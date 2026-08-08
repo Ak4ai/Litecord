@@ -1,0 +1,5 @@
+# Configuração para evitar sincronização de compilações pelo OneDrive
+# Caso mude de usuário ou precise recompilar no notebook sem este caminho:
+# Você pode alterar o caminho abaixo ou comentar a linha para usar a pasta local target/
+[build]
+target-dir = "C:/Users/hfrei/.cargo-target/litecord"

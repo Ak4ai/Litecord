@@ -1,0 +1,4 @@
+/target
+.litecord_token
+.litecord_cache
+build_*.txt
