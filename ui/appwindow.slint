@@ -45,6 +45,7 @@ export component AppWindow inherits Window {
     callback close_settings();
     callback select_input_device(string /* device_name */);
     callback select_output_device(string /* device_name */);
+    callback auto_detect_token();
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
@@ -151,6 +152,8 @@ export component AppWindow inherits Window {
 
                 HorizontalBox {
                     alignment: center;
+                    spacing: 10px;
+
                     Button {
                         text: "🚀 Conectar à Gateway";
                         primary: true;
@@ -158,6 +161,13 @@ export component AppWindow inherits Window {
                             if (token_input.text != "") {
                                 root.login(token_input.text);
                             }
+                        }
+                    }
+
+                    Button {
+                        text: "🔍 Detectar Token do Discord";
+                        clicked => {
+                            root.auto_detect_token();
                         }
                     }
                 }

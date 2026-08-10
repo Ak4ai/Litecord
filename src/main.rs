@@ -728,6 +728,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(user_info) => {
                     let username = user_info["username"].as_str().unwrap_or("User");
                     info!("Token VÁLIDO! Usuário autenticado: {}", username);
+                    let _ = std::fs::write(".litecord_token", &token_str);
 
                     let app_w = app_weak_inner.clone();
                     let username_clone = username.to_string();
@@ -768,66 +769,120 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // Auto-Login if saved token file exists
-    if let Ok(saved_token) = std::fs::read_to_string(".litecord_token") {
-        let saved_token = saved_token.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
-        if !saved_token.is_empty() {
-            info!("Token salvo encontrado em '.litecord_token'. Autoconectando...");
-            *last_token.lock().unwrap() = saved_token.clone();
-            let http = DiscordHttpClient::new(saved_token.clone());
-            *http_client.lock().unwrap() = Some(http.clone());
-            app.set_connection_status("Autoconectando à Gateway v9...".into());
+    // Callback for Auto-Detect Token Button on Login UI
+    let event_tx_auto_btn = event_tx.clone();
+    let http_client_auto_btn = Arc::clone(&http_client);
+    let app_weak_auto_btn = app_weak.clone();
+    let last_token_auto_btn = Arc::clone(&last_token);
+    let guilds_map_auto_btn = Arc::clone(&guilds_map);
+    let active_guild_auto_btn = Arc::clone(&active_guild_id);
+    let active_channel_auto_btn = Arc::clone(&active_channel_id);
+    let cmd_tx_auto_btn = Arc::clone(&cmd_tx_store);
 
-            let event_tx_gw = event_tx.clone();
-            let app_weak_auto = app_weak.clone();
-            let guilds_map_auto = Arc::clone(&guilds_map);
-            let active_guild_auto = Arc::clone(&active_guild_id);
-            let active_channel_auto = Arc::clone(&active_channel_id);
-            let cmd_tx_auto = Arc::clone(&cmd_tx_store);
+    app.on_auto_detect_token(move || {
+        let app_w = app_weak_auto_btn.clone();
+        let event_tx_gw = event_tx_auto_btn.clone();
+        let http_client_inner = Arc::clone(&http_client_auto_btn);
+        let last_token_inner = Arc::clone(&last_token_auto_btn);
+        let guilds_map_inner = Arc::clone(&guilds_map_auto_btn);
+        let active_g_inner = Arc::clone(&active_guild_auto_btn);
+        let active_c_inner = Arc::clone(&active_channel_auto_btn);
+        let cmd_tx_inner = Arc::clone(&cmd_tx_auto_btn);
 
-            tokio::spawn(async move {
-                match http.get_current_user().await {
-                    Ok(user_info) => {
-                        let username = user_info["username"].as_str().unwrap_or("User");
-                        info!("Token salvo é VÁLIDO! Usuário: {}", username);
+        let app_w_status = app_w.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = app_w_status.upgrade() {
+                ui.set_connection_status("Detectando token do Discord no sistema...".into());
+            }
+        });
 
-                        let app_w = app_weak_auto.clone();
-                        let username_clone = username.to_string();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = app_w.upgrade() {
-                                ui.set_is_logged_in(true);
-                                ui.set_connection_status(format!("Conectado como {}!", username_clone).into());
-                            }
-                        });
-
-                        // Fetch all servers and channels via HTTP REST immediately!
-                        fetch_and_populate_guilds(
-                            &http,
-                            app_weak_auto.clone(),
-                            guilds_map_auto,
-                            active_guild_auto,
-                            active_channel_auto,
-                        ).await;
-
-                        let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
-                        *cmd_tx_auto.lock().unwrap() = Some(cmd_tx);
-
-                        let gw = Arc::new(GatewayClient::new(saved_token, event_tx_gw));
-                        gw.start(cmd_rx).await;
+        tokio::spawn(async move {
+            let candidates = auto_detect_discord_tokens();
+            if candidates.is_empty() {
+                let app_w_ui = app_w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w_ui.upgrade() {
+                        ui.set_connection_status("⚠️ Nenhum token do Discord foi encontrado no sistema.".into());
                     }
-                    Err(err_msg) => {
-                        error!("Token salvo é inválido: {}", err_msg);
-                        let _ = std::fs::remove_file(".litecord_token");
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = app_weak_auto.upgrade() {
-                                ui.set_connection_status(format!("❌ {}", err_msg).into());
-                            }
-                        });
-                    }
+                });
+            } else {
+                let success = try_login_with_candidates(
+                    candidates,
+                    app_w.clone(),
+                    http_client_inner,
+                    last_token_inner,
+                    guilds_map_inner,
+                    active_g_inner,
+                    active_c_inner,
+                    cmd_tx_inner,
+                    event_tx_gw,
+                ).await;
+
+                if !success {
+                    let app_w_ui = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w_ui.upgrade() {
+                            ui.set_connection_status("⚠️ Nenhum dos tokens encontrados foi aceito pelo Discord.".into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    // Auto-Login if saved token file exists or if auto-detectable from Discord Desktop
+    let event_tx_startup = event_tx.clone();
+    let app_weak_startup = app_weak.clone();
+    let http_client_startup = Arc::clone(&http_client);
+    let last_token_startup = Arc::clone(&last_token);
+    let guilds_map_startup = Arc::clone(&guilds_map);
+    let active_guild_startup = Arc::clone(&active_guild_id);
+    let active_channel_startup = Arc::clone(&active_channel_id);
+    let cmd_tx_startup = Arc::clone(&cmd_tx_store);
+
+    tokio::spawn(async move {
+        let mut candidates = Vec::new();
+        if let Ok(saved_token) = std::fs::read_to_string(".litecord_token") {
+            let saved = saved_token.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
+            if !saved.is_empty() {
+                candidates.push(saved);
+            }
+        }
+
+        let detected = auto_detect_discord_tokens();
+        for d in detected {
+            if !candidates.contains(&d) {
+                candidates.push(d);
+            }
+        }
+
+        if !candidates.is_empty() {
+            let app_w_status = app_weak_startup.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_status.upgrade() {
+                    ui.set_connection_status("Autoconectando à Gateway v9...".into());
                 }
             });
+
+            let success = try_login_with_candidates(
+                candidates,
+                app_weak_startup.clone(),
+                http_client_startup,
+                last_token_startup,
+                guilds_map_startup,
+                active_guild_startup,
+                active_channel_startup,
+                cmd_tx_startup,
+                event_tx_startup,
+            ).await;
+
+            if !success {
+                let _ = std::fs::remove_file(".litecord_token");
+            }
         }
-    }
+    });
+
+
 
     // Select Guild Callback
     let guilds_map_select = Arc::clone(&guilds_map);
@@ -901,15 +956,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
 
-                // 2. Send REST PATCH to /guilds/{guild_id}/voice-states/@me to clear suppression
-                let http_opt = http_client_chan_select.lock().unwrap().as_ref().cloned();
-                let gid_rest = gid.clone();
-                let ch_id_rest = ch_id.clone();
-                if let Some(http) = http_opt {
-                    tokio::spawn(async move {
-                        let _ = http.update_my_voice_state(&gid_rest, &ch_id_rest).await;
-                    });
-                }
 
                 // 3. Auto-start microphone capture for voice channel (feeds PCM to gateway queue)
                 let mic_name = selected_input_voice.lock().unwrap().clone();
@@ -1076,3 +1122,217 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
     Ok(())
 }
+
+#[repr(C)]
+struct DATA_BLOB {
+    cbData: u32,
+    pbData: *mut u8,
+}
+
+#[link(name = "crypt32")]
+extern "system" {
+    fn CryptUnprotectData(
+        pDataIn: *const DATA_BLOB,
+        ppszDataDescr: *mut *mut u16,
+        pOptionalEntropy: *const DATA_BLOB,
+        pvReserved: *mut std::ffi::c_void,
+        pPromptStruct: *mut std::ffi::c_void,
+        dwFlags: u32,
+        pDataOut: *mut DATA_BLOB,
+    ) -> i32;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+
+fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
+    let mut in_blob = DATA_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut out_blob = DATA_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    let res = unsafe {
+        CryptUnprotectData(
+            &mut in_blob,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            &mut out_blob,
+        )
+    };
+
+    if res != 0 && !out_blob.pbData.is_null() {
+        let slice = unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) };
+        let result = slice.to_vec();
+        unsafe { LocalFree(out_blob.pbData as _) };
+        Some(result)
+    } else {
+        None
+    }
+}
+
+fn is_valid_token_chars(token: &str) -> bool {
+    token.len() >= 50 && token.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+fn auto_detect_discord_tokens() -> Vec<String> {
+    use base64::Engine;
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+
+    let mut tokens = Vec::new();
+    let appdata = match std::env::var("APPDATA") {
+        Ok(v) => v,
+        Err(_) => return tokens,
+    };
+    let temp_dir = std::env::temp_dir();
+
+    let discord_paths = vec![
+        format!("{}/discord", appdata),
+        format!("{}/discordcanary", appdata),
+        format!("{}/discordptb", appdata),
+        format!("{}/Lightcord", appdata),
+    ];
+
+    for path in &discord_paths {
+        let local_state_path = format!("{}/Local State", path);
+        if let Ok(content) = std::fs::read_to_string(&local_state_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(enc_key_b64) = v["os_crypt"]["encrypted_key"].as_str() {
+                    if let Ok(key_raw) = base64::engine::general_purpose::STANDARD.decode(enc_key_b64) {
+                        if key_raw.starts_with(b"DPAPI") {
+                            if let Some(master_key) = dpapi_unprotect(&key_raw[5..]) {
+                                if master_key.len() == 32 {
+                                    let leveldb_dir = format!("{}/Local Storage/leveldb", path);
+                                    if let Ok(entries) = std::fs::read_dir(&leveldb_dir) {
+                                        let mut files: Vec<std::path::PathBuf> = entries
+                                            .flatten()
+                                            .map(|e| e.path())
+                                            .filter(|p| {
+                                                let fname = p.file_name().unwrap_or_default().to_string_lossy();
+                                                fname.ends_with(".ldb") || fname.ends_with(".log")
+                                            })
+                                            .collect();
+
+                                        files.sort_by(|a, b| {
+                                            let time_a = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                                            let time_b = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                                            time_b.cmp(&time_a)
+                                        });
+
+                                        for file_path in files {
+                                            let fname = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                            let temp_file = temp_dir.join(format!("litecord_tmp_{}", fname));
+                                            if std::fs::copy(&file_path, &temp_file).is_ok() {
+                                                if let Ok(bytes) = std::fs::read(&temp_file) {
+                                                    let _ = std::fs::remove_file(&temp_file);
+                                                    let text = String::from_utf8_lossy(&bytes);
+                                                    for chunk in text.split("dQw4w9WgXcQ:") {
+                                                        let enc_b64: String = chunk
+                                                            .chars()
+                                                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
+                                                            .collect();
+                                                        if enc_b64.len() > 30 {
+                                                            if let Ok(full_enc) = base64::engine::general_purpose::STANDARD.decode(&enc_b64) {
+                                                                if full_enc.len() > 31 {
+                                                                    let nonce = &full_enc[3..15];
+                                                                    let ciphertext = &full_enc[15..];
+                                                                    if let Ok(cipher) = Aes256Gcm::new_from_slice(&master_key) {
+                                                                        let nonce_obj = Nonce::from_slice(nonce);
+                                                                        if let Ok(decrypted) = cipher.decrypt(nonce_obj, ciphertext) {
+                                                                            if let Ok(token) = String::from_utf8(decrypted) {
+                                                                                let token_clean = token.trim().to_string();
+                                                                                if is_valid_token_chars(&token_clean) && !tokens.contains(&token_clean) {
+                                                                                    info!("Candidato a token do Discord encontrado!");
+                                                                                    tokens.push(token_clean);
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    let _ = std::fs::remove_file(&temp_file);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tokens
+}
+
+async fn try_login_with_candidates(
+    candidates: Vec<String>,
+    app_weak: slint::Weak<AppWindow>,
+    http_client: Arc<Mutex<Option<DiscordHttpClient>>>,
+    last_token: Arc<Mutex<String>>,
+    guilds_map: Arc<Mutex<HashMap<String, GuildData>>>,
+    active_guild_id: Arc<Mutex<String>>,
+    active_channel_id: Arc<Mutex<String>>,
+    cmd_tx_store: Arc<Mutex<Option<mpsc::Sender<GatewayCommand>>>>,
+    event_tx_gw: mpsc::Sender<GatewayEvent>,
+) -> bool {
+    for token_str in candidates {
+        info!("Testando candidato a token via Discord REST API...");
+        let http = DiscordHttpClient::new(token_str.clone());
+        match http.get_current_user().await {
+            Ok(user_info) => {
+                let username = user_info["username"].as_str().unwrap_or("User");
+                info!("Token VÁLIDO ENCONTRADO! Conectado como {}", username);
+
+                let _ = std::fs::write(".litecord_token", &token_str);
+                *last_token.lock().unwrap() = token_str.clone();
+                *http_client.lock().unwrap() = Some(http.clone());
+
+                let app_w = app_weak.clone();
+                let username_clone = username.to_string();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w.upgrade() {
+                        ui.set_is_logged_in(true);
+                        ui.set_connection_status(format!("Conectado como {}!", username_clone).into());
+                    }
+                });
+
+                fetch_and_populate_guilds(
+                    &http,
+                    app_weak.clone(),
+                    guilds_map,
+                    active_guild_id,
+                    active_channel_id,
+                ).await;
+
+                let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
+                *cmd_tx_store.lock().unwrap() = Some(cmd_tx);
+
+                let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
+                gw.start(cmd_rx).await;
+
+                return true;
+            }
+            Err(err_msg) => {
+                info!("Candidato a token recusado pelo Discord ({}). Testando próximo candidato...", err_msg);
+            }
+        }
+    }
+    false
+}
+
+

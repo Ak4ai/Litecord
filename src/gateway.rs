@@ -12,9 +12,10 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce
 };
-use opus_rs::{OpusEncoder, Application};
-use davey::{DaveSession, ProposalsOperationType};
+use opus_rs::{OpusEncoder, OpusDecoder, Application};
+use davey::{DaveSession, ProposalsOperationType, MediaType};
 use std::num::NonZeroU16;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ChannelData {
@@ -65,10 +66,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // Shared Microphone PCM Audio Queue (32-bit float PCM at 48000Hz)
 pub static MIC_PCM_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
+// Shared Speaker PCM Audio Queues mapped by SSRC (32-bit float PCM at 48000Hz mono per user)
+pub static SPEAKER_PCM_QUEUES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<f32>>>>> = std::sync::OnceLock::new();
 pub static CURRENT_VOICE_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn get_mic_pcm_queue() -> Arc<std::sync::Mutex<VecDeque<f32>>> {
     MIC_PCM_QUEUE.get_or_init(|| Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(48000)))).clone()
+}
+
+pub fn get_speaker_pcm_queues() -> Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<f32>>>> {
+    SPEAKER_PCM_QUEUES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
 }
 
 pub fn format_discord_author(m: &Value) -> String {
@@ -78,7 +85,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let is_bot = author_obj["bot"].as_bool().unwrap_or(false);
 
     if is_bot {
-        format!("🤖 {} [BOT]", name)
+        format!("ðŸ¤– {} [BOT]", name)
     } else {
         name.to_string()
     }
@@ -102,13 +109,13 @@ pub fn format_discord_message(m: &Value) -> String {
 
             if let Some(author_name) = embed["author"]["name"].as_str() {
                 if !author_name.trim().is_empty() {
-                    embed_parts.push(format!("📌 {}", author_name.trim()));
+                    embed_parts.push(format!("ðŸ“Œ {}", author_name.trim()));
                 }
             }
 
             if let Some(title) = embed["title"].as_str() {
                 if !title.trim().is_empty() {
-                    embed_parts.push(format!("🔹 {}", title.trim()));
+                    embed_parts.push(format!("ðŸ”¹ {}", title.trim()));
                 }
             }
 
@@ -123,19 +130,19 @@ pub fn format_discord_message(m: &Value) -> String {
                     let name = field["name"].as_str().unwrap_or("").trim();
                     let val = field["value"].as_str().unwrap_or("").trim();
                     if !name.is_empty() || !val.is_empty() {
-                        embed_parts.push(format!("• {}: {}", name, val));
+                        embed_parts.push(format!("â€¢ {}: {}", name, val));
                     }
                 }
             }
 
             if let Some(footer) = embed["footer"]["text"].as_str() {
                 if !footer.trim().is_empty() {
-                    embed_parts.push(format!("── {}", footer.trim()));
+                    embed_parts.push(format!("â”€â”€ {}", footer.trim()));
                 }
             }
 
             if !embed_parts.is_empty() {
-                parts.push(format!("📋 [EMBED]\n{}", embed_parts.join("\n")));
+                parts.push(format!("ðŸ“‹ [EMBED]\n{}", embed_parts.join("\n")));
             }
         }
     }
@@ -145,7 +152,7 @@ pub fn format_discord_message(m: &Value) -> String {
         for att in attachments {
             let filename = att["filename"].as_str().unwrap_or("arquivo");
             let url = att["url"].as_str().unwrap_or("");
-            parts.push(format!("📎 [Anexo: {}] ({})", filename, url));
+            parts.push(format!("ðŸ“Ž [Anexo: {}] ({})", filename, url));
         }
     }
 
@@ -153,7 +160,7 @@ pub fn format_discord_message(m: &Value) -> String {
     if let Some(stickers) = m["sticker_items"].as_array() {
         for st in stickers {
             let st_name = st["name"].as_str().unwrap_or("Sticker");
-            parts.push(format!("🎨 [Sticker: {}]", st_name));
+            parts.push(format!("ðŸŽ¨ [Sticker: {}]", st_name));
         }
     }
 
@@ -164,7 +171,7 @@ pub fn format_discord_message(m: &Value) -> String {
             6 => "[Mensagem Fixada]".to_string(),
             7 => "[Novo membro entrou no servidor!]".to_string(),
             8 => "[Servidor Impulsionado!]".to_string(),
-            _ => "[Conteúdo Mídia/Membro Especial]".to_string(),
+            _ => "[ConteÃºdo MÃ­dia/Membro Especial]".to_string(),
         }
     } else {
         parts.join("\n")
@@ -180,6 +187,7 @@ pub struct GatewayClient {
     voice_endpoint: Arc<std::sync::Mutex<Option<String>>>,
     voice_guild_id: Arc<std::sync::Mutex<Option<String>>>,
     voice_channel_id: Arc<std::sync::Mutex<Option<String>>>,
+    voice_self_mute: Arc<std::sync::Mutex<bool>>,
 }
 
 impl GatewayClient {
@@ -194,7 +202,7 @@ impl GatewayClient {
         }
 
         let prefix_len = token.len().min(12);
-        info!("Token sanitizado (início): {}...", &token[..prefix_len]);
+        info!("Token sanitizado (inÃ­cio): {}...", &token[..prefix_len]);
 
         Self {
             token,
@@ -205,6 +213,7 @@ impl GatewayClient {
             voice_endpoint: Arc::new(std::sync::Mutex::new(None)),
             voice_guild_id: Arc::new(std::sync::Mutex::new(None)),
             voice_channel_id: Arc::new(std::sync::Mutex::new(None)),
+            voice_self_mute: Arc::new(std::sync::Mutex::new(false)),
         }
     }
 
@@ -217,11 +226,12 @@ impl GatewayClient {
         let voice_cid = self.voice_channel_id.lock().unwrap().clone().unwrap_or_default();
 
         if let (Some(uid), Some(sid), Some(tok), Some(ep), Some(gid)) = (user_id, voice_sid, voice_tok, voice_ep, voice_gid) {
-            info!("Todas as credenciais de voz prontas! Conectando à Voice Gateway no endpoint {}...", ep);
+            info!("Todas as credenciais de voz prontas! Conectando Ã  Voice Gateway no endpoint {}...", ep);
             *self.voice_token.lock().unwrap() = None; // Reset so we only trigger once per payload
 
+            let self_mute_state = Arc::clone(&self.voice_self_mute);
             tokio::spawn(async move {
-                connect_voice_gateway(&ep, &gid, &uid, &sid, &tok, &voice_cid).await;
+                connect_voice_gateway(&ep, &gid, &uid, &sid, &tok, &voice_cid, self_mute_state).await;
             });
         }
     }
@@ -229,11 +239,11 @@ impl GatewayClient {
     pub async fn start(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<GatewayCommand>) {
         // Gateway v9 is required for User Account Tokens
         let url = "wss://gateway.discord.gg/?v=9&encoding=json";
-        info!("Conectando à Gateway v9 do Discord...");
+        info!("Conectando Ã  Gateway v9 do Discord...");
 
         match connect_async(url).await {
             Ok((ws_stream, _)) => {
-                info!("Conexão WebSocket estabelecida com sucesso!");
+                info!("ConexÃ£o WebSocket estabelecida com sucesso!");
                 let (write, mut read) = ws_stream.split();
                 let write_arc = Arc::new(Mutex::new(write));
 
@@ -244,15 +254,23 @@ impl GatewayClient {
                     while let Some(cmd) = cmd_rx.recv().await {
                         match cmd {
                             GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
-                                // Terminate any existing background UDP audio tasks
-                                CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+                                let channel_changed = {
+                                    let cur_channel = client_cmd.voice_channel_id.lock().unwrap();
+                                    *cur_channel != channel_id
+                                };
 
-                                // Reset voice session buffers for clean new connection
-                                *client_cmd.voice_session_id.lock().unwrap() = None;
-                                *client_cmd.voice_token.lock().unwrap() = None;
-                                *client_cmd.voice_endpoint.lock().unwrap() = None;
-                                *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
-                                *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
+                                *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
+
+                                if channel_changed {
+                                    // Terminate any existing background UDP audio tasks
+                                    CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+
+                                    // Reset voice token and endpoint buffers for clean new connection (preserve session_id)
+                                    *client_cmd.voice_token.lock().unwrap() = None;
+                                    *client_cmd.voice_endpoint.lock().unwrap() = None;
+                                    *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
+                                    *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
+                                }
 
                                 let payload = serde_json::json!({
                                     "op": 4,
@@ -264,7 +282,7 @@ impl GatewayClient {
                                     }
                                 });
 
-                                info!("Enviando OP 4 VoiceStateUpdate à Gateway: {}", payload);
+                                info!("Enviando OP 4 VoiceStateUpdate Ã  Gateway: {}", payload);
                                 let mut w = write_cmd.lock().await;
                                 if let Err(e) = w.send(Message::Text(payload.to_string().into())).await {
                                     warn!("Falha ao enviar Opcode 4 (VoiceStateUpdate): {:?}", e);
@@ -362,10 +380,10 @@ impl GatewayClient {
                             }
                         }
                         Ok(Message::Close(close_frame)) => {
-                            warn!("Gateway fechou a conexão (Close Frame): {:?}", close_frame);
+                            warn!("Gateway fechou a conexÃ£o (Close Frame): {:?}", close_frame);
                             let reason = match close_frame {
-                                Some(frame) => format!("Código {}: {}", frame.code, frame.reason),
-                                None => "Conexão encerrada pelo servidor".to_string(),
+                                Some(frame) => format!("CÃ³digo {}: {}", frame.code, frame.reason),
+                                None => "ConexÃ£o encerrada pelo servidor".to_string(),
                             };
                             let _ = self.event_tx.send(GatewayEvent::Disconnected { reason }).await;
                             break;
@@ -381,7 +399,7 @@ impl GatewayClient {
             Err(e) => {
                 error!("Falha ao conectar na Gateway do Discord: {:?}", e);
                 let _ = self.event_tx.send(GatewayEvent::Disconnected {
-                    reason: format!("Erro de conexão: {}", e)
+                    reason: format!("Erro de conexÃ£o: {}", e)
                 }).await;
             }
         }
@@ -402,15 +420,15 @@ impl GatewayClient {
                     } else {
                         format!("{}#{}", global_name, discriminator)
                     };
-                    info!("Login BEM-SUCEDIDO na Gateway! Usuário: {} (@{})", global_name, username);
+                    info!("Login BEM-SUCEDIDO na Gateway! UsuÃ¡rio: {} (@{})", global_name, username);
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
                 }
                 "VOICE_STATE_UPDATE" => {
                     if let Some(sid) = v["d"]["session_id"].as_str() {
                         let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
                         let event_uid = v["d"]["user_id"].as_str().unwrap_or("");
-                        if event_uid == my_uid || my_uid.is_empty() {
-                            info!("VOICE_STATE_UPDATE recebido! Session ID: {}", sid);
+                        if !my_uid.is_empty() && event_uid == my_uid {
+                            info!("VOICE_STATE_UPDATE do meu usuÃ¡rio recebido! Session ID: {}", sid);
                             *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
                             self.try_trigger_voice_connect();
                         }
@@ -482,20 +500,22 @@ pub async fn connect_voice_gateway(
     session_id: &str,
     token: &str,
     channel_id: &str,
+    self_mute_state: Arc<std::sync::Mutex<bool>>,
 ) {
-    let mut clean_endpoint = raw_endpoint.trim();
-    if let Some(pos) = clean_endpoint.find(':') {
-        clean_endpoint = &clean_endpoint[..pos];
-    }
-    let voice_url = format!("wss://{}/?v=4", clean_endpoint);
-    info!("Conectando à Discord Voice Gateway v4: {}...", voice_url);
+    let clean_endpoint = raw_endpoint.trim();
+    let voice_url = if clean_endpoint.starts_with("wss://") || clean_endpoint.starts_with("ws://") {
+        clean_endpoint.to_string()
+    } else {
+        format!("wss://{}/?v=4", clean_endpoint)
+    };
+    info!("Conectando Ã  Discord Voice Gateway: {}...", voice_url);
 
     let my_session_id = CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst) + 1;
-    info!("Iniciando nova sessão de voz ID={}", my_session_id);
+    info!("Iniciando nova sessÃ£o de voz ID={}", my_session_id);
 
     match connect_async(&voice_url).await {
         Ok((ws_stream, _)) => {
-            info!("Conexão WebSocket com Voice Gateway estabelecida!");
+            info!("ConexÃ£o WebSocket com Voice Gateway estabelecida!");
             let (write, mut read) = ws_stream.split();
             let write_arc = Arc::new(Mutex::new(write));
 
@@ -532,7 +552,7 @@ pub async fn connect_voice_gateway(
                                         .unwrap_or(20000);
                                     info!("Voice Gateway HELLO recebido! Intervalo de Heartbeat: {} ms", heartbeat_interval);
 
-                                    // 1. Send Opcode 0 Voice Identify (with max_dave_protocol_version: 1)
+                                    // 1. Send Opcode 0 Voice Identify (with max_dave_protocol_version: 1 for E2EE DAVE support)
                                     let voice_identify = serde_json::json!({
                                         "op": 0,
                                         "d": {
@@ -546,7 +566,7 @@ pub async fn connect_voice_gateway(
                                         }
                                     });
 
-                                    info!("Enviando OP 0 Voice Identify (DAVE v1) para a Voice Gateway...");
+                                    info!("Enviando OP 0 Voice Identify para a Voice Gateway: {}", voice_identify);
                                     {
                                         let mut w = write_arc.lock().await;
                                         if let Err(e) = w.send(Message::Text(voice_identify.to_string().into())).await {
@@ -588,16 +608,20 @@ pub async fn connect_voice_gateway(
                                         "aead_aes256_gcm_rtpsize".to_string()
                                     };
 
-                                    info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
+                                    info!("ðŸŽ‰ VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
 
                                     // UDP IP Discovery & Opcode 1 Select Protocol Handshake
                                     if !voice_ip.is_empty() && voice_port > 0 {
                                         let write_arc_proto = Arc::clone(&write_arc);
                                         let secret_key_udp = Arc::clone(&secret_key_arc);
                                         let dave_session_audio = Arc::clone(&dave_session);
+                                        let self_mute_rx = Arc::clone(&self_mute_state);
 
                                         tokio::spawn(async move {
-                                            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                                            let socket = match UdpSocket::bind("0.0.0.0:0").await {
+                                                Ok(s) => Arc::new(s),
+                                                Err(e) => { warn!("Falha ao criar socket UDP de voz: {:?}", e); return; }
+                                            };
                                                 let target_addr = format!("{}:{}", voice_ip, voice_port);
                                                 info!("Socket UDP de Voz conectado a {}", target_addr);
 
@@ -649,7 +673,7 @@ pub async fn connect_voice_gateway(
                                                     my_pub_port = 1337;
                                                 }
 
-                                                info!("UDP IP Discovery Concluído! IP Público Real: {}:{}", my_pub_ip, my_pub_port);
+                                                info!("UDP IP Discovery ConcluÃ­do! IP PÃºblico Real: {}:{}", my_pub_ip, my_pub_port);
 
                                                 // 2. Send Opcode 1 Select Protocol to Voice Gateway WebSocket
                                                 let select_proto = serde_json::json!({
@@ -673,6 +697,230 @@ pub async fn connect_voice_gateway(
                                                 // 3. Initialize Pure Rust OpusEncoder (48000Hz, Mono 1 channel, Application::Voip)
                                                 let mut opus_encoder = OpusEncoder::new(48000, 1, Application::Voip)
                                                     .expect("Falha ao inicializar o OpusEncoder nativo em Rust");
+
+                                                // 4. Spawn incoming UDP voice receive loop
+                                                let socket_rx = Arc::clone(&socket);
+                                                let secret_key_rx = Arc::clone(&secret_key_udp);
+                                                let dave_session_rx = Arc::clone(&dave_session_audio);
+                                                let speaker_queues_rx = get_speaker_pcm_queues();
+                                                let my_ssrc = ssrc;
+                                                let rx_session_id = my_session_id;
+                                                tokio::spawn(async move {
+                                                    let mut opus_decoders: HashMap<u32, OpusDecoder> = HashMap::new();
+                                                    let mut recv_buf = vec![0u8; 4096];
+                                                    loop {
+                                                        if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != rx_session_id { break; }
+                                                        match tokio::time::timeout(Duration::from_millis(100), socket_rx.recv_from(&mut recv_buf)).await {
+                                                            Ok(Ok((len, _addr))) => {
+                                                                if len < 12 { continue; }
+                                                                let pkt = &recv_buf[..len];
+                                                                // Parse RTP header
+                                                                let version = (pkt[0] >> 6) & 0x3;
+                                                                if version != 2 { continue; }
+                                                                let ssrc_recv = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
+                                                                // Skip our own SSRC
+                                                                if ssrc_recv == my_ssrc { continue; }
+
+                                                                // Parse dynamic header size and check extensions (RFC 8285 / rtpsize format)
+                                                                let cc = (pkt[0] & 0x0F) as usize;
+                                                                let has_ext = (pkt[0] & 0x10) != 0;
+                                                                let base_header_len = 12 + 4 * cc;
+                                                                if len < base_header_len { continue; }
+
+                                                                let mut aad_len = base_header_len;
+                                                                let mut ext_payload_bytes = 0;
+
+                                                                if has_ext {
+                                                                    if len < base_header_len + 4 { continue; }
+                                                                    let ext_len_words = u16::from_be_bytes([pkt[base_header_len + 2], pkt[base_header_len + 3]]) as usize;
+                                                                    ext_payload_bytes = ext_len_words * 4;
+                                                                    aad_len = base_header_len + 4;
+                                                                }
+
+                                                                // rtpsize nonce: last 4 bytes of packet
+                                                                if len < aad_len + 4 { continue; }
+                                                                let nonce_bytes_rx = &pkt[len-4..len];
+                                                                let mut nonce_arr = [0u8; 12];
+                                                                nonce_arr[0..4].copy_from_slice(nonce_bytes_rx);
+
+                                                                let key_opt = secret_key_rx.lock().unwrap().clone();
+                                                                if let Some(key_bytes) = key_opt {
+                                                                    if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
+                                                                        let nonce = Nonce::from_slice(&nonce_arr);
+                                                                        let header = &pkt[..aad_len];
+                                                                        let ciphertext = &pkt[aad_len..len-4];
+                                                                        let payload_decrypt = aes_gcm::aead::Payload {
+                                                                            msg: ciphertext,
+                                                                            aad: header,
+                                                                        };
+                                                                        if let Ok(mut decrypted) = cipher.decrypt(nonce, payload_decrypt) {
+                                                                            // If header extensions are present, strip decrypted extension payload
+                                                                            if ext_payload_bytes > 0 {
+                                                                                if decrypted.len() < ext_payload_bytes {
+                                                                                    continue;
+                                                                                }
+                                                                                decrypted.drain(..ext_payload_bytes);
+                                                                            }
+
+                                                                            // Try DAVE decrypt if session ready, using ssrc as user_id
+                                                                            let opus_data: Vec<u8> = {
+                                                                                let mut sess = dave_session_rx.lock().unwrap();
+                                                                                if let Some(ref mut s) = *sess {
+                                                                                    if s.is_ready() {
+                                                                                        match s.decrypt(ssrc_recv as u64, MediaType::AUDIO, &decrypted) {
+                                                                                            Ok(d) => d,
+                                                                                            Err(_) => decrypted,
+                                                                                        }
+                                                                                    } else { decrypted }
+                                                                                } else { decrypted }
+                                                                            };
+
+                                                                            // Opus decode to PCM f32 mono 48kHz, frame_size=960 (20ms)
+                                                                            let decoder = opus_decoders
+                                                                                .entry(ssrc_recv)
+                                                                                .or_insert_with(|| OpusDecoder::new(48000, 1)
+                                                                                    .expect("Falha ao criar OpusDecoder"));
+
+                                                                            let mut pcm_out = vec![0.0f32; 5760]; // 120ms max
+                                                                            if let Ok(decoded_samples) = decoder.decode(&opus_data, 5760, &mut pcm_out) {
+                                                                                if let Ok(mut queues) = speaker_queues_rx.lock() {
+                                                                                    let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(96000));
+                                                                                    for &s in &pcm_out[..decoded_samples] {
+                                                                                        if q.len() < 192000 { // cap at 4s per user
+                                                                                            q.push_back(s.clamp(-1.0, 1.0));
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Ok(Err(_)) | Err(_) => { /* timeout or error, continue */ }
+                                                        }
+                                                    }
+                                                    info!("Loop de recepção de voz (ID={}) encerrado.", rx_session_id);
+                                                });
+
+                                                let speaker_queues_out = get_speaker_pcm_queues();
+                                                let out_session_id = my_session_id;
+                                                std::thread::spawn(move || {
+                                                    use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
+                                                    let host = cpal::default_host();
+                                                    let device = match host.default_output_device() {
+                                                        Some(d) => d,
+                                                        None => { warn!("Nenhum dispositivo de saída de áudio encontrado!"); return; }
+                                                    };
+                                                    let config = match device.default_output_config() {
+                                                        Ok(c) => c,
+                                                        Err(e) => { warn!("Falha ao obter config de saída: {:?}", e); return; }
+                                                    };
+                                                    let out_sample_rate = config.sample_rate().0;
+                                                    let out_channels = config.channels() as usize;
+                                                    info!("Saída de Áudio (Speaker): {}Hz, {} canal(is)", out_sample_rate, out_channels);
+
+                                                    let sq = speaker_queues_out;
+                                                    let mut started_ssrcs = std::collections::HashSet::new();
+                                                    let mut inactive_ticks = std::collections::HashMap::new();
+                                                    let stream_result = device.build_output_stream(
+                                                        &config.into(),
+                                                        move |output: &mut [f32], _| {
+                                                            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                for s in output.iter_mut() { *s = 0.0; }
+                                                                return;
+                                                            }
+
+                                                            // Clear output buffer first
+                                                            for s in output.iter_mut() { *s = 0.0; }
+
+                                                            if let Ok(mut queues) = sq.lock() {
+                                                                let frames = output.len() / out_channels;
+                                                                let mut ready_ssrcs = Vec::new();
+                                                                let mut to_remove = Vec::new();
+
+                                                                for (&ssrc, q) in queues.iter() {
+                                                                    if q.is_empty() {
+                                                                        let ticks = inactive_ticks.entry(ssrc).or_insert(0);
+                                                                        *ticks += 1;
+                                                                        if *ticks > 150 { // ~3 seconds of silence at 20ms callback interval
+                                                                            to_remove.push(ssrc);
+                                                                        }
+                                                                    } else {
+                                                                        inactive_ticks.insert(ssrc, 0); // reset inactivity
+                                                                    }
+
+                                                                    if started_ssrcs.contains(&ssrc) {
+                                                                        if !q.is_empty() {
+                                                                            ready_ssrcs.push(ssrc);
+                                                                        }
+                                                                    } else if q.len() >= 960 {
+                                                                        started_ssrcs.insert(ssrc);
+                                                                        ready_ssrcs.push(ssrc);
+                                                                    }
+                                                                }
+
+                                                                // Cleanup inactive user queues
+                                                                for ssrc in to_remove {
+                                                                    queues.remove(&ssrc);
+                                                                    started_ssrcs.remove(&ssrc);
+                                                                    inactive_ticks.remove(&ssrc);
+                                                                }
+
+                                                                if ready_ssrcs.is_empty() {
+                                                                    return;
+                                                                }
+
+                                                                // Mix and write to the output buffer
+                                                                for f in 0..frames {
+                                                                    let mut mixed_sample = 0.0f32;
+                                                                    for &ssrc in &ready_ssrcs {
+                                                                        if let Some(q) = queues.get_mut(&ssrc) {
+                                                                            let src_sample = if out_sample_rate == 48000 {
+                                                                                q.pop_front().unwrap_or(0.0)
+                                                                            } else {
+                                                                                // Simple nearest-neighbor resample per SSRC
+                                                                                let ratio = 48000.0 / out_sample_rate as f64;
+                                                                                let needed = (ratio * (f + 1) as f64) as usize;
+                                                                                let mut s = 0.0f32;
+                                                                                for _ in 0..needed.saturating_sub((ratio * f as f64) as usize) {
+                                                                                    s = q.pop_front().unwrap_or(0.0);
+                                                                                }
+                                                                                s
+                                                                            };
+                                                                            mixed_sample += src_sample;
+                                                                        }
+                                                                    }
+
+                                                                    let clamped = mixed_sample.clamp(-1.0, 1.0);
+                                                                    for ch in 0..out_channels {
+                                                                        output[f * out_channels + ch] = clamped;
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        |err| { warn!("Erro no stream de saída: {:?}", err); },
+                                                        None,
+                                                    );
+                                                    match stream_result {
+                                                        Ok(stream) => {
+                                                            use cpal::traits::StreamTrait;
+                                                            if let Err(e) = stream.play() {
+                                                                warn!("Falha ao iniciar stream de saída: {:?}", e);
+                                                                return;
+                                                            }
+                                                            info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
+                                                            // Keep thread alive while session is valid
+                                                            loop {
+                                                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                                                if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                    info!("Stream de saída encerrado (sessão expirada).");
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => { warn!("Falha ao criar stream de saída: {:?}", e); }
+                                                    }
+                                                });
 
                                                 let pcm_queue = get_mic_pcm_queue();
                                                 let mut seq: u16 = 0;
@@ -701,6 +949,15 @@ pub async fn connect_voice_gateway(
                                                         info!("Sessão de voz antiga (ID={}) encerrada, saindo do loop UDP!", my_session_id);
                                                         break;
                                                     }
+
+                                                    let is_muted = *self_mute_rx.lock().unwrap();
+                                                    if is_muted {
+                                                        if let Ok(mut q) = pcm_queue.lock() {
+                                                            q.clear();
+                                                        }
+                                                        continue;
+                                                    }
+
                                                     seq = seq.wrapping_add(1);
                                                     timestamp = timestamp.wrapping_add(960);
                                                     nonce_cnt = nonce_cnt.wrapping_add(1);
@@ -712,14 +969,25 @@ pub async fn connect_voice_gateway(
                                                     audio_header[4..8].copy_from_slice(&timestamp.to_be_bytes());
                                                     audio_header[8..12].copy_from_slice(&ssrc_bytes);
 
-                                                    // Extract 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer
+                                                    // Extract 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer smoothly
                                                     let mut pcm_frame = [0.0f32; 960];
                                                     let mut has_audio = false;
                                                     {
                                                         if let Ok(mut q) = pcm_queue.lock() {
-                                                            if q.len() >= 960 {
-                                                                for sample in pcm_frame.iter_mut() {
-                                                                    *sample = q.pop_front().unwrap_or(0.0);
+                                                            let avail = q.len();
+                                                            if avail >= 240 { // If at least 5ms of audio is available, process frame
+                                                                let count = avail.min(960);
+                                                                let mut last_sample = 0.0f32;
+                                                                for i in 0..count {
+                                                                    if let Some(s) = q.pop_front() {
+                                                                        pcm_frame[i] = s;
+                                                                        last_sample = s;
+                                                                    }
+                                                                }
+                                                                // Smoothly pad remaining samples if jitter occurred
+                                                                for i in count..960 {
+                                                                    last_sample *= 0.95;
+                                                                    pcm_frame[i] = last_sample;
                                                                 }
                                                                 has_audio = true;
                                                             }
@@ -791,7 +1059,7 @@ pub async fn connect_voice_gateway(
                                                                 speaking_loop_counter = speaking_loop_counter.wrapping_add(1);
                                                                 if speaking_loop_counter % 250 == 0 {
                                                                     let q_len = pcm_queue.lock().map(|q| q.len()).unwrap_or(0);
-                                                                    info!("Transmissão de Áudio: frames_enviados={}, pcm_queue_buffer={}, has_audio={}, dave_encrypted={}",
+                                                                    info!("TransmissÃ£o de Ãudio: frames_enviados={}, pcm_queue_buffer={}, has_audio={}, dave_encrypted={}",
                                                                         speaking_loop_counter, q_len, has_audio, dave_enc_ok);
 
                                                                     let speaking_pkt = serde_json::json!({
@@ -805,19 +1073,18 @@ pub async fn connect_voice_gateway(
                                                         }
                                                     }
                                                 }
-                                            }
                                         });
                                     }
                                 }
                                 4 => {
                                     // Voice Opcode 4: Session Description (Handshake Complete & Secret Key received!)
                                     let ssrc = *active_ssrc.lock().unwrap();
-                                    info!("🎉 VOICE GATEWAY OPCODE 4 SESSION DESCRIPTION RECEBIDO! Sessão de Voz Ativada com Sucesso!");
+                                    info!("ðŸŽ‰ VOICE GATEWAY OPCODE 4 SESSION DESCRIPTION RECEBIDO! SessÃ£o de Voz Ativada com Sucesso!");
 
                                     if let Some(key_arr) = val["d"]["secret_key"].as_array() {
                                         let key_bytes: Vec<u8> = key_arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
                                         if key_bytes.len() == 32 {
-                                            info!("Chave de criptografia AES-256 de 32 bytes configurada com SUCESSO para os pacotes de áudio!");
+                                            info!("Chave de criptografia AES-256 de 32 bytes configurada com SUCESSO para os pacotes de Ã¡udio!");
                                             *secret_key_arc.lock().unwrap() = Some(key_bytes);
                                         }
                                     }
@@ -903,7 +1170,7 @@ pub async fn connect_voice_gateway(
                                     pkt.extend_from_slice(&kp);
                                     let mut w = write_arc.lock().await;
                                     let _ = w.send(Message::Binary(pkt.into())).await;
-                                    info!("DAVE: KeyPackage (op=26) enviado à Voice Gateway!");
+                                    info!("DAVE: KeyPackage (op=26) enviado Ã  Voice Gateway!");
                                 }
                             }
                             27 => {
@@ -935,7 +1202,7 @@ pub async fn connect_voice_gateway(
                                     pkt.extend_from_slice(&commit_data);
                                     let mut w = write_arc.lock().await;
                                     let _ = w.send(Message::Binary(pkt.into())).await;
-                                    info!("DAVE: CommitWelcome (op=28) enviado à Voice Gateway!");
+                                    info!("DAVE: CommitWelcome (op=28) enviado Ã  Voice Gateway!");
                                 }
                             }
                             29 => {
@@ -965,7 +1232,7 @@ pub async fn connect_voice_gateway(
                                     if let Some(ref mut s) = *sess {
                                         match s.process_welcome(welcome_payload) {
                                             Ok(()) => {
-                                                info!("🎉 DAVE: Welcome processado com SUCESSO! Sessão ATIVA! is_ready={}", s.is_ready());
+                                                info!("ðŸŽ‰ DAVE: Welcome processado com SUCESSO! SessÃ£o ATIVA! is_ready={}", s.is_ready());
                                                 true
                                             }
                                             Err(e) => {
@@ -986,7 +1253,7 @@ pub async fn connect_voice_gateway(
                                 }
                             }
                             _ => {
-                                info!("DAVE: Opcode binário desconhecido: {}", dave_op);
+                                info!("DAVE: Opcode binÃ¡rio desconhecido: {}", dave_op);
                             }
                         }
                      }
