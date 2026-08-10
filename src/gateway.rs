@@ -525,6 +525,7 @@ pub async fn connect_voice_gateway(
             let token = token.to_string();
             let channel_id_str = channel_id.to_string();
             let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
+            let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
             let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
 
             // Create DAVE (Discord Audio/Video E2EE) session using the davey crate
@@ -595,6 +596,7 @@ pub async fn connect_voice_gateway(
                                     // Voice Opcode 2: READY!
                                     let ssrc = val["d"]["ssrc"].as_u64().unwrap_or(12345) as u32;
                                     *active_ssrc.lock().unwrap() = ssrc;
+                                    ssrc_to_userid.lock().unwrap().insert(ssrc, uid_num);
 
                                     let voice_ip = val["d"]["ip"].as_str().unwrap_or("").to_string();
                                     let voice_port = val["d"]["port"].as_u64().unwrap_or(0) as u16;
@@ -615,6 +617,7 @@ pub async fn connect_voice_gateway(
                                         let write_arc_proto = Arc::clone(&write_arc);
                                         let secret_key_udp = Arc::clone(&secret_key_arc);
                                         let dave_session_audio = Arc::clone(&dave_session);
+                                        let ssrc_to_userid_audio = Arc::clone(&ssrc_to_userid);
                                         let self_mute_rx = Arc::clone(&self_mute_state);
 
                                         tokio::spawn(async move {
@@ -702,6 +705,7 @@ pub async fn connect_voice_gateway(
                                                 let socket_rx = Arc::clone(&socket);
                                                 let secret_key_rx = Arc::clone(&secret_key_udp);
                                                 let dave_session_rx = Arc::clone(&dave_session_audio);
+                                                let ssrc_to_userid_rx = Arc::clone(&ssrc_to_userid_audio);
                                                 let speaker_queues_rx = get_speaker_pcm_queues();
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
@@ -728,13 +732,13 @@ pub async fn connect_voice_gateway(
                                                                 if len < base_header_len { continue; }
 
                                                                 let mut aad_len = base_header_len;
-                                                                let mut ext_payload_bytes = 0;
 
                                                                 if has_ext {
                                                                     if len < base_header_len + 4 { continue; }
                                                                     let ext_len_words = u16::from_be_bytes([pkt[base_header_len + 2], pkt[base_header_len + 3]]) as usize;
-                                                                    ext_payload_bytes = ext_len_words * 4;
-                                                                    aad_len = base_header_len + 4;
+                                                                    let ext_total_bytes = 4 + ext_len_words * 4;
+                                                                    if len < base_header_len + ext_total_bytes { continue; }
+                                                                    aad_len = base_header_len + ext_total_bytes;
                                                                 }
 
                                                                 // rtpsize nonce: last 4 bytes of packet
@@ -753,21 +757,16 @@ pub async fn connect_voice_gateway(
                                                                             msg: ciphertext,
                                                                             aad: header,
                                                                         };
-                                                                        if let Ok(mut decrypted) = cipher.decrypt(nonce, payload_decrypt) {
-                                                                            // If header extensions are present, strip decrypted extension payload
-                                                                            if ext_payload_bytes > 0 {
-                                                                                if decrypted.len() < ext_payload_bytes {
-                                                                                    continue;
-                                                                                }
-                                                                                decrypted.drain(..ext_payload_bytes);
-                                                                            }
+                                                                        if let Ok(decrypted) = cipher.decrypt(nonce, payload_decrypt) {
+                                                                            // Get mapped Discord User ID for this SSRC
+                                                                            let sender_user_id = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied().unwrap_or(ssrc_recv as u64);
 
-                                                                            // Try DAVE decrypt if session ready, using ssrc as user_id
+                                                                            // Try DAVE decrypt if session ready
                                                                             let opus_data: Vec<u8> = {
                                                                                 let mut sess = dave_session_rx.lock().unwrap();
                                                                                 if let Some(ref mut s) = *sess {
                                                                                     if s.is_ready() {
-                                                                                        match s.decrypt(ssrc_recv as u64, MediaType::AUDIO, &decrypted) {
+                                                                                        match s.decrypt(sender_user_id, MediaType::AUDIO, &decrypted) {
                                                                                             Ok(d) => d,
                                                                                             Err(_) => decrypted,
                                                                                         }
@@ -1103,10 +1102,36 @@ pub async fn connect_voice_gateway(
                                     let mut w = write_arc.lock().await;
                                     let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
                                 }
-                                6 => {
-                                    // Voice Opcode 6: Heartbeat ACK!
-                                    info!("Voice Gateway Heartbeat ACK (Opcode 6) recebido!");
-                                }
+                                 5 => {
+                                     // Voice Opcode 5: Speaking notification from another user
+                                     let s_ssrc = val["d"]["ssrc"].as_u64().map(|n| n as u32).unwrap_or(0);
+                                     let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                         s.parse().unwrap_or(0)
+                                     } else {
+                                         val["d"]["user_id"].as_u64().unwrap_or(0)
+                                     };
+                                     if s_ssrc > 0 && u_id > 0 {
+                                         ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
+                                         info!("Voice Gateway OP 5: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
+                                     }
+                                 }
+                                 6 => {
+                                     // Voice Opcode 6: Heartbeat ACK!
+                                     info!("Voice Gateway Heartbeat ACK (Opcode 6) recebido!");
+                                 }
+                                 11 | 12 => {
+                                     // Voice Opcode 11/12: User Joined / Client Connect
+                                     let s_ssrc = val["d"]["audio_ssrc"].as_u64().or_else(|| val["d"]["ssrc"].as_u64()).unwrap_or(0) as u32;
+                                     let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                         s.parse().unwrap_or(0)
+                                     } else {
+                                         val["d"]["user_id"].as_u64().unwrap_or(0)
+                                     };
+                                     if s_ssrc > 0 && u_id > 0 {
+                                         ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
+                                         info!("Voice Gateway OP 11/12: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
+                                     }
+                                 }
                                 18 => {
                                     // DAVE Opcode 18: DAVE_PREPARE_TRANSITION
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
