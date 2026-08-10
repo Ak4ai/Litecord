@@ -226,24 +226,27 @@ impl GatewayClient {
         let voice_cid = self.voice_channel_id.lock().unwrap().clone().unwrap_or_default();
 
         if let (Some(uid), Some(sid), Some(tok), Some(ep), Some(gid)) = (user_id, voice_sid, voice_tok, voice_ep, voice_gid) {
-            info!("Todas as credenciais de voz prontas! Conectando Ã  Voice Gateway no endpoint {}...", ep);
-            *self.voice_token.lock().unwrap() = None; // Reset so we only trigger once per payload
+            if !voice_cid.is_empty() {
+                info!("Todas as credenciais de voz prontas! Conectando à Voice Gateway no endpoint {}...", ep);
+                *self.voice_token.lock().unwrap() = None;
+                *self.voice_session_id.lock().unwrap() = None;
 
-            let self_mute_state = Arc::clone(&self.voice_self_mute);
-            tokio::spawn(async move {
-                connect_voice_gateway(&ep, &gid, &uid, &sid, &tok, &voice_cid, self_mute_state).await;
-            });
+                let self_mute_state = Arc::clone(&self.voice_self_mute);
+                tokio::spawn(async move {
+                    connect_voice_gateway(&ep, &gid, &uid, &sid, &tok, &voice_cid, self_mute_state).await;
+                });
+            }
         }
     }
 
     pub async fn start(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<GatewayCommand>) {
         // Gateway v9 is required for User Account Tokens
         let url = "wss://gateway.discord.gg/?v=9&encoding=json";
-        info!("Conectando Ã  Gateway v9 do Discord...");
+        info!("Conectando à Gateway v9 do Discord...");
 
         match connect_async(url).await {
             Ok((ws_stream, _)) => {
-                info!("ConexÃ£o WebSocket estabelecida com sucesso!");
+                info!("Conexão WebSocket estabelecida com sucesso!");
                 let (write, mut read) = ws_stream.split();
                 let write_arc = Arc::new(Mutex::new(write));
 
@@ -265,8 +268,9 @@ impl GatewayClient {
                                     // Terminate any existing background UDP audio tasks
                                     CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
 
-                                    // Reset voice token and endpoint buffers for clean new connection (preserve session_id)
+                                    // Reset voice token, session_id and endpoint buffers for clean new connection
                                     *client_cmd.voice_token.lock().unwrap() = None;
+                                    *client_cmd.voice_session_id.lock().unwrap() = None;
                                     *client_cmd.voice_endpoint.lock().unwrap() = None;
                                     *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
                                     *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
@@ -282,7 +286,7 @@ impl GatewayClient {
                                     }
                                 });
 
-                                info!("Enviando OP 4 VoiceStateUpdate Ã  Gateway: {}", payload);
+                                info!("Enviando OP 4 VoiceStateUpdate à Gateway: {}", payload);
                                 let mut w = write_cmd.lock().await;
                                 if let Err(e) = w.send(Message::Text(payload.to_string().into())).await {
                                     warn!("Falha ao enviar Opcode 4 (VoiceStateUpdate): {:?}", e);
@@ -380,10 +384,10 @@ impl GatewayClient {
                             }
                         }
                         Ok(Message::Close(close_frame)) => {
-                            warn!("Gateway fechou a conexÃ£o (Close Frame): {:?}", close_frame);
+                            warn!("Gateway fechou a conexão (Close Frame): {:?}", close_frame);
                             let reason = match close_frame {
-                                Some(frame) => format!("CÃ³digo {}: {}", frame.code, frame.reason),
-                                None => "ConexÃ£o encerrada pelo servidor".to_string(),
+                                Some(frame) => format!("Código {}: {}", frame.code, frame.reason),
+                                None => "Conexão encerrada pelo servidor".to_string(),
                             };
                             let _ = self.event_tx.send(GatewayEvent::Disconnected { reason }).await;
                             break;
@@ -399,7 +403,7 @@ impl GatewayClient {
             Err(e) => {
                 error!("Falha ao conectar na Gateway do Discord: {:?}", e);
                 let _ = self.event_tx.send(GatewayEvent::Disconnected {
-                    reason: format!("Erro de conexÃ£o: {}", e)
+                    reason: format!("Erro de conexão: {}", e)
                 }).await;
             }
         }
@@ -420,7 +424,7 @@ impl GatewayClient {
                     } else {
                         format!("{}#{}", global_name, discriminator)
                     };
-                    info!("Login BEM-SUCEDIDO na Gateway! UsuÃ¡rio: {} (@{})", global_name, username);
+                    info!("Login BEM-SUCEDIDO na Gateway! Usuário: {} (@{})", global_name, username);
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
                 }
                 "VOICE_STATE_UPDATE" => {
@@ -428,9 +432,17 @@ impl GatewayClient {
                         let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
                         let event_uid = v["d"]["user_id"].as_str().unwrap_or("");
                         if !my_uid.is_empty() && event_uid == my_uid {
-                            info!("VOICE_STATE_UPDATE do meu usuÃ¡rio recebido! Session ID: {}", sid);
-                            *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
-                            self.try_trigger_voice_connect();
+                            let channel_id_opt = v["d"]["channel_id"].as_str();
+                            info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}", sid, channel_id_opt);
+                            if channel_id_opt.is_some() {
+                                *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
+                                self.try_trigger_voice_connect();
+                            } else {
+                                // User left voice channel
+                                *self.voice_session_id.lock().unwrap() = None;
+                                *self.voice_token.lock().unwrap() = None;
+                                *self.voice_endpoint.lock().unwrap() = None;
+                            }
                         }
                     }
                 }
