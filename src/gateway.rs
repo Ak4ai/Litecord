@@ -773,18 +773,22 @@ pub async fn connect_voice_gateway(
                                                                             // Get mapped Discord User ID for this SSRC
                                                                             let sender_user_id = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied().unwrap_or(ssrc_recv as u64);
 
-                                                                            // Try DAVE decrypt if session ready
-                                                                            let opus_data: Vec<u8> = {
-                                                                                let mut sess = dave_session_rx.lock().unwrap();
-                                                                                if let Some(ref mut s) = *sess {
-                                                                                    if s.is_ready() {
-                                                                                        match s.decrypt(sender_user_id, MediaType::AUDIO, &decrypted) {
-                                                                                            Ok(d) => d,
-                                                                                            Err(_) => decrypted,
-                                                                                        }
-                                                                                    } else { decrypted }
-                                                                                } else { decrypted }
-                                                                            };
+                                                                            let opus_data_opt: Option<Vec<u8>> = {
+                                                                                 let mut sess = dave_session_rx.lock().unwrap();
+                                                                                 if let Some(ref mut s) = *sess {
+                                                                                     if s.is_ready() {
+                                                                                         match s.decrypt(sender_user_id, MediaType::AUDIO, &decrypted) {
+                                                                                             Ok(d) => Some(d),
+                                                                                             Err(_) => None,
+                                                                                         }
+                                                                                     } else { None }
+                                                                                 } else { Some(decrypted) }
+                                                                             };
+
+                                                                             let opus_data = match opus_data_opt {
+                                                                                 Some(bytes) => bytes,
+                                                                                 None => continue,
+                                                                             };
 
                                                                             // Opus decode to PCM f32 mono 48kHz, frame_size=960 (20ms)
                                                                             let decoder = opus_decoders
