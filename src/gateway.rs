@@ -41,6 +41,8 @@ pub enum GatewayEvent {
         content: String,
         embed_content: String,
         embed_color: String,
+        embed_footer: String,
+        code_block: String,
         links: Vec<LinkData>,
         timestamp: String,
     },
@@ -560,13 +562,48 @@ pub fn extract_and_clean_links(input: &str, links: &mut Vec<LinkData>) -> String
     out
 }
 
-/// Returns (content, embed_content, embed_color, links) as separate components.
+fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
+    let parts: Vec<&str> = input.split("```").collect();
+    if parts.len() < 3 {
+        return (input.to_string(), String::new());
+    }
+
+    let mut text_parts = Vec::new();
+    let mut code_parts = Vec::new();
+
+    for (idx, part) in parts.iter().enumerate() {
+        if idx % 2 == 1 {
+            // Inside code block
+            let trimmed = part.trim_start_matches('\n');
+            let (_, code_body) = if let Some(nl) = trimmed.find('\n') {
+                let potential_lang = &trimmed[..nl];
+                if potential_lang.len() <= 20 && potential_lang.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '-' || c == '_') {
+                    (potential_lang, &trimmed[nl+1..])
+                } else {
+                    ("", trimmed)
+                }
+            } else {
+                ("", trimmed)
+            };
+            code_parts.push(code_body.trim_end().to_string());
+        } else {
+            text_parts.push(*part);
+        }
+    }
+
+    (text_parts.join(""), code_parts.join("\n\n"))
+}
+
+/// Returns (content, embed_content, embed_color, embed_footer, code_block, links) as separate components.
 /// `content` has regular text, replies, interactions, stickers, components.
-/// `embed_content` has all embed text (title, desc, fields, footer etc.).
-pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<LinkData>) {
+/// `embed_content` has all embed text (title, desc, fields etc.).
+/// `embed_footer` has footer text.
+/// `code_block` has extracted monospaced code blocks.
+pub fn format_discord_message_parts(m: &Value) -> (String, String, String, String, String, Vec<LinkData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
     let mut links: Vec<LinkData> = Vec::new();
+    let mut embed_footer = String::new();
     let msg_type = m["type"].as_u64().unwrap_or(0);
 
     // Extract embed color (first embed's color if present)
@@ -617,11 +654,18 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<L
     }
 
     // 1. Raw Text Content — parsed through full Discord Markdown pipeline and clean links
+    let mut code_block = String::new();
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
             let cleaned = extract_and_clean_links(trimmed, &mut links);
-            content_parts.push(parse_discord_markdown(&cleaned));
+            let (cleaned_text, extracted_code) = extract_triple_backtick_code_blocks(&cleaned);
+            if !extracted_code.is_empty() {
+                code_block = extracted_code;
+            }
+            if !cleaned_text.trim().is_empty() {
+                content_parts.push(parse_discord_markdown(&cleaned_text));
+            }
         }
     }
 
@@ -712,12 +756,17 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<L
                 }
             }
 
-            // Embed footer
+            // Embed footer (accumulate footers)
             if let Some(footer) = embed["footer"]["text"].as_str() {
                 let f = footer.trim();
                 if !f.is_empty() {
                     let cleaned = extract_and_clean_links(f, &mut links);
-                    ep.push(parse_discord_markdown(&cleaned));
+                    let footer_parsed = parse_discord_markdown(&cleaned);
+                    if embed_footer.is_empty() {
+                        embed_footer = footer_parsed;
+                    } else {
+                        embed_footer = format!("{}\n{}", embed_footer, footer_parsed);
+                    }
                 }
             }
 
@@ -829,12 +878,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<L
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, embed_content, embed_color, links)
+    (content, embed_content, embed_color, embed_footer, code_block, links)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, embed, _, _) = format_discord_message_parts(m);
+    let (content, embed, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -1155,7 +1204,7 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, embed_content, embed_color, links) = format_discord_message_parts(&v["d"]);
+                    let (content, embed_content, embed_color, embed_footer, code_block, links) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
@@ -1164,6 +1213,8 @@ impl GatewayClient {
                         content,
                         embed_content,
                         embed_color,
+                        embed_footer,
+                        code_block,
                         links,
                         timestamp,
                     }).await;

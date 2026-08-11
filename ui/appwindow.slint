@@ -34,6 +34,8 @@ struct ChatMessage {
     content: string,
     embed_content: string,
     embed_color: color,
+    embed_footer: string,
+    code_block: string,
     links: [LinkItem],
 }
 
@@ -742,8 +744,27 @@ export component AppWindow inherits Window {
                                             wrap: word-wrap;
                                         }
 
+                                        // Monospaced Code Block Box (visual representation of block code)
+                                        if msg.code-block != "": Rectangle {
+                                            background: #1e1f22;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: #2b2d31;
+
+                                            VerticalLayout {
+                                                padding: 8px;
+                                                Text {
+                                                    text: msg.code-block;
+                                                    color: #e6c07b;
+                                                    font-family: "Courier New";
+                                                    font-size: 12.5px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
                                         // Embed box with colored left bar (always visible if present)
-                                        if msg.embed-content != "": Rectangle {
+                                        if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
                                             background: #232428;
                                             border-radius: 4px;
 
@@ -756,15 +777,30 @@ export component AppWindow inherits Window {
                                                     border-bottom-left-radius: 4px;
                                                 }
 
-                                                // Embed content
+                                                // Embed content layout
                                                 VerticalLayout {
                                                     padding: 10px;
                                                     padding-left: 12px;
+                                                    spacing: 8px;
 
-                                                    Text {
+                                                    if msg.embed-content != "": Text {
                                                         text: msg.embed-content;
                                                         color: #d2d5d9;
                                                         font-size: 12.5px;
+                                                        wrap: word-wrap;
+                                                    }
+
+                                                    // Horizontal separator (representing dashes)
+                                                    if msg.embed-footer != "": Rectangle {
+                                                        height: 1px;
+                                                        background: #3f4147;
+                                                    }
+
+                                                    // Footer content
+                                                    if msg.embed-footer != "": Text {
+                                                        text: msg.embed-footer;
+                                                        color: #949ba4;
+                                                        font-size: 11px;
                                                         wrap: word-wrap;
                                                     }
                                                 }

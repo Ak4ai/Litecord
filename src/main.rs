@@ -466,13 +466,15 @@ async fn load_messages_for_channel(
                             content: "Este canal está vazio ou não possui mensagens recentes.".into(),
                             embed_content: "".into(),
                             embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                            embed_footer: "".into(),
+                            code_block: "".into(),
                             links: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
                             let author = format_discord_author(m);
-                            let (content, embed_content, embed_color, links) = format_discord_message_parts(m);
+                            let (content, embed_content, embed_color, embed_footer, code_block, links) = format_discord_message_parts(m);
                             
                             let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                 label: l.label.clone().into(),
@@ -485,6 +487,8 @@ async fn load_messages_for_channel(
                                 content: content.into(),
                                 embed_content: embed_content.into(),
                                 embed_color: parse_hex_color(&embed_color),
+                                embed_footer: embed_footer.into(),
+                                code_block: code_block.into(),
                                 links: slint::ModelRc::from(links_model),
                                 timestamp: "Agora".into(),
                             }
@@ -511,6 +515,8 @@ async fn load_messages_for_channel(
                         content: friendly_msg.into(),
                         embed_content: "".into(),
                         embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                        embed_footer: "".into(),
+                        code_block: "".into(),
                         links: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
                     }];
@@ -939,6 +945,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 content: "🔴 Desconectado da sala de voz.".into(),
                 embed_content: "".into(),
                 embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                embed_footer: "".into(),
+                code_block: "".into(),
                 links: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
             });
@@ -1224,6 +1232,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
                     embed_content: "".into(),
                     embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                    embed_footer: "".into(),
+                    code_block: "".into(),
                     links: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
                 });
@@ -1358,7 +1368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { author, content, embed_content, embed_color, links, timestamp, .. } => {
+                GatewayEvent::MessageCreated { author, content, embed_content, embed_color, embed_footer, code_block, links, timestamp, .. } => {
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
                         // Messages will be re-fetched via REST when the window is restored.
@@ -1380,6 +1390,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     content: content.into(),
                                     embed_content: embed_content.into(),
                                     embed_color: parse_hex_color(&embed_color),
+                                    embed_footer: embed_footer.into(),
+                                    code_block: code_block.into(),
                                     links: slint::ModelRc::from(links_model),
                                     timestamp: timestamp.into(),
                                 });
