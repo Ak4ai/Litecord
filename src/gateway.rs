@@ -43,6 +43,8 @@ pub enum GatewayEvent {
         embed_color: String,
         embed_footer: String,
         code_block: String,
+        reply_author: String,
+        reply_content: String,
         links: Vec<LinkData>,
         timestamp: String,
     },
@@ -594,16 +596,18 @@ fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
     (text_parts.join(""), code_parts.join("\n\n"))
 }
 
-/// Returns (content, embed_content, embed_color, embed_footer, code_block, links) as separate components.
+/// Returns (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) as separate components.
 /// `content` has regular text, replies, interactions, stickers, components.
 /// `embed_content` has all embed text (title, desc, fields etc.).
 /// `embed_footer` has footer text.
 /// `code_block` has extracted monospaced code blocks.
-pub fn format_discord_message_parts(m: &Value) -> (String, String, String, String, String, Vec<LinkData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, String, String, String, String, String, String, Vec<LinkData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
     let mut links: Vec<LinkData> = Vec::new();
     let mut embed_footer = String::new();
+    let mut reply_author = String::new();
+    let mut reply_content = String::new();
     let msg_type = m["type"].as_u64().unwrap_or(0);
 
     // Extract embed color (first embed's color if present)
@@ -630,7 +634,8 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
             } else {
                 ref_content.to_string()
             };
-            content_parts.push(format!("[respondendo a {}] {}", ref_author, parse_discord_markdown(&preview)));
+            reply_author = ref_author.to_string();
+            reply_content = parse_discord_markdown(&preview);
         }
     }
 
@@ -878,12 +883,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, embed_content, embed_color, embed_footer, code_block, links)
+    (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, embed, _, _, _, _) = format_discord_message_parts(m);
+    let (content, embed, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -1204,7 +1209,7 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, embed_content, embed_color, embed_footer, code_block, links) = format_discord_message_parts(&v["d"]);
+                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
@@ -1215,6 +1220,8 @@ impl GatewayClient {
                         embed_color,
                         embed_footer,
                         code_block,
+                        reply_author,
+                        reply_content,
                         links,
                         timestamp,
                     }).await;

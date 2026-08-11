@@ -468,13 +468,15 @@ async fn load_messages_for_channel(
                             embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                             embed_footer: "".into(),
                             code_block: "".into(),
+                            reply_author: "".into(),
+                            reply_content: "".into(),
                             links: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
                             let author = format_discord_author(m);
-                            let (content, embed_content, embed_color, embed_footer, code_block, links) = format_discord_message_parts(m);
+                            let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
                             
                             let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                 label: l.label.clone().into(),
@@ -489,6 +491,8 @@ async fn load_messages_for_channel(
                                 embed_color: parse_hex_color(&embed_color),
                                 embed_footer: embed_footer.into(),
                                 code_block: code_block.into(),
+                                reply_author: reply_author.into(),
+                                reply_content: reply_content.into(),
                                 links: slint::ModelRc::from(links_model),
                                 timestamp: "Agora".into(),
                             }
@@ -517,6 +521,8 @@ async fn load_messages_for_channel(
                         embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                         embed_footer: "".into(),
                         code_block: "".into(),
+                        reply_author: "".into(),
+                        reply_content: "".into(),
                         links: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
                     }];
@@ -947,6 +953,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                 embed_footer: "".into(),
                 code_block: "".into(),
+                reply_author: "".into(),
+                reply_content: "".into(),
                 links: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
             });
@@ -1234,6 +1242,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                     embed_footer: "".into(),
                     code_block: "".into(),
+                    reply_author: "".into(),
+                    reply_content: "".into(),
                     links: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
                 });
@@ -1368,7 +1378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { author, content, embed_content, embed_color, embed_footer, code_block, links, timestamp, .. } => {
+                GatewayEvent::MessageCreated { author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, timestamp, .. } => {
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
                         // Messages will be re-fetched via REST when the window is restored.
@@ -1392,6 +1402,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
+                                    reply_author: reply_author.into(),
+                                    reply_content: reply_content.into(),
                                     links: slint::ModelRc::from(links_model),
                                     timestamp: timestamp.into(),
                                 });
