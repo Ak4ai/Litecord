@@ -1204,7 +1204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if is_voice {
                 ui.set_is_in_voice(true);
                 ui.set_is_voice_focused(true);
-                ui.set_current_voice_channel(format!("🔊 {}", ch_name).into());
+                ui.set_current_voice_channel(ch_name.clone().into());
                 let muted = ui.get_is_muted();
                 let deafened = ui.get_is_deafened();
 

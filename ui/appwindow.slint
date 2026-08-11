@@ -140,6 +140,7 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     alignment: center;
                     HorizontalLayout {
+                        alignment: center;
                         spacing: 6px;
                         Image {
                             source: @image-url("../assets/app_icon.png");
@@ -386,9 +387,19 @@ export component AppWindow inherits Window {
                         background: #23a55a;
                         border-radius: 6px;
 
-                        HorizontalBox {
-                            padding-left: 8px;
-                            padding-right: 8px;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 8px;
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/speaker.svg");
+                                width: 14px;
+                                height: 14px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
 
                             Text {
                                 text: root.current_voice_channel;
@@ -467,14 +478,23 @@ export component AppWindow inherits Window {
                         height: 44px;
                         background: #2b2d31;
 
-                        HorizontalBox {
+                        HorizontalLayout {
                             padding-left: 16px;
                             padding-right: 16px;
-                            spacing: 12px;
+                            spacing: 8px;
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/speaker.svg");
+                                width: 16px;
+                                height: 16px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
 
                             Text {
                                 text: root.current_voice_channel;
-                                color: #23a55a;
+                                color: #ffffff;
                                 font-size: 15px;
                                 font-weight: 800;
                                 vertical-alignment: center;
