@@ -687,7 +687,6 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<L
             // Embed image
             if let Some(img_url) = embed["image"]["url"].as_str() {
                 if !img_url.is_empty() {
-                    ep.push("[Imagem]".to_string());
                     links.push(LinkData {
                         label: "Ver Imagem do Embed".to_string(),
                         url: img_url.to_string(),
@@ -698,7 +697,6 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<L
             // Embed thumbnail
             if let Some(thumb_url) = embed["thumbnail"]["url"].as_str() {
                 if !thumb_url.is_empty() {
-                    ep.push("[Miniatura]".to_string());
                     links.push(LinkData {
                         label: "Ver Miniatura do Embed".to_string(),
                         url: thumb_url.to_string(),

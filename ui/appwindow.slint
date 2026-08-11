@@ -688,12 +688,14 @@ export component AppWindow inherits Window {
                                 for msg in root.messages: Rectangle {
                                     background: #2b2d31;
                                     border-radius: 6px;
+                                    property <bool> is-collapsed: false;
 
                                     VerticalBox {
                                         padding: 8px;
                                         spacing: 4px;
 
-                                        HorizontalBox {
+                                        HorizontalLayout {
+                                            spacing: 8px;
                                             Text {
                                                 text: msg.author;
                                                 color: #5865f2;
@@ -707,6 +709,29 @@ export component AppWindow inherits Window {
                                                 font-size: 10px;
                                                 vertical-alignment: center;
                                             }
+
+                                            // Push the button to the right end
+                                            Rectangle { }
+
+                                            // Collapse/Expand button
+                                            if msg.embed-content != "" || msg.links.length > 0 : Rectangle {
+                                                width: 20px;
+                                                height: 20px;
+                                                background: transparent;
+                                                Text {
+                                                    text: is-collapsed ? "▼" : "▲";
+                                                    color: #949ba4;
+                                                    font-size: 10px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        is-collapsed = !is-collapsed;
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         // Regular message content
@@ -717,8 +742,8 @@ export component AppWindow inherits Window {
                                             wrap: word-wrap;
                                         }
 
-                                        // Embed box with colored left bar
-                                        if msg.embed-content != "": Rectangle {
+                                        // Embed box with colored left bar (hidden if collapsed)
+                                        if msg.embed-content != "" && !is-collapsed : Rectangle {
                                             background: #232428;
                                             border-radius: 4px;
 
@@ -746,8 +771,8 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Clickable attachments / links list
-                                        if msg.links.length > 0 : VerticalLayout {
+                                        // Clickable attachments / links list (hidden if collapsed)
+                                        if msg.links.length > 0 && !is-collapsed : VerticalLayout {
                                             spacing: 6px;
                                             padding-top: 4px;
                                             for link in msg.links : Rectangle {
