@@ -1,5 +1,28 @@
 import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
 
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-color: #dbdee1;
+    in property <color> hover-color: #35373c;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background: touch.has-hover ? hover-color : #0000;
+
+    Image {
+        source: root.icon;
+        width: 20px;
+        height: 20px;
+        colorize: root.icon-color;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
 struct ChatMessage {
     author: string,
     timestamp: string,
@@ -119,8 +142,8 @@ export component AppWindow inherits Window {
 
                 Rectangle { horizontal-stretch: 1; }
 
-                Button {
-                    text: "⚙️ Configurações";
+                IconButton {
+                    icon: @image-url("../assets/settings.svg");
                     clicked => { root.open_settings(); }
                 }
 
@@ -360,18 +383,20 @@ export component AppWindow inherits Window {
                                 padding: 0px;
                                 spacing: 4px;
 
-                                Button {
-                                    text: root.is_muted ? "🎙️ Unmute" : "🎙️ Mute";
+                                IconButton {
+                                    icon: root.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
+                                    icon-color: root.is_muted ? #f23f43 : #dbdee1;
                                     clicked => { root.toggle_mute(); }
                                 }
 
-                                Button {
-                                    text: root.is_deafened ? "🎧 Undeafen" : "🎧 Deafen";
+                                IconButton {
+                                    icon: root.is_deafened ? @image-url("../assets/headphones-mute.svg") : @image-url("../assets/headphones.svg");
+                                    icon-color: root.is_deafened ? #f23f43 : #dbdee1;
                                     clicked => { root.toggle_deafen(); }
                                 }
 
-                                Button {
-                                    text: "⚙️";
+                                IconButton {
+                                    icon: @image-url("../assets/settings.svg");
                                     clicked => { root.open_settings(); }
                                 }
                             }
@@ -510,8 +535,9 @@ export component AppWindow inherits Window {
                                         HorizontalBox {
                                             spacing: 8px;
 
-                                            Button {
-                                                text: p.is_muted ? "🎙️ Desmutar" : "🔇 Mutar";
+                                            IconButton {
+                                                icon: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
+                                                icon-color: p.is_muted ? #f23f43 : #dbdee1;
                                                 clicked => { root.toggle_user_mute(p.user_id); }
                                             }
 
