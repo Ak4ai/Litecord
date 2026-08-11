@@ -181,6 +181,278 @@ pub fn get_user_name(user_id: u64) -> String {
     }
 }
 
+/// Converts raw Discord Markdown syntax into clean readable plain text.
+/// Applied in the correct order so that code blocks are parsed first (immune
+/// to inner formatting) and inline formatting runs last.
+pub fn parse_discord_markdown(input: &str) -> String {
+    // We build the output line by line for block-level constructs,
+    // then apply inline transforms per line.
+    let mut output_lines: Vec<String> = Vec::new();
+
+    // ── Step 1: Protect code blocks (```) from inner parsing ──────────────
+    // Split by triple-backtick blocks, mark odd-indexed segments as code.
+    let triple_parts: Vec<&str> = input.split("```").collect();
+    let mut lines_to_process: Vec<(String, bool)> = Vec::new(); // (text, is_code_block)
+
+    for (idx, part) in triple_parts.iter().enumerate() {
+        if idx % 2 == 1 {
+            // Inside a code block
+            // First "word" of the block may be a language hint (e.g. "python\ncode")
+            let trimmed = part.trim_start_matches('\n');
+            let (lang, code_body) = if let Some(nl) = trimmed.find('\n') {
+                let potential_lang = &trimmed[..nl];
+                // Language hints are short alphanumeric words
+                if potential_lang.len() <= 20 && potential_lang.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '-' || c == '_') {
+                    (potential_lang, &trimmed[nl+1..])
+                } else {
+                    ("", trimmed)
+                }
+            } else {
+                ("", trimmed)
+            };
+            if lang.is_empty() {
+                lines_to_process.push((format!("[Bloco de Código]\n{}", code_body.trim_end()), true));
+            } else {
+                lines_to_process.push((format!("[Bloco de Código ({})]\n{}", lang, code_body.trim_end()), true));
+            }
+        } else {
+            for line in part.split('\n') {
+                lines_to_process.push((line.to_string(), false));
+            }
+        }
+    }
+
+    // ── Step 2: Process each line ──────────────────────────────────────────
+    for (text, is_code) in lines_to_process {
+        if is_code {
+            output_lines.push(text);
+            continue;
+        }
+
+        let line = text.as_str();
+
+        // Block-level: Headers (must be at start of line)
+        if let Some(rest) = line.strip_prefix("### ") {
+            output_lines.push(format!("▪ {}", apply_inline_markdown(rest)));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("## ") {
+            output_lines.push(format!("▌ {}", apply_inline_markdown(rest)));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("# ") {
+            output_lines.push(format!("▌ {}", apply_inline_markdown(rest)));
+            continue;
+        }
+        // Subtext
+        if let Some(rest) = line.strip_prefix("-# ") {
+            output_lines.push(format!("  {}", apply_inline_markdown(rest)));
+            continue;
+        }
+        // Blockquote multi-line >>>
+        if let Some(rest) = line.strip_prefix(">>> ") {
+            for bq_line in rest.lines() {
+                output_lines.push(format!("│ {}", apply_inline_markdown(bq_line)));
+            }
+            continue;
+        }
+        // Blockquote single line >
+        if let Some(rest) = line.strip_prefix("> ") {
+            output_lines.push(format!("│ {}", apply_inline_markdown(rest)));
+            continue;
+        }
+        // Unordered list (- or * at start)
+        if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            output_lines.push(format!("• {}", apply_inline_markdown(rest)));
+            continue;
+        }
+        // Ordered list (number followed by ". ")
+        {
+            let mut chars = line.chars().peekable();
+            let mut digits = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_digit() { digits.push(c); chars.next(); } else { break; }
+            }
+            if !digits.is_empty() && line[digits.len()..].starts_with(". ") {
+                let rest = &line[digits.len() + 2..];
+                output_lines.push(format!("{}. {}", digits, apply_inline_markdown(rest)));
+                continue;
+            }
+        }
+
+        // Normal line — apply inline markdown
+        output_lines.push(apply_inline_markdown(line));
+    }
+
+    output_lines.join("\n")
+}
+
+/// Applies all inline Discord Markdown transforms to a single line of text.
+/// Code blocks have already been extracted, so this only handles inline syntax.
+fn apply_inline_markdown(input: &str) -> String {
+    let s = input.to_string();
+
+    // ── Inline code (backtick) — protect from further parsing ─────────────
+    // We replace inline code with a placeholder, process the rest, then restore.
+    let backtick_re_parts: Vec<&str> = s.split('`').collect();
+    let mut reconstructed = String::new();
+    let mut code_segments: Vec<String> = Vec::new();
+
+    for (idx, part) in backtick_re_parts.iter().enumerate() {
+        if idx % 2 == 1 {
+            // Inside inline code — protect it
+            let placeholder = format!("\x00CODE{}\x00", code_segments.len());
+            code_segments.push(format!("[código: {}]", part));
+            reconstructed.push_str(&placeholder);
+        } else {
+            reconstructed.push_str(part);
+        }
+    }
+
+    let mut s = reconstructed;
+
+    // ── Spoilers ||text|| ──────────────────────────────────────────────────
+    s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+
+    // ── Mentions and Discord entities ──────────────────────────────────────
+    // <t:timestamp:format> — Discord timestamps
+    s = regex_replace_simple(&s, "<t:", ">", |inner| {
+        let parts: Vec<&str> = inner.splitn(2, ':').collect();
+        let ts: i64 = parts[0].parse().unwrap_or(0);
+        format!("[{}]", format_unix_timestamp(ts))
+    });
+
+    // <@!USER_ID> and <@USER_ID> — user mentions
+    s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
+    s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
+    s = regex_replace_simple(&s, "<@", ">", |inner| {
+        // Only if purely numeric (user ID)
+        if inner.chars().all(|c| c.is_ascii_digit()) {
+            "@usuário".to_string()
+        } else {
+            format!("<@{}>", inner)
+        }
+    });
+    // <#CHANNEL_ID> — channel mentions
+    s = regex_replace_simple(&s, "<#", ">", |_inner| "#canal".to_string());
+
+    // <:name:ID> — custom emoji
+    s = regex_replace_simple(&s, "<a:", ">", |inner| {
+        let name = inner.split(':').next().unwrap_or("emoji");
+        format!(":{}:", name)
+    });
+    s = regex_replace_simple(&s, "<:", ">", |inner| {
+        let name = inner.split(':').next().unwrap_or("emoji");
+        format!(":{}:", name)
+    });
+
+    // ── Text formatting (order matters: most-specific first) ───────────────
+    // Bold + Italic ***
+    s = replace_between(&s, "***", "***", |inner| inner.to_string());
+    // Bold **
+    s = replace_between(&s, "**", "**", |inner| inner.to_string());
+    // Italic * (single, but not at word boundaries where it would be a list)
+    s = replace_between(&s, "*", "*", |inner| inner.to_string());
+    // Underline __
+    s = replace_between(&s, "__", "__", |inner| inner.to_string());
+    // Italic _
+    s = replace_between(&s, "_", "_", |inner| inner.to_string());
+    // Strikethrough ~~
+    s = replace_between(&s, "~~", "~~", |inner| inner.to_string());
+
+    // ── Backslash escape removal ───────────────────────────────────────────
+    let mut unescaped = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                if matches!(next, '*' | '_' | '~' | '`' | '|' | '>' | '#' | '-' | '\\') {
+                    unescaped.push(next);
+                    chars.next();
+                    continue;
+                }
+            }
+        }
+        unescaped.push(c);
+    }
+    s = unescaped;
+
+    // ── HTML entities ──────────────────────────────────────────────────────
+    s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+
+    // ── Restore inline code segments ──────────────────────────────────────
+    for (idx, code) in code_segments.iter().enumerate() {
+        let placeholder = format!("\x00CODE{}\x00", idx);
+        s = s.replace(&placeholder, code);
+    }
+
+    s
+}
+
+/// Replaces all occurrences of text between `open` and `close` delimiters,
+/// passing the inner content to `replacer`. Non-greedy (finds first closing).
+fn replace_between<F>(input: &str, open: &str, close: &str, replacer: F) -> String
+where
+    F: Fn(&str) -> String,
+{
+    let mut result = String::with_capacity(input.len());
+    let mut remaining = input;
+
+    while let Some(start) = remaining.find(open) {
+        let after_open = &remaining[start + open.len()..];
+        if let Some(end) = after_open.find(close) {
+            let inner = &after_open[..end];
+            // Only replace if inner is non-empty
+            if !inner.is_empty() {
+                result.push_str(&remaining[..start]);
+                result.push_str(&replacer(inner));
+                remaining = &after_open[end + close.len()..];
+                continue;
+            }
+        }
+        // No matching close found — emit the open delimiter literally
+        result.push_str(&remaining[..start + open.len()]);
+        remaining = &remaining[start + open.len()..];
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Replaces `prefix...suffix` patterns (single-pass, non-overlapping).
+fn regex_replace_simple<F>(input: &str, prefix: &str, suffix: &str, replacer: F) -> String
+where
+    F: Fn(&str) -> String,
+{
+    replace_between(input, prefix, suffix, replacer)
+}
+
+/// Formats a Unix timestamp (seconds since epoch) into a human-readable string.
+fn format_unix_timestamp(unix_secs: i64) -> String {
+    // Simple calculation: days since 1970-01-01
+    if unix_secs <= 0 {
+        return "data desconhecida".to_string();
+    }
+    let secs_per_day = 86400i64;
+    let total_days = unix_secs / secs_per_day;
+    let time_secs = unix_secs % secs_per_day;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+
+    // Compute year/month/day from days since epoch (Gregorian)
+    let days_remaining = total_days + 719468; // offset to March 1, year 0
+    let era = if days_remaining >= 0 { days_remaining } else { days_remaining - 146096 } / 146097;
+    let doe = days_remaining - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{:02}/{:02}/{} {:02}:{:02}", d, m, y, hours, minutes)
+}
+
 pub fn format_discord_author(m: &Value) -> String {
     let author_obj = &m["author"];
     let name = author_obj["global_name"].as_str()
@@ -197,11 +469,11 @@ pub fn format_discord_author(m: &Value) -> String {
 pub fn format_discord_message(m: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    // 1. Raw Text Content
+    // 1. Raw Text Content — parsed through full Discord Markdown pipeline
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
-            parts.push(trimmed.to_string());
+            parts.push(parse_discord_markdown(trimmed));
         }
     }
 
