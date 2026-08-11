@@ -1355,6 +1355,7 @@ fn is_valid_token_chars(token: &str) -> bool {
 fn set_dark_titlebar_color(hwnd: isize) {
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DWMWA_BORDER_COLOR,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
@@ -1393,6 +1394,15 @@ fn set_dark_titlebar_color(hwnd: isize) {
             hwnd as _,
             DWMWA_TEXT_COLOR as _,
             &text_color as *const u32 as _,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Window border color #1e1f22 (BGR COLORREF: 0x00221f1e)
+        let border_color: u32 = 0x00221f1e;
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_BORDER_COLOR as _,
+            &border_color as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
         );
 
