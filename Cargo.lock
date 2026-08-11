@@ -4181,6 +4181,8 @@ dependencies = [
  "davey",
  "env_logger",
  "futures-util",
+ "i-slint-backend-winit",
+ "image",
  "log",
  "opus-rs",
  "raw-window-handle",

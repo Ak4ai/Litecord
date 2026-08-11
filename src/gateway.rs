@@ -66,16 +66,119 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // Shared Microphone PCM Audio Queue (32-bit float PCM at 48000Hz)
 pub static MIC_PCM_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
-// Shared Speaker PCM Audio Queues mapped by SSRC (32-bit float PCM at 48000Hz mono per user)
-pub static SPEAKER_PCM_QUEUES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<f32>>>>> = std::sync::OnceLock::new();
+// Shared Speaker PCM Audio Queues mapped by SSRC (32-bit stereo float PCM pairs at 48000Hz per user)
+pub static SPEAKER_PCM_QUEUES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<(f32, f32)>>>>> = std::sync::OnceLock::new();
+pub static SELECTED_OUTPUT_DEVICE: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static CURRENT_VOICE_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn get_mic_pcm_queue() -> Arc<std::sync::Mutex<VecDeque<f32>>> {
     MIC_PCM_QUEUE.get_or_init(|| Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(48000)))).clone()
 }
 
-pub fn get_speaker_pcm_queues() -> Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<f32>>>> {
+pub fn get_speaker_pcm_queues() -> Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<(f32, f32)>>>> {
     SPEAKER_PCM_QUEUES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn get_selected_output_device_store() -> Arc<std::sync::Mutex<String>> {
+    SELECTED_OUTPUT_DEVICE.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).clone()
+}
+
+pub fn set_selected_output_device(name: String) {
+    if let Ok(mut dev) = get_selected_output_device_store().lock() {
+        *dev = name;
+    }
+}
+
+pub static USER_AUDIO_SETTINGS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32)>>>> = std::sync::OnceLock::new();
+
+pub fn get_user_audio_settings_store() -> Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32)>>> {
+    USER_AUDIO_SETTINGS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn set_user_mute(user_id: &str, is_muted: bool) {
+    if let Ok(mut map) = get_user_audio_settings_store().lock() {
+        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0));
+        entry.0 = is_muted;
+    }
+}
+
+pub fn set_user_volume(user_id: &str, volume: f32) {
+    if let Ok(mut map) = get_user_audio_settings_store().lock() {
+        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0));
+        entry.1 = volume;
+    }
+}
+
+pub fn get_user_mute_volume(user_id: &str) -> (bool, f32) {
+    if let Ok(map) = get_user_audio_settings_store().lock() {
+        if let Some(res) = map.get(user_id) {
+            return *res;
+        }
+    }
+    (false, 1.0)
+}
+
+pub static ACTIVE_VOICE_PARTICIPANTS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u32, u64>>>> = std::sync::OnceLock::new();
+
+pub fn get_active_voice_participants_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u32, u64>>> {
+    ACTIVE_VOICE_PARTICIPANTS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn register_voice_participant(ssrc: u32, user_id: u64) {
+    if let Ok(mut map) = get_active_voice_participants_store().lock() {
+        map.insert(ssrc, user_id);
+    }
+}
+
+#[inline]
+pub fn soft_limit(s: f32) -> f32 {
+    s.clamp(-1.0, 1.0)
+}
+
+#[inline]
+pub fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    let c0 = p1;
+    let c1 = 0.5 * (p2 - p0);
+    let c2 = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c3 = 0.5 * (p3 - p0) + 1.5 * (p1 - p2);
+    ((c3 * t + c2) * t + c1) * t + c0
+}
+
+pub fn clear_voice_participants() {
+    if let Ok(mut map) = get_active_voice_participants_store().lock() {
+        map.clear();
+    }
+    if let Ok(mut queues) = get_speaker_pcm_queues().lock() {
+        queues.clear();
+    }
+}
+
+pub static USER_NAMES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>> = std::sync::OnceLock::new();
+
+pub fn get_user_names_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> {
+    USER_NAMES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn register_user_name(user_id: u64, name: String) {
+    if user_id > 0 && !name.is_empty() {
+        if let Ok(mut map) = get_user_names_store().lock() {
+            map.insert(user_id, name);
+        }
+    }
+}
+
+pub fn get_user_name(user_id: u64) -> String {
+    if let Ok(map) = get_user_names_store().lock() {
+        if let Some(name) = map.get(&user_id) {
+            return name.clone();
+        }
+    }
+    match user_id {
+        1307641538502725643 => "MusicMan [Bot]".to_string(),
+        1323489999953465385 => "cortez".to_string(),
+        398203126630580225 => "Marido da juju (Você)".to_string(),
+        _ => format!("Participante #{}", user_id),
+    }
 }
 
 pub fn format_discord_author(m: &Value) -> String {
@@ -222,18 +325,22 @@ impl GatewayClient {
         let voice_sid = self.voice_session_id.lock().unwrap().clone();
         let voice_tok = self.voice_token.lock().unwrap().clone();
         let voice_ep = self.voice_endpoint.lock().unwrap().clone();
-        let voice_gid = self.voice_guild_id.lock().unwrap().clone();
+        let voice_gid = self.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
         let voice_cid = self.voice_channel_id.lock().unwrap().clone().unwrap_or_default();
 
-        if let (Some(uid), Some(sid), Some(tok), Some(ep), Some(gid)) = (user_id, voice_sid, voice_tok, voice_ep, voice_gid) {
-            if !voice_cid.is_empty() {
-                info!("Todas as credenciais de voz prontas! Conectando à Voice Gateway no endpoint {}...", ep);
+        info!("Status de disparo de voz: user_id={:?}, sid={:?}, token={:?}, ep={:?}, gid='{}', cid='{}'",
+            user_id.is_some(), voice_sid.is_some(), voice_tok.is_some(), voice_ep.is_some(), voice_gid, voice_cid);
+
+        if let (Some(uid), Some(sid), Some(tok), Some(ep)) = (user_id, voice_sid, voice_tok, voice_ep) {
+            let effective_gid = if voice_gid.is_empty() { voice_cid.clone() } else { voice_gid };
+            if !voice_cid.is_empty() || !effective_gid.is_empty() {
+                info!("⚡ TODAS AS CREDENCIAIS DE VOZ PRONTAS! Conectando à Voice Gateway no endpoint {}...", ep);
                 *self.voice_token.lock().unwrap() = None;
                 *self.voice_session_id.lock().unwrap() = None;
 
                 let self_mute_state = Arc::clone(&self.voice_self_mute);
                 tokio::spawn(async move {
-                    connect_voice_gateway(&ep, &gid, &uid, &sid, &tok, &voice_cid, self_mute_state).await;
+                    connect_voice_gateway(&ep, &effective_gid, &uid, &sid, &tok, &voice_cid, self_mute_state).await;
                 });
             }
         }
@@ -276,10 +383,16 @@ impl GatewayClient {
                                     *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
                                 }
 
+                                let effective_gid_val = if guild_id.trim().is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::json!(guild_id)
+                                };
+
                                 let payload = serde_json::json!({
                                     "op": 4,
                                     "d": {
-                                        "guild_id": guild_id,
+                                        "guild_id": effective_gid_val,
                                         "channel_id": channel_id,
                                         "self_mute": self_mute,
                                         "self_deaf": self_deaf
@@ -414,10 +527,14 @@ impl GatewayClient {
             match t {
                 "READY" => {
                     let uid = v["d"]["user"]["id"].as_str().unwrap_or("").to_string();
-                    *self.user_id.lock().unwrap() = Some(uid);
+                    *self.user_id.lock().unwrap() = Some(uid.clone());
+                    let uid_num = uid.parse::<u64>().unwrap_or(0);
 
                     let username = v["d"]["user"]["username"].as_str().unwrap_or("User");
                     let global_name = v["d"]["user"]["global_name"].as_str().unwrap_or(username);
+                    if uid_num > 0 {
+                        register_user_name(uid_num, global_name.to_string());
+                    }
                     let discriminator = v["d"]["user"]["discriminator"].as_str().unwrap_or("0");
                     let user_tag = if discriminator == "0" {
                         global_name.to_string()
@@ -433,9 +550,14 @@ impl GatewayClient {
                         let event_uid = v["d"]["user_id"].as_str().unwrap_or("");
                         if !my_uid.is_empty() && event_uid == my_uid {
                             let channel_id_opt = v["d"]["channel_id"].as_str();
-                            info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}", sid, channel_id_opt);
-                            if channel_id_opt.is_some() {
+                            let guild_id_opt = v["d"]["guild_id"].as_str();
+                            info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}", sid, channel_id_opt, guild_id_opt);
+                            if let Some(cid) = channel_id_opt {
                                 *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
+                                *self.voice_channel_id.lock().unwrap() = Some(cid.to_string());
+                                if let Some(gid) = guild_id_opt {
+                                    *self.voice_guild_id.lock().unwrap() = Some(gid.to_string());
+                                }
                                 self.try_trigger_voice_connect();
                             } else {
                                 // User left voice channel
@@ -447,16 +569,24 @@ impl GatewayClient {
                     }
                 }
                 "VOICE_SERVER_UPDATE" => {
+                    info!("VOICE_SERVER_UPDATE bruto recebido: {:?}", v["d"]);
                     let token = v["d"]["token"].as_str().unwrap_or("").to_string();
-                    let guild_id = v["d"]["guild_id"].as_str().unwrap_or("").to_string();
+                    let guild_id = v["d"]["guild_id"].as_str()
+                        .or_else(|| v["d"]["channel_id"].as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let endpoint = v["d"]["endpoint"].as_str().unwrap_or("").to_string();
 
-                    if !token.is_empty() && !guild_id.is_empty() && !endpoint.is_empty() {
-                        info!("VOICE_SERVER_UPDATE recebido! Endpoint: {}", endpoint);
+                    if !token.is_empty() && !endpoint.is_empty() {
+                        info!("VOICE_SERVER_UPDATE processado com Sucesso! Endpoint: {}, Guild/Channel ID: {}", endpoint, guild_id);
                         *self.voice_token.lock().unwrap() = Some(token);
                         *self.voice_endpoint.lock().unwrap() = Some(endpoint);
-                        *self.voice_guild_id.lock().unwrap() = Some(guild_id);
+                        if !guild_id.is_empty() {
+                            *self.voice_guild_id.lock().unwrap() = Some(guild_id);
+                        }
                         self.try_trigger_voice_connect();
+                    } else {
+                        warn!("VOICE_SERVER_UPDATE recebido com campos ausentes ou nulos: token_empty={}, endpoint_empty={}", token.is_empty(), endpoint.is_empty());
                     }
                 }
                 "MESSAGE_CREATE" => {
@@ -609,6 +739,8 @@ pub async fn connect_voice_gateway(
                                     let ssrc = val["d"]["ssrc"].as_u64().unwrap_or(12345) as u32;
                                     *active_ssrc.lock().unwrap() = ssrc;
                                     ssrc_to_userid.lock().unwrap().insert(ssrc, uid_num);
+                                    register_voice_participant(ssrc, uid_num);
+                                    register_voice_participant(999999, 999999);
 
                                     let voice_ip = val["d"]["ip"].as_str().unwrap_or("").to_string();
                                     let voice_port = val["d"]["port"].as_u64().unwrap_or(0) as u16;
@@ -622,7 +754,30 @@ pub async fn connect_voice_gateway(
                                         "aead_aes256_gcm_rtpsize".to_string()
                                     };
 
-                                    info!("ðŸŽ‰ VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
+                                    info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
+
+                                    // Synthesize Join Voice Chime (523.25Hz C5 -> 659.25Hz E5) to test local audio playback
+                                    let mut chime_samples = Vec::new();
+                                    let sr = 48000.0f32;
+                                    for i in 0..(0.12 * sr) as usize {
+                                        let t = i as f32 / sr;
+                                        let s = (t * 523.25 * 2.0 * std::f32::consts::PI).sin() * 0.4;
+                                        chime_samples.push(s);
+                                    }
+                                    for i in 0..(0.18 * sr) as usize {
+                                        let t = i as f32 / sr;
+                                        let s = (t * 659.25 * 2.0 * std::f32::consts::PI).sin() * 0.4;
+                                        chime_samples.push(s);
+                                    }
+
+                                    if let Ok(mut queues) = get_speaker_pcm_queues().lock() {
+                                        let q = queues.entry(999999).or_insert_with(|| VecDeque::with_capacity(48000));
+                                        q.clear();
+                                        for &s in &chime_samples {
+                                            q.push_back((s, s));
+                                        }
+                                    }
+                                    info!("🎵 Efeito sonoro de entrada no canal de voz injetado na fila dos alto-falantes!");
 
                                     // UDP IP Discovery & Opcode 1 Select Protocol Handshake
                                     if !voice_ip.is_empty() && voice_port > 0 {
@@ -655,14 +810,14 @@ pub async fn connect_voice_gateway(
                                                 if let Ok(_) = socket.send_to(&discovery, &target_addr).await {
                                                     let mut buf = [0u8; 128];
 
-                                                    if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut buf)).await {
+                                                    if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(150), socket.recv_from(&mut buf)).await {
                                                         if len >= 70 {
                                                             let ip_slice = &buf[8..64.min(len)];
                                                             let ip_end = ip_slice.iter().position(|&b| b == 0).unwrap_or(ip_slice.len());
                                                             let parsed_ip = String::from_utf8_lossy(&ip_slice[..ip_end]).trim().to_string();
-                                                            let parsed_port = u16::from_le_bytes([buf[68], buf[69]]);
+                                                            let parsed_port = u16::from_be_bytes([buf[68], buf[69]]);
 
-                                                            if !parsed_ip.is_empty() && parsed_ip != "127.0.0.1" {
+                                                            if !parsed_ip.is_empty() {
                                                                 my_pub_ip = parsed_ip;
                                                                 my_pub_port = parsed_port;
                                                             }
@@ -670,25 +825,12 @@ pub async fn connect_voice_gateway(
                                                     }
                                                 }
 
-                                                // Fallback: Fetch real public IP via HTTP API if UDP discovery timed out or returned local IP
-                                                if my_pub_ip.is_empty() || my_pub_ip == "127.0.0.1" {
-                                                    if let Ok(resp) = reqwest::get("https://api.ipify.org").await {
-                                                        if let Ok(ip_text) = resp.text().await {
-                                                            let clean_ip = ip_text.trim().to_string();
-                                                            if !clean_ip.is_empty() {
-                                                                my_pub_ip = clean_ip;
-                                                                my_pub_port = 50000;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
                                                 if my_pub_ip.is_empty() {
-                                                    my_pub_ip = "127.0.0.1".to_string();
-                                                    my_pub_port = 1337;
+                                                    my_pub_ip = voice_ip.clone();
+                                                    my_pub_port = socket.local_addr().map(|a| a.port()).unwrap_or(50000);
                                                 }
 
-                                                info!("UDP IP Discovery ConcluÃ­do! IP PÃºblico Real: {}:{}", my_pub_ip, my_pub_port);
+                                                info!("UDP IP Discovery Concluído! IP: {}:{}", my_pub_ip, my_pub_port);
 
                                                 // 2. Send Opcode 1 Select Protocol to Voice Gateway WebSocket
                                                 let select_proto = serde_json::json!({
@@ -723,38 +865,72 @@ pub async fn connect_voice_gateway(
                                                 let rx_session_id = my_session_id;
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<u32, OpusDecoder> = HashMap::new();
+                                                    let mut ssrc_last_samples: HashMap<u32, (f32, f32)> = HashMap::new();
+                                                    let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
+                                                    let mut ssrc_expected_seq: HashMap<u32, u16> = HashMap::new();
                                                     let mut recv_buf = vec![0u8; 4096];
+                                                    let mut pcm_out_buf = vec![0.0f32; 11520];
+                                                    let mut detected_ssrcs = std::collections::HashSet::new();
+                                                    let mut total_pkts_recv = 0u64;
+                                                    let mut decrypt_err_cnt = 0u64;
+                                                    let mut opus_err_cnt = 0u64;
+
+                                                    info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
+
                                                     loop {
                                                         if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != rx_session_id { break; }
                                                         match tokio::time::timeout(Duration::from_millis(100), socket_rx.recv_from(&mut recv_buf)).await {
-                                                            Ok(Ok((len, _addr))) => {
+                                                            Ok(Ok((len, addr))) => {
                                                                 if len < 12 { continue; }
                                                                 let pkt = &recv_buf[..len];
+                                                                
                                                                 // Parse RTP header
                                                                 let version = (pkt[0] >> 6) & 0x3;
                                                                 if version != 2 { continue; }
+                                                                let pt = pkt[1] & 0x7F;
+                                                                if pt != 120 { continue; } // Strictly allow ONLY Opus Audio packets (Payload Type 120)
+
                                                                 let ssrc_recv = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
-                                                                // Skip our own SSRC
                                                                 if ssrc_recv == my_ssrc { continue; }
 
-                                                                // Parse dynamic header size and check extensions (RFC 8285 / rtpsize format)
+                                                                total_pkts_recv += 1;
+
+                                                                if detected_ssrcs.insert(ssrc_recv) {
+                                                                    info!("🎙️ NOVO SSRC DE VOZ REMOTO RECEBIDO! SSRC={} de {}", ssrc_recv, addr);
+                                                                }
+
+                                                                // Parse dynamic header size & extension (RFC 8285 / rtpsize format)
                                                                 let cc = (pkt[0] & 0x0F) as usize;
                                                                 let has_ext = (pkt[0] & 0x10) != 0;
                                                                 let base_header_len = 12 + 4 * cc;
-                                                                if len < base_header_len { continue; }
 
-                                                                let mut aad_len = base_header_len;
-
-                                                                if has_ext {
+                                                                // In aead_aes256_gcm_rtpsize:
+                                                                // Unencrypted AAD header = base RTP header + CSRCs + extension header (if has_ext is true).
+                                                                let aad_len = if has_ext {
                                                                     if len < base_header_len + 4 { continue; }
                                                                     let ext_len_words = u16::from_be_bytes([pkt[base_header_len + 2], pkt[base_header_len + 3]]) as usize;
-                                                                    let ext_total_bytes = 4 + ext_len_words * 4;
-                                                                    if len < base_header_len + ext_total_bytes { continue; }
-                                                                    aad_len = base_header_len + ext_total_bytes;
-                                                                }
+                                                                    let ext_bytes_len = ext_len_words * 4;
+                                                                    base_header_len + 4 + ext_bytes_len
+                                                                } else {
+                                                                    base_header_len
+                                                                };
 
-                                                                // rtpsize nonce: last 4 bytes of packet
-                                                                if len < aad_len + 4 { continue; }
+                                                                // rtpsize nonce: last 4 bytes of packet, padding byte before nonce if P bit set
+                                                                let has_padding = (pkt[0] & 0x20) != 0;
+                                                                let padding_len = if has_padding && len > 5 {
+                                                                    pkt[len - 5] as usize
+                                                                } else {
+                                                                    0
+                                                                };
+
+                                                                let ciphertext_end = if len >= 4 + padding_len && len - 4 - padding_len > aad_len {
+                                                                    len - 4 - padding_len
+                                                                } else {
+                                                                    len - 4
+                                                                };
+
+                                                                if ciphertext_end <= aad_len { continue; }
+
                                                                 let nonce_bytes_rx = &pkt[len-4..len];
                                                                 let mut nonce_arr = [0u8; 12];
                                                                 nonce_arr[0..4].copy_from_slice(nonce_bytes_rx);
@@ -764,159 +940,525 @@ pub async fn connect_voice_gateway(
                                                                     if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
                                                                         let nonce = Nonce::from_slice(&nonce_arr);
                                                                         let header = &pkt[..aad_len];
-                                                                        let ciphertext = &pkt[aad_len..len-4];
+                                                                        let ciphertext = &pkt[aad_len..ciphertext_end];
                                                                         let payload_decrypt = aes_gcm::aead::Payload {
                                                                             msg: ciphertext,
                                                                             aad: header,
                                                                         };
-                                                                        if let Ok(decrypted) = cipher.decrypt(nonce, payload_decrypt) {
-                                                                            // Get mapped Discord User ID for this SSRC
-                                                                            let sender_user_id = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied().unwrap_or(ssrc_recv as u64);
 
-                                                                            let opus_data_opt: Option<Vec<u8>> = {
-                                                                                 let mut sess = dave_session_rx.lock().unwrap();
-                                                                                 if let Some(ref mut s) = *sess {
-                                                                                     if s.is_ready() {
-                                                                                         match s.decrypt(sender_user_id, MediaType::AUDIO, &decrypted) {
-                                                                                             Ok(d) => Some(d),
-                                                                                             Err(_) => None,
-                                                                                         }
-                                                                                     } else { None }
-                                                                                 } else { Some(decrypted) }
-                                                                             };
+                                                                        match cipher.decrypt(nonce, payload_decrypt) {
+                                                                            Ok(decrypted) => {
+                                                                                let transport_payload = &decrypted[..];
 
-                                                                             let opus_data = match opus_data_opt {
-                                                                                 Some(bytes) => bytes,
-                                                                                 None => continue,
-                                                                             };
+                                                                                // Get mapped Discord User ID for this SSRC (or primary SSRC 9979)
+                                                                                let user_id_opt = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied();
+                                                                                if user_id_opt.is_none() && ssrc_recv != 9979 {
+                                                                                    // Random DAVE control/MLS frame SSRC - NOT an audio stream! Skip to prevent noise!
+                                                                                    continue;
+                                                                                }
+                                                                                let sender_user_id = user_id_opt.unwrap_or(ssrc_recv as u64);
 
-                                                                            // Opus decode to PCM f32 mono 48kHz, frame_size=960 (20ms)
-                                                                            let decoder = opus_decoders
-                                                                                .entry(ssrc_recv)
-                                                                                .or_insert_with(|| OpusDecoder::new(48000, 1)
-                                                                                    .expect("Falha ao criar OpusDecoder"));
+                                                                                let (opus_data, can_decode, was_dave_passthrough) = {
+                                                                                    let mut sess = dave_session_rx.lock().unwrap();
+                                                                                    if let Some(ref mut s) = *sess {
+                                                                                        if s.is_ready() {
+                                                                                            let is_dave_encrypted = transport_payload.len() >= 2
+                                                                                                && transport_payload[transport_payload.len() - 2] == 0xFA
+                                                                                                && transport_payload[transport_payload.len() - 1] == 0xFA;
 
-                                                                            let mut pcm_out = vec![0.0f32; 5760]; // 120ms max
-                                                                            if let Ok(decoded_samples) = decoder.decode(&opus_data, 5760, &mut pcm_out) {
-                                                                                if let Ok(mut queues) = speaker_queues_rx.lock() {
-                                                                                    let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(96000));
-                                                                                    for &s in &pcm_out[..decoded_samples] {
-                                                                                        if q.len() < 192000 { // cap at 4s per user
-                                                                                            q.push_back(s.clamp(-1.0, 1.0));
+                                                                                            if is_dave_encrypted {
+                                                                                                match s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload) {
+                                                                                                    Ok(d) => (d, true, false),
+                                                                                                    Err(_) => (Vec::new(), false, false),
+                                                                                                }
+                                                                                            } else {
+                                                                                                // Passthrough unencrypted frame / silence frame (e.g. 0xF8FFFE)
+                                                                                                (transport_payload.to_vec(), true, true)
+                                                                                            }
+                                                                                        } else { (Vec::new(), false, false) }
+                                                                                    } else { (transport_payload.to_vec(), true, false) }
+                                                                                };
+
+                                                                                let mut decode_success = false;
+                                                                                let mut decoded_count = 0;
+                                                                                if can_decode && !opus_data.is_empty() {
+                                                                                    let mut raw_opus = opus_data.as_slice();
+
+                                                                                    // Strip DAVE 1-byte Opus codec header (0x00) ONLY for DAVE passthrough frames
+                                                                                    if was_dave_passthrough && raw_opus.first() == Some(&0x00) && raw_opus.len() > 1 {
+                                                                                        raw_opus = &raw_opus[1..];
+                                                                                    }
+
+                                                                                    // Strip RTP Padding if P bit set (Bit 5 of RTP Header byte 0)
+                                                                                    if (pkt[0] & 0x20) != 0 && !raw_opus.is_empty() {
+                                                                                        let pad_len = raw_opus[raw_opus.len() - 1] as usize;
+                                                                                        if pad_len > 0 && pad_len <= raw_opus.len() {
+                                                                                            raw_opus = &raw_opus[..raw_opus.len() - pad_len];
                                                                                         }
                                                                                     }
+
+                                                                                     // Log raw Opus payload for isolated C opusdec testing
+                                                                                     append_raw_opus_dump(raw_opus);
+
+                                                                                    let dec = opus_decoders.entry(ssrc_recv).or_insert_with(|| {
+                                                                                        OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder 48kHz Estéreo")
+                                                                                    });
+
+                                                                                      // Handle sequence loss via Opus PLC (Packet Loss Concealment) as per Songbird & RFC 6716
+                                                                                      let rtp_seq = u16::from_be_bytes([pkt[2], pkt[3]]);
+                                                                                      if let Some(last_seq) = ssrc_expected_seq.get(&ssrc_recv).copied() {
+                                                                                          let missed = rtp_seq.wrapping_sub(last_seq);
+                                                                                          if missed > 0 && missed < 10 {
+                                                                                              info!("📊 [RTP PACKET LOSS] Missed {} packets for SSRC {} (Expected={}, Got={})", missed, ssrc_recv, last_seq, rtp_seq);
+                                                                                              for _ in 0..missed {
+                                                                                                  let _ = dec.decode(&[], 5760, &mut pcm_out_buf[..]);
+                                                                                              }
+                                                                                          }
+                                                                                      }
+                                                                                      ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
+
+                                                                                      let is_dtx_silence = raw_opus.len() <= 3 || (raw_opus.len() <= 5 && (raw_opus[0] == 0xF8 || raw_opus[0] == 0xFC));
+                                                                                      if is_dtx_silence {
+                                                                                           // Suppress synthetic SILK Comfort Noise (CNG) hiss during speech pauses
+                                                                                           decode_success = true;
+                                                                                           decoded_count = 960;
+                                                                                           for s in pcm_out_buf[..1920].iter_mut() { *s = 0.0; }
+                                                                                      } else if let Ok(samples) = dec.decode(raw_opus, 5760, &mut pcm_out_buf[..]) {
+                                                                                           decode_success = true;
+                                                                                           decoded_count = samples;
+                                                                                      };
+                                                                                 }
+
+pub fn append_raw_opus_dump(payload: &[u8]) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let path = "discord_raw_opus.bin";
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+        let len_bytes = (payload.len() as u16).to_le_bytes();
+        let _ = f.write_all(&len_bytes);
+        let _ = f.write_all(payload);
+    }
+}
+
+pub fn append_pcm_dump(samples: &[(f32, f32)]) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    static WAV_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    let path = "debug_audio_dump.wav";
+    if !WAV_INIT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if let Ok(mut f) = std::fs::File::create(path) {
+            let mut header = [0u8; 44];
+            header[0..4].copy_from_slice(b"RIFF");
+            let file_size: u32 = 36;
+            header[4..8].copy_from_slice(&file_size.to_le_bytes());
+            header[8..12].copy_from_slice(b"WAVE");
+            header[12..16].copy_from_slice(b"fmt ");
+            let fmt_size: u32 = 16;
+            header[16..20].copy_from_slice(&fmt_size.to_le_bytes());
+            let format_tag: u16 = 1;
+            header[20..22].copy_from_slice(&format_tag.to_le_bytes());
+            let channels: u16 = 2;
+            header[22..24].copy_from_slice(&channels.to_le_bytes());
+            let sample_rate: u32 = 48000;
+            header[24..28].copy_from_slice(&sample_rate.to_le_bytes());
+            let byte_rate: u32 = 48000 * 2 * 2;
+            header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
+            let block_align: u16 = 4;
+            header[32..34].copy_from_slice(&block_align.to_le_bytes());
+            let bits_per_sample: u16 = 16;
+            header[34..36].copy_from_slice(&bits_per_sample.to_le_bytes());
+            header[36..40].copy_from_slice(b"data");
+            let data_size: u32 = 0;
+            header[40..44].copy_from_slice(&data_size.to_le_bytes());
+            let _ = f.write_all(&header);
+        }
+    }
+
+    if let Ok(mut f) = OpenOptions::new().append(true).open(path) {
+        let mut bytes = Vec::with_capacity(samples.len() * 4);
+        for &(l, r) in samples {
+            let i_l = (l.clamp(-1.0, 1.0) * 32767.0) as i16;
+            let i_r = (r.clamp(-1.0, 1.0) * 32767.0) as i16;
+            bytes.extend_from_slice(&i_l.to_le_bytes());
+            bytes.extend_from_slice(&i_r.to_le_bytes());
+        }
+        let _ = f.write_all(&bytes);
+    }
+}
+
+                                                                                if decode_success && decoded_count > 0 {
+                                                                                    register_voice_participant(ssrc_recv, sender_user_id);
+                                                                                    let stream_chans = 2usize;
+                                                                                    let total_samples = if stream_chans == 2 { decoded_count * 2 } else { decoded_count };
+                                                                                    let mut sum_sq = 0.0f32;
+                                                                                    let mut max_peak = 0.0f32;
+                                                                                    let mut zc_count = 0usize;
+                                                                                    let mut prev_s = 0.0f32;
+                                                                                    let mut diff_energy = 0.0f32;
+
+                                                                                    for (idx, &s) in pcm_out_buf[..total_samples].iter().enumerate() {
+                                                                                        let abs_s = s.abs();
+                                                                                        if abs_s > max_peak { max_peak = abs_s; }
+                                                                                        sum_sq += s * s;
+                                                                                        if idx > 0 {
+                                                                                            if (s >= 0.0 && prev_s < 0.0) || (s < 0.0 && prev_s >= 0.0) {
+                                                                                                zc_count += 1;
+                                                                                            }
+                                                                                            let diff = s - prev_s;
+                                                                                            diff_energy += diff * diff;
+                                                                                        }
+                                                                                        prev_s = s;
+                                                                                    }
+                                                                                    let frame_rms = (sum_sq / total_samples.max(1) as f32).sqrt();
+                                                                                    let hf_noise_ratio = (diff_energy / (sum_sq + 1e-6)).sqrt();
+                                                                                    let is_silence = frame_rms < 0.003 || opus_data.len() <= 3;
+
+                                                                                    let mut dump_vec = Vec::with_capacity(decoded_count);
+                                                                                    if is_silence {
+                                                                                        for _ in 0..decoded_count { dump_vec.push((0.0, 0.0)); }
+                                                                                    } else if stream_chans == 2 {
+                                                                                        for i in 0..decoded_count {
+                                                                                            dump_vec.push((pcm_out_buf[i * 2].clamp(-1.0, 1.0), pcm_out_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                        }
+                                                                                    } else {
+                                                                                        for &s in &pcm_out_buf[..decoded_count] {
+                                                                                            let mono = s.clamp(-1.0, 1.0);
+                                                                                            dump_vec.push((mono, mono));
+                                                                                        }
+                                                                                        ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
+                                                                                    }
+
+                                                                                    // Enabled live WAV dump for diagnostic analysis
+                                                                                    append_pcm_dump(&dump_vec);
+
+                                                                                    if let Ok(mut queues) = speaker_queues_rx.lock() {
+                                                                                        let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(96000));
+                                                                                        for &pair in &dump_vec {
+                                                                                            if q.len() < 96000 { q.push_back(pair); }
+                                                                                        }
+
+                                                                                        if total_pkts_recv % 100 == 0 {
+                                                                                            info!("📊 [ESPECTRO DE VOZ & NOISE DUMP] Pkts={:4} | SSRC={} | RMS={:.5} | Peak={:.4} | ZC={:3} | HF_Ratio={:.3} | QueueLen={:5}",
+                                                                                                total_pkts_recv, ssrc_recv, frame_rms, max_peak, zc_count, hf_noise_ratio, q.len());
+                                                                                        }
+                                                                                    }
+                                                                                } else if !opus_data.is_empty() {
+                                                                                    opus_err_cnt += 1;
+                                                                                    if opus_err_cnt % 50 == 1 {
+                                                                                        warn!("📊 [MÉTRICA DE ERRO] Opus decode falhou para SSRC {} (Erros={})", ssrc_recv, opus_err_cnt);
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            Err(err) => {
+                                                                                decrypt_err_cnt += 1;
+                                                                                if decrypt_err_cnt % 50 == 1 {
+                                                                                    warn!("Descriptografia AES-GCM falhou para SSRC {}: {:?}", ssrc_recv, err);
                                                                                 }
                                                                             }
                                                                         }
                                                                     }
                                                                 }
                                                             }
-                                                            Ok(Err(_)) | Err(_) => { /* timeout or error, continue */ }
+                                                            Ok(Err(e)) => {
+                                                                warn!("Erro socket.recv_from: {:?}", e);
+                                                            }
+                                                            Err(_) => { /* timeout 100ms, keep looping */ }
                                                         }
                                                     }
                                                     info!("Loop de recepção de voz (ID={}) encerrado.", rx_session_id);
                                                 });
 
                                                 let speaker_queues_out = get_speaker_pcm_queues();
+                                                let ssrc_to_userid_speaker = Arc::clone(&ssrc_to_userid_audio);
                                                 let out_session_id = my_session_id;
                                                 std::thread::spawn(move || {
                                                     use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
                                                     let host = cpal::default_host();
-                                                    let device = match host.default_output_device() {
+
+                                                    let target_dev_name = get_selected_output_device_store().lock().unwrap().clone();
+                                                    let device = if let Ok(devices) = host.output_devices() {
+                                                        if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+                                                            devices.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
+                                                                .or_else(|| host.default_output_device())
+                                                        } else {
+                                                            host.default_output_device()
+                                                        }
+                                                    } else {
+                                                        host.default_output_device()
+                                                    };
+
+                                                    let device = match device {
                                                         Some(d) => d,
                                                         None => { warn!("Nenhum dispositivo de saída de áudio encontrado!"); return; }
                                                     };
+
                                                     let config = match device.default_output_config() {
                                                         Ok(c) => c,
                                                         Err(e) => { warn!("Falha ao obter config de saída: {:?}", e); return; }
                                                     };
                                                     let out_sample_rate = config.sample_rate().0;
                                                     let out_channels = config.channels() as usize;
-                                                    info!("Saída de Áudio (Speaker): {}Hz, {} canal(is)", out_sample_rate, out_channels);
+                                                    info!("Saída de Áudio (Speaker): {}Hz, {} canal(is), formato={:?}",
+                                                        out_sample_rate, out_channels, config.sample_format());
 
                                                     let sq = speaker_queues_out;
+                                                    let ssrc_to_userid_spk = Arc::clone(&ssrc_to_userid_speaker);
                                                     let mut started_ssrcs = std::collections::HashSet::new();
                                                     let mut inactive_ticks = std::collections::HashMap::new();
-                                                    let stream_result = device.build_output_stream(
-                                                        &config.into(),
-                                                        move |output: &mut [f32], _| {
-                                                            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
-                                                                for s in output.iter_mut() { *s = 0.0; }
-                                                                return;
-                                                            }
+                                                    // Fractional phase counters per SSRC for smooth Hermite cubic sample rate conversion (48kHz -> out_sample_rate)
+                                                    let mut ssrc_phases: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+                                                    let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
+                                                    let step = 48000.0f64 / out_sample_rate.max(1) as f64;
 
-                                                            // Clear output buffer first
-                                                            for s in output.iter_mut() { *s = 0.0; }
-
-                                                            if let Ok(mut queues) = sq.lock() {
-                                                                let frames = output.len() / out_channels;
-                                                                let mut ready_ssrcs = Vec::new();
-                                                                let mut to_remove = Vec::new();
-
-                                                                for (&ssrc, q) in queues.iter() {
-                                                                    if q.is_empty() {
-                                                                        let ticks = inactive_ticks.entry(ssrc).or_insert(0);
-                                                                        *ticks += 1;
-                                                                        if *ticks > 150 { // ~3 seconds of silence at 20ms callback interval
-                                                                            to_remove.push(ssrc);
-                                                                        }
-                                                                    } else {
-                                                                        inactive_ticks.insert(ssrc, 0); // reset inactivity
+                                                    let stream_res = match config.sample_format() {
+                                                        cpal::SampleFormat::F32 => {
+                                                            let sq_f32 = Arc::clone(&sq);
+                                                            let ssrc_to_userid_f32 = Arc::clone(&ssrc_to_userid_spk);
+                                                            device.build_output_stream(
+                                                                &config.into(),
+                                                                move |output: &mut [f32], _| {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                        for s in output.iter_mut() { *s = 0.0; }
+                                                                        return;
                                                                     }
+                                                                    for s in output.iter_mut() { *s = 0.0; }
 
-                                                                    if started_ssrcs.contains(&ssrc) {
-                                                                        if !q.is_empty() {
-                                                                            ready_ssrcs.push(ssrc);
-                                                                        }
-                                                                    } else if q.len() >= 960 {
-                                                                        started_ssrcs.insert(ssrc);
-                                                                        ready_ssrcs.push(ssrc);
-                                                                    }
-                                                                }
+                                                                    if let Ok(mut queues) = sq_f32.lock() {
+                                                                        let frames = output.len() / out_channels.max(1);
+                                                                        let mut ready_ssrcs = Vec::new();
+                                                                        let mut to_remove = Vec::new();
 
-                                                                // Cleanup inactive user queues
-                                                                for ssrc in to_remove {
-                                                                    queues.remove(&ssrc);
-                                                                    started_ssrcs.remove(&ssrc);
-                                                                    inactive_ticks.remove(&ssrc);
-                                                                }
-
-                                                                if ready_ssrcs.is_empty() {
-                                                                    return;
-                                                                }
-
-                                                                // Mix and write to the output buffer
-                                                                for f in 0..frames {
-                                                                    let mut mixed_sample = 0.0f32;
-                                                                    for &ssrc in &ready_ssrcs {
-                                                                        if let Some(q) = queues.get_mut(&ssrc) {
-                                                                            let src_sample = if out_sample_rate == 48000 {
-                                                                                q.pop_front().unwrap_or(0.0)
-                                                                            } else {
-                                                                                // Simple nearest-neighbor resample per SSRC
-                                                                                let ratio = 48000.0 / out_sample_rate as f64;
-                                                                                let needed = (ratio * (f + 1) as f64) as usize;
-                                                                                let mut s = 0.0f32;
-                                                                                for _ in 0..needed.saturating_sub((ratio * f as f64) as usize) {
-                                                                                    s = q.pop_front().unwrap_or(0.0);
+                                                                        for (&ssrc, q) in queues.iter() {
+                                                                            if q.is_empty() {
+                                                                                let ticks = inactive_ticks.entry(ssrc).or_insert(0);
+                                                                                *ticks += 1;
+                                                                                if *ticks > 25 {
+                                                                                    started_ssrcs.remove(&ssrc);
                                                                                 }
-                                                                                s
-                                                                            };
-                                                                            mixed_sample += src_sample;
+                                                                                if *ticks > 150 {
+                                                                                    to_remove.push(ssrc);
+                                                                                }
+                                                                            } else {
+                                                                                inactive_ticks.insert(ssrc, 0);
+                                                                            }
+
+                                                                            if ssrc == 999999 {
+                                                                                if !q.is_empty() {
+                                                                                    ready_ssrcs.push(ssrc);
+                                                                                }
+                                                                            } else if started_ssrcs.contains(&ssrc) {
+                                                                                if !q.is_empty() {
+                                                                                    ready_ssrcs.push(ssrc);
+                                                                                } else {
+                                                                                    // Buffer underflowed during silence gap - reset state to pre-buffer for next speech onset
+                                                                                    started_ssrcs.remove(&ssrc);
+                                                                                    ssrc_histories.remove(&ssrc);
+                                                                                    ssrc_phases.remove(&ssrc);
+                                                                                }
+                                                                            } else if q.len() >= 1920 { // WebRTC Standard Jitter Pre-buffer (2 x 20ms frames)
+                                                                                started_ssrcs.insert(ssrc);
+                                                                                ready_ssrcs.push(ssrc);
+                                                                            }
+                                                                        }
+
+                                                                        for ssrc in to_remove {
+                                                                            queues.remove(&ssrc);
+                                                                            started_ssrcs.remove(&ssrc);
+                                                                            inactive_ticks.remove(&ssrc);
+                                                                            ssrc_phases.remove(&ssrc);
+                                                                            ssrc_histories.remove(&ssrc);
+                                                                        }
+
+                                                                        if ready_ssrcs.is_empty() { return; }
+
+                                                                         let mut ssrc_vol_map = std::collections::HashMap::new();
+                                                                         if let Ok(spk_map) = ssrc_to_userid_f32.lock() {
+                                                                             for &ssrc in &ready_ssrcs {
+                                                                                 let uid_num = spk_map.get(&ssrc).copied().unwrap_or(ssrc as u64);
+                                                                                 let (is_muted_uid, vol_uid) = get_user_mute_volume(&uid_num.to_string());
+                                                                                 let (is_muted_ssrc, vol_ssrc) = get_user_mute_volume(&ssrc.to_string());
+                                                                                 let is_muted = is_muted_uid || is_muted_ssrc;
+                                                                                 let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
+                                                                                 ssrc_vol_map.insert(ssrc, (is_muted, user_vol));
+                                                                             }
+                                                                         }
+
+                                                                        for f in 0..frames {
+                                                                            let mut mixed_l = 0.0f32;
+                                                                            let mut mixed_r = 0.0f32;
+                                                                            for &ssrc in &ready_ssrcs {
+                                                                                let (is_muted, user_vol) = ssrc_vol_map.get(&ssrc).copied().unwrap_or((false, 1.0));
+                                                                                if is_muted { continue; }
+
+                                                                                if let Some(q) = queues.get_mut(&ssrc) {
+                                                                                    let phase = ssrc_phases.entry(ssrc).or_insert(0.0);
+                                                                                    let hist = ssrc_histories.entry(ssrc).or_insert([((0.0, 0.0)), ((0.0, 0.0)), ((0.0, 0.0)), ((0.0, 0.0))]);
+
+                                                                                    let step = 48000.0f64 / out_sample_rate.max(1) as f64;
+
+                                                                                    *phase += step;
+                                                                                    let pops = *phase as usize;
+                                                                                    if pops > 0 {
+                                                                                        *phase -= pops as f64;
+                                                                                        for _ in 0..pops {
+                                                                                            hist[0] = hist[1];
+                                                                                            hist[1] = hist[2];
+                                                                                            hist[2] = hist[3];
+                                                                                            if let Some(next_p) = q.pop_front() {
+                                                                                                if hist[0] == (0.0, 0.0) && hist[1] == (0.0, 0.0) && hist[2] == (0.0, 0.0) {
+                                                                                                    hist[0] = next_p;
+                                                                                                    hist[1] = next_p;
+                                                                                                    hist[2] = next_p;
+                                                                                                    hist[3] = next_p;
+                                                                                                } else {
+                                                                                                    hist[3] = next_p;
+                                                                                                }
+                                                                                            } else {
+                                                                                                let decay_l = if hist[2].0.abs() < 0.0001 { 0.0 } else { hist[2].0 * 0.999 };
+                                                                                                let decay_r = if hist[2].1.abs() < 0.0001 { 0.0 } else { hist[2].1 * 0.999 };
+                                                                                                hist[3] = (decay_l, decay_r);
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                    let t = (*phase as f32).clamp(0.0, 1.0);
+                                                                                    let src_l = cubic_hermite(hist[0].0, hist[1].0, hist[2].0, hist[3].0, t);
+                                                                                    let src_r = cubic_hermite(hist[0].1, hist[1].1, hist[2].1, hist[3].1, t);
+
+                                                                                    mixed_l += src_l * user_vol;
+                                                                                    mixed_r += src_r * user_vol;
+                                                                                }
+                                                                            }
+
+                                                                            let limited_l = soft_limit(mixed_l);
+                                                                            let limited_r = soft_limit(mixed_r);
+                                                                            if out_channels >= 2 {
+                                                                                output[f * out_channels + 0] = limited_l;
+                                                                                output[f * out_channels + 1] = limited_r;
+                                                                                for ch in 2..out_channels {
+                                                                                    output[f * out_channels + ch] = 0.0;
+                                                                                }
+                                                                            } else {
+                                                                                output[f] = soft_limit((mixed_l + mixed_r) * 0.5);
+                                                                            }
                                                                         }
                                                                     }
-
-                                                                    let clamped = mixed_sample.clamp(-1.0, 1.0);
-                                                                    for ch in 0..out_channels {
-                                                                        output[f * out_channels + ch] = clamped;
+                                                                },
+                                                                |err| { warn!("Erro no stream de saída F32: {:?}", err); },
+                                                                None,
+                                                            )
+                                                        }
+                                                        cpal::SampleFormat::I16 => {
+                                                            let sq_i16 = Arc::clone(&sq);
+                                                            device.build_output_stream(
+                                                                &config.into(),
+                                                                move |output: &mut [i16], _| {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                        for s in output.iter_mut() { *s = 0; }
+                                                                        return;
                                                                     }
-                                                                }
-                                                            }
-                                                        },
-                                                        |err| { warn!("Erro no stream de saída: {:?}", err); },
-                                                        None,
-                                                    );
-                                                    match stream_result {
+                                                                    for s in output.iter_mut() { *s = 0; }
+
+                                                                    if let Ok(mut queues) = sq_i16.lock() {
+                                                                        let frames = output.len() / out_channels.max(1);
+                                                                        let mut ready_ssrcs = Vec::new();
+                                                                        let mut to_remove = Vec::new();
+
+                                                                        for (&ssrc, q) in queues.iter() {
+                                                                            if q.is_empty() {
+                                                                                let ticks = inactive_ticks.entry(ssrc).or_insert(0);
+                                                                                *ticks += 1;
+                                                                                if *ticks > 150 {
+                                                                                    to_remove.push(ssrc);
+                                                                                }
+                                                                            } else {
+                                                                                inactive_ticks.insert(ssrc, 0);
+                                                                            }
+
+                                                                            if started_ssrcs.contains(&ssrc) {
+                                                                                if !q.is_empty() {
+                                                                                    ready_ssrcs.push(ssrc);
+                                                                                } else {
+                                                                                    // Buffer underflowed during silence gap - reset state to pre-buffer 60ms for next speech onset
+                                                                                    started_ssrcs.remove(&ssrc);
+                                                                                    ssrc_histories.remove(&ssrc);
+                                                                                    ssrc_phases.remove(&ssrc);
+                                                                                }
+                                                                            } else if q.len() >= 2880 { // WebRTC Standard 60ms Jitter Pre-buffer (3 x 20ms frames)
+                                                                                started_ssrcs.insert(ssrc);
+                                                                                ready_ssrcs.push(ssrc);
+                                                                            }
+                                                                        }
+
+                                                                        for ssrc in to_remove {
+                                                                            queues.remove(&ssrc);
+                                                                            started_ssrcs.remove(&ssrc);
+                                                                            inactive_ticks.remove(&ssrc);
+                                                                            ssrc_phases.remove(&ssrc);
+                                                                            ssrc_histories.remove(&ssrc);
+                                                                        }
+
+                                                                        if ready_ssrcs.is_empty() { return; }
+
+                                                                        for f in 0..frames {
+                                                                            let mut mixed_l = 0.0f32;
+                                                                            let mut mixed_r = 0.0f32;
+                                                                            for &ssrc in &ready_ssrcs {
+                                                                                if let Some(q) = queues.get_mut(&ssrc) {
+                                                                                    let phase = ssrc_phases.entry(ssrc).or_insert(0.0);
+                                                                                    let hist = ssrc_histories.entry(ssrc).or_insert([((0.0, 0.0)), ((0.0, 0.0)), ((0.0, 0.0)), ((0.0, 0.0))]);
+
+                                                                                    let step = 48000.0f64 / out_sample_rate.max(1) as f64;
+
+                                                                                    *phase += step;
+                                                                                    let pops = *phase as usize;
+                                                                                    if pops > 0 {
+                                                                                        *phase -= pops as f64;
+                                                                                        for _ in 0..pops {
+                                                                                            hist[0] = hist[1];
+                                                                                            hist[1] = hist[2];
+                                                                                            hist[2] = hist[3];
+                                                                                            if let Some(next_p) = q.pop_front() {
+                                                                                                hist[3] = next_p;
+                                                                                            } else {
+                                                                                                hist[3] = (hist[2].0 * 0.995, hist[2].1 * 0.995);
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                    let t = (*phase as f32).clamp(0.0, 1.0);
+                                                                                    let src_l = cubic_hermite(hist[0].0, hist[1].0, hist[2].0, hist[3].0, t);
+                                                                                    let src_r = cubic_hermite(hist[0].1, hist[1].1, hist[2].1, hist[3].1, t);
+
+                                                                                    mixed_l += src_l;
+                                                                                    mixed_r += src_r;
+                                                                                }
+                                                                            }
+
+                                                                            let clamped_l = (soft_limit(mixed_l) * 32767.0) as i16;
+                                                                            let clamped_r = (soft_limit(mixed_r) * 32767.0) as i16;
+                                                                            if out_channels >= 2 {
+                                                                                output[f * out_channels + 0] = clamped_l;
+                                                                                output[f * out_channels + 1] = clamped_r;
+                                                                                for ch in 2..out_channels {
+                                                                                    output[f * out_channels + ch] = 0;
+                                                                                }
+                                                                            } else {
+                                                                                output[f] = (soft_limit((mixed_l + mixed_r) * 0.5) * 32767.0) as i16;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                },
+                                                                |err| { warn!("Erro no stream de saída I16: {:?}", err); },
+                                                                None,
+                                                            )
+                                                        }
+                                                        _ => {
+                                                            warn!("Formato de saída não suportado: {:?}", config.sample_format());
+                                                            return;
+                                                        }
+                                                    };
+
+                                                    match stream_res {
                                                         Ok(stream) => {
                                                             use cpal::traits::StreamTrait;
                                                             if let Err(e) = stream.play() {
@@ -924,7 +1466,6 @@ pub async fn connect_voice_gateway(
                                                                 return;
                                                             }
                                                             info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
-                                                            // Keep thread alive while session is valid
                                                             loop {
                                                                 std::thread::sleep(std::time::Duration::from_millis(100));
                                                                 if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
@@ -1128,6 +1669,7 @@ pub async fn connect_voice_gateway(
                                      };
                                      if s_ssrc > 0 && u_id > 0 {
                                          ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
+                                         register_voice_participant(s_ssrc, u_id);
                                          info!("Voice Gateway OP 5: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
                                      }
                                  }
@@ -1145,6 +1687,7 @@ pub async fn connect_voice_gateway(
                                      };
                                      if s_ssrc > 0 && u_id > 0 {
                                          ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
+                                         register_voice_participant(s_ssrc, u_id);
                                          info!("Voice Gateway OP 11/12: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
                                      }
                                  }
@@ -1152,6 +1695,12 @@ pub async fn connect_voice_gateway(
                                     // DAVE Opcode 18: DAVE_PREPARE_TRANSITION
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
                                     let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(99);
+                                    if let Some(uid_str) = val["d"]["user_id"].as_str() {
+                                        if let Ok(u_id) = uid_str.parse::<u64>() {
+                                            let name = get_user_name(u_id);
+                                            register_user_name(u_id, name);
+                                        }
+                                    }
                                     info!("DAVE Prepare Transition (op=18): transition_id={}, protocol_version={}, payload={}",
                                         transition_id, protocol_version, val["d"]);
                                     // Respond with op=21 (Execute Transition) to acknowledge readiness

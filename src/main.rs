@@ -484,15 +484,57 @@ async fn load_messages_for_channel(
     }
 }
 
+struct MultiWriter {
+    file: std::sync::Mutex<std::fs::File>,
+}
+
+impl std::io::Write for MultiWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::stdout().write(buf);
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.write(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stdout().flush();
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.flush();
+        }
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    if let Ok(log_file) = std::fs::File::create("litecord_app.log") {
+        let writer = MultiWriter { file: std::sync::Mutex::new(log_file) };
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .target(env_logger::Target::Pipe(Box::new(writer)))
+            .init();
+    } else {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    }
     info!("Iniciando Litecord v0.1.0...");
 
     let app = AppWindow::new()?;
     let app_weak = app.as_weak();
 
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
+
+    use i_slint_backend_winit::WinitWindowAccessor;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    app.window().with_winit_window(|winit_win| {
+        if let Ok(handle) = winit_win.window_handle() {
+            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                let hwnd = win32_handle.hwnd.get() as isize;
+                *hwnd_store.lock().unwrap() = Some(hwnd);
+                set_dark_titlebar_color(hwnd);
+            }
+        }
+    });
+
     let last_token: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let guilds_map: Arc<Mutex<HashMap<String, GuildData>>> = Arc::new(Mutex::new(HashMap::new()));
     let cmd_tx_store: Arc<Mutex<Option<mpsc::Sender<GatewayCommand>>>> = Arc::new(Mutex::new(None));
@@ -560,6 +602,129 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w_inner.upgrade() {
                     ui.set_mic_level(level);
+                }
+            });
+        }
+    });
+
+    // Voice Room View Focus Toggle & Per-User Audio Callbacks
+    let app_weak_voice_focus = app_weak.clone();
+    app.on_toggle_voice_focus(move || {
+        if let Some(ui) = app_weak_voice_focus.upgrade() {
+            let cur = ui.get_is_voice_focused();
+            ui.set_is_voice_focused(!cur);
+        }
+    });
+
+    app.on_toggle_user_mute(move |uid_str: SharedString| {
+        let uid = uid_str.to_string();
+        let (is_m, _vol) = gateway::get_user_mute_volume(&uid);
+        gateway::set_user_mute(&uid, !is_m);
+        info!("🎙️ Mute do participante {} alterado para: {}", uid, !is_m);
+    });
+
+    app.on_set_user_volume(move |uid_str: SharedString, vol: f32| {
+        let uid = uid_str.to_string();
+        gateway::set_user_volume(&uid, vol);
+    });
+
+    // Dispatch Live Voice Room Participants & Animated Volume Level Bars
+    let app_weak_voice_loop = app_weak.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            let app_w_inner = app_weak_voice_loop.clone();
+
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = app_w_inner.upgrade() else { return; };
+                if !ui.get_is_in_voice() { return; }
+
+                let active_parts = gateway::get_active_voice_participants_store();
+                let queues_arc = gateway::get_speaker_pcm_queues();
+                let mut participants = Vec::new();
+
+                if let Ok(parts_map) = active_parts.lock() {
+                    let queues_guard = queues_arc.lock().ok();
+                    let mut user_best: HashMap<u64, (u32, f32, bool)> = HashMap::new();
+
+                    for (&ssrc, &user_id) in parts_map.iter() {
+                        if ssrc == 999999 || user_id == 999999 { continue; }
+
+                        let mut audio_level = 0.0f32;
+                        let mut is_speaking = false;
+
+                        if let Some(ref queues) = queues_guard {
+                            if let Some(q) = queues.get(&ssrc) {
+                                let sample_cnt = q.len().min(480);
+                                if sample_cnt > 0 {
+                                    let mut sum_sq = 0.0f32;
+                                    for i in 0..sample_cnt {
+                                        let (l, r) = q[i];
+                                        let s = (l + r) * 0.5;
+                                        sum_sq += s * s;
+                                    }
+                                    let rms = (sum_sq / sample_cnt as f32).sqrt();
+                                    audio_level = if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) };
+                                    is_speaking = audio_level > 0.03;
+                                }
+                            }
+                        }
+
+                        let entry = user_best.entry(user_id).or_insert((ssrc, audio_level, is_speaking));
+                        if audio_level > entry.1 {
+                            *entry = (ssrc, audio_level, is_speaking);
+                        }
+                    }
+
+                    let mut sorted_users: Vec<_> = user_best.into_iter().collect();
+                    sorted_users.sort_by(|(id_a, _), (id_b, _)| {
+                        let name_a = gateway::get_user_name(*id_a);
+                        let name_b = gateway::get_user_name(*id_b);
+                        name_a.cmp(&name_b)
+                    });
+
+                    for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
+                        let uid_str = user_id.to_string();
+                        let username = gateway::get_user_name(user_id);
+                        let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
+                        let (is_muted, vol) = gateway::get_user_mute_volume(&uid_str);
+
+                        participants.push(VoiceParticipant {
+                            user_id: uid_str.into(),
+                            username: username.into(),
+                            avatar_text: avatar_text.into(),
+                            is_speaking,
+                            audio_level,
+                            is_muted,
+                            volume: vol,
+                        });
+                    }
+                }
+
+                let cur_model = ui.get_voice_participants();
+                let mut need_full_rebuild = cur_model.row_count() != participants.len();
+                if !need_full_rebuild {
+                    for (i, p) in participants.iter().enumerate() {
+                        if let Some(old) = cur_model.row_data(i) {
+                            if old.user_id != p.user_id || old.username != p.username {
+                                need_full_rebuild = true;
+                                break;
+                            }
+                        } else {
+                            need_full_rebuild = true;
+                            break;
+                        }
+                    }
+                }
+
+                if need_full_rebuild {
+                    let model = std::rc::Rc::new(slint::VecModel::from(participants));
+                    ui.set_voice_participants(model.into());
+                } else {
+                    for (i, p) in participants.into_iter().enumerate() {
+                        cur_model.set_row_data(i, p);
+                    }
                 }
             });
         }
@@ -650,6 +815,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name_str = dev_name.to_string();
         info!("Alto-falante selecionado: {}", name_str);
         *selected_output_store.lock().unwrap() = name_str.clone();
+        gateway::set_selected_output_device(name_str.clone());
 
         if let Some(ui) = app_weak_select_output.upgrade() {
             let current_devs: Vec<AudioDeviceItem> = ui.get_output_devices().iter().map(|mut item| {
@@ -671,6 +837,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
             ui.set_current_voice_channel("".into());
+            gateway::clear_voice_participants();
 
             let gid = active_guild_leave.lock().unwrap().clone();
 
@@ -942,6 +1109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_chan_select.upgrade() {
             if is_voice {
                 ui.set_is_in_voice(true);
+                ui.set_is_voice_focused(true);
                 ui.set_current_voice_channel(format!("🔊 {}", ch_name).into());
                 let muted = ui.get_is_muted();
                 let deafened = ui.get_is_deafened();
@@ -1181,6 +1349,64 @@ fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
 
 fn is_valid_token_chars(token: &str) -> bool {
     token.len() >= 50 && token.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+#[cfg(target_os = "windows")]
+fn set_dark_titlebar_color(hwnd: isize) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    let dark_mode: u32 = 1;
+    unsafe {
+        // Attribute 20 (Win11 / Win10 20H1+)
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as _,
+            &dark_mode as *const u32 as _,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Attribute 19 (older Win10 1903-1909 builds)
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            19,
+            &dark_mode as *const u32 as _,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Header color #111214 (BGR COLORREF: 0x00141211)
+        let caption_color: u32 = 0x00141211;
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_CAPTION_COLOR as _,
+            &caption_color as *const u32 as _,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Header text color White #FFFFFF (BGR COLORREF: 0x00FFFFFF)
+        let text_color: u32 = 0x00FFFFFF;
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_TEXT_COLOR as _,
+            &text_color as *const u32 as _,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Force DWM to re-calculate and redraw the non-client title bar frame immediately!
+        SetWindowPos(
+            hwnd as _,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
+    }
 }
 
 fn auto_detect_discord_tokens() -> Vec<String> {

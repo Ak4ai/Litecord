@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
 
 struct ChatMessage {
     author: string,
@@ -26,8 +26,19 @@ struct AudioDeviceItem {
     is_selected: bool,
 }
 
+struct VoiceParticipant {
+    user_id: string,
+    username: string,
+    avatar_text: string,
+    is_speaking: bool,
+    audio_level: float,
+    is_muted: bool,
+    volume: float,
+}
+
 export component AppWindow inherits Window {
     title: "Litecord - Ultra-Lightweight Discord Client";
+    icon: @image-url("../assets/app_icon.png");
     preferred-width: 980px;
     preferred-height: 620px;
     background: #1e1f22;
@@ -46,6 +57,9 @@ export component AppWindow inherits Window {
     callback select_input_device(string /* device_name */);
     callback select_output_device(string /* device_name */);
     callback auto_detect_token();
+    callback toggle_user_mute(string /* user_id */);
+    callback set_user_volume(string /* user_id */, float /* volume */);
+    callback toggle_voice_focus();
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
@@ -56,6 +70,8 @@ export component AppWindow inherits Window {
     in-out property <bool> is_deafened: false;
     in-out property <bool> is_in_voice: false;
     in-out property <string> current_voice_channel: "";
+    in-out property <bool> is_voice_focused: false;
+    in-out property <[VoiceParticipant]> voice_participants: [];
 
     // Voice & Audio Settings Properties
     in-out property <bool> show_settings_modal: false;
@@ -364,12 +380,164 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // 3. Main Chat View
+            // 3. Main Content View (Text Chat OR Voice Room View)
             Rectangle {
                 background: #313338;
                 horizontal-stretch: 1;
 
-                VerticalBox {
+                if root.is_voice_focused && root.is_in_voice: VerticalBox {
+                    padding: 0px;
+                    spacing: 0px;
+
+                    // Voice Room Header Bar
+                    Rectangle {
+                        height: 44px;
+                        background: #2b2d31;
+
+                        HorizontalBox {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 12px;
+
+                            Text {
+                                text: root.current_voice_channel;
+                                color: #23a55a;
+                                font-size: 15px;
+                                font-weight: 800;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            Button {
+                                text: "💬 Ver Chat de Texto";
+                                clicked => { root.toggle_voice_focus(); }
+                            }
+
+                            Button {
+                                text: "🔴 Sair da Call";
+                                clicked => { root.leave_voice(); }
+                            }
+                        }
+                    }
+
+                    // Voice Room Participants List View
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: #313338;
+
+                        VerticalBox {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "PARTICIPANTES NA SALA DE ÁUDIO (" + root.voice_participants.length + ")";
+                                color: #949ba4;
+                                font-size: 11px;
+                                font-weight: 700;
+                            }
+
+                            ListView {
+                                for p in root.voice_participants: Rectangle {
+                                    height: 68px;
+                                    background: #2b2d31;
+                                    border-radius: 8px;
+
+                                    HorizontalBox {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 12px;
+
+                                        // Avatar Badge with Glowing Green Ring when speaking!
+                                        Rectangle {
+                                            width: 42px;
+                                            height: 42px;
+                                            border-radius: 21px;
+                                            background: p.is_speaking ? #23a55a : #383a40;
+                                            border-width: p.is_speaking ? 3px : 0px;
+                                            border-color: #23a55a;
+
+                                            Text {
+                                                text: p.avatar_text;
+                                                color: #ffffff;
+                                                font-size: 16px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        // Username & Moving Audio Volume Meter Bar!
+                                        VerticalBox {
+                                            horizontal-stretch: 1;
+                                            spacing: 4px;
+
+                                            HorizontalBox {
+                                                Text {
+                                                    text: p.username;
+                                                    color: p.is_speaking ? #ffffff : #dbdee1;
+                                                    font-weight: 700;
+                                                    font-size: 14px;
+                                                }
+
+                                                if p.is_muted: Text {
+                                                    text: " 🔇 [MUTADO]";
+                                                    color: #f23f43;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                }
+                                            }
+
+                                            // Animated Volume Level Meter Bar (sobe e desce à medida que fala!)
+                                            Rectangle {
+                                                height: 8px;
+                                                width: 220px;
+                                                background: #1e1f22;
+                                                border-radius: 4px;
+
+                                                Rectangle {
+                                                    x: 0px;
+                                                    y: 0px;
+                                                    height: 8px;
+                                                    width: p.audio_level * 220px;
+                                                    background: p.is_speaking ? #23a55a : #5865f2;
+                                                    border-radius: 4px;
+                                                }
+                                            }
+                                        }
+
+                                        // Per-User Mute & Volume Controls on the Right!
+                                        HorizontalBox {
+                                            spacing: 8px;
+
+                                            Button {
+                                                text: p.is_muted ? "🎙️ Desmutar" : "🔇 Mutar";
+                                                clicked => { root.toggle_user_mute(p.user_id); }
+                                            }
+
+                                            Text {
+                                                text: "Vol: " + Math.round(p.volume * 100) + "%";
+                                                color: #b5bac1;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Slider {
+                                                width: 100px;
+                                                minimum: 0.0;
+                                                maximum: 1.0;
+                                                value: p.volume;
+                                                changed(val) => { root.set_user_volume(p.user_id, val); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!root.is_voice_focused || !root.is_in_voice): VerticalBox {
                     padding: 0px;
                     spacing: 0px;
 
@@ -380,6 +548,7 @@ export component AppWindow inherits Window {
 
                         HorizontalBox {
                             padding-left: 16px;
+                            padding-right: 16px;
 
                             Text {
                                 text: root.active_channel_name;
@@ -387,6 +556,13 @@ export component AppWindow inherits Window {
                                 font-size: 15px;
                                 font-weight: 700;
                                 vertical-alignment: center;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            if root.is_in_voice: Button {
+                                text: "🔊 Ver Sala de Voz";
+                                clicked => { root.toggle_voice_focus(); }
                             }
                         }
                     }

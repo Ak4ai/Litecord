@@ -2,3 +2,9 @@
 .litecord_token
 .litecord_cache
 build_*.txt
+*.log
+*.wav
+*.bin
+*.txt
+scratch/
+scratch_*
