@@ -135,7 +135,7 @@ export component AppWindow inherits Window {
 
         // Top Status Header Bar (Frameless Custom Titlebar)
         Rectangle {
-            height: 42px;
+            height: 32px;
             background: #111214;
 
             TouchArea {
@@ -176,7 +176,7 @@ export component AppWindow inherits Window {
                                 text: "LITECORD";
                                 color: #ffffff;
                                 font-weight: 800;
-                                font-size: 14px;
+                                font-size: 13px;
                             }
                         }
                     }
@@ -189,7 +189,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: root.connection_status;
                         color: #949ba4;
-                        font-size: 12px;
+                        font-size: 11px;
                         vertical-alignment: center;
                     }
                 }
@@ -210,21 +210,27 @@ export component AppWindow inherits Window {
                 x: parent.width - 138px;
                 y: 0px;
                 width: 138px;
-                height: 42px;
+                height: 32px;
                 spacing: 0px;
 
                 // Minimize
                 Rectangle {
                     width: 46px;
-                    height: 42px;
+                    height: 32px;
                     background: min-touch.has-hover ? #2b2d31 : transparent;
 
-                    Text {
-                        text: "—";
-                        color: #dbdee1;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-minimize.svg");
+                                width: 10px;
+                                height: 10px;
+                                colorize: #dbdee1;
+                                image-fit: contain;
+                            }
+                        }
                     }
 
                     min-touch := TouchArea {
@@ -235,15 +241,21 @@ export component AppWindow inherits Window {
                 // Maximize
                 Rectangle {
                     width: 46px;
-                    height: 42px;
+                    height: 32px;
                     background: max-touch.has-hover ? #2b2d31 : transparent;
 
-                    Rectangle {
-                        width: 10px;
-                        height: 10px;
-                        border-width: 1px;
-                        border-color: #dbdee1;
-                        background: transparent;
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-maximize.svg");
+                                width: 10px;
+                                height: 10px;
+                                colorize: #dbdee1;
+                                image-fit: contain;
+                            }
+                        }
                     }
 
                     max-touch := TouchArea {
@@ -254,15 +266,21 @@ export component AppWindow inherits Window {
                 // Close
                 Rectangle {
                     width: 46px;
-                    height: 42px;
+                    height: 32px;
                     background: close-touch.has-hover ? #f23f43 : transparent;
 
-                    Text {
-                        text: "✕";
-                        color: close-touch.has-hover ? #ffffff : #dbdee1;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-close.svg");
+                                width: 10px;
+                                height: 10px;
+                                colorize: close-touch.has-hover ? #ffffff : #dbdee1;
+                                image-fit: contain;
+                            }
+                        }
                     }
 
                     close-touch := TouchArea {
