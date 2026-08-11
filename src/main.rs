@@ -525,25 +525,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use i_slint_backend_winit::WinitWindowAccessor;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use winit::platform::windows::WindowExtWindows;
     app.window().with_winit_window(|winit_win| {
-        let border_col = winit::platform::windows::Color::from_rgb(0x1e, 0x1f, 0x22);
-        winit_win.set_border_color(Some(border_col));
-
         if let Ok(handle) = winit_win.window_handle() {
             if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
                 let hwnd = win32_handle.hwnd.get() as isize;
                 *hwnd_store.lock().unwrap() = Some(hwnd);
                 set_dark_titlebar_color(hwnd);
-
-                // Spawn a thread to apply DWM properties again at progressive intervals.
-                // This ensures the custom border color is respected after window mapping and focus changes.
-                std::thread::spawn(move || {
-                    for delay in &[200, 500, 1000, 2000, 4000] {
-                        std::thread::sleep(std::time::Duration::from_millis(*delay));
-                        set_dark_titlebar_color(hwnd);
-                    }
-                });
             }
         }
     });
@@ -1368,7 +1355,6 @@ fn is_valid_token_chars(token: &str) -> bool {
 fn set_dark_titlebar_color(hwnd: isize) {
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
-        DWMWA_BORDER_COLOR,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
@@ -1377,7 +1363,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
     let dark_mode: u32 = 1;
     unsafe {
         // Attribute 20 (Win11 / Win10 20H1+)
-        let r20 = DwmSetWindowAttribute(
+        let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_USE_IMMERSIVE_DARK_MODE as _,
             &dark_mode as *const u32 as _,
@@ -1385,7 +1371,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         );
 
         // Attribute 19 (older Win10 1903-1909 builds)
-        let r19 = DwmSetWindowAttribute(
+        let _ = DwmSetWindowAttribute(
             hwnd as _,
             19,
             &dark_mode as *const u32 as _,
@@ -1394,7 +1380,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
 
         // Header color #111214 (BGR COLORREF: 0x00141211)
         let caption_color: u32 = 0x00141211;
-        let r_cap = DwmSetWindowAttribute(
+        let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_CAPTION_COLOR as _,
             &caption_color as *const u32 as _,
@@ -1403,24 +1389,12 @@ fn set_dark_titlebar_color(hwnd: isize) {
 
         // Header text color White #FFFFFF (BGR COLORREF: 0x00FFFFFF)
         let text_color: u32 = 0x00FFFFFF;
-        let r_txt = DwmSetWindowAttribute(
+        let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_TEXT_COLOR as _,
             &text_color as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
         );
-
-        // Window border color #1e1f22 (BGR COLORREF: 0x00221f1e)
-        let border_color: u32 = 0x00221f1e;
-        let r_brd = DwmSetWindowAttribute(
-            hwnd as _,
-            DWMWA_BORDER_COLOR as _,
-            &border_color as *const u32 as _,
-            std::mem::size_of::<u32>() as u32,
-        );
-
-        info!("DWM Attributes: ImmersiveDark(20)={:x}, ImmersiveDark(19)={:x}, CaptionColor={:x}, TextColor={:x}, BorderColor={:x}",
-            r20, r19, r_cap, r_txt, r_brd);
 
         // Force DWM to re-calculate and redraw the non-client title bar frame immediately!
         SetWindowPos(
