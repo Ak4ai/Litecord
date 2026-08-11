@@ -305,7 +305,7 @@ fn apply_inline_markdown(input: &str) -> String {
         if idx % 2 == 1 {
             // Inside inline code — protect it
             let placeholder = format!("\x00CODE{}\x00", code_segments.len());
-            code_segments.push(format!("[código: {}]", part));
+            code_segments.push(format!("`{}`", part));
             reconstructed.push_str(&placeholder);
         } else {
             reconstructed.push_str(part);
@@ -717,7 +717,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<L
                 let f = footer.trim();
                 if !f.is_empty() {
                     let cleaned = extract_and_clean_links(f, &mut links);
-                    ep.push(format!("-- {}", parse_discord_markdown(&cleaned)));
+                    ep.push(parse_discord_markdown(&cleaned));
                 }
             }
 
