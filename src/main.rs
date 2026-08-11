@@ -525,7 +525,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use i_slint_backend_winit::WinitWindowAccessor;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use winit::platform::windows::WindowExtWindows;
     app.window().with_winit_window(|winit_win| {
+        let border_col = winit::platform::windows::Color::from_rgb(0x1e, 0x1f, 0x22);
+        winit_win.set_border_color(Some(border_col));
+
         if let Ok(handle) = winit_win.window_handle() {
             if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
                 let hwnd = win32_handle.hwnd.get() as isize;
