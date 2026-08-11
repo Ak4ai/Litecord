@@ -140,21 +140,27 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     alignment: center;
                     HorizontalLayout {
-                        alignment: center;
                         spacing: 6px;
-                        Image {
-                            source: @image-url("../assets/app_icon.png");
-                            width: 16px;
-                            height: 16px;
-                            colorize: #ffffff;
-                            image-fit: contain;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/app_icon.png");
+                                width: 16px;
+                                height: 16px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
                         }
-                        Text {
-                            text: "LITECORD";
-                            color: #ffffff;
-                            font-weight: 800;
-                            font-size: 14px;
-                            vertical-alignment: center;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "LITECORD";
+                                color: #ffffff;
+                                font-weight: 800;
+                                font-size: 14px;
+                            }
                         }
                     }
                 }
@@ -391,31 +397,38 @@ export component AppWindow inherits Window {
                             padding-left: 12px;
                             padding-right: 12px;
                             spacing: 8px;
-                            alignment: center;
 
-                            Image {
-                                source: @image-url("../assets/speaker.svg");
-                                width: 14px;
-                                height: 14px;
-                                colorize: #ffffff;
-                                image-fit: contain;
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../assets/speaker.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                    colorize: #ffffff;
+                                    image-fit: contain;
+                                }
                             }
 
-                            Text {
-                                text: root.current_voice_channel;
-                                color: #ffffff;
-                                font-size: 12px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                overflow: elide;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.current_voice_channel;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
                             }
 
                             Rectangle { horizontal-stretch: 1; }
 
-                            Button {
-                                icon: @image-url("../assets/log-out.svg");
-                                text: "Sair";
-                                clicked => { root.leave_voice(); }
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    icon: @image-url("../assets/log-out.svg");
+                                    text: "Sair";
+                                    clicked => { root.leave_voice(); }
+                                }
                             }
                         }
                     }
@@ -482,36 +495,46 @@ export component AppWindow inherits Window {
                             padding-left: 16px;
                             padding-right: 16px;
                             spacing: 8px;
-                            alignment: center;
 
-                            Image {
-                                source: @image-url("../assets/speaker.svg");
-                                width: 16px;
-                                height: 16px;
-                                colorize: #ffffff;
-                                image-fit: contain;
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../assets/speaker.svg");
+                                    width: 16px;
+                                    height: 16px;
+                                    colorize: #ffffff;
+                                    image-fit: contain;
+                                }
                             }
 
-                            Text {
-                                text: root.current_voice_channel;
-                                color: #ffffff;
-                                font-size: 15px;
-                                font-weight: 800;
-                                vertical-alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.current_voice_channel;
+                                    color: #ffffff;
+                                    font-size: 15px;
+                                    font-weight: 800;
+                                }
                             }
 
                             Rectangle { horizontal-stretch: 1; }
 
-                            Button {
-                                icon: @image-url("../assets/message-square.svg");
-                                text: "Ver Chat de Texto";
-                                clicked => { root.toggle_voice_focus(); }
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    icon: @image-url("../assets/message-square.svg");
+                                    text: "Ver Chat de Texto";
+                                    clicked => { root.toggle_voice_focus(); }
+                                }
                             }
 
-                            Button {
-                                icon: @image-url("../assets/log-out.svg");
-                                text: "Sair da Call";
-                                clicked => { root.leave_voice(); }
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
+                                    icon: @image-url("../assets/log-out.svg");
+                                    text: "Sair da Call";
+                                    clicked => { root.leave_voice(); }
+                                }
                             }
                         }
                     }
