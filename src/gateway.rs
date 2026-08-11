@@ -311,6 +311,46 @@ fn apply_inline_markdown(input: &str) -> String {
 
     let mut s = reconstructed;
 
+    // ── Markdown links [text](url) ─────────────────────────────────────────
+    // Parse [label](url) → "label (url)"
+    {
+        let mut out = String::with_capacity(s.len());
+        let mut rem = s.as_str();
+        while let Some(bracket_start) = rem.find('[') {
+            // Check it's not an escaped bracket
+            out.push_str(&rem[..bracket_start]);
+            let after_bracket = &rem[bracket_start + 1..];
+            if let Some(bracket_end) = after_bracket.find(']') {
+                let label = &after_bracket[..bracket_end];
+                let after_label = &after_bracket[bracket_end + 1..];
+                if after_label.starts_with('(') {
+                    if let Some(paren_end) = after_label.find(')') {
+                        let url = &after_label[1..paren_end];
+                        if url.starts_with("http") {
+                            if label.is_empty() {
+                                out.push_str(url);
+                            } else {
+                                out.push_str(label);
+                                out.push_str(" (");
+                                out.push_str(url);
+                                out.push(')');
+                            }
+                            rem = &after_label[paren_end + 1..];
+                            continue;
+                        }
+                    }
+                }
+                // Not a valid link — emit literally
+                out.push('[');
+            } else {
+                out.push('[');
+            }
+            rem = &rem[bracket_start + 1..];
+        }
+        out.push_str(rem);
+        s = out;
+    }
+
     // ── Spoilers ||text|| ──────────────────────────────────────────────────
     s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
 
@@ -460,7 +500,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let is_bot = author_obj["bot"].as_bool().unwrap_or(false);
 
     if is_bot {
-        format!("ðŸ¤– {} [BOT]", name)
+        format!("🤖 {} [BOT]", name)
     } else {
         name.to_string()
     }
@@ -482,42 +522,55 @@ pub fn format_discord_message(m: &Value) -> String {
         for embed in embeds {
             let mut embed_parts: Vec<String> = Vec::new();
 
+            // Embed author
             if let Some(author_name) = embed["author"]["name"].as_str() {
-                if !author_name.trim().is_empty() {
-                    embed_parts.push(format!("ðŸ“Œ {}", author_name.trim()));
+                let a = author_name.trim();
+                if !a.is_empty() {
+                    embed_parts.push(format!("[{}]", parse_discord_markdown(a)));
                 }
             }
 
+            // Embed title
             if let Some(title) = embed["title"].as_str() {
-                if !title.trim().is_empty() {
-                    embed_parts.push(format!("ðŸ”¹ {}", title.trim()));
+                let t = title.trim();
+                if !t.is_empty() {
+                    embed_parts.push(format!(">> {}", parse_discord_markdown(t)));
                 }
             }
 
+            // Embed description — full markdown parsing
             if let Some(desc) = embed["description"].as_str() {
-                if !desc.trim().is_empty() {
-                    embed_parts.push(desc.trim().to_string());
+                let d = desc.trim();
+                if !d.is_empty() {
+                    embed_parts.push(parse_discord_markdown(d));
                 }
             }
 
+            // Embed fields
             if let Some(fields) = embed["fields"].as_array() {
                 for field in fields {
                     let name = field["name"].as_str().unwrap_or("").trim();
-                    let val = field["value"].as_str().unwrap_or("").trim();
-                    if !name.is_empty() || !val.is_empty() {
-                        embed_parts.push(format!("â€¢ {}: {}", name, val));
+                    let val  = field["value"].as_str().unwrap_or("").trim();
+                    if !name.is_empty() && !val.is_empty() {
+                        embed_parts.push(format!("{}: {}",
+                            parse_discord_markdown(name),
+                            parse_discord_markdown(val)));
+                    } else if !val.is_empty() {
+                        embed_parts.push(parse_discord_markdown(val));
                     }
                 }
             }
 
+            // Embed footer
             if let Some(footer) = embed["footer"]["text"].as_str() {
-                if !footer.trim().is_empty() {
-                    embed_parts.push(format!("â”€â”€ {}", footer.trim()));
+                let f = footer.trim();
+                if !f.is_empty() {
+                    embed_parts.push(format!("-- {}", parse_discord_markdown(f)));
                 }
             }
 
             if !embed_parts.is_empty() {
-                parts.push(format!("ðŸ“‹ [EMBED]\n{}", embed_parts.join("\n")));
+                parts.push(format!("[EMBED]\n{}", embed_parts.join("\n")));
             }
         }
     }
@@ -527,7 +580,11 @@ pub fn format_discord_message(m: &Value) -> String {
         for att in attachments {
             let filename = att["filename"].as_str().unwrap_or("arquivo");
             let url = att["url"].as_str().unwrap_or("");
-            parts.push(format!("ðŸ“Ž [Anexo: {}] ({})", filename, url));
+            if url.is_empty() {
+                parts.push(format!("[Anexo: {}]", filename));
+            } else {
+                parts.push(format!("[Anexo: {}]\n{}", filename, url));
+            }
         }
     }
 
