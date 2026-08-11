@@ -500,7 +500,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let is_bot = author_obj["bot"].as_bool().unwrap_or(false);
 
     if is_bot {
-        format!("🤖 {} [BOT]", name)
+        format!("{} [BOT]", name)
     } else {
         name.to_string()
     }
@@ -508,6 +508,47 @@ pub fn format_discord_author(m: &Value) -> String {
 
 pub fn format_discord_message(m: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
+    let msg_type = m["type"].as_u64().unwrap_or(0);
+
+    // Handle reply context (type 19)
+    if msg_type == 19 {
+        if let Some(ref_msg) = m["referenced_message"].as_object() {
+            let ref_author = ref_msg.get("author")
+                .and_then(|a| a["global_name"].as_str()
+                    .or_else(|| a["username"].as_str()))
+                .unwrap_or("alguem");
+            let ref_content = ref_msg.get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            let preview = if ref_content.len() > 60 {
+                format!("{}...", &ref_content[..57])
+            } else if ref_content.is_empty() {
+                "[midia/embed]".to_string()
+            } else {
+                ref_content.to_string()
+            };
+            parts.push(format!("[respondendo a {}] {}", ref_author, parse_discord_markdown(&preview)));
+        }
+    }
+
+    // Handle interaction context (type 20 = slash command, 23 = context menu)
+    if msg_type == 20 || msg_type == 23 {
+        if let Some(interaction) = m["interaction"].as_object()
+            .or_else(|| m["interaction_metadata"].as_object()) {
+            let cmd_name = interaction.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("comando");
+            let user_name = interaction.get("user")
+                .and_then(|u| u["global_name"].as_str()
+                    .or_else(|| u["username"].as_str()))
+                .unwrap_or("");
+            if !user_name.is_empty() {
+                parts.push(format!("[/{} por {}]", cmd_name, user_name));
+            } else {
+                parts.push(format!("[/{}]", cmd_name));
+            }
+        }
+    }
 
     // 1. Raw Text Content — parsed through full Discord Markdown pipeline
     if let Some(content) = m["content"].as_str() {
@@ -526,15 +567,24 @@ pub fn format_discord_message(m: &Value) -> String {
             if let Some(author_name) = embed["author"]["name"].as_str() {
                 let a = author_name.trim();
                 if !a.is_empty() {
-                    embed_parts.push(format!("[{}]", parse_discord_markdown(a)));
+                    embed_parts.push(parse_discord_markdown(a));
                 }
             }
 
-            // Embed title
+            // Embed title (with optional URL)
             if let Some(title) = embed["title"].as_str() {
                 let t = title.trim();
                 if !t.is_empty() {
-                    embed_parts.push(format!(">> {}", parse_discord_markdown(t)));
+                    let parsed_title = parse_discord_markdown(t);
+                    if let Some(url) = embed["url"].as_str() {
+                        if !url.is_empty() {
+                            embed_parts.push(format!("{} ({})", parsed_title, url));
+                        } else {
+                            embed_parts.push(parsed_title);
+                        }
+                    } else {
+                        embed_parts.push(parsed_title);
+                    }
                 }
             }
 
@@ -561,6 +611,29 @@ pub fn format_discord_message(m: &Value) -> String {
                 }
             }
 
+            // Embed image
+            if let Some(img_url) = embed["image"]["url"].as_str() {
+                if !img_url.is_empty() {
+                    embed_parts.push(format!("[Imagem: {}]", img_url));
+                }
+            }
+
+            // Embed thumbnail
+            if let Some(thumb_url) = embed["thumbnail"]["url"].as_str() {
+                if !thumb_url.is_empty() {
+                    embed_parts.push(format!("[Miniatura: {}]", thumb_url));
+                }
+            }
+
+            // Embed timestamp
+            if let Some(ts) = embed["timestamp"].as_str() {
+                if !ts.is_empty() {
+                    // ISO 8601 timestamp — show as-is (e.g. "2024-01-15T12:00:00.000Z")
+                    let display = if ts.len() >= 10 { &ts[..10] } else { ts };
+                    embed_parts.push(format!("[{}]", display));
+                }
+            }
+
             // Embed footer
             if let Some(footer) = embed["footer"]["text"].as_str() {
                 let f = footer.trim();
@@ -580,10 +653,20 @@ pub fn format_discord_message(m: &Value) -> String {
         for att in attachments {
             let filename = att["filename"].as_str().unwrap_or("arquivo");
             let url = att["url"].as_str().unwrap_or("");
-            if url.is_empty() {
-                parts.push(format!("[Anexo: {}]", filename));
+            let content_type = att["content_type"].as_str().unwrap_or("");
+            let label = if content_type.starts_with("image/") {
+                "Imagem"
+            } else if content_type.starts_with("video/") {
+                "Video"
+            } else if content_type.starts_with("audio/") {
+                "Audio"
             } else {
-                parts.push(format!("[Anexo: {}]\n{}", filename, url));
+                "Anexo"
+            };
+            if url.is_empty() {
+                parts.push(format!("[{}: {}]", label, filename));
+            } else {
+                parts.push(format!("[{}: {}]\n{}", label, filename, url));
             }
         }
     }
@@ -592,18 +675,69 @@ pub fn format_discord_message(m: &Value) -> String {
     if let Some(stickers) = m["sticker_items"].as_array() {
         for st in stickers {
             let st_name = st["name"].as_str().unwrap_or("Sticker");
-            parts.push(format!("ðŸŽ¨ [Sticker: {}]", st_name));
+            parts.push(format!("[Sticker: {}]", st_name));
         }
     }
 
-    // Fallback if message is completely empty or system message
+    // 5. Components V2 (buttons, select menus) — extract labels
+    if let Some(components) = m["components"].as_array() {
+        for row in components {
+            if let Some(row_components) = row["components"].as_array() {
+                let mut button_labels: Vec<String> = Vec::new();
+                for comp in row_components {
+                    let comp_type = comp["type"].as_u64().unwrap_or(0);
+                    match comp_type {
+                        // Button
+                        2 => {
+                            if let Some(label) = comp["label"].as_str() {
+                                if let Some(url) = comp["url"].as_str() {
+                                    button_labels.push(format!("[{}]({})", label, url));
+                                } else {
+                                    button_labels.push(format!("[{}]", label));
+                                }
+                            }
+                        }
+                        // String select menu
+                        3 => {
+                            if let Some(placeholder) = comp["placeholder"].as_str() {
+                                button_labels.push(format!("[Menu: {}]", placeholder));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !button_labels.is_empty() {
+                    parts.push(button_labels.join("  "));
+                }
+            }
+        }
+    }
+
+    // Fallback for empty or system messages
     if parts.is_empty() {
-        let msg_type = m["type"].as_u64().unwrap_or(0);
         match msg_type {
+            1 => "[Membro adicionado ao grupo]".to_string(),
+            2 => "[Membro removido do grupo]".to_string(),
+            3 => "[Chamada]".to_string(),
+            4 => "[Nome do canal alterado]".to_string(),
+            5 => "[Icone do canal alterado]".to_string(),
             6 => "[Mensagem Fixada]".to_string(),
             7 => "[Novo membro entrou no servidor!]".to_string(),
             8 => "[Servidor Impulsionado!]".to_string(),
-            _ => "[ConteÃºdo MÃ­dia/Membro Especial]".to_string(),
+            9 => "[Servidor alcancou nivel 1 de impulso!]".to_string(),
+            10 => "[Servidor alcancou nivel 2 de impulso!]".to_string(),
+            11 => "[Servidor alcancou nivel 3 de impulso!]".to_string(),
+            12 => "[Canal seguido adicionado]".to_string(),
+            14 => "[Servidor desqualificado da descoberta]".to_string(),
+            15 => "[Servidor requalificado na descoberta]".to_string(),
+            19 => "[Resposta]".to_string(),
+            20 => "[Comando de barra]".to_string(),
+            21 => "[Mensagem inicial de thread]".to_string(),
+            22 => "[Lembrete de convite]".to_string(),
+            23 => "[Comando de menu de contexto]".to_string(),
+            24 => "[Acao do AutoMod]".to_string(),
+            25 => "[Compra de assinatura de cargo]".to_string(),
+            _ => "[Conteudo especial]".to_string(),
         }
     } else {
         parts.join("\n")
