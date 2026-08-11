@@ -7,7 +7,7 @@ use http::DiscordHttpClient;
 use tray::SystemTrayManager;
 
 use slint::{SharedString, Model, Image};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use log::{info, error};
@@ -20,6 +20,17 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
 
 slint::include_modules!();
+
+/// True when the window is visible; false when hidden to the system tray.
+/// Guards all UI-rendering loops so they sleep when not needed.
+static APP_IS_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+/// Set to true by the tray restore paths to signal a REST refresh is needed.
+static NEED_UI_REFRESH: AtomicBool = AtomicBool::new(false);
+
+/// Number of messages received while the window was hidden.
+/// Cleared when the window is restored and a REST refresh is triggered.
+static PENDING_MESSAGES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone)]
 struct RawGuildItem {
@@ -557,11 +568,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(event) = menu_rx.try_recv() {
                 if event.id == show_id {
                     if let Some(hwnd) = *hwnd_store_tray.lock().unwrap() {
+                        APP_IS_VISIBLE.store(true, Ordering::Relaxed);
+                        NEED_UI_REFRESH.store(true, Ordering::Relaxed);
                         unsafe {
                             ShowWindow(hwnd as _, SW_SHOW);
                             ShowWindow(hwnd as _, SW_RESTORE);
                             SetForegroundWindow(hwnd as _);
                         }
+                        info!("[DeepSleep] Janela restaurada — acordando UI.");
                     }
                 } else if event.id == quit_id {
                     std::process::exit(0);
@@ -571,11 +585,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(event) = tray_rx.try_recv() {
                 if matches!(event, TrayIconEvent::DoubleClick { .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
                     if let Some(hwnd) = *hwnd_store_tray.lock().unwrap() {
+                        APP_IS_VISIBLE.store(true, Ordering::Relaxed);
+                        NEED_UI_REFRESH.store(true, Ordering::Relaxed);
                         unsafe {
                             ShowWindow(hwnd as _, SW_SHOW);
                             ShowWindow(hwnd as _, SW_RESTORE);
                             SetForegroundWindow(hwnd as _);
                         }
+                        info!("[DeepSleep] Janela restaurada via clique no tray — acordando UI.");
                     }
                 }
             }
@@ -595,9 +612,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
 
     // Dispatch Microphone Volume Level to Slint UI Thread
+    // Skipped when window is hidden to save CPU.
     let app_weak_level = app_weak.clone();
     tokio::spawn(async move {
         while let Some(level) = level_rx.recv().await {
+            // Deep-sleep guard: drain the channel without invoking Slint
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                continue;
+            }
             let app_w_inner = app_weak_level.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w_inner.upgrade() {
@@ -630,10 +652,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Dispatch Live Voice Room Participants & Animated Volume Level Bars
     let app_weak_voice_loop = app_weak.clone();
+    let http_client_voice_loop = Arc::clone(&http_client);
+    let active_channel_voice_loop = Arc::clone(&active_channel_id);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
             interval.tick().await;
+
+            // Deep-sleep guard: skip all RMS calculation and UI invoke when hidden.
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                continue;
+            }
+
+            // On-restore refresh: re-fetch active channel messages via REST
+            if NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                let pending = PENDING_MESSAGES.swap(0, Ordering::Relaxed);
+                let ch_id = active_channel_voice_loop.lock().unwrap().clone();
+                if !ch_id.is_empty() {
+                    let http_opt = http_client_voice_loop.lock().unwrap().clone();
+                    if let Some(http) = http_opt {
+                        let app_w_refresh = app_weak_voice_loop.clone();
+                        info!("[DeepSleep] Restaurado - re-sincronizando {} mensagem(s) pendente(s) do canal {}.", pending, ch_id);
+                        tokio::spawn(async move {
+                            load_messages_for_channel(&http, app_w_refresh, &ch_id).await;
+                        });
+                    }
+                }
+            }
+
             let app_w_inner = app_weak_voice_loop.clone();
 
             let _ = slint::invoke_from_event_loop(move || {
@@ -1227,6 +1273,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hwnd_store_minimize = Arc::clone(&hwnd_store);
     app.on_minimize_to_tray(move || {
         info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
+        // Signal all UI loops to enter deep sleep
+        APP_IS_VISIBLE.store(false, Ordering::Relaxed);
+        PENDING_MESSAGES.store(0, Ordering::Relaxed);
+        info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
         unsafe {
             let hwnd = GetForegroundWindow();
             if !hwnd.is_null() {
@@ -1266,19 +1316,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageCreated { author, content, timestamp, .. } => {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_weak_inner.upgrade() {
-                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
-                            current_msgs.push(ChatMessage {
-                                author: author.into(),
-                                content: content.into(),
-                                timestamp: timestamp.into(),
-                            });
-                            
-                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-                            ui.set_messages(model.into());
-                        }
-                    });
+                    if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                        // Window is hidden — count message but don't touch Slint.
+                        // Messages will be re-fetched via REST when the window is restored.
+                        let pending = PENDING_MESSAGES.fetch_add(1, Ordering::Relaxed) + 1;
+                        info!("[DeepSleep] Mensagem recebida em background ({} pendente(s)) — UI ignorada.", pending);
+                    } else {
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_weak_inner.upgrade() {
+                                let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+                                current_msgs.push(ChatMessage {
+                                    author: author.into(),
+                                    content: content.into(),
+                                    timestamp: timestamp.into(),
+                                });
+                                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                                ui.set_messages(model.into());
+                            }
+                        });
+                    }
                 }
                 GatewayEvent::GuildLoaded { .. } => {
                     // Handled via HTTP REST instant fetching
