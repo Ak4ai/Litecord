@@ -688,7 +688,7 @@ export component AppWindow inherits Window {
                                 for msg in root.messages: Rectangle {
                                     background: #2b2d31;
                                     border-radius: 6px;
-                                    property <bool> is-collapsed: false;
+                                    property <bool> is-collapsed: true;
 
                                     VerticalBox {
                                         padding: 8px;
@@ -713,8 +713,8 @@ export component AppWindow inherits Window {
                                             // Push the button to the right end
                                             Rectangle { }
 
-                                            // Collapse/Expand button
-                                            if msg.embed-content != "" || msg.links.length > 0 : Rectangle {
+                                            // Collapse/Expand button (only if links are present)
+                                            if msg.links.length > 0 : Rectangle {
                                                 width: 20px;
                                                 height: 20px;
                                                 background: transparent;
@@ -742,8 +742,8 @@ export component AppWindow inherits Window {
                                             wrap: word-wrap;
                                         }
 
-                                        // Embed box with colored left bar (hidden if collapsed)
-                                        if msg.embed-content != "" && !is-collapsed : Rectangle {
+                                        // Embed box with colored left bar (always visible if present)
+                                        if msg.embed-content != "": Rectangle {
                                             background: #232428;
                                             border-radius: 4px;
 
@@ -771,7 +771,7 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Clickable attachments / links list (hidden if collapsed)
+                                        // Clickable attachments / links list (toggled by is-collapsed, starts hidden)
                                         if msg.links.length > 0 && !is-collapsed : VerticalLayout {
                                             spacing: 6px;
                                             padding-top: 4px;
