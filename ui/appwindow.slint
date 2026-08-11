@@ -123,12 +123,21 @@ export component AppWindow inherits Window {
                 padding-left: 12px;
                 padding-right: 12px;
 
-                Text {
-                    text: "⚡ LITECORD";
-                    color: #5865f2;
-                    font-weight: 800;
-                    font-size: 14px;
-                    vertical-alignment: center;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Image {
+                        source: @image-url("../assets/lightning.svg");
+                        width: 16px;
+                        height: 16px;
+                        colorize: #5865f2;
+                    }
+                    Text {
+                        text: "LITECORD";
+                        color: #5865f2;
+                        font-weight: 800;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
                 }
 
                 Rectangle { horizontal-stretch: 1; }
@@ -148,7 +157,8 @@ export component AppWindow inherits Window {
                 }
 
                 Button {
-                    text: "📌 Minimizar p/ Tray";
+                    icon: @image-url("../assets/pin.svg");
+                    text: "Minimizar p/ Tray";
                     clicked => { root.minimize_to_tray(); }
                 }
             }
@@ -194,7 +204,8 @@ export component AppWindow inherits Window {
                     spacing: 10px;
 
                     Button {
-                        text: "🚀 Conectar à Gateway";
+                        icon: @image-url("../assets/rocket.svg");
+                        text: "Conectar à Gateway";
                         primary: true;
                         clicked => {
                             if (token_input.text != "") {
@@ -204,7 +215,8 @@ export component AppWindow inherits Window {
                     }
 
                     Button {
-                        text: "🔍 Detectar Token do Discord";
+                        icon: @image-url("../assets/search.svg");
+                        text: "Detectar Token do Discord";
                         clicked => {
                             root.auto_detect_token();
                         }
@@ -309,9 +321,16 @@ export component AppWindow inherits Window {
                                         padding-right: 8px;
                                         spacing: 6px;
 
-                                        Text {
-                                            text: channel.is_voice ? "🔊" : "#";
-                                            color: channel.is_voice ? #23a55a : #80848e;
+                                        if channel.is_voice : Image {
+                                            source: @image-url("../assets/speaker.svg");
+                                            width: 14px;
+                                            height: 14px;
+                                            colorize: #23a55a;
+                                        }
+                                        if !channel.is_voice : Text {
+                                            text: "#";
+                                            color: #80848e;
+                                            font-size: 16px;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -355,7 +374,8 @@ export component AppWindow inherits Window {
                             Rectangle { horizontal-stretch: 1; }
 
                             Button {
-                                text: "🔴 Sair";
+                                icon: @image-url("../assets/log-out.svg");
+                                text: "Sair";
                                 clicked => { root.leave_voice(); }
                             }
                         }
@@ -435,12 +455,14 @@ export component AppWindow inherits Window {
                             Rectangle { horizontal-stretch: 1; }
 
                             Button {
-                                text: "💬 Ver Chat de Texto";
+                                icon: @image-url("../assets/message-square.svg");
+                                text: "Ver Chat de Texto";
                                 clicked => { root.toggle_voice_focus(); }
                             }
 
                             Button {
-                                text: "🔴 Sair da Call";
+                                icon: @image-url("../assets/log-out.svg");
+                                text: "Sair da Call";
                                 clicked => { root.leave_voice(); }
                             }
                         }
@@ -505,11 +527,21 @@ export component AppWindow inherits Window {
                                                     font-size: 14px;
                                                 }
 
-                                                if p.is_muted: Text {
-                                                    text: " 🔇 [MUTADO]";
-                                                    color: #f23f43;
-                                                    font-size: 11px;
-                                                    font-weight: 700;
+                                                if p.is_muted: HorizontalLayout {
+                                                    spacing: 4px;
+                                                    Image {
+                                                        source: @image-url("../assets/volume-x.svg");
+                                                        width: 12px;
+                                                        height: 12px;
+                                                        colorize: #f23f43;
+                                                    }
+                                                    Text {
+                                                        text: "MUTADO";
+                                                        color: #f23f43;
+                                                        font-size: 11px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
                                                 }
                                             }
 
@@ -587,7 +619,8 @@ export component AppWindow inherits Window {
                             Rectangle { horizontal-stretch: 1; }
 
                             if root.is_in_voice: Button {
-                                text: "🔊 Ver Sala de Voz";
+                                icon: @image-url("../assets/speaker.svg");
+                                text: "Ver Sala de Voz";
                                 clicked => { root.toggle_voice_focus(); }
                             }
                         }
@@ -695,28 +728,46 @@ export component AppWindow inherits Window {
 
                 // Header Title & Close Button
                 HorizontalBox {
-                    Text {
-                        text: "⚙️ Configurações de Voz e Áudio";
-                        color: #f2f3f5;
-                        font-size: 18px;
-                        font-weight: 700;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Image {
+                            source: @image-url("../assets/settings.svg");
+                            width: 20px;
+                            height: 20px;
+                        }
+                        Text {
+                            text: "Configurações de Voz e Áudio";
+                            color: #f2f3f5;
+                            font-size: 18px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
                     }
 
                     Rectangle { horizontal-stretch: 1; }
 
                     Button {
-                        text: "✖ Sair";
+                        icon: @image-url("../assets/x.svg");
+                        text: "Sair";
                         clicked => { root.close_settings(); }
                     }
                 }
 
                 // 1. Microphone Input Device Selection
-                Text {
-                    text: "🎙️ DISPOSITIVO DE ENTRADA (MICROFONE)";
-                    color: #b5bac1;
-                    font-size: 11px;
-                    font-weight: 700;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Image {
+                        source: @image-url("../assets/microphone.svg");
+                        width: 14px;
+                        height: 14px;
+                    }
+                    Text {
+                        text: "DISPOSITIVO DE ENTRADA (MICROFONE)";
+                        color: #b5bac1;
+                        font-size: 11px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
                 }
 
                 Rectangle {
@@ -742,10 +793,10 @@ export component AppWindow inherits Window {
                                     padding-right: 8px;
                                     spacing: 6px;
 
-                                    Text {
-                                        text: dev.is_selected ? "🔘" : "⚪";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
+                                    Image {
+                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                        width: 14px;
+                                        height: 14px;
                                     }
 
                                     Text {
@@ -767,11 +818,21 @@ export component AppWindow inherits Window {
                 }
 
                 // 2. Speaker / Headphone Output Device Selection
-                Text {
-                    text: "🎧 DISPOSITIVO DE SAÍDA (ALTO-FALANTES / FONE DE OUVIDO)";
-                    color: #b5bac1;
-                    font-size: 11px;
-                    font-weight: 700;
+                // 2. Speaker / Headphone Output Device Selection
+                HorizontalLayout {
+                    spacing: 6px;
+                    Image {
+                        source: @image-url("../assets/headphones.svg");
+                        width: 14px;
+                        height: 14px;
+                    }
+                    Text {
+                        text: "DISPOSITIVO DE SAÍDA (ALTO-FALANTES / FONE DE OUVIDO)";
+                        color: #b5bac1;
+                        font-size: 11px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
                 }
 
                 Rectangle {
@@ -797,10 +858,10 @@ export component AppWindow inherits Window {
                                     padding-right: 8px;
                                     spacing: 6px;
 
-                                    Text {
-                                        text: dev.is_selected ? "🔘" : "⚪";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
+                                    Image {
+                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                        width: 14px;
+                                        height: 14px;
                                     }
 
                                     Text {
@@ -823,11 +884,20 @@ export component AppWindow inherits Window {
 
                 // 3. Mic Level Test Indicator Bar (Dynamic Real-Time Level)
                 HorizontalBox {
-                    Text {
-                        text: "🔊 TESTE DE SENSIBILIDADE DO MICROFONE AO VIVO";
-                        color: #b5bac1;
-                        font-size: 11px;
-                        font-weight: 700;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Image {
+                            source: @image-url("../assets/speaker.svg");
+                            width: 14px;
+                            height: 14px;
+                        }
+                        Text {
+                            text: "TESTE DE SENSIBILIDADE DO MICROFONE AO VIVO";
+                            color: #b5bac1;
+                            font-size: 11px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
                     }
 
                     Rectangle { horizontal-stretch: 1; }
