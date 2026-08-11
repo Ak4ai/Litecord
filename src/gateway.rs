@@ -570,7 +570,7 @@ pub fn format_discord_message(m: &Value) -> String {
             }
 
             if !embed_parts.is_empty() {
-                parts.push(format!("[EMBED]\n{}", embed_parts.join("\n")));
+                parts.push(embed_parts.join("\n"));
             }
         }
     }
