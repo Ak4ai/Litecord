@@ -21,6 +21,19 @@ use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
 
 slint::include_modules!();
 
+fn parse_hex_color(hex: &str) -> slint::Color {
+    if hex.starts_with('#') && hex.len() == 7 {
+        if let Ok(r) = u8::from_str_radix(&hex[1..3], 16) {
+            if let Ok(g) = u8::from_str_radix(&hex[3..5], 16) {
+                if let Ok(b) = u8::from_str_radix(&hex[5..7], 16) {
+                    return slint::Color::from_rgb_u8(r, g, b);
+                }
+            }
+        }
+    }
+    slint::Color::from_rgb_u8(88, 101, 242) // default blurple
+}
+
 /// True when the window is visible; false when hidden to the system tray.
 /// Guards all UI-rendering loops so they sleep when not needed.
 static APP_IS_VISIBLE: AtomicBool = AtomicBool::new(true);
@@ -445,28 +458,38 @@ async fn load_messages_for_channel(
     info!("Carregando mensagens do canal {}...", channel_id);
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
-            let ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
-                vec![ChatMessage {
-                    author: "Litecord System".into(),
-                    content: "Este canal está vazio ou não possui mensagens recentes.".into(),
-                    embed_content: "".into(),
-                    timestamp: "Agora".into(),
-                }]
-            } else {
-                msgs_val.iter().rev().map(|m| {
-                    let author = format_discord_author(m);
-                    let (content, embed_content) = format_discord_message_parts(m);
-                    ChatMessage {
-                        author: author.into(),
-                        content: content.into(),
-                        embed_content: embed_content.into(),
-                        timestamp: "Agora".into(),
-                    }
-                }).collect()
-            };
-
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak.upgrade() {
+                    let ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
+                        vec![ChatMessage {
+                            author: "Litecord System".into(),
+                            content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                            embed_content: "".into(),
+                            embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                            links: slint::ModelRc::default(),
+                            timestamp: "Agora".into(),
+                        }]
+                    } else {
+                        msgs_val.iter().rev().map(|m| {
+                            let author = format_discord_author(m);
+                            let (content, embed_content, embed_color, links) = format_discord_message_parts(m);
+                            
+                            let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
+                                label: l.label.clone().into(),
+                                url: l.url.clone().into(),
+                            }).collect();
+                            let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                            ChatMessage {
+                                author: author.into(),
+                                content: content.into(),
+                                embed_content: embed_content.into(),
+                                embed_color: parse_hex_color(&embed_color),
+                                links: slint::ModelRc::from(links_model),
+                                timestamp: "Agora".into(),
+                            }
+                        }).collect()
+                    };
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
                 }
@@ -487,6 +510,8 @@ async fn load_messages_for_channel(
                         author: "Litecord System".into(),
                         content: friendly_msg.into(),
                         embed_content: "".into(),
+                        embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                        links: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
                     }];
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
@@ -639,6 +664,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cur = ui.get_is_voice_focused();
             ui.set_is_voice_focused(!cur);
         }
+    });
+
+    app.on_open_link(move |url_str: SharedString| {
+        let url = url_str.to_string();
+        info!("Abrindo link no navegador: {}", url);
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(&["/C", "start", &url])
+            .spawn();
     });
 
     app.on_toggle_user_mute(move |uid_str: SharedString| {
@@ -904,6 +938,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 author: "Litecord Voice".into(),
                 content: "🔴 Desconectado da sala de voz.".into(),
                 embed_content: "".into(),
+                embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                links: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
             });
             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -1187,6 +1223,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     author: "Litecord Voice".into(),
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
                     embed_content: "".into(),
+                    embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                    links: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -1320,7 +1358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { author, content, embed_content, timestamp, .. } => {
+                GatewayEvent::MessageCreated { author, content, embed_content, embed_color, links, timestamp, .. } => {
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
                         // Messages will be re-fetched via REST when the window is restored.
@@ -1330,10 +1368,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak_inner.upgrade() {
                                 let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+
+                                let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
+                                    label: l.label.clone().into(),
+                                    url: l.url.clone().into(),
+                                }).collect();
+                                let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
                                 current_msgs.push(ChatMessage {
                                     author: author.into(),
                                     content: content.into(),
                                     embed_content: embed_content.into(),
+                                    embed_color: parse_hex_color(&embed_color),
+                                    links: slint::ModelRc::from(links_model),
                                     timestamp: timestamp.into(),
                                 });
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));

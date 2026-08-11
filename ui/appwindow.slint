@@ -23,11 +23,18 @@ component IconButton inherits Rectangle {
     }
 }
 
+struct LinkItem {
+    label: string,
+    url: string,
+}
+
 struct ChatMessage {
     author: string,
     timestamp: string,
     content: string,
     embed_content: string,
+    embed_color: color,
+    links: [LinkItem],
 }
 
 struct ChannelItem {
@@ -84,6 +91,7 @@ export component AppWindow inherits Window {
     callback toggle_user_mute(string /* user_id */);
     callback set_user_volume(string /* user_id */, float /* volume */);
     callback toggle_voice_focus();
+    callback open_link(string /* url */);
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
@@ -718,7 +726,7 @@ export component AppWindow inherits Window {
                                                 // Colored left bar
                                                 Rectangle {
                                                     width: 4px;
-                                                    background: #5865f2;
+                                                    background: msg.embed_color;
                                                     border-top-left-radius: 4px;
                                                     border-bottom-left-radius: 4px;
                                                 }
@@ -733,6 +741,38 @@ export component AppWindow inherits Window {
                                                         color: #d2d5d9;
                                                         font-size: 12.5px;
                                                         wrap: word-wrap;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Clickable attachments / links list
+                                        if msg.links.length > 0 : VerticalLayout {
+                                            spacing: 6px;
+                                            padding-top: 4px;
+                                            for link in msg.links : Rectangle {
+                                                height: 20px;
+                                                background: transparent;
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    Text {
+                                                        text: "🔗";
+                                                        color: #00b0f4;
+                                                        vertical-alignment: center;
+                                                        font-size: 11px;
+                                                    }
+                                                    Text {
+                                                        text: link.label;
+                                                        color: #00b0f4;
+                                                        vertical-alignment: center;
+                                                        font-size: 13px;
+                                                        font-weight: 500;
+                                                    }
+                                                }
+                                                TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.open_link(link.url);
                                                     }
                                                 }
                                             }

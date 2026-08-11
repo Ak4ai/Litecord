@@ -40,6 +40,8 @@ pub enum GatewayEvent {
         author: String,
         content: String,
         embed_content: String,
+        embed_color: String,
+        links: Vec<LinkData>,
         timestamp: String,
     },
     GuildLoaded {
@@ -332,9 +334,6 @@ fn apply_inline_markdown(input: &str) -> String {
                                 out.push_str(url);
                             } else {
                                 out.push_str(label);
-                                out.push_str(" (");
-                                out.push_str(url);
-                                out.push(')');
                             }
                             rem = &after_label[paren_end + 1..];
                             continue;
@@ -507,13 +506,75 @@ pub fn format_discord_author(m: &Value) -> String {
     }
 }
 
-/// Returns (content, embed_content) as separate strings.
-/// `content` has regular text, replies, interactions, attachments, stickers, components.
+#[derive(Clone, Default, Debug)]
+pub struct LinkData {
+    pub label: String,
+    pub url: String,
+}
+
+pub fn format_decimal_color(color_val: &Value) -> String {
+    if let Some(dec) = color_val.as_u64() {
+        let r = (dec >> 16) & 0xFF;
+        let g = (dec >> 8) & 0xFF;
+        let b = dec & 0xFF;
+        format!("#{:02X}{:02X}{:02X}", r, g, b)
+    } else {
+        "#5865f2".to_string() // Default blurple
+    }
+}
+
+pub fn extract_and_clean_links(input: &str, links: &mut Vec<LinkData>) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rem = input;
+    while let Some(bracket_start) = rem.find('[') {
+        out.push_str(&rem[..bracket_start]);
+        let after_bracket = &rem[bracket_start + 1..];
+        if let Some(bracket_end) = after_bracket.find(']') {
+            let label = &after_bracket[..bracket_end];
+            let after_label = &after_bracket[bracket_end + 1..];
+            if after_label.starts_with('(') {
+                if let Some(paren_end) = after_label.find(')') {
+                    let url = &after_label[1..paren_end];
+                    if url.starts_with("http") {
+                        links.push(LinkData {
+                            label: if label.is_empty() { "Link".to_string() } else { label.to_string() },
+                            url: url.to_string(),
+                        });
+                        if label.is_empty() {
+                            out.push_str(url);
+                        } else {
+                            out.push_str(label);
+                        }
+                        rem = &after_label[paren_end + 1..];
+                        continue;
+                    }
+                }
+            }
+            out.push('[');
+        } else {
+            out.push('[');
+        }
+        rem = &rem[bracket_start + 1..];
+    }
+    out.push_str(rem);
+    out
+}
+
+/// Returns (content, embed_content, embed_color, links) as separate components.
+/// `content` has regular text, replies, interactions, stickers, components.
 /// `embed_content` has all embed text (title, desc, fields, footer etc.).
-pub fn format_discord_message_parts(m: &Value) -> (String, String) {
+pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Vec<LinkData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
+    let mut links: Vec<LinkData> = Vec::new();
     let msg_type = m["type"].as_u64().unwrap_or(0);
+
+    // Extract embed color (first embed's color if present)
+    let embed_color = m["embeds"].as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("color"))
+        .map(|c| format_decimal_color(c))
+        .unwrap_or_else(|| "#5865f2".to_string());
 
     // Handle reply context (type 19)
     if msg_type == 19 {
@@ -555,11 +616,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
         }
     }
 
-    // 1. Raw Text Content — parsed through full Discord Markdown pipeline
+    // 1. Raw Text Content — parsed through full Discord Markdown pipeline and clean links
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
-            content_parts.push(parse_discord_markdown(trimmed));
+            let cleaned = extract_and_clean_links(trimmed, &mut links);
+            content_parts.push(parse_discord_markdown(&cleaned));
         }
     }
 
@@ -572,7 +634,8 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
             if let Some(author_name) = embed["author"]["name"].as_str() {
                 let a = author_name.trim();
                 if !a.is_empty() {
-                    ep.push(parse_discord_markdown(a));
+                    let cleaned = extract_and_clean_links(a, &mut links);
+                    ep.push(parse_discord_markdown(&cleaned));
                 }
             }
 
@@ -580,16 +643,17 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
             if let Some(title) = embed["title"].as_str() {
                 let t = title.trim();
                 if !t.is_empty() {
-                    let parsed_title = parse_discord_markdown(t);
+                    let cleaned_title = extract_and_clean_links(t, &mut links);
+                    let parsed_title = parse_discord_markdown(&cleaned_title);
                     if let Some(url) = embed["url"].as_str() {
                         if !url.is_empty() {
-                            ep.push(format!("{} ({})", parsed_title, url));
-                        } else {
-                            ep.push(parsed_title);
+                            links.push(LinkData {
+                                label: format!("Titulo: {}", parsed_title),
+                                url: url.to_string(),
+                            });
                         }
-                    } else {
-                        ep.push(parsed_title);
                     }
+                    ep.push(parsed_title);
                 }
             }
 
@@ -597,7 +661,8 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
             if let Some(desc) = embed["description"].as_str() {
                 let d = desc.trim();
                 if !d.is_empty() {
-                    ep.push(parse_discord_markdown(d));
+                    let cleaned = extract_and_clean_links(d, &mut links);
+                    ep.push(parse_discord_markdown(&cleaned));
                 }
             }
 
@@ -607,11 +672,14 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
                     let name = field["name"].as_str().unwrap_or("").trim();
                     let val  = field["value"].as_str().unwrap_or("").trim();
                     if !name.is_empty() && !val.is_empty() {
+                        let cleaned_name = extract_and_clean_links(name, &mut links);
+                        let cleaned_val = extract_and_clean_links(val, &mut links);
                         ep.push(format!("{}: {}",
-                            parse_discord_markdown(name),
-                            parse_discord_markdown(val)));
+                            parse_discord_markdown(&cleaned_name),
+                            parse_discord_markdown(&cleaned_val)));
                     } else if !val.is_empty() {
-                        ep.push(parse_discord_markdown(val));
+                        let cleaned_val = extract_and_clean_links(val, &mut links);
+                        ep.push(parse_discord_markdown(&cleaned_val));
                     }
                 }
             }
@@ -619,14 +687,22 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
             // Embed image
             if let Some(img_url) = embed["image"]["url"].as_str() {
                 if !img_url.is_empty() {
-                    ep.push(format!("[Imagem: {}]", img_url));
+                    ep.push("[Imagem]".to_string());
+                    links.push(LinkData {
+                        label: "Ver Imagem do Embed".to_string(),
+                        url: img_url.to_string(),
+                    });
                 }
             }
 
             // Embed thumbnail
             if let Some(thumb_url) = embed["thumbnail"]["url"].as_str() {
                 if !thumb_url.is_empty() {
-                    ep.push(format!("[Miniatura: {}]", thumb_url));
+                    ep.push("[Miniatura]".to_string());
+                    links.push(LinkData {
+                        label: "Ver Miniatura do Embed".to_string(),
+                        url: thumb_url.to_string(),
+                    });
                 }
             }
 
@@ -642,7 +718,8 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
             if let Some(footer) = embed["footer"]["text"].as_str() {
                 let f = footer.trim();
                 if !f.is_empty() {
-                    ep.push(format!("-- {}", parse_discord_markdown(f)));
+                    let cleaned = extract_and_clean_links(f, &mut links);
+                    ep.push(format!("-- {}", parse_discord_markdown(&cleaned)));
                 }
             }
 
@@ -652,7 +729,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
         }
     }
 
-    // 3. Attachments → content
+    // 3. Attachments → content & clickable links
     if let Some(attachments) = m["attachments"].as_array() {
         for att in attachments {
             let filename = att["filename"].as_str().unwrap_or("arquivo");
@@ -667,10 +744,13 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
             } else {
                 "Anexo"
             };
-            if url.is_empty() {
-                content_parts.push(format!("[{}: {}]", label, filename));
-            } else {
-                content_parts.push(format!("[{}: {}]\n{}", label, filename, url));
+            
+            content_parts.push(format!("[{}: {}]", label, filename));
+            if !url.is_empty() {
+                links.push(LinkData {
+                    label: format!("Abrir {}: {}", label, filename),
+                    url: url.to_string(),
+                });
             }
         }
     }
@@ -683,7 +763,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
         }
     }
 
-    // 5. Components V2 → content
+    // 5. Components V2 → content & clickable links
     if let Some(components) = m["components"].as_array() {
         for row in components {
             if let Some(row_components) = row["components"].as_array() {
@@ -694,7 +774,11 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
                         2 => {
                             if let Some(label) = comp["label"].as_str() {
                                 if let Some(url) = comp["url"].as_str() {
-                                    button_labels.push(format!("[{}]({})", label, url));
+                                    button_labels.push(format!("[{}]", label));
+                                    links.push(LinkData {
+                                        label: format!("Botao: {}", label),
+                                        url: url.to_string(),
+                                    });
                                 } else {
                                     button_labels.push(format!("[{}]", label));
                                 }
@@ -747,12 +831,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String) {
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, embed_content)
+    (content, embed_content, embed_color, links)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, embed) = format_discord_message_parts(m);
+    let (content, embed, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -1073,7 +1157,7 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, embed_content) = format_discord_message_parts(&v["d"]);
+                    let (content, embed_content, embed_color, links) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
@@ -1081,6 +1165,8 @@ impl GatewayClient {
                         author,
                         content,
                         embed_content,
+                        embed_color,
+                        links,
                         timestamp,
                     }).await;
                 }
