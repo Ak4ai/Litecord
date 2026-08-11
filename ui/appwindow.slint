@@ -16,6 +16,7 @@ component IconButton inherits Rectangle {
         width: 20px;
         height: 20px;
         colorize: root.icon-color;
+        image-fit: contain;
     }
 
     touch := TouchArea {
@@ -145,6 +146,7 @@ export component AppWindow inherits Window {
                             width: 16px;
                             height: 16px;
                             colorize: #ffffff;
+                            image-fit: contain;
                         }
                         Text {
                             text: "LITECORD";
@@ -286,6 +288,7 @@ export component AppWindow inherits Window {
                                         source: guild.icon_image;
                                         width: 48px;
                                         height: 48px;
+                                        image-fit: cover;
                                     }
 
                                     if !guild.has_image: Text {
