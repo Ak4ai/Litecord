@@ -521,34 +521,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = AppWindow::new()?;
     let app_weak = app.as_weak();
 
-    // Call show() first so that the underlying winit window is created/realized immediately!
-    app.show()?;
-
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     use i_slint_backend_winit::WinitWindowAccessor;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use winit::platform::windows::WindowExtWindows;
     app.window().with_winit_window(|winit_win| {
-        let bg_color = winit::platform::windows::Color::from_rgb(0x11, 0x12, 0x14);
-        let txt_color = winit::platform::windows::Color::from_rgb(0xff, 0xff, 0xff);
-        winit_win.set_title_background_color(Some(bg_color));
-        winit_win.set_title_text_color(txt_color);
-
         if let Ok(handle) = winit_win.window_handle() {
             if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
                 let hwnd = win32_handle.hwnd.get() as isize;
                 *hwnd_store.lock().unwrap() = Some(hwnd);
                 set_dark_titlebar_color(hwnd);
-
-                // Spawn a thread to apply DWM properties again at progressive intervals.
-                // This ensures the custom caption color is respected after window mapping and focus changes.
-                std::thread::spawn(move || {
-                    for delay in &[200, 500, 1000, 2000, 4000] {
-                        std::thread::sleep(std::time::Duration::from_millis(*delay));
-                        set_dark_titlebar_color(hwnd);
-                    }
-                });
             }
         }
     });
@@ -1377,7 +1359,6 @@ fn set_dark_titlebar_color(hwnd: isize) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
-    use std::ffi::c_void;
 
     let dark_mode: u32 = 1;
     unsafe {
@@ -1385,7 +1366,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_USE_IMMERSIVE_DARK_MODE as _,
-            &dark_mode as *const u32 as *const c_void,
+            &dark_mode as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
         );
 
@@ -1393,7 +1374,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             19,
-            &dark_mode as *const u32 as *const c_void,
+            &dark_mode as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
         );
 
@@ -1402,7 +1383,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_CAPTION_COLOR as _,
-            &caption_color as *const u32 as *const c_void,
+            &caption_color as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
         );
 
@@ -1411,7 +1392,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_TEXT_COLOR as _,
-            &text_color as *const u32 as *const c_void,
+            &text_color as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
         );
 
