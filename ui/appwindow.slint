@@ -116,50 +116,64 @@ export component AppWindow inherits Window {
 
         // Top Status Header Bar
         Rectangle {
-            height: 36px;
+            height: 42px;
             background: #111214;
 
             HorizontalBox {
                 padding-left: 12px;
                 padding-right: 12px;
+                padding-top: 0px;
+                padding-bottom: 0px;
 
-                HorizontalLayout {
-                    spacing: 6px;
-                    Image {
-                        source: @image-url("../assets/lightning.svg");
-                        width: 16px;
-                        height: 16px;
-                        colorize: #5865f2;
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Image {
+                            source: @image-url("../assets/lightning.svg");
+                            width: 16px;
+                            height: 16px;
+                            colorize: #5865f2;
+                        }
+                        Text {
+                            text: "LITECORD";
+                            color: #5865f2;
+                            font-weight: 800;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
                     }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                VerticalLayout {
+                    alignment: center;
                     Text {
-                        text: "LITECORD";
-                        color: #5865f2;
-                        font-weight: 800;
-                        font-size: 14px;
+                        text: root.connection_status;
+                        color: #949ba4;
+                        font-size: 12px;
                         vertical-alignment: center;
                     }
                 }
 
                 Rectangle { horizontal-stretch: 1; }
 
-                Text {
-                    text: root.connection_status;
-                    color: #949ba4;
-                    font-size: 12px;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("../assets/settings.svg");
+                        clicked => { root.open_settings(); }
+                    }
                 }
 
-                Rectangle { horizontal-stretch: 1; }
-
-                IconButton {
-                    icon: @image-url("../assets/settings.svg");
-                    clicked => { root.open_settings(); }
-                }
-
-                Button {
-                    icon: @image-url("../assets/pin.svg");
-                    text: "Minimizar p/ Tray";
-                    clicked => { root.minimize_to_tray(); }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        icon: @image-url("../assets/pin.svg");
+                        text: "Minimizar p/ Tray";
+                        clicked => { root.minimize_to_tray(); }
+                    }
                 }
             }
         }

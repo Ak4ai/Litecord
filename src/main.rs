@@ -346,7 +346,7 @@ async fn fetch_and_populate_channels(
     let g_name_top = g_name.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_w_top.upgrade() {
-            ui.set_connection_status(format!("🛡️ Servidor: {} | Gateway v9 (Online)", g_name_top).into());
+            ui.set_connection_status(format!("Servidor: {} | Gateway v9 (Online)", g_name_top).into());
         }
     });
 
