@@ -505,103 +505,128 @@ export component AppWindow inherits Window {
                                     border-radius: 8px;
 
                                     HorizontalBox {
-                                        padding-left: 12px;
-                                        padding-right: 12px;
-                                        spacing: 12px;
+                                         padding-left: 12px;
+                                         padding-right: 12px;
+                                         spacing: 12px;
 
-                                        // Avatar Badge with Glowing Green Ring when speaking!
-                                        Rectangle {
-                                            width: 42px;
-                                            height: 42px;
-                                            border-radius: 21px;
-                                            background: p.is_speaking ? #23a55a : #383a40;
-                                            border-width: p.is_speaking ? 3px : 0px;
-                                            border-color: #23a55a;
+                                         // Avatar Badge with Glowing Green Ring when speaking!
+                                         VerticalLayout {
+                                             alignment: center;
+                                             Rectangle {
+                                                 width: 42px;
+                                                 height: 42px;
+                                                 border-radius: 21px;
+                                                 background: p.is_speaking ? #23a55a : #383a40;
+                                                 border-width: p.is_speaking ? 3px : 0px;
+                                                 border-color: #23a55a;
 
-                                            Text {
-                                                text: p.avatar_text;
-                                                color: #ffffff;
-                                                font-size: 16px;
-                                                font-weight: 700;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
+                                                 Text {
+                                                     text: p.avatar_text;
+                                                     color: #ffffff;
+                                                     font-size: 16px;
+                                                     font-weight: 700;
+                                                     horizontal-alignment: center;
+                                                     vertical-alignment: center;
+                                                 }
+                                             }
+                                         }
 
-                                        // Username & Moving Audio Volume Meter Bar!
-                                        VerticalBox {
-                                            horizontal-stretch: 1;
-                                            spacing: 4px;
+                                         // Username & Controls in a Vertical Stack!
+                                         VerticalBox {
+                                             horizontal-stretch: 1;
+                                             alignment: center;
+                                             spacing: 6px;
+                                             padding: 0px;
 
-                                            HorizontalBox {
-                                                Text {
-                                                    text: p.username;
-                                                    color: p.is_speaking ? #ffffff : #dbdee1;
-                                                    font-weight: 700;
-                                                    font-size: 14px;
-                                                }
+                                             // Row 1: Username & Mute Status Badge
+                                             HorizontalLayout {
+                                                 spacing: 8px;
+                                                 Text {
+                                                     text: p.username;
+                                                     color: p.is_speaking ? #ffffff : #dbdee1;
+                                                     font-weight: 700;
+                                                     font-size: 14px;
+                                                     vertical-alignment: center;
+                                                 }
 
-                                                if p.is_muted: HorizontalLayout {
-                                                    spacing: 4px;
-                                                    Image {
-                                                        source: @image-url("../assets/volume-x.svg");
-                                                        width: 12px;
-                                                        height: 12px;
-                                                        colorize: #f23f43;
-                                                    }
-                                                    Text {
-                                                        text: "MUTADO";
-                                                        color: #f23f43;
-                                                        font-size: 11px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
-                                            }
+                                                 if p.is_muted: HorizontalLayout {
+                                                     spacing: 4px;
+                                                     alignment: start;
+                                                     Image {
+                                                         source: @image-url("../assets/volume-x.svg");
+                                                         width: 12px;
+                                                         height: 12px;
+                                                         colorize: #f23f43;
+                                                     }
+                                                     Text {
+                                                         text: "MUTADO";
+                                                         color: #f23f43;
+                                                         font-size: 11px;
+                                                         font-weight: 700;
+                                                         vertical-alignment: center;
+                                                     }
+                                                 }
+                                             }
 
-                                            // Animated Volume Level Meter Bar (sobe e desce à medida que fala!)
-                                            Rectangle {
-                                                height: 8px;
-                                                width: 220px;
-                                                background: #1e1f22;
-                                                border-radius: 4px;
+                                             // Row 2: Dynamic Volume bar & Per-User Controls
+                                             HorizontalLayout {
+                                                 spacing: 16px;
+                                                 alignment: start;
 
-                                                Rectangle {
-                                                    x: 0px;
-                                                    y: 0px;
-                                                    height: 8px;
-                                                    width: p.audio_level * 220px;
-                                                    background: p.is_speaking ? #23a55a : #5865f2;
-                                                    border-radius: 4px;
-                                                }
-                                            }
-                                        }
+                                                 // Animated Volume Level Meter Bar (sobe e desce à medida que fala!)
+                                                 VerticalLayout {
+                                                     alignment: center;
+                                                     Rectangle {
+                                                         height: 8px;
+                                                         width: 140px;
+                                                         background: #1e1f22;
+                                                         border-radius: 4px;
 
-                                        // Per-User Mute & Volume Controls on the Right!
-                                        HorizontalBox {
-                                            spacing: 8px;
+                                                         Rectangle {
+                                                             x: 0px;
+                                                             y: 0px;
+                                                             height: 8px;
+                                                             width: p.audio_level * 140px;
+                                                             background: p.is_speaking ? #23a55a : #5865f2;
+                                                             border-radius: 4px;
+                                                         }
+                                                     }
+                                                 }
 
-                                            IconButton {
-                                                icon: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
-                                                icon-color: p.is_muted ? #f23f43 : #dbdee1;
-                                                clicked => { root.toggle_user_mute(p.user_id); }
-                                            }
+                                                 // Mute Button
+                                                 VerticalLayout {
+                                                     alignment: center;
+                                                     IconButton {
+                                                         icon: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
+                                                         icon-color: p.is_muted ? #f23f43 : #dbdee1;
+                                                         clicked => { root.toggle_user_mute(p.user_id); }
+                                                     }
+                                                 }
 
-                                            Text {
-                                                text: "Vol: " + Math.round(p.volume * 100) + "%";
-                                                color: #b5bac1;
-                                                font-size: 11px;
-                                                vertical-alignment: center;
-                                            }
+                                                 // Volume Text
+                                                 VerticalLayout {
+                                                     alignment: center;
+                                                     Text {
+                                                         text: "Vol: " + Math.round(p.volume * 100) + "%";
+                                                         color: #b5bac1;
+                                                         font-size: 11px;
+                                                         vertical-alignment: center;
+                                                     }
+                                                 }
 
-                                            Slider {
-                                                width: 100px;
-                                                minimum: 0.0;
-                                                maximum: 1.0;
-                                                value: p.volume;
-                                                changed(val) => { root.set_user_volume(p.user_id, val); }
-                                            }
-                                        }
+                                                 // Slider
+                                                 VerticalLayout {
+                                                     alignment: center;
+                                                     Slider {
+                                                         width: 100px;
+                                                         minimum: 0.0;
+                                                         maximum: 1.0;
+                                                         value: p.volume;
+                                                         changed(val) => { root.set_user_volume(p.user_id, val); }
+                                                     }
+                                                 }
+                                             }
+                                         }
                                     }
                                 }
                             }
