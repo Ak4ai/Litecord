@@ -571,14 +571,13 @@ export component AppWindow inherits Window {
                                              // Row 2: Dynamic Volume bar & Per-User Controls
                                              HorizontalLayout {
                                                  spacing: 16px;
-                                                 alignment: start;
 
                                                  // Animated Volume Level Meter Bar (sobe e desce à medida que fala!)
                                                  VerticalLayout {
+                                                     horizontal-stretch: 1;
                                                      alignment: center;
                                                      Rectangle {
                                                          height: 8px;
-                                                         width: 140px;
                                                          background: #1e1f22;
                                                          border-radius: 4px;
 
@@ -586,7 +585,7 @@ export component AppWindow inherits Window {
                                                              x: 0px;
                                                              y: 0px;
                                                              height: 8px;
-                                                             width: p.audio_level * 140px;
+                                                             width: p.audio_level * parent.width;
                                                              background: p.is_speaking ? #23a55a : #5865f2;
                                                              border-radius: 4px;
                                                          }
@@ -618,7 +617,7 @@ export component AppWindow inherits Window {
                                                  VerticalLayout {
                                                      alignment: center;
                                                      Slider {
-                                                         width: 100px;
+                                                         width: 120px;
                                                          minimum: 0.0;
                                                          maximum: 1.0;
                                                          value: p.volume;
