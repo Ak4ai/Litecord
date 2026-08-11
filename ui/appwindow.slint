@@ -27,6 +27,7 @@ struct ChatMessage {
     author: string,
     timestamp: string,
     content: string,
+    embed_content: string,
 }
 
 struct ChannelItem {
@@ -700,11 +701,41 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        Text {
+                                        // Regular message content
+                                        if msg.content != "": Text {
                                             text: msg.content;
                                             color: #dbdee1;
                                             font-size: 13px;
                                             wrap: word-wrap;
+                                        }
+
+                                        // Embed box with colored left bar
+                                        if msg.embed-content != "": Rectangle {
+                                            background: #232428;
+                                            border-radius: 4px;
+
+                                            HorizontalLayout {
+                                                // Colored left bar
+                                                Rectangle {
+                                                    width: 4px;
+                                                    background: #5865f2;
+                                                    border-top-left-radius: 4px;
+                                                    border-bottom-left-radius: 4px;
+                                                }
+
+                                                // Embed content
+                                                VerticalLayout {
+                                                    padding: 10px;
+                                                    padding-left: 12px;
+
+                                                    Text {
+                                                        text: msg.embed-content;
+                                                        color: #d2d5d9;
+                                                        font-size: 12.5px;
+                                                        wrap: word-wrap;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }

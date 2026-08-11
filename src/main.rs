@@ -2,7 +2,7 @@ mod gateway;
 mod http;
 mod tray;
 
-use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message};
+use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message, format_discord_message_parts};
 use http::DiscordHttpClient;
 use tray::SystemTrayManager;
 
@@ -449,15 +449,17 @@ async fn load_messages_for_channel(
                 vec![ChatMessage {
                     author: "Litecord System".into(),
                     content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                    embed_content: "".into(),
                     timestamp: "Agora".into(),
                 }]
             } else {
                 msgs_val.iter().rev().map(|m| {
                     let author = format_discord_author(m);
-                    let content = format_discord_message(m);
+                    let (content, embed_content) = format_discord_message_parts(m);
                     ChatMessage {
                         author: author.into(),
                         content: content.into(),
+                        embed_content: embed_content.into(),
                         timestamp: "Agora".into(),
                     }
                 }).collect()
@@ -484,6 +486,7 @@ async fn load_messages_for_channel(
                     let ui_msgs = vec![ChatMessage {
                         author: "Litecord System".into(),
                         content: friendly_msg.into(),
+                        embed_content: "".into(),
                         timestamp: "Agora".into(),
                     }];
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
@@ -900,6 +903,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             current_msgs.push(ChatMessage {
                 author: "Litecord Voice".into(),
                 content: "🔴 Desconectado da sala de voz.".into(),
+                embed_content: "".into(),
                 timestamp: "Agora".into(),
             });
             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -1182,6 +1186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 current_msgs.push(ChatMessage {
                     author: "Litecord Voice".into(),
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
+                    embed_content: "".into(),
                     timestamp: "Agora".into(),
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -1315,7 +1320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { author, content, timestamp, .. } => {
+                GatewayEvent::MessageCreated { author, content, embed_content, timestamp, .. } => {
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
                         // Messages will be re-fetched via REST when the window is restored.
@@ -1328,6 +1333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 current_msgs.push(ChatMessage {
                                     author: author.into(),
                                     content: content.into(),
+                                    embed_content: embed_content.into(),
                                     timestamp: timestamp.into(),
                                 });
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));

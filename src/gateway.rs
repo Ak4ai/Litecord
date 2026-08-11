@@ -39,6 +39,7 @@ pub enum GatewayEvent {
         channel_id: String,
         author: String,
         content: String,
+        embed_content: String,
         timestamp: String,
     },
     GuildLoaded {
@@ -506,8 +507,12 @@ pub fn format_discord_author(m: &Value) -> String {
     }
 }
 
-pub fn format_discord_message(m: &Value) -> String {
-    let mut parts: Vec<String> = Vec::new();
+/// Returns (content, embed_content) as separate strings.
+/// `content` has regular text, replies, interactions, attachments, stickers, components.
+/// `embed_content` has all embed text (title, desc, fields, footer etc.).
+pub fn format_discord_message_parts(m: &Value) -> (String, String) {
+    let mut content_parts: Vec<String> = Vec::new();
+    let mut embed_parts_all: Vec<String> = Vec::new();
     let msg_type = m["type"].as_u64().unwrap_or(0);
 
     // Handle reply context (type 19)
@@ -527,7 +532,7 @@ pub fn format_discord_message(m: &Value) -> String {
             } else {
                 ref_content.to_string()
             };
-            parts.push(format!("[respondendo a {}] {}", ref_author, parse_discord_markdown(&preview)));
+            content_parts.push(format!("[respondendo a {}] {}", ref_author, parse_discord_markdown(&preview)));
         }
     }
 
@@ -543,9 +548,9 @@ pub fn format_discord_message(m: &Value) -> String {
                     .or_else(|| u["username"].as_str()))
                 .unwrap_or("");
             if !user_name.is_empty() {
-                parts.push(format!("[/{} por {}]", cmd_name, user_name));
+                content_parts.push(format!("[/{} por {}]", cmd_name, user_name));
             } else {
-                parts.push(format!("[/{}]", cmd_name));
+                content_parts.push(format!("[/{}]", cmd_name));
             }
         }
     }
@@ -554,20 +559,20 @@ pub fn format_discord_message(m: &Value) -> String {
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
-            parts.push(parse_discord_markdown(trimmed));
+            content_parts.push(parse_discord_markdown(trimmed));
         }
     }
 
-    // 2. Embeds (Bot Messages, Webhooks, Links)
+    // 2. Embeds → go into embed_content (separate from main content)
     if let Some(embeds) = m["embeds"].as_array() {
         for embed in embeds {
-            let mut embed_parts: Vec<String> = Vec::new();
+            let mut ep: Vec<String> = Vec::new();
 
             // Embed author
             if let Some(author_name) = embed["author"]["name"].as_str() {
                 let a = author_name.trim();
                 if !a.is_empty() {
-                    embed_parts.push(parse_discord_markdown(a));
+                    ep.push(parse_discord_markdown(a));
                 }
             }
 
@@ -578,12 +583,12 @@ pub fn format_discord_message(m: &Value) -> String {
                     let parsed_title = parse_discord_markdown(t);
                     if let Some(url) = embed["url"].as_str() {
                         if !url.is_empty() {
-                            embed_parts.push(format!("{} ({})", parsed_title, url));
+                            ep.push(format!("{} ({})", parsed_title, url));
                         } else {
-                            embed_parts.push(parsed_title);
+                            ep.push(parsed_title);
                         }
                     } else {
-                        embed_parts.push(parsed_title);
+                        ep.push(parsed_title);
                     }
                 }
             }
@@ -592,7 +597,7 @@ pub fn format_discord_message(m: &Value) -> String {
             if let Some(desc) = embed["description"].as_str() {
                 let d = desc.trim();
                 if !d.is_empty() {
-                    embed_parts.push(parse_discord_markdown(d));
+                    ep.push(parse_discord_markdown(d));
                 }
             }
 
@@ -602,11 +607,11 @@ pub fn format_discord_message(m: &Value) -> String {
                     let name = field["name"].as_str().unwrap_or("").trim();
                     let val  = field["value"].as_str().unwrap_or("").trim();
                     if !name.is_empty() && !val.is_empty() {
-                        embed_parts.push(format!("{}: {}",
+                        ep.push(format!("{}: {}",
                             parse_discord_markdown(name),
                             parse_discord_markdown(val)));
                     } else if !val.is_empty() {
-                        embed_parts.push(parse_discord_markdown(val));
+                        ep.push(parse_discord_markdown(val));
                     }
                 }
             }
@@ -614,23 +619,22 @@ pub fn format_discord_message(m: &Value) -> String {
             // Embed image
             if let Some(img_url) = embed["image"]["url"].as_str() {
                 if !img_url.is_empty() {
-                    embed_parts.push(format!("[Imagem: {}]", img_url));
+                    ep.push(format!("[Imagem: {}]", img_url));
                 }
             }
 
             // Embed thumbnail
             if let Some(thumb_url) = embed["thumbnail"]["url"].as_str() {
                 if !thumb_url.is_empty() {
-                    embed_parts.push(format!("[Miniatura: {}]", thumb_url));
+                    ep.push(format!("[Miniatura: {}]", thumb_url));
                 }
             }
 
             // Embed timestamp
             if let Some(ts) = embed["timestamp"].as_str() {
                 if !ts.is_empty() {
-                    // ISO 8601 timestamp — show as-is (e.g. "2024-01-15T12:00:00.000Z")
                     let display = if ts.len() >= 10 { &ts[..10] } else { ts };
-                    embed_parts.push(format!("[{}]", display));
+                    ep.push(format!("[{}]", display));
                 }
             }
 
@@ -638,17 +642,17 @@ pub fn format_discord_message(m: &Value) -> String {
             if let Some(footer) = embed["footer"]["text"].as_str() {
                 let f = footer.trim();
                 if !f.is_empty() {
-                    embed_parts.push(format!("-- {}", parse_discord_markdown(f)));
+                    ep.push(format!("-- {}", parse_discord_markdown(f)));
                 }
             }
 
-            if !embed_parts.is_empty() {
-                parts.push(embed_parts.join("\n"));
+            if !ep.is_empty() {
+                embed_parts_all.push(ep.join("\n"));
             }
         }
     }
 
-    // 3. Attachments (Images, Files, Videos)
+    // 3. Attachments → content
     if let Some(attachments) = m["attachments"].as_array() {
         for att in attachments {
             let filename = att["filename"].as_str().unwrap_or("arquivo");
@@ -664,22 +668,22 @@ pub fn format_discord_message(m: &Value) -> String {
                 "Anexo"
             };
             if url.is_empty() {
-                parts.push(format!("[{}: {}]", label, filename));
+                content_parts.push(format!("[{}: {}]", label, filename));
             } else {
-                parts.push(format!("[{}: {}]\n{}", label, filename, url));
+                content_parts.push(format!("[{}: {}]\n{}", label, filename, url));
             }
         }
     }
 
-    // 4. Stickers
+    // 4. Stickers → content
     if let Some(stickers) = m["sticker_items"].as_array() {
         for st in stickers {
             let st_name = st["name"].as_str().unwrap_or("Sticker");
-            parts.push(format!("[Sticker: {}]", st_name));
+            content_parts.push(format!("[Sticker: {}]", st_name));
         }
     }
 
-    // 5. Components V2 (buttons, select menus) — extract labels
+    // 5. Components V2 → content
     if let Some(components) = m["components"].as_array() {
         for row in components {
             if let Some(row_components) = row["components"].as_array() {
@@ -687,7 +691,6 @@ pub fn format_discord_message(m: &Value) -> String {
                 for comp in row_components {
                     let comp_type = comp["type"].as_u64().unwrap_or(0);
                     match comp_type {
-                        // Button
                         2 => {
                             if let Some(label) = comp["label"].as_str() {
                                 if let Some(url) = comp["url"].as_str() {
@@ -697,7 +700,6 @@ pub fn format_discord_message(m: &Value) -> String {
                                 }
                             }
                         }
-                        // String select menu
                         3 => {
                             if let Some(placeholder) = comp["placeholder"].as_str() {
                                 button_labels.push(format!("[Menu: {}]", placeholder));
@@ -707,14 +709,14 @@ pub fn format_discord_message(m: &Value) -> String {
                     }
                 }
                 if !button_labels.is_empty() {
-                    parts.push(button_labels.join("  "));
+                    content_parts.push(button_labels.join("  "));
                 }
             }
         }
     }
 
-    // Fallback for empty or system messages
-    if parts.is_empty() {
+    // Build content string
+    let content = if content_parts.is_empty() && embed_parts_all.is_empty() {
         match msg_type {
             1 => "[Membro adicionado ao grupo]".to_string(),
             2 => "[Membro removido do grupo]".to_string(),
@@ -740,7 +742,23 @@ pub fn format_discord_message(m: &Value) -> String {
             _ => "[Conteudo especial]".to_string(),
         }
     } else {
-        parts.join("\n")
+        content_parts.join("\n")
+    };
+
+    let embed_content = embed_parts_all.join("\n\n");
+
+    (content, embed_content)
+}
+
+/// Legacy wrapper — returns combined content + embed as a single string.
+pub fn format_discord_message(m: &Value) -> String {
+    let (content, embed) = format_discord_message_parts(m);
+    if embed.is_empty() {
+        content
+    } else if content.is_empty() {
+        embed
+    } else {
+        format!("{}\n{}", content, embed)
     }
 }
 
@@ -1055,13 +1073,14 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let content = format_discord_message(&v["d"]);
+                    let (content, embed_content) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
                         channel_id,
                         author,
                         content,
+                        embed_content,
                         timestamp,
                     }).await;
                 }
