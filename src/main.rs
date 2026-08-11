@@ -521,6 +521,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = AppWindow::new()?;
     let app_weak = app.as_weak();
 
+    // Call show() first so that the underlying winit window is created/realized immediately!
+    app.show()?;
+
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     use i_slint_backend_winit::WinitWindowAccessor;
@@ -531,6 +534,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let hwnd = win32_handle.hwnd.get() as isize;
                 *hwnd_store.lock().unwrap() = Some(hwnd);
                 set_dark_titlebar_color(hwnd);
+
+                // Spawn a thread to apply DWM properties again at progressive intervals.
+                // This ensures the custom caption color is respected after window mapping and focus changes.
+                std::thread::spawn(move || {
+                    for delay in &[200, 500, 1000, 2000, 4000] {
+                        std::thread::sleep(std::time::Duration::from_millis(*delay));
+                        set_dark_titlebar_color(hwnd);
+                    }
+                });
             }
         }
     });
