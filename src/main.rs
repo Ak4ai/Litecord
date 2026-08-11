@@ -531,6 +531,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let hwnd = win32_handle.hwnd.get() as isize;
                 *hwnd_store.lock().unwrap() = Some(hwnd);
                 set_dark_titlebar_color(hwnd);
+
+                // Spawn a thread to apply DWM properties again at progressive intervals.
+                // This ensures the custom border color is respected after window mapping and focus changes.
+                std::thread::spawn(move || {
+                    for delay in &[200, 500, 1000, 2000, 4000] {
+                        std::thread::sleep(std::time::Duration::from_millis(*delay));
+                        set_dark_titlebar_color(hwnd);
+                    }
+                });
             }
         }
     });
@@ -1355,10 +1364,12 @@ fn is_valid_token_chars(token: &str) -> bool {
 fn set_dark_titlebar_color(hwnd: isize) {
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DWMWA_BORDER_COLOR,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
+    use std::ffi::c_void;
 
     let dark_mode: u32 = 1;
     unsafe {
@@ -1366,7 +1377,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_USE_IMMERSIVE_DARK_MODE as _,
-            &dark_mode as *const u32 as _,
+            &dark_mode as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
 
@@ -1374,7 +1385,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             19,
-            &dark_mode as *const u32 as _,
+            &dark_mode as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
 
@@ -1383,7 +1394,7 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_CAPTION_COLOR as _,
-            &caption_color as *const u32 as _,
+            &caption_color as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
 
@@ -1392,7 +1403,16 @@ fn set_dark_titlebar_color(hwnd: isize) {
         let _ = DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_TEXT_COLOR as _,
-            &text_color as *const u32 as _,
+            &text_color as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Window border color #1e1f22 (BGR COLORREF: 0x00221f1e)
+        let border_color: u32 = 0x00221f1e;
+        let _ = DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_BORDER_COLOR as _,
+            &border_color as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
 
