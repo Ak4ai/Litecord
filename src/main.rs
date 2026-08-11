@@ -7,6 +7,7 @@ use http::DiscordHttpClient;
 use tray::SystemTrayManager;
 
 use slint::{SharedString, Model, Image};
+use i_slint_backend_winit::WinitWindowAccessor;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -1347,6 +1348,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ShowWindow(hwnd, SW_HIDE);
             }
         }
+    });
+
+    // Custom window controls for frameless mode
+    let app_weak_drag = app_weak.clone();
+    app.on_drag_window(move || {
+        if let Some(app_instance) = app_weak_drag.upgrade() {
+            let _ = app_instance.window().with_winit_window(|winit_window| {
+                let _ = winit_window.drag_window();
+            });
+        }
+    });
+
+    let app_weak_min = app_weak.clone();
+    app.on_minimize_window(move || {
+        if let Some(app_instance) = app_weak_min.upgrade() {
+            app_instance.window().set_minimized(true);
+        }
+    });
+
+    let app_weak_max = app_weak.clone();
+    app.on_maximize_window(move || {
+        if let Some(app_instance) = app_weak_max.upgrade() {
+            let is_max = app_instance.window().is_maximized();
+            app_instance.window().set_maximized(!is_max);
+        }
+    });
+
+    app.on_close_window(move || {
+        info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        std::process::exit(0);
     });
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread

@@ -75,11 +75,16 @@ struct VoiceParticipant {
 export component AppWindow inherits Window {
     title: "Litecord - Ultra-Lightweight Discord Client";
     icon: @image-url("../assets/app_icon.png");
+    no-frame: true;
     preferred-width: 980px;
     preferred-height: 620px;
     background: #1e1f22;
 
     // Callbacks to Rust backend
+    callback drag_window();
+    callback minimize_window();
+    callback maximize_window();
+    callback close_window();
     callback login(string /* token */);
     callback send_message(string /* content */);
     callback select_channel(string /* channel_id */);
@@ -128,14 +133,24 @@ export component AppWindow inherits Window {
         padding: 0px;
         spacing: 0px;
 
-        // Top Status Header Bar
+        // Top Status Header Bar (Frameless Custom Titlebar)
         Rectangle {
             height: 42px;
             background: #111214;
 
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                        root.drag_window();
+                    }
+                }
+            }
+
             HorizontalBox {
                 padding-left: 12px;
-                padding-right: 12px;
+                padding-right: 146px;
                 padding-top: 0px;
                 padding-bottom: 0px;
 
@@ -188,13 +203,70 @@ export component AppWindow inherits Window {
                         clicked => { root.open_settings(); }
                     }
                 }
+            }
 
-                VerticalLayout {
-                    alignment: center;
-                    Button {
-                        icon: @image-url("../assets/pin.svg");
-                        text: "Minimizar p/ Tray";
-                        clicked => { root.minimize_to_tray(); }
+            // Custom Window Control Buttons (Minimize, Maximize, Close)
+            HorizontalLayout {
+                x: parent.width - 138px;
+                y: 0px;
+                width: 138px;
+                height: 42px;
+                spacing: 0px;
+
+                // Minimize
+                Rectangle {
+                    width: 46px;
+                    height: 42px;
+                    background: min-touch.has-hover ? #2b2d31 : transparent;
+
+                    Text {
+                        text: "—";
+                        color: #dbdee1;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    min-touch := TouchArea {
+                        clicked => { root.minimize_window(); }
+                    }
+                }
+
+                // Maximize
+                Rectangle {
+                    width: 46px;
+                    height: 42px;
+                    background: max-touch.has-hover ? #2b2d31 : transparent;
+
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        border-width: 1px;
+                        border-color: #dbdee1;
+                        background: transparent;
+                    }
+
+                    max-touch := TouchArea {
+                        clicked => { root.maximize_window(); }
+                    }
+                }
+
+                // Close
+                Rectangle {
+                    width: 46px;
+                    height: 42px;
+                    background: close-touch.has-hover ? #f23f43 : transparent;
+
+                    Text {
+                        text: "✕";
+                        color: close-touch.has-hover ? #ffffff : #dbdee1;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    close-touch := TouchArea {
+                        clicked => { root.close_window(); }
                     }
                 }
             }
