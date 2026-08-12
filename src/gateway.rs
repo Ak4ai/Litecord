@@ -35,6 +35,7 @@ pub struct GuildData {
 pub enum GatewayEvent {
     Connected { user_tag: String },
     Disconnected { reason: String },
+    VoiceStatesUpdated,
     MessageCreated {
         channel_id: String,
         author: String,
@@ -1320,6 +1321,61 @@ impl GatewayClient {
                     info!("Login BEM-SUCEDIDO na Gateway! Usuário: {} (@{})", global_name, username);
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
                 }
+                "READY_SUPPLEMENTAL" => {
+                    info!("📌 Evento READY_SUPPLEMENTAL recebido da Gateway! Keys: {:?}", v["d"].as_object().map(|m| m.keys().collect::<Vec<_>>()));
+                    if let Some(vs_arr) = v["d"]["voice_states"].as_array() {
+                        info!("📌 [READY_SUPPLEMENTAL] Encontrados {} voice_states na raiz!", vs_arr.len());
+                        for vs in vs_arr {
+                            let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
+                                s.parse().unwrap_or(0)
+                            } else {
+                                vs["user_id"].as_u64().unwrap_or(0)
+                            };
+                            let c_str = if let Some(s) = vs["channel_id"].as_str() {
+                                s.to_string()
+                            } else if let Some(n) = vs["channel_id"].as_u64() {
+                                n.to_string()
+                            } else {
+                                String::new()
+                            };
+                            if u_id > 0 && !c_str.is_empty() {
+                                if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                    gvs.insert(u_id, c_str.clone());
+                                    info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(guilds_arr) = v["d"]["guilds"].as_array() {
+                        info!("📌 [READY_SUPPLEMENTAL] Encontrados {} guilds no READY_SUPPLEMENTAL!", guilds_arr.len());
+                        for g in guilds_arr {
+                            if let Some(vs_arr) = g["voice_states"].as_array() {
+                                info!("📌 [READY_SUPPLEMENTAL] Guild {} tem {} voice_states!", g["id"], vs_arr.len());
+                                for vs in vs_arr {
+                                    let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        vs["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    let c_str = if let Some(s) = vs["channel_id"].as_str() {
+                                        s.to_string()
+                                    } else if let Some(n) = vs["channel_id"].as_u64() {
+                                        n.to_string()
+                                    } else {
+                                        String::new()
+                                    };
+                                    if u_id > 0 && !c_str.is_empty() {
+                                        if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                            gvs.insert(u_id, c_str.clone());
+                                            info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
+                }
                 "GUILD_MEMBERS_CHUNK" => {
                     if let Some(members_arr) = v["d"]["members"].as_array() {
                         for m in members_arr {
@@ -1424,6 +1480,7 @@ impl GatewayClient {
                                 }
                             }
                         }
+                        let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
                     }
                 }
                 "VOICE_SERVER_UPDATE" => {

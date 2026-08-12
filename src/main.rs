@@ -346,10 +346,10 @@ async fn fetch_and_populate_guilds(
                 fetch_and_populate_channels(
                     http,
                     app_weak.clone(),
-                    guilds_map,
-                    active_guild_id,
-                    active_channel_id,
-                    cmd_tx_store,
+                    guilds_map.clone(),
+                    active_guild_id.clone(),
+                    active_channel_id.clone(),
+                    cmd_tx_store.clone(),
                     &first_gid,
                 ).await;
             }
@@ -459,6 +459,9 @@ async fn fetch_and_populate_channels(
 
             let ui_channels: Vec<ChannelItem> = channels_data.iter().map(|ch| {
                 let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
+                if ch.is_voice {
+                    info!("📊 Canal de Voz {} ('{}'): vcount = {}", ch.id, ch.name, vcount);
+                }
                 ChannelItem {
                     id: ch.id.clone().into(),
                     name: ch.name.clone().into(),
@@ -1010,21 +1013,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w.upgrade() {
                         let cur_chans = ui.get_channels();
-                        let mut needs_update = cur_chans.row_count() != ui_channels.len();
-                        if !needs_update {
+                        let mut needs_rebuild = cur_chans.row_count() != ui_channels.len();
+                        if !needs_rebuild {
                             for (i, new_c) in ui_channels.iter().enumerate() {
                                 if let Some(old_c) = cur_chans.row_data(i) {
                                     if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
-                                        needs_update = true;
-                                        break;
+                                        cur_chans.set_row_data(i, new_c.clone());
                                     }
                                 } else {
-                                    needs_update = true;
+                                    needs_rebuild = true;
                                     break;
                                 }
                             }
                         }
-                        if needs_update {
+                        if needs_rebuild {
                             let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
                             ui.set_channels(model.into());
                         }
@@ -1603,11 +1605,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
     let app_weak_gw_events = app_weak.clone();
     let last_token_gw_save = Arc::clone(&last_token);
+    let active_guild_gw_events = Arc::clone(&active_guild_id);
+    let guilds_map_gw_events = Arc::clone(&guilds_map);
 
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             let app_weak_inner = app_weak_gw_events.clone();
             let last_token_inner = Arc::clone(&last_token_gw_save);
+            let active_guild_inner = Arc::clone(&active_guild_gw_events);
+            let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
 
             match event {
                 GatewayEvent::Connected { user_tag } => {
@@ -1662,6 +1668,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_messages(model.into());
                             }
                         });
+                    }
+                }
+                GatewayEvent::VoiceStatesUpdated => {
+                    let gid = active_guild_inner.lock().unwrap().clone();
+                    if !gid.is_empty() {
+                        let channels_opt = {
+                            if let Ok(map) = guilds_map_inner.lock() {
+                                map.get(&gid).map(|g| g.channels.clone())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(chans) = channels_opt {
+                            let ui_channels: Vec<ChannelItem> = chans.iter().map(|ch| {
+                                let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
+                                ChannelItem {
+                                    id: ch.id.clone().into(),
+                                    name: ch.name.clone().into(),
+                                    is_voice: ch.is_voice,
+                                    voice_count: vcount,
+                                }
+                            }).collect();
+
+                            let app_w = app_weak_inner.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_w.upgrade() {
+                                    let cur_chans = ui.get_channels();
+                                    let mut needs_rebuild = cur_chans.row_count() != ui_channels.len();
+                                    if !needs_rebuild {
+                                        for (i, new_c) in ui_channels.iter().enumerate() {
+                                            if let Some(old_c) = cur_chans.row_data(i) {
+                                                if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
+                                                    cur_chans.set_row_data(i, new_c.clone());
+                                                }
+                                            } else {
+                                                needs_rebuild = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if needs_rebuild {
+                                        let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
+                                        ui.set_channels(model.into());
+                                    }
+                                }
+                            });
+                        }
                     }
                 }
                 GatewayEvent::GuildLoaded { .. } => {
