@@ -1178,6 +1178,48 @@ impl GatewayClient {
                     if uid_num > 0 {
                         register_user_name(uid_num, global_name.to_string());
                     }
+
+                    // Parse all user/bot objects in READY payload
+                    if let Some(users_arr) = v["d"]["users"].as_array() {
+                        for u in users_arr {
+                            if let Some(u_id_str) = u["id"].as_str() {
+                                if let Ok(u_id) = u_id_str.parse::<u64>() {
+                                    let mut dname = String::new();
+                                    if let Some(gname) = u["global_name"].as_str() {
+                                        if !gname.is_empty() { dname = gname.to_string(); }
+                                    }
+                                    if dname.is_empty() {
+                                        if let Some(uname) = u["username"].as_str() {
+                                            if !uname.is_empty() { dname = uname.to_string(); }
+                                        }
+                                    }
+                                    if !dname.is_empty() {
+                                        register_user_name(u_id, dname);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Parse initial voice states in READY payload
+                    if let Some(guilds_arr) = v["d"]["guilds"].as_array() {
+                        for g in guilds_arr {
+                            if let Some(vs_arr) = g["voice_states"].as_array() {
+                                for vs in vs_arr {
+                                    let u_str = vs["user_id"].as_str().unwrap_or("");
+                                    let c_str = vs["channel_id"].as_str().unwrap_or("");
+                                    if let Ok(u_id) = u_str.parse::<u64>() {
+                                        if !c_str.is_empty() {
+                                            if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                                gvs.insert(u_id, c_str.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let discriminator = v["d"]["user"]["discriminator"].as_str().unwrap_or("0");
                     let user_tag = if discriminator == "0" {
                         global_name.to_string()
@@ -1186,6 +1228,32 @@ impl GatewayClient {
                     };
                     info!("Login BEM-SUCEDIDO na Gateway! Usuário: {} (@{})", global_name, username);
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
+                }
+                "GUILD_MEMBERS_CHUNK" => {
+                    if let Some(members_arr) = v["d"]["members"].as_array() {
+                        for m in members_arr {
+                            let uid_str = m["user"]["id"].as_str().unwrap_or("");
+                            if let Ok(uid) = uid_str.parse::<u64>() {
+                                let mut display_name = String::new();
+                                if let Some(nick) = m["nick"].as_str() {
+                                    if !nick.is_empty() { display_name = nick.to_string(); }
+                                }
+                                if display_name.is_empty() {
+                                    if let Some(gname) = m["user"]["global_name"].as_str() {
+                                        if !gname.is_empty() { display_name = gname.to_string(); }
+                                    }
+                                }
+                                if display_name.is_empty() {
+                                    if let Some(uname) = m["user"]["username"].as_str() {
+                                        if !uname.is_empty() { display_name = uname.to_string(); }
+                                    }
+                                }
+                                if !display_name.is_empty() {
+                                    register_user_name(uid, display_name);
+                                }
+                            }
+                        }
+                    }
                 }
                 "VOICE_STATE_UPDATE" => {
                     if let Some(event_uid_str) = v["d"]["user_id"].as_str() {

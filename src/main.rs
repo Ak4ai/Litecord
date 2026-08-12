@@ -773,6 +773,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_voice_loop = app_weak.clone();
     let http_client_voice_loop = Arc::clone(&http_client);
     let active_channel_voice_loop = Arc::clone(&active_channel_id);
+    let active_guild_voice_loop = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
@@ -801,6 +802,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let app_w_inner = app_weak_voice_loop.clone();
             let http_client_voice_loop_inner = Arc::clone(&http_client_voice_loop);
+            let active_guild_voice_loop_inner = Arc::clone(&active_guild_voice_loop);
 
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = app_w_inner.upgrade() else { return; };
@@ -861,17 +863,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Ok(mut set) = fetching_store.lock() {
                                     if set.insert(user_id) {
                                         let uid_str_task = uid_str.clone();
+                                        let active_gid = active_guild_voice_loop_inner.lock().unwrap().clone();
+                                        let store_arc = Arc::clone(fetching_store);
                                         tokio::spawn(async move {
-                                            if let Ok(profile) = http.get_user_profile(&uid_str_task).await {
-                                                let display_name = profile["global_name"].as_str()
-                                                    .or_else(|| profile["username"].as_str())
-                                                    .or_else(|| profile["user"]["global_name"].as_str())
-                                                    .or_else(|| profile["user"]["username"].as_str())
-                                                    .or_else(|| profile["nick"].as_str())
-                                                    .unwrap_or("");
-                                                if !display_name.is_empty() {
-                                                    gateway::register_user_name(user_id, display_name.to_string());
-                                                    info!("✅ Nome de usuário/bot resolvido via REST API: {} -> {}", user_id, display_name);
+                                            let mut resolved_name = String::new();
+
+                                            // 1. Try GET /guilds/{guild_id}/members/{user_id} first (returns nick, user object)
+                                            if !active_gid.is_empty() {
+                                                if let Ok(member_json) = http.get_guild_member(&active_gid, &uid_str_task).await {
+                                                    if let Some(nick) = member_json["nick"].as_str() {
+                                                        if !nick.is_empty() { resolved_name = nick.to_string(); }
+                                                    }
+                                                    if resolved_name.is_empty() {
+                                                        if let Some(gname) = member_json["user"]["global_name"].as_str() {
+                                                            if !gname.is_empty() { resolved_name = gname.to_string(); }
+                                                        }
+                                                    }
+                                                    if resolved_name.is_empty() {
+                                                        if let Some(uname) = member_json["user"]["username"].as_str() {
+                                                            if !uname.is_empty() { resolved_name = uname.to_string(); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // 2. Fallback to GET /users/{user_id}
+                                            if resolved_name.is_empty() {
+                                                if let Ok(profile) = http.get_user_profile(&uid_str_task).await {
+                                                    resolved_name = profile["global_name"].as_str()
+                                                        .or_else(|| profile["username"].as_str())
+                                                        .unwrap_or("")
+                                                        .to_string();
+                                                }
+                                            }
+
+                                            if !resolved_name.is_empty() {
+                                                gateway::register_user_name(user_id, resolved_name.clone());
+                                                info!("✅ Nome de usuário/bot resolvido via REST API: {} -> {}", user_id, resolved_name);
+                                            } else {
+                                                if let Ok(mut set) = store_arc.lock() {
+                                                    set.remove(&user_id);
                                                 }
                                             }
                                         });

@@ -172,6 +172,22 @@ impl DiscordHttpClient {
         }
     }
 
+    pub async fn get_guild_member(&self, guild_id: &str, user_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(member) = resp.json::<serde_json::Value>().await {
+                        return Ok(member);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP ao buscar membro do servidor: {:?}", e)),
+        }
+    }
+
     pub async fn get_guild_members(&self, guild_id: &str) -> Result<Vec<serde_json::Value>, String> {
         let url = format!("https://discord.com/api/v10/guilds/{}/members?limit=1000", guild_id);
         match self.client.get(&url).send().await {
