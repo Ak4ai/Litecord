@@ -2540,14 +2540,18 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                      }
                                  }
                                 18 => {
-                                    // DAVE Opcode 18: DAVE_PREPARE_TRANSITION
+                                    // DAVE Opcode 18: DAVE_PREPARE_TRANSITION (Sent for all active voice channel participants)
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
                                     let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(99);
-                                    if let Some(uid_str) = val["d"]["user_id"].as_str() {
-                                        if let Ok(u_id) = uid_str.parse::<u64>() {
-                                            let name = get_user_name(u_id);
-                                            register_user_name(u_id, name);
-                                        }
+                                    let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        val["d"]["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    if u_id > 0 {
+                                        let ssrc = (u_id & 0xFFFFFFFF) as u32;
+                                        register_voice_participant(ssrc, u_id);
+                                        info!("👥 Voice Gateway OP 18 DAVE Transition: Registrado participante no canal de voz! User ID {}", u_id);
                                     }
                                     info!("DAVE Prepare Transition (op=18): transition_id={}, protocol_version={}, payload={}",
                                         transition_id, protocol_version, val["d"]);
