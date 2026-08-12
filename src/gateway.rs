@@ -1621,9 +1621,6 @@ pub async fn connect_voice_gateway(
                                                                                         }
                                                                                     }
 
-                                                                                     // Log raw Opus payload for isolated C opusdec testing
-                                                                                     append_raw_opus_dump(raw_opus);
-
                                                                                     let dec = opus_decoders.entry(ssrc_recv).or_insert_with(|| {
                                                                                         OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder 48kHz Estéreo")
                                                                                     });
@@ -1753,8 +1750,8 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                         ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
                                                                                     }
 
-                                                                                    // Enabled live WAV dump for diagnostic analysis
-                                                                                    append_pcm_dump(&dump_vec);
+                                                                                    // Diagnostic WAV dump disabled for zero-latency real-time receiving
+                                                                                    // append_pcm_dump(&dump_vec);
 
                                                                                     if let Ok(mut queues) = speaker_queues_rx.lock() {
                                                                                         let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(96000));
@@ -2122,6 +2119,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                 // Stream AES-256-GCM Encrypted Opus microphone audio RTP frames every 20ms over UDP
                                                 let mut timer = tokio::time::interval(Duration::from_millis(20));
                                                 timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                                let mut remaining_silence_frames: usize = 0;
 
                                                 loop {
                                                     timer.tick().await;
@@ -2135,8 +2133,42 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                         if let Ok(mut q) = pcm_queue.lock() {
                                                             q.clear();
                                                         }
+                                                        remaining_silence_frames = 0;
                                                         continue;
                                                     }
+
+                                                    // Extract 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer
+                                                    let mut pcm_frame = [0.0f32; 960];
+                                                    let mut has_audio = false;
+                                                    {
+                                                        if let Ok(mut q) = pcm_queue.lock() {
+                                                            let avail = q.len();
+                                                            if avail >= 240 { // If at least 5ms of audio is available, process frame
+                                                                let count = avail.min(960);
+                                                                for i in 0..count {
+                                                                    if let Some(s) = q.pop_front() {
+                                                                        pcm_frame[i] = s;
+                                                                    }
+                                                                }
+                                                                // Pad remaining samples with clean silence (zeroes)
+                                                                for i in count..960 {
+                                                                    pcm_frame[i] = 0.0;
+                                                                }
+                                                                has_audio = true;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    let is_silence_packet = if has_audio {
+                                                        remaining_silence_frames = 5;
+                                                        false
+                                                    } else if remaining_silence_frames > 0 {
+                                                        remaining_silence_frames -= 1;
+                                                        true
+                                                    } else {
+                                                        // Stop sending UDP packets during prolonged silence as per WebRTC & Discord spec
+                                                        continue;
+                                                    };
 
                                                     seq = seq.wrapping_add(1);
                                                     timestamp = timestamp.wrapping_add(960);
@@ -2149,39 +2181,14 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                     audio_header[4..8].copy_from_slice(&timestamp.to_be_bytes());
                                                     audio_header[8..12].copy_from_slice(&ssrc_bytes);
 
-                                                    // Extract 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer smoothly
-                                                    let mut pcm_frame = [0.0f32; 960];
-                                                    let mut has_audio = false;
-                                                    {
-                                                        if let Ok(mut q) = pcm_queue.lock() {
-                                                            let avail = q.len();
-                                                            if avail >= 240 { // If at least 5ms of audio is available, process frame
-                                                                let count = avail.min(960);
-                                                                let mut last_sample = 0.0f32;
-                                                                for i in 0..count {
-                                                                    if let Some(s) = q.pop_front() {
-                                                                        pcm_frame[i] = s;
-                                                                        last_sample = s;
-                                                                    }
-                                                                }
-                                                                // Smoothly pad remaining samples if jitter occurred
-                                                                for i in count..960 {
-                                                                    last_sample *= 0.95;
-                                                                    pcm_frame[i] = last_sample;
-                                                                }
-                                                                has_audio = true;
-                                                            }
-                                                        }
-                                                    }
-
-                                                    let opus_bytes: &[u8] = if has_audio {
+                                                    let opus_bytes: &[u8] = if !is_silence_packet {
                                                         if let Ok(encoded_len) = opus_encoder.encode(&pcm_frame, 960, &mut opus_out) {
                                                             &opus_out[..encoded_len]
                                                         } else {
                                                             &[0xF8, 0xFF, 0xFE] // Silence frame fallback
                                                         }
                                                     } else {
-                                                        &[0xF8, 0xFF, 0xFE] // Silence frame fallback
+                                                        &[0xF8, 0xFF, 0xFE] // 5x Silence frame trailing pulse
                                                     };
 
                                                     let key_opt = secret_key_udp.lock().unwrap().clone();
