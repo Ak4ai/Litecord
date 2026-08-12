@@ -1261,20 +1261,23 @@ impl GatewayClient {
                     // Parse all user/bot objects in READY payload
                     if let Some(users_arr) = v["d"]["users"].as_array() {
                         for u in users_arr {
-                            if let Some(u_id_str) = u["id"].as_str() {
-                                if let Ok(u_id) = u_id_str.parse::<u64>() {
-                                    let mut dname = String::new();
-                                    if let Some(gname) = u["global_name"].as_str() {
-                                        if !gname.is_empty() { dname = gname.to_string(); }
+                            let u_id: u64 = if let Some(s) = u["id"].as_str() {
+                                s.parse().unwrap_or(0)
+                            } else {
+                                u["id"].as_u64().unwrap_or(0)
+                            };
+                            if u_id > 0 {
+                                let mut dname = String::new();
+                                if let Some(gname) = u["global_name"].as_str() {
+                                    if !gname.is_empty() { dname = gname.to_string(); }
+                                }
+                                if dname.is_empty() {
+                                    if let Some(uname) = u["username"].as_str() {
+                                        if !uname.is_empty() { dname = uname.to_string(); }
                                     }
-                                    if dname.is_empty() {
-                                        if let Some(uname) = u["username"].as_str() {
-                                            if !uname.is_empty() { dname = uname.to_string(); }
-                                        }
-                                    }
-                                    if !dname.is_empty() {
-                                        register_user_name(u_id, dname);
-                                    }
+                                }
+                                if !dname.is_empty() {
+                                    register_user_name(u_id, dname);
                                 }
                             }
                         }
@@ -1285,13 +1288,22 @@ impl GatewayClient {
                         for g in guilds_arr {
                             if let Some(vs_arr) = g["voice_states"].as_array() {
                                 for vs in vs_arr {
-                                    let u_str = vs["user_id"].as_str().unwrap_or("");
-                                    let c_str = vs["channel_id"].as_str().unwrap_or("");
-                                    if let Ok(u_id) = u_str.parse::<u64>() {
-                                        if !c_str.is_empty() {
-                                            if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
-                                                gvs.insert(u_id, c_str.to_string());
-                                            }
+                                    let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        vs["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    let c_str = if let Some(s) = vs["channel_id"].as_str() {
+                                        s.to_string()
+                                    } else if let Some(n) = vs["channel_id"].as_u64() {
+                                        n.to_string()
+                                    } else {
+                                        String::new()
+                                    };
+                                    if u_id > 0 && !c_str.is_empty() {
+                                        if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                            gvs.insert(u_id, c_str.clone());
+                                            info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", u_id, c_str);
                                         }
                                     }
                                 }
@@ -1335,70 +1347,80 @@ impl GatewayClient {
                     }
                 }
                 "VOICE_STATE_UPDATE" => {
-                    if let Some(event_uid_str) = v["d"]["user_id"].as_str() {
-                        if let Ok(event_uid) = event_uid_str.parse::<u64>() {
-                            // Extract display name from member object if present
-                            let mut display_name = String::new();
-                            if let Some(nick) = v["d"]["member"]["nick"].as_str() {
-                                if !nick.is_empty() { display_name = nick.to_string(); }
-                            }
-                            if display_name.is_empty() {
-                                if let Some(gname) = v["d"]["member"]["user"]["global_name"].as_str() {
-                                    if !gname.is_empty() { display_name = gname.to_string(); }
-                                }
-                            }
-                            if display_name.is_empty() {
-                                if let Some(uname) = v["d"]["member"]["user"]["username"].as_str() {
-                                    if !uname.is_empty() { display_name = uname.to_string(); }
-                                }
-                            }
+                    let event_uid: u64 = if let Some(s) = v["d"]["user_id"].as_str() {
+                        s.parse().unwrap_or(0)
+                    } else {
+                        v["d"]["user_id"].as_u64().unwrap_or(0)
+                    };
 
-                            if !display_name.is_empty() {
-                                register_user_name(event_uid, display_name.clone());
-                                info!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
+                    if event_uid > 0 {
+                        let mut display_name = String::new();
+                        if let Some(nick) = v["d"]["member"]["nick"].as_str() {
+                            if !nick.is_empty() { display_name = nick.to_string(); }
+                        }
+                        if display_name.is_empty() {
+                            if let Some(gname) = v["d"]["member"]["user"]["global_name"].as_str() {
+                                if !gname.is_empty() { display_name = gname.to_string(); }
                             }
+                        }
+                        if display_name.is_empty() {
+                            if let Some(uname) = v["d"]["member"]["user"]["username"].as_str() {
+                                if !uname.is_empty() { display_name = uname.to_string(); }
+                            }
+                        }
 
-                            let event_chan = v["d"]["channel_id"].as_str();
+                        if !display_name.is_empty() {
+                            register_user_name(event_uid, display_name.clone());
+                            info!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
+                        }
 
-                            if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                        let event_chan = if let Some(s) = v["d"]["channel_id"].as_str() {
+                            Some(s.to_string())
+                        } else if let Some(n) = v["d"]["channel_id"].as_u64() {
+                            Some(n.to_string())
+                        } else {
+                            None
+                        };
+
+                        if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                            if let Some(ref cid) = event_chan {
+                                gvs.insert(event_uid, cid.clone());
+                                info!("📌 [VOICE_STATE_UPDATE] User {} -> Canal {}", event_uid, cid);
+                            } else {
+                                gvs.remove(&event_uid);
+                            }
+                        }
+                        let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
+
+                        if let Some(ref my_cid) = my_voice_chan {
+                            if event_chan.as_deref() == Some(my_cid.as_str()) {
+                                info!("👥 [VOICE CHANNEL JOIN] Usuário {} ({}) entrou no nosso canal de voz!", event_uid, display_name);
+                                register_voice_participant(event_uid as u32, event_uid);
+                            } else {
+                                info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
+                                remove_voice_participant_by_user_id(event_uid);
+                            }
+                        }
+
+                        // Check if this is MY OWN voice state update
+                        let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
+                        let event_uid_str = event_uid.to_string();
+                        if !my_uid.is_empty() && event_uid_str == my_uid {
+                            if let Some(sid) = v["d"]["session_id"].as_str() {
+                                info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}", sid, event_chan, v["d"]["guild_id"].as_str());
                                 if let Some(cid) = event_chan {
-                                    gvs.insert(event_uid, cid.to_string());
-                                } else {
-                                    gvs.remove(&event_uid);
-                                }
-                            }
-
-                            let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
-
-                            if let Some(ref my_cid) = my_voice_chan {
-                                if event_chan == Some(my_cid.as_str()) {
-                                    info!("👥 [VOICE CHANNEL JOIN] Usuário {} ({}) entrou no nosso canal de voz!", event_uid, display_name);
-                                    register_voice_participant(event_uid as u32, event_uid);
-                                } else {
-                                    info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
-                                    remove_voice_participant_by_user_id(event_uid);
-                                }
-                            }
-
-                            // Check if this is MY OWN voice state update
-                            let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
-                            if !my_uid.is_empty() && event_uid_str == my_uid {
-                                if let Some(sid) = v["d"]["session_id"].as_str() {
-                                    info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}", sid, event_chan, v["d"]["guild_id"].as_str());
-                                    if let Some(cid) = event_chan {
-                                        *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
-                                        *self.voice_channel_id.lock().unwrap() = Some(cid.to_string());
-                                        if let Some(gid) = v["d"]["guild_id"].as_str() {
-                                            *self.voice_guild_id.lock().unwrap() = Some(gid.to_string());
-                                        }
-                                        self.try_trigger_voice_connect();
-                                    } else {
-                                        // We left the voice channel
-                                        *self.voice_session_id.lock().unwrap() = None;
-                                        *self.voice_token.lock().unwrap() = None;
-                                        *self.voice_endpoint.lock().unwrap() = None;
-                                        clear_voice_participants();
+                                    *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
+                                    *self.voice_channel_id.lock().unwrap() = Some(cid.to_string());
+                                    if let Some(gid) = v["d"]["guild_id"].as_str() {
+                                        *self.voice_guild_id.lock().unwrap() = Some(gid.to_string());
                                     }
+                                    self.try_trigger_voice_connect();
+                                } else {
+                                    // We left the voice channel
+                                    *self.voice_session_id.lock().unwrap() = None;
+                                    *self.voice_token.lock().unwrap() = None;
+                                    *self.voice_endpoint.lock().unwrap() = None;
+                                    clear_voice_participants();
                                 }
                             }
                         }
