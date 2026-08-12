@@ -722,8 +722,8 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
             let ref_content = ref_msg.get("content")
                 .and_then(|c| c.as_str())
                 .unwrap_or("");
-            let preview = if ref_content.len() > 60 {
-                format!("{}...", &ref_content[..57])
+            let preview = if ref_content.chars().count() > 60 {
+                format!("{}...", ref_content.chars().take(57).collect::<String>())
             } else if ref_content.is_empty() {
                 "[midia/embed]".to_string()
             } else {
@@ -851,7 +851,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
             // Embed timestamp
             if let Some(ts) = embed["timestamp"].as_str() {
                 if !ts.is_empty() {
-                    let display = if ts.len() >= 10 { &ts[..10] } else { ts };
+                    let display = if ts.chars().count() >= 10 { ts.chars().take(10).collect::<String>() } else { ts.to_string() };
                     ep.push(format!("[{}]", display));
                 }
             }

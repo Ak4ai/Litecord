@@ -648,6 +648,23 @@ impl std::io::Write for MultiWriter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "desconhecido".to_string()
+        };
+        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
+        let msg = format!("💥 PANIC DETECTADO: {}\nLocation: {}\n", payload, location);
+        eprintln!("{}", msg);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("panic_log.txt") {
+            use std::io::Write;
+            let _ = writeln!(f, "{}", msg);
+        }
+    }));
+
     if let Ok(log_file) = std::fs::File::create("litecord_app.log") {
         let writer = MultiWriter { file: std::sync::Mutex::new(log_file) };
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
