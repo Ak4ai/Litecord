@@ -460,6 +460,33 @@ async fn fetch_and_populate_channels(
                 }
             });
 
+            // Fetch and cache all guild members via REST API asynchronously
+            if let Ok(members) = http.get_guild_members(guild_id).await {
+                for m in members {
+                    let uid_str = m["user"]["id"].as_str().unwrap_or("");
+                    if let Ok(uid) = uid_str.parse::<u64>() {
+                        let mut display_name = String::new();
+                        if let Some(nick) = m["nick"].as_str() {
+                            if !nick.is_empty() { display_name = nick.to_string(); }
+                        }
+                        if display_name.is_empty() {
+                            if let Some(gname) = m["user"]["global_name"].as_str() {
+                                if !gname.is_empty() { display_name = gname.to_string(); }
+                            }
+                        }
+                        if display_name.is_empty() {
+                            if let Some(uname) = m["user"]["username"].as_str() {
+                                if !uname.is_empty() { display_name = uname.to_string(); }
+                            }
+                        }
+                        if !display_name.is_empty() {
+                            gateway::register_user_name(uid, display_name);
+                        }
+                    }
+                }
+                info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
+            }
+
             // Try to find the first readable text channel automatically
             let text_channels: Vec<&ChannelData> = channels_data.iter().filter(|c| !c.is_voice).collect();
             let mut loaded_readable = false;
@@ -1286,6 +1313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_is_in_voice(true);
                 ui.set_is_voice_focused(true);
                 ui.set_current_voice_channel(ch_name.clone().into());
+                gateway::sync_voice_channel_participants(&ch_id);
                 let muted = ui.get_is_muted();
                 let deafened = ui.get_is_deafened();
 

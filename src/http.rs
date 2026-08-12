@@ -171,4 +171,20 @@ impl DiscordHttpClient {
             Err(e) => Err(format!("Erro HTTP ao buscar usuário: {:?}", e)),
         }
     }
+
+    pub async fn get_guild_members(&self, guild_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/members?limit=1000", guild_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(members) = resp.json::<Vec<serde_json::Value>>().await {
+                        return Ok(members);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP ao buscar membros do servidor: {:?}", e)),
+        }
+    }
 }
