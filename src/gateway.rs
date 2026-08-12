@@ -2345,8 +2345,8 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                     let src_l = cubic_hermite(hist[0].0, hist[1].0, hist[2].0, hist[3].0, t);
                                                                                     let src_r = cubic_hermite(hist[0].1, hist[1].1, hist[2].1, hist[3].1, t);
 
-                                                                                    mixed_l += src_l * user_vol;
-                                                                                    mixed_r += src_r * user_vol;
+                                                                                    mixed_l += src_l * effective_vol;
+                                                                                    mixed_r += src_r * effective_vol;
                                                                                 }
                                                                             }
 
@@ -2370,6 +2370,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                         }
                                                         cpal::SampleFormat::I16 => {
                                                             let sq_i16 = Arc::clone(&sq);
+                                                            let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
                                                             device.build_output_stream(
                                                                 &config.into(),
                                                                 move |output: &mut [i16], _| {
@@ -2420,10 +2421,47 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
 
                                                                         if ready_ssrcs.is_empty() { return; }
 
+                                                                        let mut ssrc_vol_map_i16 = std::collections::HashMap::new();
+                                                                        let mut max_active_priority_i16 = 0i32;
+                                                                        let active_spk_store_i16 = get_active_voice_participants_store();
+                                                                        let active_spk_map_i16 = active_spk_store_i16.lock().ok();
+                                                                        if let Ok(spk_map) = ssrc_to_userid_i16.lock() {
+                                                                            for &ssrc in &ready_ssrcs {
+                                                                                let uid_num = spk_map.get(&ssrc)
+                                                                                    .or_else(|| active_spk_map_i16.as_ref().and_then(|m| m.get(&ssrc)))
+                                                                                    .copied()
+                                                                                    .unwrap_or(ssrc as u64);
+
+                                                                                let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
+                                                                                let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
+                                                                                let is_muted = is_muted_uid || is_muted_ssrc;
+                                                                                let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
+                                                                                let user_prio = prio_uid.max(prio_ssrc);
+                                                                                if !is_muted {
+                                                                                    if user_prio > max_active_priority_i16 {
+                                                                                        max_active_priority_i16 = user_prio;
+                                                                                    }
+                                                                                }
+                                                                                ssrc_vol_map_i16.insert(ssrc, (is_muted, user_vol, user_prio));
+                                                                            }
+                                                                        }
+
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
                                                                             for &ssrc in &ready_ssrcs {
+                                                                                let (is_muted, user_vol, user_prio) = ssrc_vol_map_i16.get(&ssrc).copied().unwrap_or((false, 1.0, 0));
+                                                                                if is_muted { continue; }
+
+                                                                                let priority_multiplier = if max_active_priority_i16 > 0 && user_prio < max_active_priority_i16 {
+                                                                                    let diff = max_active_priority_i16 - user_prio;
+                                                                                    let mult = 0.5f32 - (diff as f32 - 1.0f32) * 0.1f32;
+                                                                                    mult.max(0.05f32)
+                                                                                } else {
+                                                                                    1.0f32
+                                                                                };
+                                                                                let effective_vol = user_vol * priority_multiplier;
+
                                                                                 if let Some(q) = queues.get_mut(&ssrc) {
                                                                                     let phase = ssrc_phases.entry(ssrc).or_insert(0.0);
                                                                                     let hist = ssrc_histories.entry(ssrc).or_insert([((0.0, 0.0)), ((0.0, 0.0)), ((0.0, 0.0)), ((0.0, 0.0))]);
@@ -2449,8 +2487,8 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                     let src_l = cubic_hermite(hist[0].0, hist[1].0, hist[2].0, hist[3].0, t);
                                                                                     let src_r = cubic_hermite(hist[0].1, hist[1].1, hist[2].1, hist[3].1, t);
 
-                                                                                    mixed_l += src_l;
-                                                                                    mixed_r += src_r;
+                                                                                    mixed_l += src_l * effective_vol;
+                                                                                    mixed_r += src_r * effective_vol;
                                                                                 }
                                                                             }
 
