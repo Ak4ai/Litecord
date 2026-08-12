@@ -192,7 +192,48 @@ fn start_mic_capture(
                     let _ = level_tx.try_send(level);
                 },
                 move |err| {
-                    log::error!("Erro no Stream de Microfone: {:?}", err);
+                    log::error!("Erro no Stream de Microfone I16: {:?}", err);
+                },
+                None,
+            ).ok()?
+        }
+        cpal::SampleFormat::I32 => {
+            let q_arc = Arc::clone(&pcm_queue);
+            target_dev.build_input_stream(
+                &config.into(),
+                move |data: &[i32], _: &_| {
+                    let mut sum_sq = 0.0f32;
+                    if let Ok(mut q) = q_arc.lock() {
+                        let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                            let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32;
+                            sum_sq += s * s;
+                            s.clamp(-1.0, 1.0)
+                        }).collect();
+
+                        if sample_rate == 48000 {
+                            for s in mono_samples {
+                                if q.len() < 96000 { q.push_back(s); }
+                            }
+                        } else {
+                            let ratio = 48000.0 / sample_rate as f64;
+                            let out_len = (mono_samples.len() as f64 * ratio) as usize;
+                            for i in 0..out_len {
+                                let src_pos = i as f64 / ratio;
+                                let src_idx = src_pos as usize;
+                                let frac = src_pos - src_idx as f64;
+                                let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
+                                let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
+                                let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
+                                if q.len() < 96000 { q.push_back(resampled); }
+                            }
+                        }
+                    }
+                    let rms = (sum_sq / (data.len() / channels.max(1)).max(1) as f32).sqrt();
+                    let level = (rms * 6.0).min(1.0);
+                    let _ = level_tx.try_send(level);
+                },
+                move |err| {
+                    log::error!("Erro no Stream de Microfone I32: {:?}", err);
                 },
                 None,
             ).ok()?
@@ -201,9 +242,10 @@ fn start_mic_capture(
     };
 
     if stream.play().is_ok() {
-        info!("Stream de Microfone ativado com SUCESSO via WASAPI! Rate: {}Hz -> 48000Hz", sample_rate);
+        info!("🎙️ Stream de Microfone INICIADO COM SUCESSO! Rate: {}Hz -> 48000Hz", sample_rate);
         Some(stream)
     } else {
+        log::error!("Falha ao executar stream.play() no microfone!");
         None
     }
 }
@@ -899,7 +941,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_close_settings(move || {
         if let Some(ui) = app_weak_close_settings.upgrade() {
             ui.set_show_settings_modal(false);
-            *active_stream_close.lock().unwrap() = None; // Stop test stream
+            if !ui.get_is_in_voice() {
+                *active_stream_close.lock().unwrap() = None; // Only stop test stream if not in voice
+            }
         }
     });
 
