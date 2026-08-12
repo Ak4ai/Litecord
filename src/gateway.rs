@@ -1518,30 +1518,40 @@ impl GatewayClient {
                     // Parse voice_states to populate existing voice channel participants
                     if let Some(vs_arr) = v["d"]["voice_states"].as_array() {
                         for vs in vs_arr {
-                            let uid_str = vs["user_id"].as_str().unwrap_or("");
-                            let cid_str = vs["channel_id"].as_str().unwrap_or("");
-                            if let Ok(uid) = uid_str.parse::<u64>() {
-                                if !cid_str.is_empty() {
-                                    if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
-                                        gvs.insert(uid, cid_str.to_string());
+                            let uid: u64 = if let Some(s) = vs["user_id"].as_str() {
+                                s.parse().unwrap_or(0)
+                            } else {
+                                vs["user_id"].as_u64().unwrap_or(0)
+                            };
+                            let cid_str = if let Some(s) = vs["channel_id"].as_str() {
+                                s.to_string()
+                            } else if let Some(n) = vs["channel_id"].as_u64() {
+                                n.to_string()
+                            } else {
+                                String::new()
+                            };
+
+                            if uid > 0 && !cid_str.is_empty() {
+                                if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                    gvs.insert(uid, cid_str.clone());
+                                    info!("📌 [GUILD_CREATE] Pré-carregado estado de voz: User {} -> Canal {}", uid, cid_str);
+                                }
+                                let mut display_name = String::new();
+                                if let Some(nick) = vs["member"]["nick"].as_str() {
+                                    if !nick.is_empty() { display_name = nick.to_string(); }
+                                }
+                                if display_name.is_empty() {
+                                    if let Some(gname) = vs["member"]["user"]["global_name"].as_str() {
+                                        if !gname.is_empty() { display_name = gname.to_string(); }
                                     }
-                                    let mut display_name = String::new();
-                                    if let Some(nick) = vs["member"]["nick"].as_str() {
-                                        if !nick.is_empty() { display_name = nick.to_string(); }
+                                }
+                                if display_name.is_empty() {
+                                    if let Some(uname) = vs["member"]["user"]["username"].as_str() {
+                                        if !uname.is_empty() { display_name = uname.to_string(); }
                                     }
-                                    if display_name.is_empty() {
-                                        if let Some(gname) = vs["member"]["user"]["global_name"].as_str() {
-                                            if !gname.is_empty() { display_name = gname.to_string(); }
-                                        }
-                                    }
-                                    if display_name.is_empty() {
-                                        if let Some(uname) = vs["member"]["user"]["username"].as_str() {
-                                            if !uname.is_empty() { display_name = uname.to_string(); }
-                                        }
-                                    }
-                                    if !display_name.is_empty() {
-                                        register_user_name(uid, display_name);
-                                    }
+                                }
+                                if !display_name.is_empty() {
+                                    register_user_name(uid, display_name);
                                 }
                             }
                         }
