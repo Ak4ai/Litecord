@@ -444,10 +444,12 @@ async fn fetch_and_populate_channels(
             }
 
             let ui_channels: Vec<ChannelItem> = channels_data.iter().map(|ch| {
+                let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
                 ChannelItem {
                     id: ch.id.clone().into(),
                     name: ch.name.clone().into(),
                     is_voice: ch.is_voice,
+                    voice_count: vcount,
                 }
             }).collect();
 
@@ -959,6 +961,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Periodic update for voice channel participant badges in sidebar
+    let app_weak_ch_badges = app_weak.clone();
+    let guilds_map_badges = Arc::clone(&guilds_map);
+    let active_guild_badges = Arc::clone(&active_guild_id);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) { continue; }
+            let gid = active_guild_badges.lock().unwrap().clone();
+            if gid.is_empty() { continue; }
+
+            let channels_opt = {
+                if let Ok(map) = guilds_map_badges.lock() {
+                    map.get(&gid).map(|g| g.channels.clone())
+                } else {
+                    None
+                }
+            };
+
+            if let Some(chans) = channels_opt {
+                let ui_channels: Vec<ChannelItem> = chans.iter().map(|ch| {
+                    let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
+                    ChannelItem {
+                        id: ch.id.clone().into(),
+                        name: ch.name.clone().into(),
+                        is_voice: ch.is_voice,
+                        voice_count: vcount,
+                    }
+                }).collect();
+
+                let app_w = app_weak_ch_badges.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w.upgrade() {
+                        let cur_chans = ui.get_channels();
+                        let mut needs_update = cur_chans.row_count() != ui_channels.len();
+                        if !needs_update {
+                            for (i, new_c) in ui_channels.iter().enumerate() {
+                                if let Some(old_c) = cur_chans.row_data(i) {
+                                    if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
+                                        needs_update = true;
+                                        break;
+                                    }
+                                } else {
+                                    needs_update = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if needs_update {
+                            let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
+                            ui.set_channels(model.into());
+                        }
+                    }
+                });
+            }
+        }
+    });
+
     // Voice & Audio Settings Callbacks
     let app_weak_open_settings = app_weak.clone();
     let selected_input_open = Arc::clone(&selected_input);
@@ -1443,6 +1504,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_deafen.upgrade() {
             let new_deafened = !ui.get_is_deafened();
             ui.set_is_deafened(new_deafened);
+            gateway::set_self_deaf(new_deafened);
 
             let gid = active_guild_deafen.lock().unwrap().clone();
             let cid = active_channel_deafen.lock().unwrap().clone();

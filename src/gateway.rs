@@ -83,6 +83,26 @@ pub static CURRENT_VOICE_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+pub static SELF_DEAF_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_self_deaf(val: bool) {
+    SELF_DEAF_STATE.store(val, Ordering::Relaxed);
+}
+
+pub fn is_self_deaf() -> bool {
+    SELF_DEAF_STATE.load(Ordering::Relaxed)
+}
+
+pub fn get_voice_channel_participant_count(channel_id: &str) -> i32 {
+    if channel_id.is_empty() { return 0; }
+    if let Ok(map) = get_guild_voice_states_store().lock() {
+        let count = map.values().filter(|cid| cid.as_str() == channel_id).count();
+        count as i32
+    } else {
+        0
+    }
+}
+
 pub fn set_my_user_id(id: u64) {
     MY_USER_ID.store(id, Ordering::Relaxed);
 }
@@ -2078,7 +2098,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                             device.build_output_stream(
                                                                 &config.into(),
                                                                 move |output: &mut [f32], _| {
-                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
                                                                         for s in output.iter_mut() { *s = 0.0; }
                                                                         return;
                                                                     }
@@ -2191,7 +2211,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             let limited_r = soft_limit(mixed_r);
                                                                             if out_channels >= 2 {
                                                                                 output[f * out_channels + 0] = limited_l;
-                                                                                output[f * out_channels + 1] = limited_r;
+                                                                                        output[f * out_channels + 1] = limited_r;
                                                                                 for ch in 2..out_channels {
                                                                                     output[f * out_channels + ch] = 0.0;
                                                                                 }
@@ -2210,7 +2230,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                             device.build_output_stream(
                                                                 &config.into(),
                                                                 move |output: &mut [i16], _| {
-                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
                                                                         for s in output.iter_mut() { *s = 0; }
                                                                         return;
                                                                     }

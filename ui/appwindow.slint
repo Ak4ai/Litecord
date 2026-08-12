@@ -46,6 +46,7 @@ struct ChannelItem {
     id: string,
     name: string,
     is_voice: bool,
+    voice_count: int,
 }
 
 struct GuildItem {
@@ -467,7 +468,24 @@ export component AppWindow inherits Window {
                                             color: #dbdee1;
                                             font-size: 13px;
                                             vertical-alignment: center;
+                                            horizontal-stretch: 1;
                                             overflow: elide;
+                                        }
+
+                                        if channel.is_voice && channel.voice_count > 0 : Rectangle {
+                                            width: 22px;
+                                            height: 18px;
+                                            border-radius: 9px;
+                                            background: #23a55a;
+
+                                            Text {
+                                                text: channel.voice_count;
+                                                color: #ffffff;
+                                                font-size: 10px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
 
