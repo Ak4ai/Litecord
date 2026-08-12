@@ -169,6 +169,23 @@ pub fn remove_voice_participant_by_user_id(user_id: u64) {
     }
 }
 
+pub static GUILD_VOICE_STATES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>> = std::sync::OnceLock::new();
+
+pub fn get_guild_voice_states_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> {
+    GUILD_VOICE_STATES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn sync_voice_channel_participants(channel_id: &str) {
+    if channel_id.is_empty() { return; }
+    if let Ok(map) = get_guild_voice_states_store().lock() {
+        for (&uid, cid) in map.iter() {
+            if cid == channel_id {
+                register_voice_participant(uid as u32, uid);
+            }
+        }
+    }
+}
+
 pub static USER_NAMES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>> = std::sync::OnceLock::new();
 
 pub fn get_user_names_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> {
@@ -1194,8 +1211,17 @@ impl GatewayClient {
                                 info!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
                             }
 
-                            let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
                             let event_chan = v["d"]["channel_id"].as_str();
+
+                            if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                if let Some(cid) = event_chan {
+                                    gvs.insert(event_uid, cid.to_string());
+                                } else {
+                                    gvs.remove(&event_uid);
+                                }
+                            }
+
+                            let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
 
                             if let Some(ref my_cid) = my_voice_chan {
                                 if event_chan == Some(my_cid.as_str()) {
@@ -1294,6 +1320,64 @@ impl GatewayClient {
                         }
                     }
 
+                    // Parse members to cache user display names
+                    if let Some(members_arr) = v["d"]["members"].as_array() {
+                        for m in members_arr {
+                            let uid_str = m["user"]["id"].as_str().unwrap_or("");
+                            if let Ok(uid) = uid_str.parse::<u64>() {
+                                let mut display_name = String::new();
+                                if let Some(nick) = m["nick"].as_str() {
+                                    if !nick.is_empty() { display_name = nick.to_string(); }
+                                }
+                                if display_name.is_empty() {
+                                    if let Some(gname) = m["user"]["global_name"].as_str() {
+                                        if !gname.is_empty() { display_name = gname.to_string(); }
+                                    }
+                                }
+                                if display_name.is_empty() {
+                                    if let Some(uname) = m["user"]["username"].as_str() {
+                                        if !uname.is_empty() { display_name = uname.to_string(); }
+                                    }
+                                }
+                                if !display_name.is_empty() {
+                                    register_user_name(uid, display_name);
+                                }
+                            }
+                        }
+                    }
+
+                    // Parse voice_states to populate existing voice channel participants
+                    if let Some(vs_arr) = v["d"]["voice_states"].as_array() {
+                        for vs in vs_arr {
+                            let uid_str = vs["user_id"].as_str().unwrap_or("");
+                            let cid_str = vs["channel_id"].as_str().unwrap_or("");
+                            if let Ok(uid) = uid_str.parse::<u64>() {
+                                if !cid_str.is_empty() {
+                                    if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                                        gvs.insert(uid, cid_str.to_string());
+                                    }
+                                    let mut display_name = String::new();
+                                    if let Some(nick) = vs["member"]["nick"].as_str() {
+                                        if !nick.is_empty() { display_name = nick.to_string(); }
+                                    }
+                                    if display_name.is_empty() {
+                                        if let Some(gname) = vs["member"]["user"]["global_name"].as_str() {
+                                            if !gname.is_empty() { display_name = gname.to_string(); }
+                                        }
+                                    }
+                                    if display_name.is_empty() {
+                                        if let Some(uname) = vs["member"]["user"]["username"].as_str() {
+                                            if !uname.is_empty() { display_name = uname.to_string(); }
+                                        }
+                                    }
+                                    if !display_name.is_empty() {
+                                        register_user_name(uid, display_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     info!("Servidor carregado: '{}' ({} canais)", name, channels.len());
 
                     let guild = GuildData { id, name, channels };
@@ -1336,6 +1420,7 @@ pub async fn connect_voice_gateway(
             let session_id = session_id.to_string();
             let token = token.to_string();
             let channel_id_str = channel_id.to_string();
+            sync_voice_channel_participants(&channel_id_str);
             let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
             let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
             let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));

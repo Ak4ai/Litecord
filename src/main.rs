@@ -838,9 +838,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if let Ok(profile) = http.get_user_profile(&uid_str_task).await {
                                                 let display_name = profile["global_name"].as_str()
                                                     .or_else(|| profile["username"].as_str())
-                                                    .unwrap_or("Novo Usuário");
-                                                gateway::register_user_name(user_id, display_name.to_string());
-                                                info!("✅ Nome de usuário resolvido via REST API: {} -> {}", user_id, display_name);
+                                                    .or_else(|| profile["user"]["global_name"].as_str())
+                                                    .or_else(|| profile["user"]["username"].as_str())
+                                                    .or_else(|| profile["nick"].as_str())
+                                                    .unwrap_or("");
+                                                if !display_name.is_empty() {
+                                                    gateway::register_user_name(user_id, display_name.to_string());
+                                                    info!("✅ Nome de usuário/bot resolvido via REST API: {} -> {}", user_id, display_name);
+                                                }
                                             }
                                         });
                                     }
