@@ -80,6 +80,24 @@ pub static MIC_PCM_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>
 pub static SPEAKER_PCM_QUEUES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u32, VecDeque<(f32, f32)>>>>> = std::sync::OnceLock::new();
 pub static SELECTED_OUTPUT_DEVICE: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static CURRENT_VOICE_SESSION_ID: AtomicU64 = AtomicU64::new(0);
+pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
+pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_my_user_id(id: u64) {
+    MY_USER_ID.store(id, Ordering::Relaxed);
+}
+
+pub fn get_my_user_id() -> u64 {
+    MY_USER_ID.load(Ordering::Relaxed)
+}
+
+pub fn set_self_mic_level(val: f32) {
+    SELF_MIC_LEVEL.store(val.to_bits(), Ordering::Relaxed);
+}
+
+pub fn get_self_mic_level() -> f32 {
+    f32::from_bits(SELF_MIC_LEVEL.load(Ordering::Relaxed))
+}
 
 pub fn get_mic_pcm_queue() -> Arc<std::sync::Mutex<VecDeque<f32>>> {
     MIC_PCM_QUEUE.get_or_init(|| Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(48000)))).clone()
@@ -1197,6 +1215,7 @@ impl GatewayClient {
                     let username = v["d"]["user"]["username"].as_str().unwrap_or("User");
                     let global_name = v["d"]["user"]["global_name"].as_str().unwrap_or(username);
                     if uid_num > 0 {
+                        set_my_user_id(uid_num);
                         register_user_name(uid_num, global_name.to_string());
                     }
 

@@ -722,10 +722,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
 
     // Dispatch Microphone Volume Level to Slint UI Thread
-    // Skipped when window is hidden to save CPU.
     let app_weak_level = app_weak.clone();
     tokio::spawn(async move {
         while let Some(level) = level_rx.recv().await {
+            gateway::set_self_mic_level(level);
             // Deep-sleep guard: drain the channel without invoking Slint
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                 continue;
@@ -810,6 +810,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let active_parts = gateway::get_active_voice_participants_store();
                 let queues_arc = gateway::get_speaker_pcm_queues();
+                let my_uid = gateway::get_my_user_id();
+                let self_level = gateway::get_self_mic_level();
                 let mut participants = Vec::new();
 
                 if let Ok(parts_map) = active_parts.lock() {
@@ -822,7 +824,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut audio_level = 0.0f32;
                         let mut is_speaking = false;
 
-                        if let Some(ref queues) = queues_guard {
+                        if user_id == my_uid && my_uid > 0 {
+                            audio_level = self_level;
+                            is_speaking = audio_level > 0.03;
+                        } else if let Some(ref queues) = queues_guard {
                             if let Some(q) = queues.get(&ssrc) {
                                 let sample_cnt = q.len().min(480);
                                 if sample_cnt > 0 {
