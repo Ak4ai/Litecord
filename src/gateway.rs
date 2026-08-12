@@ -63,6 +63,7 @@ pub enum GatewayCommand {
     },
     SubscribeGuild {
         guild_id: String,
+        channel_ids: Vec<String>,
     },
 }
 
@@ -95,12 +96,25 @@ pub fn is_self_deaf() -> bool {
 
 pub fn get_voice_channel_participant_count(channel_id: &str) -> i32 {
     if channel_id.is_empty() { return 0; }
+    let mut set = std::collections::HashSet::new();
+
     if let Ok(map) = get_guild_voice_states_store().lock() {
-        let count = map.values().filter(|cid| cid.as_str() == channel_id).count();
-        count as i32
-    } else {
-        0
+        for (&uid, cid) in map.iter() {
+            if cid == channel_id {
+                set.insert(uid);
+            }
+        }
     }
+
+    if let Ok(parts_map) = get_active_voice_participants_store().lock() {
+        for (&ssrc, &uid) in parts_map.iter() {
+            if ssrc != 999999 && uid != 999999 && uid > 0 {
+                set.insert(uid);
+            }
+        }
+    }
+
+    set.len() as i32
 }
 
 pub fn set_my_user_id(id: u64) {
@@ -1089,8 +1103,13 @@ impl GatewayClient {
                                     warn!("Falha ao enviar Opcode 4 (VoiceStateUpdate): {:?}", e);
                                 }
                             }
-                            GatewayCommand::SubscribeGuild { guild_id } => {
+                            GatewayCommand::SubscribeGuild { guild_id, channel_ids } => {
                                 if !guild_id.is_empty() {
+                                    let mut channels_map = serde_json::Map::new();
+                                    for cid in &channel_ids {
+                                        channels_map.insert(cid.clone(), serde_json::json!([[0, 99]]));
+                                    }
+
                                     let sub_payload = serde_json::json!({
                                         "op": 14,
                                         "d": {
@@ -1099,10 +1118,10 @@ impl GatewayClient {
                                             "threads": true,
                                             "activities": true,
                                             "members": [],
-                                            "channels": {}
+                                            "channels": channels_map
                                         }
                                     });
-                                    info!("📡 Opcode 14 Lazy Guild Subscription enviado para a Gateway (Guild: {})", guild_id);
+                                    info!("📡 Opcode 14 Lazy Guild Subscription enviado para a Gateway (Guild: {}, {} canais inscritos)", guild_id, channel_ids.len());
                                     let mut w = write_cmd.lock().await;
                                     let _ = w.send(Message::Text(sub_payload.to_string().into())).await;
                                 }

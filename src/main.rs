@@ -265,6 +265,7 @@ async fn fetch_and_populate_guilds(
     guilds_map: Arc<Mutex<HashMap<String, GuildData>>>,
     active_guild_id: Arc<Mutex<String>>,
     active_channel_id: Arc<Mutex<String>>,
+    cmd_tx_store: Arc<Mutex<Option<mpsc::Sender<GatewayCommand>>>>,
 ) {
     info!("Buscando servidores do usuário via REST API...");
     let cache_dir = std::path::Path::new(".litecord_cache/icons");
@@ -293,30 +294,28 @@ async fn fetch_and_populate_guilds(
                     let mut icon_path_opt = None;
                     if local_icon_path.exists() {
                         icon_path_opt = Some(local_icon_path.to_string_lossy().to_string());
-                    } else if let Some(ref icon_hash) = g_icon_hash {
-                        let icon_url = format!("https://cdn.discordapp.com/icons/{}/{}.png?size=64", g_id, icon_hash);
-                        pending_icon_downloads.push((g_id.clone(), icon_url));
+                    } else if let Some(ref hash) = g_icon_hash {
+                        let icon_url = format!("https://cdn.discordapp.com/icons/{}/{}.png?size=128", g_id, hash);
+                        pending_icon_downloads.push((icon_url, local_icon_path.to_string_lossy().to_string()));
                     }
 
-                    raw_guilds.push(RawGuildItem {
+                    guilds_map.lock().unwrap().insert(g_id.clone(), GuildData {
                         id: g_id.clone(),
                         name: g_name.clone(),
+                        channels: Vec::new(),
+                    });
+
+                    raw_guilds.push(RawGuildItem {
+                        id: g_id,
+                        name: g_name,
                         icon: icon_str,
                         icon_path: icon_path_opt,
                     });
-
-                    let g_data = GuildData {
-                        id: g_id.clone(),
-                        name: g_name,
-                        channels: Vec::new(),
-                    };
-                    guilds_map.lock().unwrap().insert(g_id, g_data);
                 }
             }
 
-            let app_w = app_weak.clone();
             let raw_guilds_clone = raw_guilds.clone();
-
+            let app_w = app_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let ui_guilds: Vec<GuildItem> = raw_guilds_clone.into_iter().map(|raw| {
@@ -350,6 +349,7 @@ async fn fetch_and_populate_guilds(
                     guilds_map,
                     active_guild_id,
                     active_channel_id,
+                    cmd_tx_store,
                     &first_gid,
                 ).await;
             }
@@ -360,30 +360,34 @@ async fn fetch_and_populate_guilds(
                 let app_w_dl = app_weak.clone();
 
                 tokio::spawn(async move {
-                    for (gid, url) in pending_icon_downloads {
+                    for (url, save_path) in pending_icon_downloads {
                         if let Ok(bytes) = http_dl.download_image(&url).await {
-                            let icon_file = std::path::Path::new(".litecord_cache/icons").join(format!("{}.png", gid));
-                            let _ = std::fs::write(&icon_file, &bytes);
+                            let _ = std::fs::write(&save_path, &bytes);
+                        }
+                    }
 
-                            let app_w_inner = app_w_dl.clone();
-                            let gid_clone = gid.clone();
-                            let icon_path_str = icon_file.to_string_lossy().to_string();
-
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = app_w_inner.upgrade() {
-                                    if let Ok(img) = Image::load_from_path(std::path::Path::new(&icon_path_str)) {
-                                        let mut current_g: Vec<GuildItem> = ui.get_guilds().iter().collect();
-                                        if let Some(item) = current_g.iter_mut().find(|g| g.id == gid_clone) {
+                    // Reload UI with newly cached icons
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w_dl.upgrade() {
+                            let old_guilds = ui.get_guilds();
+                            let mut updated = Vec::new();
+                            for i in 0..old_guilds.row_count() {
+                                if let Some(mut item) = old_guilds.row_data(i) {
+                                    let gid = item.id.to_string();
+                                    let icon_path = cache_dir.join(format!("{}.png", gid));
+                                    if icon_path.exists() {
+                                        if let Ok(img) = Image::load_from_path(&icon_path) {
                                             item.has_image = true;
                                             item.icon_image = img;
                                         }
-                                        let model = std::rc::Rc::new(slint::VecModel::from(current_g));
-                                        ui.set_guilds(model.into());
                                     }
+                                    updated.push(item);
                                 }
-                            });
+                            }
+                            let model = std::rc::Rc::new(slint::VecModel::from(updated));
+                            ui.set_guilds(model.into());
                         }
-                    }
+                    });
                 });
             }
         }
@@ -399,6 +403,7 @@ async fn fetch_and_populate_channels(
     guilds_map: Arc<Mutex<HashMap<String, GuildData>>>,
     active_guild_id: Arc<Mutex<String>>,
     active_channel_id: Arc<Mutex<String>>,
+    cmd_tx_store: Arc<Mutex<Option<mpsc::Sender<GatewayCommand>>>>,
     guild_id: &str,
 ) {
     info!("Buscando canais do servidor {} via REST API...", guild_id);
@@ -436,6 +441,15 @@ async fn fetch_and_populate_channels(
                         is_voice,
                     });
                 }
+            }
+
+            // Subscribe via Gateway Opcode 14 for all voice channels in this guild to get live voice_states
+            let voice_cids: Vec<String> = channels_data.iter().filter(|c| c.is_voice).map(|c| c.id.clone()).collect();
+            if let Some(tx) = cmd_tx_store.lock().unwrap().as_ref() {
+                let _ = tx.try_send(GatewayCommand::SubscribeGuild {
+                    guild_id: guild_id.to_string(),
+                    channel_ids: voice_cids,
+                });
             }
 
             // Update channels in guilds_map
@@ -1205,6 +1219,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
 
+                    // Start Gateway WebSocket connection with Opcode 4 command channel
+                    let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
+                    *cmd_tx_gw_store.lock().unwrap() = Some(cmd_tx);
+
                     // Fetch all servers and channels via HTTP REST immediately!
                     fetch_and_populate_guilds(
                         &http,
@@ -1212,11 +1230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         guilds_map_in,
                         active_guild_in,
                         active_channel_in,
+                        cmd_tx_gw_store,
                     ).await;
-
-                    // Start Gateway WebSocket connection with Opcode 4 command channel
-                    let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
-                    *cmd_tx_gw_store.lock().unwrap() = Some(cmd_tx);
 
                     let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
                     gw.start(cmd_rx).await;
@@ -1363,7 +1378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Servidor selecionado pelo usuário: {}", gid);
 
         if let Some(tx) = cmd_tx_guild_select.lock().unwrap().as_ref() {
-            let _ = tx.try_send(GatewayCommand::SubscribeGuild { guild_id: gid.clone() });
+            let _ = tx.try_send(GatewayCommand::SubscribeGuild { guild_id: gid.clone(), channel_ids: Vec::new() });
         }
 
         let http_opt = http_client_guild_select.lock().unwrap().as_ref().cloned();
@@ -1371,6 +1386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let guilds_map_in = Arc::clone(&guilds_map_select);
         let active_g_in = Arc::clone(&active_guild_select);
         let active_c_in = Arc::clone(&active_channel_guild_select);
+        let cmd_tx_in = Arc::clone(&cmd_tx_guild_select);
 
         if let Some(http) = http_opt {
             tokio::spawn(async move {
@@ -1380,6 +1396,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     guilds_map_in,
                     active_g_in,
                     active_c_in,
+                    cmd_tx_in,
                     &gid,
                 ).await;
             });
@@ -1904,16 +1921,17 @@ async fn try_login_with_candidates(
                     }
                 });
 
+                let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
+                *cmd_tx_store.lock().unwrap() = Some(cmd_tx);
+
                 fetch_and_populate_guilds(
                     &http,
                     app_weak.clone(),
                     guilds_map,
                     active_guild_id,
                     active_channel_id,
+                    cmd_tx_store,
                 ).await;
-
-                let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
-                *cmd_tx_store.lock().unwrap() = Some(cmd_tx);
 
                 let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
                 gw.start(cmd_rx).await;
