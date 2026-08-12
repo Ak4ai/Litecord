@@ -788,6 +788,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gateway::set_user_volume(&uid, vol);
     });
 
+    app.on_set_user_priority(move |uid_str: SharedString, prio: i32| {
+        let uid = uid_str.to_string();
+        info!("👑 Prioridade de fala do participante {} alterada para: P:{}", uid, prio);
+        gateway::set_user_priority(&uid, prio);
+    });
+
     // Dispatch Live Voice Room Participants & Animated Volume Level Bars
     let app_weak_voice_loop = app_weak.clone();
     let http_client_voice_loop = Arc::clone(&http_client);
@@ -936,7 +942,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
-                        let (is_muted, vol) = gateway::get_user_mute_volume(&uid_str);
+                        let (is_muted, vol, prio) = gateway::get_user_audio_settings(&uid_str);
 
                         participants.push(VoiceParticipant {
                             user_id: uid_str.into(),
@@ -946,6 +952,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             audio_level,
                             is_muted,
                             volume: vol,
+                            priority: prio,
                         });
                     }
                 }
@@ -955,7 +962,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !need_full_rebuild {
                     for (i, p) in participants.iter().enumerate() {
                         if let Some(old) = cur_model.row_data(i) {
-                            if old.user_id != p.user_id || old.username != p.username {
+                            if old.user_id != p.user_id || old.username != p.username || old.priority != p.priority {
                                 need_full_rebuild = true;
                                 break;
                             }

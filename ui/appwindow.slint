@@ -71,6 +71,7 @@ struct VoiceParticipant {
     audio_level: float,
     is_muted: bool,
     volume: float,
+    priority: int,
 }
 
 export component AppWindow inherits Window {
@@ -101,6 +102,7 @@ export component AppWindow inherits Window {
     callback auto_detect_token();
     callback toggle_user_mute(string /* user_id */);
     callback set_user_volume(string /* user_id */, float /* volume */);
+    callback set_user_priority(string /* user_id */, int /* priority */);
     callback toggle_voice_focus();
     callback open_link(string /* url */);
 
@@ -780,17 +782,95 @@ export component AppWindow inherits Window {
                                                      }
                                                  }
 
-                                                 // Slider
-                                                 VerticalLayout {
-                                                     alignment: center;
-                                                     Slider {
-                                                         width: 120px;
-                                                         minimum: 0.0;
-                                                         maximum: 1.0;
-                                                         value: p.volume;
-                                                         changed(val) => { root.set_user_volume(p.user_id, val); }
-                                                     }
-                                                 }
+                                                  // Slider
+                                                  VerticalLayout {
+                                                      alignment: center;
+                                                      Slider {
+                                                          width: 110px;
+                                                          minimum: 0.0;
+                                                          maximum: 1.0;
+                                                          value: p.volume;
+                                                          changed(val) => { root.set_user_volume(p.user_id, val); }
+                                                      }
+                                                  }
+
+                                                  // Speech Priority Control Box (Prioridade de Fala)
+                                                  VerticalLayout {
+                                                      alignment: center;
+                                                      Rectangle {
+                                                          width: 86px;
+                                                          height: 24px;
+                                                          background: #2b2d31;
+                                                          border-radius: 6px;
+                                                          border-width: 1px;
+                                                          border-color: p.priority > 0 ? #5865f2 : #383a40;
+
+                                                          HorizontalLayout {
+                                                              padding-left: 2px;
+                                                              padding-right: 2px;
+                                                              alignment: space-between;
+
+                                                              // "-" Decrement Button
+                                                              Rectangle {
+                                                                  width: 20px;
+                                                                  height: 20px;
+                                                                  border-radius: 4px;
+                                                                  background: btn_minus.has-hover ? #35373c : #1e1f22;
+
+                                                                  Text {
+                                                                      text: "-";
+                                                                      color: p.priority > 0 ? #f23f43 : #4e5058;
+                                                                      font-size: 13px;
+                                                                      font-weight: 700;
+                                                                      horizontal-alignment: center;
+                                                                      vertical-alignment: center;
+                                                                  }
+
+                                                                  btn_minus := TouchArea {
+                                                                      clicked => {
+                                                                          if (p.priority > 0) {
+                                                                              root.set_user_priority(p.user_id, p.priority - 1);
+                                                                          }
+                                                                      }
+                                                                  }
+                                                              }
+
+                                                              // Priority Indicator Text (P:0, P:1, P:2...)
+                                                              Text {
+                                                                  text: "P:" + p.priority;
+                                                                  color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                  font-size: 11px;
+                                                                  font-weight: 700;
+                                                                  horizontal-alignment: center;
+                                                                  vertical-alignment: center;
+                                                                  horizontal-stretch: 1;
+                                                              }
+
+                                                              // "+" Increment Button
+                                                              Rectangle {
+                                                                  width: 20px;
+                                                                  height: 20px;
+                                                                  border-radius: 4px;
+                                                                  background: btn_plus.has-hover ? #35373c : #1e1f22;
+
+                                                                  Text {
+                                                                      text: "+";
+                                                                      color: #23a55a;
+                                                                      font-size: 13px;
+                                                                      font-weight: 700;
+                                                                      horizontal-alignment: center;
+                                                                      vertical-alignment: center;
+                                                                  }
+
+                                                                  btn_plus := TouchArea {
+                                                                      clicked => {
+                                                                          root.set_user_priority(p.user_id, p.priority + 1);
+                                                                      }
+                                                                  }
+                                                              }
+                                                          }
+                                                      }
+                                                  }
                                              }
                                          }
                                     }

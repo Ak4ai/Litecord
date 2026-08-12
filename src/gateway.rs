@@ -152,33 +152,46 @@ pub fn set_selected_output_device(name: String) {
     }
 }
 
-pub static USER_AUDIO_SETTINGS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32)>>>> = std::sync::OnceLock::new();
+pub static USER_AUDIO_SETTINGS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32, i32)>>>> = std::sync::OnceLock::new();
 
-pub fn get_user_audio_settings_store() -> Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32)>>> {
+pub fn get_user_audio_settings_store() -> Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32, i32)>>> {
     USER_AUDIO_SETTINGS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
 }
 
 pub fn set_user_mute(user_id: &str, is_muted: bool) {
     if let Ok(mut map) = get_user_audio_settings_store().lock() {
-        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0));
+        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0, 0));
         entry.0 = is_muted;
     }
 }
 
 pub fn set_user_volume(user_id: &str, volume: f32) {
     if let Ok(mut map) = get_user_audio_settings_store().lock() {
-        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0));
+        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0, 0));
         entry.1 = volume;
     }
 }
 
-pub fn get_user_mute_volume(user_id: &str) -> (bool, f32) {
+pub fn set_user_priority(user_id: &str, priority: i32) {
+    let safe_priority = priority.max(0);
+    if let Ok(mut map) = get_user_audio_settings_store().lock() {
+        let entry = map.entry(user_id.to_string()).or_insert((false, 1.0, 0));
+        entry.2 = safe_priority;
+    }
+}
+
+pub fn get_user_audio_settings(user_id: &str) -> (bool, f32, i32) {
     if let Ok(map) = get_user_audio_settings_store().lock() {
         if let Some(res) = map.get(user_id) {
             return *res;
         }
     }
-    (false, 1.0)
+    (false, 1.0, 0)
+}
+
+pub fn get_user_mute_volume(user_id: &str) -> (bool, f32) {
+    let (m, v, _) = get_user_audio_settings(user_id);
+    (m, v)
 }
 
 pub static ACTIVE_VOICE_PARTICIPANTS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u32, u64>>>> = std::sync::OnceLock::new();
@@ -2257,24 +2270,38 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
 
                                                                         if ready_ssrcs.is_empty() { return; }
 
-                                                                         let mut ssrc_vol_map = std::collections::HashMap::new();
-                                                                         if let Ok(spk_map) = ssrc_to_userid_f32.lock() {
-                                                                             for &ssrc in &ready_ssrcs {
-                                                                                 let uid_num = spk_map.get(&ssrc).copied().unwrap_or(ssrc as u64);
-                                                                                 let (is_muted_uid, vol_uid) = get_user_mute_volume(&uid_num.to_string());
-                                                                                 let (is_muted_ssrc, vol_ssrc) = get_user_mute_volume(&ssrc.to_string());
-                                                                                 let is_muted = is_muted_uid || is_muted_ssrc;
-                                                                                 let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
-                                                                                 ssrc_vol_map.insert(ssrc, (is_muted, user_vol));
-                                                                             }
-                                                                         }
+                                                                        let mut ssrc_vol_map = std::collections::HashMap::new();
+                                                                        let mut max_active_priority = 0i32;
+                                                                        if let Ok(spk_map) = ssrc_to_userid_f32.lock() {
+                                                                            for &ssrc in &ready_ssrcs {
+                                                                                let uid_num = spk_map.get(&ssrc).copied().unwrap_or(ssrc as u64);
+                                                                                let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
+                                                                                let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
+                                                                                let is_muted = is_muted_uid || is_muted_ssrc;
+                                                                                let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
+                                                                                let user_prio = prio_uid.max(prio_ssrc);
+                                                                                if !is_muted {
+                                                                                    if user_prio > max_active_priority {
+                                                                                        max_active_priority = user_prio;
+                                                                                    }
+                                                                                }
+                                                                                ssrc_vol_map.insert(ssrc, (is_muted, user_vol, user_prio));
+                                                                            }
+                                                                        }
 
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
                                                                             for &ssrc in &ready_ssrcs {
-                                                                                let (is_muted, user_vol) = ssrc_vol_map.get(&ssrc).copied().unwrap_or((false, 1.0));
+                                                                                let (is_muted, user_vol, user_prio) = ssrc_vol_map.get(&ssrc).copied().unwrap_or((false, 1.0, 0));
                                                                                 if is_muted { continue; }
+
+                                                                                let priority_multiplier = if max_active_priority > 0 && user_prio < max_active_priority {
+                                                                                    0.5f32
+                                                                                } else {
+                                                                                    1.0f32
+                                                                                };
+                                                                                let effective_vol = user_vol * priority_multiplier;
 
                                                                                 if let Some(q) = queues.get_mut(&ssrc) {
                                                                                     let phase = ssrc_phases.entry(ssrc).or_insert(0.0);
