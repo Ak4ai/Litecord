@@ -2272,9 +2272,15 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
 
                                                                         let mut ssrc_vol_map = std::collections::HashMap::new();
                                                                         let mut max_active_priority = 0i32;
+                                                                        let active_spk_store = get_active_voice_participants_store();
+                                                                        let active_spk_map = active_spk_store.lock().ok();
                                                                         if let Ok(spk_map) = ssrc_to_userid_f32.lock() {
                                                                             for &ssrc in &ready_ssrcs {
-                                                                                let uid_num = spk_map.get(&ssrc).copied().unwrap_or(ssrc as u64);
+                                                                                let uid_num = spk_map.get(&ssrc)
+                                                                                    .or_else(|| active_spk_map.as_ref().and_then(|m| m.get(&ssrc)))
+                                                                                    .copied()
+                                                                                    .unwrap_or(ssrc as u64);
+
                                                                                 let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
                                                                                 let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
                                                                                 let is_muted = is_muted_uid || is_muted_ssrc;
@@ -2297,7 +2303,9 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                 if is_muted { continue; }
 
                                                                                 let priority_multiplier = if max_active_priority > 0 && user_prio < max_active_priority {
-                                                                                    0.5f32
+                                                                                    let diff = max_active_priority - user_prio;
+                                                                                    let mult = 0.5f32 - (diff as f32 - 1.0f32) * 0.1f32;
+                                                                                    mult.max(0.05f32)
                                                                                 } else {
                                                                                     1.0f32
                                                                                 };

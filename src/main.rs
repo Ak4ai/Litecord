@@ -776,22 +776,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .spawn();
     });
 
+    let app_weak_mute = app_weak.clone();
     app.on_toggle_user_mute(move |uid_str: SharedString| {
         let uid = uid_str.to_string();
         let (is_m, _vol) = gateway::get_user_mute_volume(&uid);
-        gateway::set_user_mute(&uid, !is_m);
-        info!("🎙️ Mute do participante {} alterado para: {}", uid, !is_m);
+        let new_m = !is_m;
+        gateway::set_user_mute(&uid, new_m);
+        info!("🎙️ Mute do participante {} alterado para: {}", uid, new_m);
+        if let Some(ui) = app_weak_mute.upgrade() {
+            let cur_model = ui.get_voice_participants();
+            for i in 0..cur_model.row_count() {
+                if let Some(mut p) = cur_model.row_data(i) {
+                    if p.user_id == uid_str {
+                        p.is_muted = new_m;
+                        cur_model.set_row_data(i, p);
+                        break;
+                    }
+                }
+            }
+        }
     });
 
+    let app_weak_vol = app_weak.clone();
     app.on_set_user_volume(move |uid_str: SharedString, vol: f32| {
         let uid = uid_str.to_string();
         gateway::set_user_volume(&uid, vol);
+        if let Some(ui) = app_weak_vol.upgrade() {
+            let cur_model = ui.get_voice_participants();
+            for i in 0..cur_model.row_count() {
+                if let Some(mut p) = cur_model.row_data(i) {
+                    if p.user_id == uid_str {
+                        p.volume = vol;
+                        cur_model.set_row_data(i, p);
+                        break;
+                    }
+                }
+            }
+        }
     });
 
+    let app_weak_prio = app_weak.clone();
     app.on_set_user_priority(move |uid_str: SharedString, prio: i32| {
         let uid = uid_str.to_string();
         info!("👑 Prioridade de fala do participante {} alterada para: P:{}", uid, prio);
         gateway::set_user_priority(&uid, prio);
+        if let Some(ui) = app_weak_prio.upgrade() {
+            let cur_model = ui.get_voice_participants();
+            for i in 0..cur_model.row_count() {
+                if let Some(mut p) = cur_model.row_data(i) {
+                    if p.user_id == uid_str {
+                        p.priority = prio;
+                        cur_model.set_row_data(i, p);
+                        break;
+                    }
+                }
+            }
+        }
     });
 
     // Dispatch Live Voice Room Participants & Animated Volume Level Bars
