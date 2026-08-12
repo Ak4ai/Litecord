@@ -731,6 +731,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let app_w_inner = app_weak_voice_loop.clone();
+            let http_client_voice_loop_inner = Arc::clone(&http_client_voice_loop);
 
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = app_w_inner.upgrade() else { return; };
@@ -783,6 +784,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
                         let uid_str = user_id.to_string();
                         let username = gateway::get_user_name(user_id);
+                        if username.starts_with("Participante #") {
+                            let http_opt = http_client_voice_loop_inner.lock().unwrap().clone();
+                            if let Some(http) = http_opt {
+                                static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();
+                                let fetching_store = FETCHING_USERS.get_or_init(|| Arc::new(Mutex::new(std::collections::HashSet::new())));
+                                if let Ok(mut set) = fetching_store.lock() {
+                                    if set.insert(user_id) {
+                                        let uid_str_task = uid_str.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(profile) = http.get_user_profile(&uid_str_task).await {
+                                                let display_name = profile["global_name"].as_str()
+                                                    .or_else(|| profile["username"].as_str())
+                                                    .unwrap_or("Novo Usuário");
+                                                gateway::register_user_name(user_id, display_name.to_string());
+                                                info!("✅ Nome de usuário resolvido via REST API: {} -> {}", user_id, display_name);
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
                         let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
                         let (is_muted, vol) = gateway::get_user_mute_volume(&uid_str);
 

@@ -160,6 +160,15 @@ pub fn clear_voice_participants() {
     }
 }
 
+pub fn remove_voice_participant_by_user_id(user_id: u64) {
+    if let Ok(mut map) = get_active_voice_participants_store().lock() {
+        map.retain(|_ssrc, &mut uid| uid != user_id);
+    }
+    if let Ok(mut queues) = get_speaker_pcm_queues().lock() {
+        queues.retain(|&ssrc, _| ssrc as u64 != user_id);
+    }
+}
+
 pub static USER_NAMES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>> = std::sync::OnceLock::new();
 
 pub fn get_user_names_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> {
@@ -1162,25 +1171,62 @@ impl GatewayClient {
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
                 }
                 "VOICE_STATE_UPDATE" => {
-                    if let Some(sid) = v["d"]["session_id"].as_str() {
-                        let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
-                        let event_uid = v["d"]["user_id"].as_str().unwrap_or("");
-                        if !my_uid.is_empty() && event_uid == my_uid {
-                            let channel_id_opt = v["d"]["channel_id"].as_str();
-                            let guild_id_opt = v["d"]["guild_id"].as_str();
-                            info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}", sid, channel_id_opt, guild_id_opt);
-                            if let Some(cid) = channel_id_opt {
-                                *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
-                                *self.voice_channel_id.lock().unwrap() = Some(cid.to_string());
-                                if let Some(gid) = guild_id_opt {
-                                    *self.voice_guild_id.lock().unwrap() = Some(gid.to_string());
+                    if let Some(event_uid_str) = v["d"]["user_id"].as_str() {
+                        if let Ok(event_uid) = event_uid_str.parse::<u64>() {
+                            // Extract display name from member object if present
+                            let mut display_name = String::new();
+                            if let Some(nick) = v["d"]["member"]["nick"].as_str() {
+                                if !nick.is_empty() { display_name = nick.to_string(); }
+                            }
+                            if display_name.is_empty() {
+                                if let Some(gname) = v["d"]["member"]["user"]["global_name"].as_str() {
+                                    if !gname.is_empty() { display_name = gname.to_string(); }
                                 }
-                                self.try_trigger_voice_connect();
-                            } else {
-                                // User left voice channel
-                                *self.voice_session_id.lock().unwrap() = None;
-                                *self.voice_token.lock().unwrap() = None;
-                                *self.voice_endpoint.lock().unwrap() = None;
+                            }
+                            if display_name.is_empty() {
+                                if let Some(uname) = v["d"]["member"]["user"]["username"].as_str() {
+                                    if !uname.is_empty() { display_name = uname.to_string(); }
+                                }
+                            }
+
+                            if !display_name.is_empty() {
+                                register_user_name(event_uid, display_name.clone());
+                                info!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
+                            }
+
+                            let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
+                            let event_chan = v["d"]["channel_id"].as_str();
+
+                            if let Some(ref my_cid) = my_voice_chan {
+                                if event_chan == Some(my_cid.as_str()) {
+                                    info!("👥 [VOICE CHANNEL JOIN] Usuário {} ({}) entrou no nosso canal de voz!", event_uid, display_name);
+                                    register_voice_participant(event_uid as u32, event_uid);
+                                } else {
+                                    info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
+                                    remove_voice_participant_by_user_id(event_uid);
+                                }
+                            }
+
+                            // Check if this is MY OWN voice state update
+                            let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
+                            if !my_uid.is_empty() && event_uid_str == my_uid {
+                                if let Some(sid) = v["d"]["session_id"].as_str() {
+                                    info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}", sid, event_chan, v["d"]["guild_id"].as_str());
+                                    if let Some(cid) = event_chan {
+                                        *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
+                                        *self.voice_channel_id.lock().unwrap() = Some(cid.to_string());
+                                        if let Some(gid) = v["d"]["guild_id"].as_str() {
+                                            *self.voice_guild_id.lock().unwrap() = Some(gid.to_string());
+                                        }
+                                        self.try_trigger_voice_connect();
+                                    } else {
+                                        // We left the voice channel
+                                        *self.voice_session_id.lock().unwrap() = None;
+                                        *self.voice_token.lock().unwrap() = None;
+                                        *self.voice_endpoint.lock().unwrap() = None;
+                                        clear_voice_participants();
+                                    }
+                                }
                             }
                         }
                     }

@@ -155,4 +155,20 @@ impl DiscordHttpClient {
             }
         }
     }
+
+    pub async fn get_user_profile(&self, user_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/users/{}", user_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(user) = resp.json::<serde_json::Value>().await {
+                        return Ok(user);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP ao buscar usuário: {:?}", e)),
+        }
+    }
 }
