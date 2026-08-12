@@ -1900,10 +1900,9 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             if q.is_empty() {
                                                                                 let ticks = inactive_ticks.entry(ssrc).or_insert(0);
                                                                                 *ticks += 1;
-                                                                                if *ticks > 25 {
-                                                                                    started_ssrcs.remove(&ssrc);
-                                                                                }
+                                                                                // Only reset pre-buffer state after prolonged inactivity (150 ticks = 750ms of silence)
                                                                                 if *ticks > 150 {
+                                                                                    started_ssrcs.remove(&ssrc);
                                                                                     to_remove.push(ssrc);
                                                                                 }
                                                                             } else {
@@ -1917,15 +1916,13 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             } else if started_ssrcs.contains(&ssrc) {
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
-                                                                                } else {
-                                                                                    // Buffer underflowed during silence gap - reset state to pre-buffer for next speech onset
-                                                                                    started_ssrcs.remove(&ssrc);
-                                                                                    ssrc_histories.remove(&ssrc);
-                                                                                    ssrc_phases.remove(&ssrc);
                                                                                 }
-                                                                            } else if q.len() >= 1920 { // WebRTC Standard Jitter Pre-buffer (2 x 20ms frames)
-                                                                                started_ssrcs.insert(ssrc);
-                                                                                ready_ssrcs.push(ssrc);
+                                                                            } else if !q.is_empty() {
+                                                                                // Instant speech onset re-entry for brief pauses, or 40ms pre-buffer on initial join
+                                                                                if q.len() >= 960 { // At least 1 frame (20ms) ready for immediate playback
+                                                                                    started_ssrcs.insert(ssrc);
+                                                                                    ready_ssrcs.push(ssrc);
+                                                                                }
                                                                             }
                                                                         }
 
