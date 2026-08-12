@@ -1290,10 +1290,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_guild_select = app_weak.clone();
     let http_client_guild_select = Arc::clone(&http_client);
     let active_channel_guild_select = Arc::clone(&active_channel_id);
+    let cmd_tx_guild_select = Arc::clone(&cmd_tx_store);
 
     app.on_select_guild(move |guild_id: SharedString| {
         let gid = guild_id.to_string();
         info!("Servidor selecionado pelo usuário: {}", gid);
+
+        if let Some(tx) = cmd_tx_guild_select.lock().unwrap().as_ref() {
+            let _ = tx.try_send(GatewayCommand::SubscribeGuild { guild_id: gid.clone() });
+        }
 
         let http_opt = http_client_guild_select.lock().unwrap().as_ref().cloned();
         let app_w = app_weak_guild_select.clone();

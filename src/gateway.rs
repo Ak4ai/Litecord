@@ -61,6 +61,9 @@ pub enum GatewayCommand {
         self_mute: bool,
         self_deaf: bool,
     },
+    SubscribeGuild {
+        guild_id: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1042,10 +1045,28 @@ impl GatewayClient {
                                     }
                                 });
 
-                                info!("Enviando OP 4 VoiceStateUpdate à Gateway: {}", payload);
+                                 info!("Enviando OP 4 VoiceStateUpdate à Gateway: {}", payload);
                                 let mut w = write_cmd.lock().await;
                                 if let Err(e) = w.send(Message::Text(payload.to_string().into())).await {
                                     warn!("Falha ao enviar Opcode 4 (VoiceStateUpdate): {:?}", e);
+                                }
+                            }
+                            GatewayCommand::SubscribeGuild { guild_id } => {
+                                if !guild_id.is_empty() {
+                                    let sub_payload = serde_json::json!({
+                                        "op": 14,
+                                        "d": {
+                                            "guild_id": guild_id,
+                                            "typing": true,
+                                            "threads": true,
+                                            "activities": true,
+                                            "members": [],
+                                            "channels": {}
+                                        }
+                                    });
+                                    info!("📡 Opcode 14 Lazy Guild Subscription enviado para a Gateway (Guild: {})", guild_id);
+                                    let mut w = write_cmd.lock().await;
+                                    let _ = w.send(Message::Text(sub_payload.to_string().into())).await;
                                 }
                             }
                         }
