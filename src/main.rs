@@ -1623,17 +1623,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hwnd_store_minimize = Arc::clone(&hwnd_store);
     app.on_minimize_to_tray(move || {
         info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
-        // Signal all UI loops to enter deep sleep
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            if !hwnd.is_null() {
-                *hwnd_store_minimize.lock().unwrap() = Some(hwnd as isize);
-                ShowWindow(hwnd, SW_HIDE);
+        let hwnd_opt = *hwnd_store_minimize.lock().unwrap();
+        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            let hwnd_target = hwnd_opt.or_else(|| {
+                unsafe {
+                    let h = GetForegroundWindow();
+                    if !h.is_null() { Some(h as isize) } else { None }
+                }
+            });
+            if let Some(hwnd) = hwnd_target {
+                unsafe {
+                    ShowWindow(hwnd as _, SW_HIDE);
+                }
             }
-        }
+        });
     });
 
     // Custom window controls for frameless mode
@@ -1652,19 +1658,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
-        if let Some(hwnd) = *hwnd_store_min.lock().unwrap() {
-            unsafe {
-                ShowWindow(hwnd as _, SW_HIDE);
-            }
-        } else {
-            unsafe {
-                let hwnd = GetForegroundWindow();
-                if !hwnd.is_null() {
-                    *hwnd_store_min.lock().unwrap() = Some(hwnd as isize);
-                    ShowWindow(hwnd, SW_HIDE);
+        let hwnd_opt = *hwnd_store_min.lock().unwrap();
+        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            let hwnd_target = hwnd_opt.or_else(|| {
+                unsafe {
+                    let h = GetForegroundWindow();
+                    if !h.is_null() { Some(h as isize) } else { None }
+                }
+            });
+            if let Some(hwnd) = hwnd_target {
+                unsafe {
+                    ShowWindow(hwnd as _, SW_HIDE);
                 }
             }
-        }
+        });
     });
 
     let app_weak_max = app_weak.clone();

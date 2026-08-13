@@ -1117,28 +1117,8 @@ impl GatewayClient {
                                     warn!("Falha ao enviar Opcode 4 (VoiceStateUpdate): {:?}", e);
                                 }
                             }
-                            GatewayCommand::SubscribeGuild { guild_id, channel_ids } => {
-                                if !guild_id.is_empty() {
-                                    let mut channels_map = serde_json::Map::new();
-                                    for cid in &channel_ids {
-                                        channels_map.insert(cid.clone(), serde_json::json!([[0, 99]]));
-                                    }
-
-                                    let sub_payload = serde_json::json!({
-                                        "op": 14,
-                                        "d": {
-                                            "guild_id": guild_id,
-                                            "typing": true,
-                                            "threads": true,
-                                            "activities": true,
-                                            "members": [],
-                                            "channels": channels_map
-                                        }
-                                    });
-                                    info!("📡 Opcode 14 Lazy Guild Subscription enviado para a Gateway (Guild: {}, {} canais inscritos)", guild_id, channel_ids.len());
-                                    let mut w = write_cmd.lock().await;
-                                    let _ = w.send(Message::Text(sub_payload.to_string().into())).await;
-                                }
+                            GatewayCommand::SubscribeGuild { .. } => {
+                                // Opcode 14 is not needed for user accounts; voice states and members are pre-loaded via GUILD_CREATE and READY_SUPPLEMENTAL
                             }
                         }
                     }
