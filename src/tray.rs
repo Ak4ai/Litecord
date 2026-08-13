@@ -57,6 +57,7 @@ impl SystemTrayManager {
         let tray_icon = match TrayIconBuilder::new()
             .with_icon(icon)
             .with_menu(Box::new(tray_menu))
+            .with_menu_on_left_click(true)
             .with_tooltip("Litecord - Discord Client Ultra-Leve")
             .build()
         {

@@ -707,6 +707,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn tray event listener thread
     let hwnd_store_tray = Arc::clone(&hwnd_store);
     let app_weak_tray = app_weak.clone();
+    let show_id_c = show_id.clone();
+    let quit_id_c = quit_id.clone();
     tokio::task::spawn_blocking(move || {
         let menu_rx = MenuEvent::receiver();
         let tray_rx = TrayIconEvent::receiver();
@@ -714,16 +716,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let mut should_restore = false;
 
-            if let Ok(event) = menu_rx.try_recv() {
-                if event.id == show_id {
+            while let Ok(event) = menu_rx.try_recv() {
+                info!("Tray MenuEvent recebido: {:?}", event);
+                if event.id == show_id_c {
                     should_restore = true;
-                } else if event.id == quit_id {
+                } else if event.id == quit_id_c {
                     std::process::exit(0);
                 }
             }
 
-            if let Ok(event) = tray_rx.try_recv() {
-                if matches!(event, TrayIconEvent::DoubleClick { .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
+            while let Ok(event) = tray_rx.try_recv() {
+                info!("TrayIconEvent recebido: {:?}", event);
+                if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
                     should_restore = true;
                 }
             }
@@ -734,6 +738,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
 
                 let app_weak_inner = app_weak_tray.clone();
+                let hwnd_store_inner = Arc::clone(&hwnd_store_tray);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui_inner) = app_weak_inner.upgrade() {
                         let _ = ui_inner.window().with_winit_window(|winit_win| {
@@ -742,15 +747,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             winit_win.focus_window();
                         });
                     }
-                });
-
-                if let Some(hwnd) = *hwnd_store_tray.lock().unwrap() {
-                    unsafe {
-                        ShowWindow(hwnd as _, SW_SHOW);
-                        ShowWindow(hwnd as _, SW_RESTORE);
-                        SetForegroundWindow(hwnd as _);
+                    if let Some(hwnd) = *hwnd_store_inner.lock().unwrap() {
+                        unsafe {
+                            ShowWindow(hwnd as _, SW_SHOW);
+                            ShowWindow(hwnd as _, SW_RESTORE);
+                            SetForegroundWindow(hwnd as _);
+                        }
                     }
-                }
+                });
             }
 
             std::thread::sleep(std::time::Duration::from_millis(50));
