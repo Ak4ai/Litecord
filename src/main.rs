@@ -1646,10 +1646,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let app_weak_min = app_weak.clone();
+    let hwnd_store_min = Arc::clone(&hwnd_store);
     app.on_minimize_window(move || {
-        if let Some(app_instance) = app_weak_min.upgrade() {
-            app_instance.window().set_minimized(true);
+        info!("🔕 Minimizando janela para a bandeja do sistema (System Tray) & entrando em DeepSleep...");
+        APP_IS_VISIBLE.store(false, Ordering::Relaxed);
+        PENDING_MESSAGES.store(0, Ordering::Relaxed);
+        info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
+        if let Some(hwnd) = *hwnd_store_min.lock().unwrap() {
+            unsafe {
+                ShowWindow(hwnd as _, SW_HIDE);
+            }
+        } else {
+            unsafe {
+                let hwnd = GetForegroundWindow();
+                if !hwnd.is_null() {
+                    *hwnd_store_min.lock().unwrap() = Some(hwnd as isize);
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            }
         }
     });
 
