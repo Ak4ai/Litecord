@@ -14,8 +14,8 @@ use tokio::sync::mpsc;
 use log::{info, error};
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    ShowWindow, SetForegroundWindow, GetForegroundWindow,
-    SW_HIDE, SW_SHOW, SW_RESTORE
+    ShowWindow, SetForegroundWindow, GetForegroundWindow, SetWindowPos,
+    SW_HIDE, SW_SHOW, SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, HWND_TOP
 };
 
 use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
@@ -752,6 +752,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ShowWindow(hwnd as _, SW_SHOW);
                             ShowWindow(hwnd as _, SW_RESTORE);
                             SetForegroundWindow(hwnd as _);
+                            SetWindowPos(hwnd as _, HWND_TOP as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
                         }
                     }
                 });
@@ -1634,14 +1635,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Minimize to Tray Callback using Win32 ShowWindow(SW_HIDE)
+    let app_weak_tray_min = app_weak.clone();
     let hwnd_store_minimize = Arc::clone(&hwnd_store);
     app.on_minimize_to_tray(move || {
         info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
+        let app_w = app_weak_tray_min.clone();
         let hwnd_opt = *hwnd_store_minimize.lock().unwrap();
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            if let Some(ui) = app_w.upgrade() {
+                let _ = ui.window().with_winit_window(|winit_win| {
+                    winit_win.set_visible(false);
+                });
+            }
             let hwnd_target = hwnd_opt.or_else(|| {
                 unsafe {
                     let h = GetForegroundWindow();
@@ -1666,14 +1674,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_min = app_weak.clone();
     let hwnd_store_min = Arc::clone(&hwnd_store);
     app.on_minimize_window(move || {
         info!("🔕 Minimizando janela para a bandeja do sistema (System Tray) & entrando em DeepSleep...");
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
+        let app_w = app_weak_min.clone();
         let hwnd_opt = *hwnd_store_min.lock().unwrap();
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            if let Some(ui) = app_w.upgrade() {
+                let _ = ui.window().with_winit_window(|winit_win| {
+                    winit_win.set_visible(false);
+                });
+            }
             let hwnd_target = hwnd_opt.or_else(|| {
                 unsafe {
                     let h = GetForegroundWindow();
