@@ -706,23 +706,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn tray event listener thread
     let hwnd_store_tray = Arc::clone(&hwnd_store);
+    let app_weak_tray = app_weak.clone();
     tokio::task::spawn_blocking(move || {
         let menu_rx = MenuEvent::receiver();
         let tray_rx = TrayIconEvent::receiver();
 
         loop {
+            let mut should_restore = false;
+
             if let Ok(event) = menu_rx.try_recv() {
                 if event.id == show_id {
-                    if let Some(hwnd) = *hwnd_store_tray.lock().unwrap() {
-                        APP_IS_VISIBLE.store(true, Ordering::Relaxed);
-                        NEED_UI_REFRESH.store(true, Ordering::Relaxed);
-                        unsafe {
-                            ShowWindow(hwnd as _, SW_SHOW);
-                            ShowWindow(hwnd as _, SW_RESTORE);
-                            SetForegroundWindow(hwnd as _);
-                        }
-                        info!("[DeepSleep] Janela restaurada — acordando UI.");
-                    }
+                    should_restore = true;
                 } else if event.id == quit_id {
                     std::process::exit(0);
                 }
@@ -730,15 +724,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Ok(event) = tray_rx.try_recv() {
                 if matches!(event, TrayIconEvent::DoubleClick { .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
-                    if let Some(hwnd) = *hwnd_store_tray.lock().unwrap() {
-                        APP_IS_VISIBLE.store(true, Ordering::Relaxed);
-                        NEED_UI_REFRESH.store(true, Ordering::Relaxed);
-                        unsafe {
-                            ShowWindow(hwnd as _, SW_SHOW);
-                            ShowWindow(hwnd as _, SW_RESTORE);
-                            SetForegroundWindow(hwnd as _);
-                        }
-                        info!("[DeepSleep] Janela restaurada via clique no tray — acordando UI.");
+                    should_restore = true;
+                }
+            }
+
+            if should_restore {
+                APP_IS_VISIBLE.store(true, Ordering::Relaxed);
+                NEED_UI_REFRESH.store(true, Ordering::Relaxed);
+                info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
+
+                let app_weak_inner = app_weak_tray.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui_inner) = app_weak_inner.upgrade() {
+                        let _ = ui_inner.window().with_winit_window(|winit_win| {
+                            winit_win.set_visible(true);
+                            winit_win.set_minimized(false);
+                            winit_win.focus_window();
+                        });
+                    }
+                });
+
+                if let Some(hwnd) = *hwnd_store_tray.lock().unwrap() {
+                    unsafe {
+                        ShowWindow(hwnd as _, SW_SHOW);
+                        ShowWindow(hwnd as _, SW_RESTORE);
+                        SetForegroundWindow(hwnd as _);
                     }
                 }
             }

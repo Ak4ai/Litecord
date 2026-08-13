@@ -54,18 +54,21 @@ impl SystemTrayManager {
 
         let icon = create_default_icon();
 
-        let tray_icon = TrayIconBuilder::new()
+        let tray_icon = match TrayIconBuilder::new()
             .with_icon(icon)
             .with_menu(Box::new(tray_menu))
             .with_tooltip("Litecord - Discord Client Ultra-Leve")
             .build()
-            .ok();
-
-        if tray_icon.is_some() {
-            info!("Ícone roxo ativado na bandeja do sistema (System Tray).");
-        } else {
-            warn!("Não foi possível inicializar o ícone do System Tray, continuando modo janela.");
-        }
+        {
+            Ok(icon) => {
+                info!("Ícone roxo ativado na bandeja do sistema (System Tray).");
+                Some(icon)
+            }
+            Err(e) => {
+                warn!("Não foi possível inicializar o ícone do System Tray ({:?}), continuando modo janela.", e);
+                None
+            }
+        };
 
         Self {
             _tray_icon: tray_icon,
