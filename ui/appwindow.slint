@@ -7,14 +7,14 @@ component IconButton inherits Rectangle {
     callback clicked();
 
     width: 32px;
-    height: 32px;
+    height: 28px;
     border-radius: 4px;
     background: touch.has-hover ? hover-color : #0000;
 
     Image {
         source: root.icon;
-        width: 20px;
-        height: 20px;
+        width: 18px;
+        height: 18px;
         colorize: root.icon-color;
         image-fit: contain;
     }
@@ -57,6 +57,13 @@ struct GuildItem {
     icon_image: image,
 }
 
+struct LanguageItem {
+    code: string,
+    name: string,
+    native_name: string,
+    is_selected: bool,
+}
+
 struct AudioDeviceItem {
     id: string,
     name: string,
@@ -72,6 +79,7 @@ struct VoiceParticipant {
     is_muted: bool,
     volume: float,
     priority: int,
+    is_self: bool,
 }
 
 export component AppWindow inherits Window {
@@ -105,6 +113,41 @@ export component AppWindow inherits Window {
     callback set_user_priority(string /* user_id */, int /* priority */);
     callback toggle_voice_focus();
     callback open_link(string /* url */);
+    callback set_vad_threshold(float /* threshold */);
+    callback toggle_test_mic();
+    callback logout();
+    callback change_language(string /* "auto", "en", "pt" */);
+
+    // Translations (i18n)
+    in-out property <string> current_language_code: "auto";
+    in-out property <string> tr_login_title: "Sign in to Litecord";
+    in-out property <string> tr_login_desc: "Enter your Discord User Token for direct connection to Gateway v9.\n(Estimated RAM usage ~15MB)";
+    in-out property <string> tr_login_placeholder: "Paste your Discord User Token here...";
+    in-out property <string> tr_login_btn_connect: "Connect to Gateway";
+    in-out property <string> tr_login_btn_detect: "Detect Discord Token";
+    in-out property <string> tr_server_channels: "SERVER CHANNELS";
+    in-out property <string> tr_leave: "Leave";
+    in-out property <string> tr_view_text_chat: "View Text Chat";
+    in-out property <string> tr_leave_call: "Disconnect Call";
+    in-out property <string> tr_voice_participants_title: "VOICE ROOM PARTICIPANTS";
+    in-out property <string> tr_badge_you: "YOU";
+    in-out property <string> tr_view_voice_room: "View Voice Room";
+    in-out property <string> tr_replying_to: "Replying to @";
+    in-out property <string> tr_chat_placeholder_prefix: "Message ";
+    in-out property <string> tr_send: "Send";
+    in-out property <string> tr_settings_title: "Voice & Audio Settings";
+    in-out property <string> tr_settings_language_label: "LANGUAGE / IDIOMA";
+    in-out property <string> tr_settings_input_device: "INPUT DEVICE (MICROPHONE)";
+    in-out property <string> tr_settings_output_device: "OUTPUT DEVICE (SPEAKERS / HEADPHONES)";
+    in-out property <string> tr_settings_threshold: "VOICE DETECTION SENSITIVITY (THRESHOLD)";
+    in-out property <string> tr_settings_mic_level: "REAL-TIME MICROPHONE LEVEL";
+    in-out property <string> tr_settings_btn_test_start: "🎧 Test Microphone (\"Hear Yourself\")";
+    in-out property <string> tr_settings_btn_test_stop: "🎙️ Stop Testing (Listening...)";
+    in-out property <string> tr_settings_done: "Done";
+    in-out property <string> tr_logout_title: "Sign Out";
+    in-out property <string> tr_logout_confirm_prefix: "Do you want to log out from ";
+    in-out property <string> tr_cancel: "Cancel";
+    in-out property <string> tr_confirm_logout: "Sign Out";
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
@@ -117,14 +160,18 @@ export component AppWindow inherits Window {
     in-out property <string> current_voice_channel: "";
     in-out property <bool> is_voice_focused: false;
     in-out property <[VoiceParticipant]> voice_participants: [];
+    in-out property <bool> show_user_menu: false;
 
     // Voice & Audio Settings Properties
     in-out property <bool> show_settings_modal: false;
+    in-out property <[LanguageItem]> languages: [];
     in-out property <[AudioDeviceItem]> input_devices: [];
     in-out property <[AudioDeviceItem]> output_devices: [];
     in-out property <string> selected_input_device: "Microfone Padrão do Sistema";
     in-out property <string> selected_output_device: "Alto-falantes Padrão do Sistema";
     in-out property <float> mic_level: 0.0; // Real-time mic volume level (0.0 to 1.0)
+    in-out property <float> vad_threshold: 0.05; // Voice Activity Detection Threshold (0.0 to 1.0)
+    in-out property <bool> is_testing_mic: false; // Mic loopback ("Se ouvir") test active
 
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
@@ -303,7 +350,7 @@ export component AppWindow inherits Window {
                 width: 420px;
 
                 Text {
-                    text: "Entrar no Litecord";
+                    text: root.tr_login_title;
                     color: #f2f3f5;
                     font-size: 22px;
                     font-weight: 700;
@@ -311,7 +358,7 @@ export component AppWindow inherits Window {
                 }
 
                 Text {
-                    text: "Insira seu Discord User Token para conexão direta à Gateway v9.\n(Consumo de RAM estimado em ~15MB)";
+                    text: root.tr_login_desc;
                     color: #b5bac1;
                     font-size: 12px;
                     horizontal-alignment: center;
@@ -319,7 +366,7 @@ export component AppWindow inherits Window {
                 }
 
                 token_input := LineEdit {
-                    placeholder-text: "Cole seu Discord User Token aqui...";
+                    placeholder-text: root.tr_login_placeholder;
                     input-type: password;
                     accepted => {
                         if (token_input.text != "") {
@@ -334,7 +381,7 @@ export component AppWindow inherits Window {
 
                     Button {
                         icon: @image-url("../assets/rocket.svg");
-                        text: "Conectar à Gateway";
+                        text: root.tr_login_btn_connect;
                         primary: true;
                         clicked => {
                             if (token_input.text != "") {
@@ -345,7 +392,7 @@ export component AppWindow inherits Window {
 
                     Button {
                         icon: @image-url("../assets/search.svg");
-                        text: "Detectar Token do Discord";
+                        text: root.tr_login_btn_detect;
                         clicked => {
                             root.auto_detect_token();
                         }
@@ -423,7 +470,7 @@ export component AppWindow inherits Window {
                     spacing: 6px;
 
                     Text {
-                        text: "CANAIS DO SERVIDOR";
+                        text: root.tr_server_channels;
                         color: #949ba4;
                         font-size: 11px;
                         font-weight: 700;
@@ -538,7 +585,7 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 Button {
                                     icon: @image-url("../assets/log-out.svg");
-                                    text: "Sair";
+                                    text: root.tr_leave;
                                     clicked => { root.leave_voice(); }
                                 }
                             }
@@ -547,20 +594,42 @@ export component AppWindow inherits Window {
 
                     // User Footer in Channels bar
                     Rectangle {
-                        height: 54px;
+                        height: 58px;
                         background: #232428;
                         border-radius: 6px;
 
                         VerticalBox {
-                            padding: 6px;
+                            padding-top: 4px;
+                            padding-bottom: 6px;
+                            padding-left: 6px;
+                            padding-right: 6px;
                             spacing: 2px;
 
-                            Text {
-                                text: root.user_tag;
-                                color: #f2f3f5;
-                                font-size: 12px;
-                                font-weight: 700;
-                                overflow: elide;
+                            Rectangle {
+                                background: user_tag_touch.has-hover ? #35373c : transparent;
+                                border-radius: 4px;
+                                height: 20px;
+
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: root.user_tag;
+                                        color: user_tag_touch.has-hover ? #5865f2 : #f2f3f5;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                user_tag_touch := TouchArea {
+                                    clicked => {
+                                        root.show_user_menu = !root.show_user_menu;
+                                    }
+                                }
                             }
 
                             HorizontalBox {
@@ -635,7 +704,7 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 Button {
                                     icon: @image-url("../assets/message-square.svg");
-                                    text: "Ver Chat de Texto";
+                                    text: root.tr_view_text_chat;
                                     clicked => { root.toggle_voice_focus(); }
                                 }
                             }
@@ -644,7 +713,7 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 Button {
                                     icon: @image-url("../assets/log-out.svg");
-                                    text: "Sair da Call";
+                                    text: root.tr_leave_call;
                                     clicked => { root.leave_voice(); }
                                 }
                             }
@@ -661,7 +730,7 @@ export component AppWindow inherits Window {
                             spacing: 8px;
 
                             Text {
-                                text: "PARTICIPANTES NA SALA DE ÁUDIO (" + root.voice_participants.length + ")";
+                                text: root.tr_voice_participants_title + " (" + root.voice_participants.length + ")";
                                 color: #949ba4;
                                 font-size: 11px;
                                 font-weight: 700;
@@ -669,210 +738,270 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
-                                    height: 68px;
-                                    background: #2b2d31;
-                                    border-radius: 8px;
+                                    height: 76px;
+                                    background: #00000000;
 
-                                    HorizontalBox {
-                                         padding-left: 12px;
-                                         padding-right: 12px;
-                                         spacing: 12px;
+                                    Rectangle {
+                                        y: 4px;
+                                        height: 68px;
+                                        background: p.is_self ? #232738 : #2b2d31;
+                                        border-radius: 8px;
+                                        border-width: p.is_self ? 1px : 0px;
+                                        border-color: p.is_self ? #5865f2 : #00000000;
 
-                                         // Avatar Badge with Glowing Green Ring when speaking!
-                                         VerticalLayout {
-                                             alignment: center;
-                                             Rectangle {
-                                                 width: 42px;
-                                                 height: 42px;
-                                                 border-radius: 21px;
-                                                 background: p.is_speaking ? #23a55a : #383a40;
-                                                 border-width: p.is_speaking ? 3px : 0px;
-                                                 border-color: #23a55a;
+                                        HorizontalBox {
+                                             padding-left: 12px;
+                                             padding-right: 12px;
+                                             spacing: 12px;
 
-                                                 Text {
-                                                     text: p.avatar_text;
-                                                     color: #ffffff;
-                                                     font-size: 16px;
-                                                     font-weight: 700;
-                                                     horizontal-alignment: center;
-                                                     vertical-alignment: center;
-                                                 }
-                                             }
-                                         }
+                                             // Avatar Badge with Glowing Green Ring when speaking / Blue accent for self!
+                                             VerticalLayout {
+                                                 alignment: center;
+                                                 Rectangle {
+                                                     width: 42px;
+                                                     height: 42px;
+                                                     border-radius: 21px;
+                                                     background: p.is_speaking ? #23a55a : (p.is_self ? #5865f2 : #383a40);
+                                                     border-width: p.is_speaking ? 3px : (p.is_self ? 2px : 0px);
+                                                     border-color: p.is_speaking ? #23a55a : (p.is_self ? #7983f5 : #00000000);
 
-                                         // Username & Controls in a Vertical Stack!
-                                         VerticalBox {
-                                             horizontal-stretch: 1;
-                                             alignment: center;
-                                             spacing: 6px;
-                                             padding: 0px;
-
-                                             // Row 1: Username & Mute Status Badge
-                                             HorizontalLayout {
-                                                 spacing: 8px;
-                                                 Text {
-                                                     text: p.username;
-                                                     color: p.is_speaking ? #ffffff : #dbdee1;
-                                                     font-weight: 700;
-                                                     font-size: 14px;
-                                                     vertical-alignment: center;
-                                                 }
-
-                                                 if p.is_muted: HorizontalLayout {
-                                                     spacing: 4px;
-                                                     alignment: start;
-                                                     Image {
-                                                         source: @image-url("../assets/volume-x.svg");
-                                                         width: 12px;
-                                                         height: 12px;
-                                                         colorize: #f23f43;
-                                                     }
                                                      Text {
-                                                         text: "MUTADO";
-                                                         color: #f23f43;
-                                                         font-size: 11px;
+                                                         text: p.avatar_text;
+                                                         color: #ffffff;
+                                                         font-size: 16px;
                                                          font-weight: 700;
+                                                         horizontal-alignment: center;
                                                          vertical-alignment: center;
                                                      }
                                                  }
                                              }
 
-                                             // Row 2: Dynamic Volume bar & Per-User Controls
-                                             HorizontalLayout {
-                                                 spacing: 16px;
+                                             // Username & Controls in a Vertical Stack!
+                                             VerticalBox {
+                                                 horizontal-stretch: 1;
+                                                 alignment: center;
+                                                 spacing: 6px;
+                                                 padding: 0px;
 
-                                                 // Animated Volume Level Meter Bar (sobe e desce à medida que fala!)
-                                                 VerticalLayout {
-                                                     horizontal-stretch: 1;
-                                                     alignment: center;
-                                                     Rectangle {
-                                                         height: 8px;
-                                                         background: #1e1f22;
+                                                 // Row 1: Username & Badges
+                                                 HorizontalLayout {
+                                                     spacing: 8px;
+                                                     Text {
+                                                         text: p.username;
+                                                         color: p.is_self ? #7983f5 : (p.is_speaking ? #ffffff : #dbdee1);
+                                                         font-weight: 700;
+                                                         font-size: 14px;
+                                                         vertical-alignment: center;
+                                                     }
+
+                                                     if p.is_self: Rectangle {
+                                                         background: #5865f2;
                                                          border-radius: 4px;
+                                                         height: 16px;
+                                                         HorizontalLayout {
+                                                             padding-left: 6px;
+                                                             padding-right: 6px;
+                                                             Text {
+                                                                 text: root.tr_badge_you;
+                                                                 color: #ffffff;
+                                                                 font-size: 9px;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
 
-                                                         Rectangle {
-                                                             x: 0px;
-                                                             y: 0px;
-                                                             height: 8px;
-                                                             width: p.audio_level * parent.width;
-                                                             background: p.is_speaking ? #23a55a : #5865f2;
-                                                             border-radius: 4px;
+                                                     if p.is_muted: HorizontalLayout {
+                                                         spacing: 4px;
+                                                         alignment: start;
+                                                         Image {
+                                                             source: @image-url("../assets/volume-x.svg");
+                                                             width: 12px;
+                                                             height: 12px;
+                                                             colorize: #f23f43;
+                                                         }
+                                                         Text {
+                                                             text: p.is_self ? "MUTED" : "MUTED";
+                                                             color: #f23f43;
+                                                             font-size: 11px;
+                                                             font-weight: 700;
+                                                             vertical-alignment: center;
                                                          }
                                                      }
                                                  }
 
-                                                 // Mute Button
-                                                 VerticalLayout {
-                                                     alignment: center;
-                                                     IconButton {
-                                                         icon: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
-                                                         icon-color: p.is_muted ? #f23f43 : #dbdee1;
-                                                         clicked => { root.toggle_user_mute(p.user_id); }
+                                                 // Row 2: Controls vs Self Info
+                                                 if p.is_self: HorizontalLayout {
+                                                     spacing: 12px;
+
+                                                     // Animated Mic Volume Meter Bar for Self
+                                                     VerticalLayout {
+                                                         horizontal-stretch: 1;
+                                                         alignment: center;
+                                                         Rectangle {
+                                                             height: 8px;
+                                                             background: #1e1f22;
+                                                             border-radius: 4px;
+
+                                                             Rectangle {
+                                                                 x: 0px;
+                                                                 y: 0px;
+                                                                 height: 8px;
+                                                                 width: p.audio_level * parent.width;
+                                                                 background: p.is_speaking ? #23a55a : #5865f2;
+                                                                 border-radius: 4px;
+                                                             }
+                                                         }
+                                                     }
+
+                                                     // Status description for Self
+                                                     VerticalLayout {
+                                                         alignment: center;
+                                                         Text {
+                                                             text: root.is_muted ? "Muted" : (p.is_speaking ? "Transmitting..." : "Mic active");
+                                                             color: root.is_muted ? #f23f43 : (p.is_speaking ? #23a55a : #80848e);
+                                                             font-size: 11px;
+                                                             font-weight: 600;
+                                                             vertical-alignment: center;
+                                                         }
                                                      }
                                                  }
 
-                                                 // Volume Text
-                                                 VerticalLayout {
-                                                     alignment: center;
-                                                     Text {
-                                                         text: "Vol: " + Math.round(p.volume * 100) + "%";
-                                                         color: #b5bac1;
-                                                         font-size: 11px;
-                                                         vertical-alignment: center;
-                                                     }
-                                                 }
+                                                 if !p.is_self: HorizontalLayout {
+                                                     spacing: 16px;
 
-                                                  // Slider
-                                                  VerticalLayout {
-                                                      alignment: center;
-                                                      Slider {
-                                                          width: 110px;
-                                                          minimum: 0.0;
-                                                          maximum: 1.0;
-                                                          value: p.volume;
-                                                          changed(val) => { root.set_user_volume(p.user_id, val); }
+                                                     // Animated Volume Level Meter Bar
+                                                     VerticalLayout {
+                                                         horizontal-stretch: 1;
+                                                         alignment: center;
+                                                         Rectangle {
+                                                             height: 8px;
+                                                             background: #1e1f22;
+                                                             border-radius: 4px;
+
+                                                             Rectangle {
+                                                                 x: 0px;
+                                                                 y: 0px;
+                                                                 height: 8px;
+                                                                 width: p.audio_level * parent.width;
+                                                                 background: p.is_speaking ? #23a55a : #5865f2;
+                                                                 border-radius: 4px;
+                                                             }
+                                                         }
+                                                     }
+
+                                                     // Mute Button
+                                                     VerticalLayout {
+                                                         alignment: center;
+                                                         IconButton {
+                                                             icon: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
+                                                             icon-color: p.is_muted ? #f23f43 : #dbdee1;
+                                                             clicked => { root.toggle_user_mute(p.user_id); }
+                                                         }
+                                                     }
+
+                                                     // Volume Text
+                                                     VerticalLayout {
+                                                         alignment: center;
+                                                         Text {
+                                                             text: "Vol: " + Math.round(p.volume * 100) + "%";
+                                                             color: #b5bac1;
+                                                             font-size: 11px;
+                                                             vertical-alignment: center;
+                                                         }
+                                                     }
+
+                                                      // Slider
+                                                      VerticalLayout {
+                                                          alignment: center;
+                                                          Slider {
+                                                              width: 110px;
+                                                              minimum: 0.0;
+                                                              maximum: 1.0;
+                                                              value: p.volume;
+                                                              changed(val) => { root.set_user_volume(p.user_id, val); }
+                                                          }
                                                       }
-                                                  }
 
-                                                  // Speech Priority Control Box (Prioridade de Fala)
-                                                  VerticalLayout {
-                                                      alignment: center;
-                                                      Rectangle {
-                                                          width: 86px;
-                                                          height: 24px;
-                                                          background: #2b2d31;
-                                                          border-radius: 6px;
-                                                          border-width: 1px;
-                                                          border-color: p.priority > 0 ? #5865f2 : #383a40;
+                                                      // Speech Priority Control Box (Prioridade de Fala)
+                                                      VerticalLayout {
+                                                          alignment: center;
+                                                          Rectangle {
+                                                              width: 86px;
+                                                              height: 24px;
+                                                              background: #2b2d31;
+                                                              border-radius: 6px;
+                                                              border-width: 1px;
+                                                              border-color: p.priority > 0 ? #5865f2 : #383a40;
 
-                                                          HorizontalLayout {
-                                                              padding-left: 2px;
-                                                              padding-right: 2px;
-                                                              alignment: space-between;
+                                                              HorizontalLayout {
+                                                                  padding: 2px;
+                                                                  spacing: 2px;
 
-                                                              // "-" Decrement Button
-                                                              Rectangle {
-                                                                  width: 20px;
-                                                                  height: 20px;
-                                                                  border-radius: 4px;
-                                                                  background: btn_minus.has-hover ? #35373c : #1e1f22;
+                                                                  // "-" Decrement Button
+                                                                  Rectangle {
+                                                                      width: 20px;
+                                                                      height: 20px;
+                                                                      border-radius: 4px;
+                                                                      background: btn_minus.has-hover ? #35373c : #1e1f22;
 
-                                                                  Text {
-                                                                      text: "-";
-                                                                      color: p.priority > 0 ? #f23f43 : #4e5058;
-                                                                      font-size: 13px;
-                                                                      font-weight: 700;
-                                                                      horizontal-alignment: center;
-                                                                      vertical-alignment: center;
-                                                                  }
+                                                                      Text {
+                                                                          text: "-";
+                                                                          color: p.priority > 0 ? #f23f43 : #4e5058;
+                                                                          font-size: 14px;
+                                                                          font-weight: 700;
+                                                                          horizontal-alignment: center;
+                                                                          vertical-alignment: center;
+                                                                      }
 
-                                                                  btn_minus := TouchArea {
-                                                                      clicked => {
-                                                                          if (p.priority > 0) {
-                                                                              root.set_user_priority(p.user_id, p.priority - 1);
+                                                                      btn_minus := TouchArea {
+                                                                          clicked => {
+                                                                              if (p.priority > 0) {
+                                                                                  root.set_user_priority(p.user_id, p.priority - 1);
+                                                                              }
                                                                           }
                                                                       }
                                                                   }
-                                                              }
 
-                                                              // Priority Indicator Text (P:0, P:1, P:2...)
-                                                              Text {
-                                                                  text: "P:" + p.priority;
-                                                                  color: p.priority > 0 ? #5865f2 : #949ba4;
-                                                                  font-size: 11px;
-                                                                  font-weight: 700;
-                                                                  horizontal-alignment: center;
-                                                                  vertical-alignment: center;
-                                                                  horizontal-stretch: 1;
-                                                              }
-
-                                                              // "+" Increment Button
-                                                              Rectangle {
-                                                                  width: 20px;
-                                                                  height: 20px;
-                                                                  border-radius: 4px;
-                                                                  background: btn_plus.has-hover ? #35373c : #1e1f22;
-
+                                                                  // Priority Indicator Text (P:0, P:1, P:2...)
                                                                   Text {
-                                                                      text: "+";
-                                                                      color: #23a55a;
-                                                                      font-size: 13px;
+                                                                      text: "P:" + p.priority;
+                                                                      color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                      font-size: 11px;
                                                                       font-weight: 700;
                                                                       horizontal-alignment: center;
                                                                       vertical-alignment: center;
+                                                                      horizontal-stretch: 1;
                                                                   }
 
-                                                                  btn_plus := TouchArea {
-                                                                      clicked => {
-                                                                          root.set_user_priority(p.user_id, p.priority + 1);
+                                                                  // "+" Increment Button
+                                                                  Rectangle {
+                                                                      width: 20px;
+                                                                      height: 20px;
+                                                                      border-radius: 4px;
+                                                                      background: btn_plus.has-hover ? #35373c : #1e1f22;
+
+                                                                      Text {
+                                                                          text: "+";
+                                                                          color: #23a55a;
+                                                                          font-size: 14px;
+                                                                          font-weight: 700;
+                                                                          horizontal-alignment: center;
+                                                                          vertical-alignment: center;
+                                                                      }
+
+                                                                      btn_plus := TouchArea {
+                                                                          clicked => {
+                                                                              root.set_user_priority(p.user_id, p.priority + 1);
+                                                                          }
                                                                       }
                                                                   }
                                                               }
                                                           }
                                                       }
-                                                  }
+                                                 }
                                              }
-                                         }
+                                        }
                                     }
                                 }
                             }
@@ -905,7 +1034,7 @@ export component AppWindow inherits Window {
 
                             if root.is_in_voice: Button {
                                 icon: @image-url("../assets/speaker.svg");
-                                text: "Ver Sala de Voz";
+                                text: root.tr_view_voice_room;
                                 clicked => { root.toggle_voice_focus(); }
                             }
                         }
@@ -957,7 +1086,7 @@ export component AppWindow inherits Window {
                                                      }
 
                                                      Text {
-                                                         text: "Respondendo a @" + msg.reply-author;
+                                                         text: root.tr_replying_to + msg.reply-author;
                                                          color: #3b82f6;
                                                          font-size: 10px;
                                                          font-weight: 700;
@@ -1132,7 +1261,7 @@ export component AppWindow inherits Window {
                             spacing: 8px;
 
                             msg_input := LineEdit {
-                                placeholder-text: "Conversar em " + root.active_channel_name + "...";
+                                placeholder-text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
                                 accepted => {
                                     if (msg_input.text != "") {
                                         root.send_message(msg_input.text);
@@ -1142,7 +1271,7 @@ export component AppWindow inherits Window {
                             }
 
                             Button {
-                                text: "Enviar";
+                                text: root.tr_send;
                                 primary: true;
                                 clicked => {
                                     if (msg_input.text != "") {
@@ -1165,14 +1294,14 @@ export component AppWindow inherits Window {
         height: 100%;
 
         Rectangle {
-            width: 560px;
-            height: 490px;
+            width: 580px;
+            height: Math.min(560px, parent.height - 40px);
             background: #2b2d31;
             border-radius: 12px;
 
             VerticalBox {
-                padding: 18px;
-                spacing: 14px;
+                padding: 16px;
+                spacing: 12px;
 
                 // Header Title & Close Button
                 HorizontalBox {
@@ -1184,7 +1313,7 @@ export component AppWindow inherits Window {
                             height: 20px;
                         }
                         Text {
-                            text: "Configurações de Voz e Áudio";
+                            text: root.tr_settings_title;
                             color: #f2f3f5;
                             font-size: 18px;
                             font-weight: 700;
@@ -1196,195 +1325,488 @@ export component AppWindow inherits Window {
 
                     Button {
                         icon: @image-url("../assets/x.svg");
-                        text: "Sair";
+                        text: root.tr_leave;
                         clicked => { root.close_settings(); }
                     }
                 }
 
-                // 1. Microphone Input Device Selection
-                HorizontalLayout {
-                    spacing: 6px;
-                    Image {
-                        source: @image-url("../assets/microphone.svg");
-                        width: 14px;
-                        height: 14px;
-                    }
-                    Text {
-                        text: "DISPOSITIVO DE ENTRADA (MICROFONE)";
-                        color: #b5bac1;
-                        font-size: 11px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                }
+                // Scrollable Settings Content Body
+                ScrollView {
+                    vertical-stretch: 1;
 
-                Rectangle {
-                    height: 110px;
-                    background: #1e1f22;
-                    border-radius: 8px;
+                    VerticalBox {
+                        padding-right: 6px;
+                        spacing: 12px;
 
-                    ScrollView {
-                        height: 100%;
-                        width: 100%;
+                        // 0. Language Selector (Idioma / Language)
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Image {
+                                source: @image-url("../assets/globe.svg");
+                                width: 14px;
+                                height: 14px;
+                                colorize: #5865f2;
+                            }
+                            Text {
+                                text: root.tr_settings_language_label;
+                                color: #b5bac1;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
 
-                        VerticalBox {
-                            padding: 6px;
-                            spacing: 4px;
+                        Rectangle {
+                            height: 105px;
+                            background: #1e1f22;
+                            border-radius: 8px;
 
-                            for dev in root.input_devices: Rectangle {
-                                height: 30px;
-                                background: dev.is_selected ? #35373c : #2b2d31;
-                                border-radius: 6px;
+                            ScrollView {
+                                height: 100%;
+                                width: 100%;
 
-                                HorizontalBox {
+                                VerticalBox {
+                                    padding: 6px;
+                                    spacing: 4px;
+
+                                    for lang in root.languages: Rectangle {
+                                        height: 30px;
+                                        background: lang.is_selected ? #35373c : #2b2d31;
+                                        border-radius: 6px;
+
+                                        HorizontalBox {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+
+                                            Image {
+                                                source: lang.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                            }
+
+                                            Text {
+                                                text: lang.name;
+                                                color: lang.is_selected ? #5865f2 : #dbdee1;
+                                                font-size: 12px;
+                                                font-weight: lang.is_selected ? 700 : 400;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Rectangle { horizontal-stretch: 1; }
+
+                                            Text {
+                                                text: lang.native_name;
+                                                color: #80848e;
+                                                font-size: 11px;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            clicked => { root.change_language(lang.code); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 1. Microphone Input Device Selection
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Image {
+                                source: @image-url("../assets/microphone.svg");
+                                width: 14px;
+                                height: 14px;
+                            }
+                            Text {
+                                text: root.tr_settings_input_device;
+                                color: #b5bac1;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 95px;
+                            background: #1e1f22;
+                            border-radius: 8px;
+
+                            ScrollView {
+                                height: 100%;
+                                width: 100%;
+
+                                VerticalBox {
+                                    padding: 6px;
+                                    spacing: 4px;
+
+                                    for dev in root.input_devices: Rectangle {
+                                        height: 30px;
+                                        background: dev.is_selected ? #35373c : #2b2d31;
+                                        border-radius: 6px;
+
+                                        HorizontalBox {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+
+                                            Image {
+                                                source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                            }
+
+                                            Text {
+                                                text: dev.name;
+                                                color: dev.is_selected ? #5865f2 : #dbdee1;
+                                                font-size: 12px;
+                                                font-weight: dev.is_selected ? 700 : 400;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            clicked => { root.select_input_device(dev.name); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Speaker / Headphone Output Device Selection
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Image {
+                                source: @image-url("../assets/headphones.svg");
+                                width: 14px;
+                                height: 14px;
+                            }
+                            Text {
+                                text: root.tr_settings_output_device;
+                                color: #b5bac1;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 95px;
+                            background: #1e1f22;
+                            border-radius: 8px;
+
+                            ScrollView {
+                                height: 100%;
+                                width: 100%;
+
+                                VerticalBox {
+                                    padding: 6px;
+                                    spacing: 4px;
+
+                                    for dev in root.output_devices: Rectangle {
+                                        height: 30px;
+                                        background: dev.is_selected ? #35373c : #2b2d31;
+                                        border-radius: 6px;
+
+                                        HorizontalBox {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+
+                                            Image {
+                                                source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                            }
+
+                                            Text {
+                                                text: dev.name;
+                                                color: dev.is_selected ? #5865f2 : #dbdee1;
+                                                font-size: 12px;
+                                                font-weight: dev.is_selected ? 700 : 400;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            clicked => { root.select_output_device(dev.name); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. VAD Threshold Control Slider
+                        HorizontalBox {
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Image {
+                                    source: @image-url("../assets/microphone.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                }
+                                Text {
+                                    text: root.tr_settings_threshold;
+                                    color: #b5bac1;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            // High-visibility Percentage Badge
+                            Rectangle {
+                                background: #5865f2;
+                                border-radius: 4px;
+                                height: 18px;
+
+                                HorizontalLayout {
                                     padding-left: 8px;
                                     padding-right: 8px;
-                                    spacing: 6px;
-
-                                    Image {
-                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
-                                        width: 14px;
-                                        height: 14px;
-                                    }
-
                                     Text {
-                                        text: dev.name;
-                                        color: dev.is_selected ? #5865f2 : #dbdee1;
-                                        font-size: 12px;
-                                        font-weight: dev.is_selected ? 700 : 400;
+                                        text: Math.round(root.vad_threshold * 100) + "%";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        font-weight: 700;
                                         vertical-alignment: center;
-                                        overflow: elide;
                                     }
                                 }
+                            }
+                        }
 
-                                TouchArea {
-                                    clicked => { root.select_input_device(dev.name); }
+                        HorizontalBox {
+                            spacing: 8px;
+
+                            Text {
+                                text: "0%";
+                                color: #80848e;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+
+                            Slider {
+                                horizontal-stretch: 1;
+                                minimum: 0.0;
+                                maximum: 0.40;
+                                value: root.vad_threshold;
+                                changed(val) => {
+                                    root.vad_threshold = val;
+                                    root.set_vad_threshold(val);
                                 }
+                            }
+
+                            Text {
+                                text: "40%";
+                                color: #80848e;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // 4. Mic Level Test Indicator Bar (Dynamic Real-Time Level & Threshold Marker)
+                        HorizontalBox {
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Image {
+                                    source: @image-url("../assets/speaker.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                }
+                                Text {
+                                    text: root.tr_settings_mic_level;
+                                    color: #b5bac1;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            Text {
+                                text: root.mic_level >= root.vad_threshold 
+                                    ? "VOICE ACTIVE (" + Math.round(root.mic_level * 100) + "% / Lim: " + Math.round(root.vad_threshold * 100) + "%)" 
+                                    : "SILENCE (" + Math.round(root.mic_level * 100) + "% / Lim: " + Math.round(root.vad_threshold * 100) + "%)";
+                                color: root.mic_level >= root.vad_threshold ? #23a55a : #949ba4;
+                                font-size: 11px;
+                                font-weight: 700;
+                            }
+                        }
+
+                        Rectangle {
+                            height: 20px;
+                            background: #1e1f22;
+                            border-radius: 6px;
+
+                            // Active Mic Volume Fill
+                            HorizontalBox {
+                                padding: 3px;
+                                spacing: 0px;
+
+                                Rectangle {
+                                    width: Math.max(4px, (root.mic_level * 460) * 1px);
+                                    height: 14px;
+                                    background: root.mic_level >= root.vad_threshold ? #23a55a : #f0b232;
+                                    border-radius: 4px;
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+
+                            // Threshold position indicator marker line
+                            Rectangle {
+                                x: (root.vad_threshold * 460) * 1px;
+                                y: 0px;
+                                width: 2px;
+                                height: 20px;
+                                background: #ffffff;
                             }
                         }
                     }
                 }
 
-                // 2. Speaker / Headphone Output Device Selection
-                // 2. Speaker / Headphone Output Device Selection
-                HorizontalLayout {
-                    spacing: 6px;
-                    Image {
-                        source: @image-url("../assets/headphones.svg");
-                        width: 14px;
-                        height: 14px;
-                    }
-                    Text {
-                        text: "DISPOSITIVO DE SAÍDA (ALTO-FALANTES / FONE DE OUVIDO)";
-                        color: #b5bac1;
-                        font-size: 11px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    height: 110px;
-                    background: #1e1f22;
-                    border-radius: 8px;
-
-                    ScrollView {
-                        height: 100%;
-                        width: 100%;
-
-                        VerticalBox {
-                            padding: 6px;
-                            spacing: 4px;
-
-                            for dev in root.output_devices: Rectangle {
-                                height: 30px;
-                                background: dev.is_selected ? #35373c : #2b2d31;
-                                border-radius: 6px;
-
-                                HorizontalBox {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    spacing: 6px;
-
-                                    Image {
-                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
-                                        width: 14px;
-                                        height: 14px;
-                                    }
-
-                                    Text {
-                                        text: dev.name;
-                                        color: dev.is_selected ? #5865f2 : #dbdee1;
-                                        font-size: 12px;
-                                        font-weight: dev.is_selected ? 700 : 400;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-                                }
-
-                                TouchArea {
-                                    clicked => { root.select_output_device(dev.name); }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 3. Mic Level Test Indicator Bar (Dynamic Real-Time Level)
+                // 5. Pinned Footer Action Bar (Always Visible!)
                 HorizontalBox {
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Image {
-                            source: @image-url("../assets/speaker.svg");
-                            width: 14px;
-                            height: 14px;
-                        }
-                        Text {
-                            text: "TESTE DE SENSIBILIDADE DO MICROFONE AO VIVO";
-                            color: #b5bac1;
-                            font-size: 11px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
+                    spacing: 10px;
+
+                    Button {
+                        text: root.is_testing_mic ? root.tr_settings_btn_test_stop : root.tr_settings_btn_test_start;
+                        primary: root.is_testing_mic;
+                        clicked => { root.toggle_test_mic(); }
                     }
 
                     Rectangle { horizontal-stretch: 1; }
 
-                    Text {
-                        text: Math.round(root.mic_level * 100) + "%";
-                        color: root.mic_level > 0.1 ? #23a55a : #949ba4;
-                        font-size: 11px;
-                        font-weight: 700;
-                    }
-                }
-
-                Rectangle {
-                    height: 16px;
-                    background: #1e1f22;
-                    border-radius: 8px;
-
-                    HorizontalBox {
-                        padding: 2px;
-                        spacing: 0px;
-
-                        Rectangle {
-                            width: Math.max(8px, (root.mic_level * 500) * 1px);
-                            height: 12px;
-                            background: root.mic_level > 0.1 ? #23a55a : #5865f2;
-                            border-radius: 6px;
-                        }
-
-                        Rectangle { horizontal-stretch: 1; }
-                    }
-                }
-
-                HorizontalBox {
-                    alignment: end;
-
                     Button {
-                        text: "Concluído";
+                        text: root.tr_settings_done;
                         primary: true;
                         clicked => { root.close_settings(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Small Centered Logout Confirmation Modal
+    if root.show_user_menu: Rectangle {
+        background: #00000088;
+        width: 100%;
+        height: 100%;
+
+        TouchArea {
+            clicked => { root.show_user_menu = false; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 280px;
+                    height: 135px;
+                    background: #2b2d31;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: #383a40;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000088;
+
+                    VerticalBox {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: root.tr_logout_title;
+                            color: #f2f3f5;
+                            font-size: 15px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: root.tr_logout_confirm_prefix + root.user_tag + "?";
+                            color: #b5bac1;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+
+                        HorizontalBox {
+                            spacing: 8px;
+                            padding: 0px;
+
+                            // Voltar Button
+                            Rectangle {
+                                height: 32px;
+                                horizontal-stretch: 1;
+                                background: back_touch.has-hover ? #3b3e45 : #35373c;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: root.tr_cancel;
+                                        color: #dbdee1;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                back_touch := TouchArea {
+                                    clicked => {
+                                        root.show_user_menu = false;
+                                    }
+                                }
+                            }
+
+                            // Sair Button (Danger Red / Logout)
+                            Rectangle {
+                                height: 32px;
+                                horizontal-stretch: 1;
+                                background: logout_btn_touch.has-hover ? #c0353b : #da373c;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 6px;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/log-out.svg");
+                                            width: 14px;
+                                            height: 14px;
+                                            colorize: #ffffff;
+                                            image-fit: contain;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.tr_confirm_logout;
+                                        color: #ffffff;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                logout_btn_touch := TouchArea {
+                                    clicked => {
+                                        root.show_user_menu = false;
+                                        root.logout();
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

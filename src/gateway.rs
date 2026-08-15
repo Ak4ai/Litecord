@@ -25,6 +25,7 @@ pub struct ChannelData {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GuildData {
     pub id: String,
     pub name: String,
@@ -32,6 +33,7 @@ pub struct GuildData {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum GatewayEvent {
     Connected { user_tag: String },
     Disconnected { reason: String },
@@ -55,6 +57,7 @@ pub enum GatewayEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum GatewayCommand {
     UpdateVoiceState {
         guild_id: String,
@@ -69,6 +72,7 @@ pub enum GatewayCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[allow(dead_code)]
 struct HeartbeatPayload {
     op: u8,
     d: Option<u64>,
@@ -84,8 +88,98 @@ pub static SELECTED_OUTPUT_DEVICE: std::sync::OnceLock<Arc<std::sync::Mutex<Stri
 pub static CURRENT_VOICE_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static VAD_THRESHOLD: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
+pub static IS_TESTING_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static MIC_LOOPBACK_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
 
 pub static SELF_DEAF_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static IS_CONNECTED_TO_VOICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+const GLOBAL_AUDIO_CONFIG_FILE: &str = ".litecord_audio_config.json";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GlobalAudioConfig {
+    pub vad_threshold: f32,
+    pub input_device: String,
+    pub output_device: String,
+}
+
+impl Default for GlobalAudioConfig {
+    fn default() -> Self {
+        Self {
+            vad_threshold: 0.05,
+            input_device: String::new(),
+            output_device: String::new(),
+        }
+    }
+}
+
+pub fn load_persisted_audio_config() -> GlobalAudioConfig {
+    if let Ok(data) = std::fs::read_to_string(GLOBAL_AUDIO_CONFIG_FILE) {
+        if let Ok(cfg) = serde_json::from_str::<GlobalAudioConfig>(&data) {
+            return cfg;
+        }
+    }
+    GlobalAudioConfig::default()
+}
+
+pub fn save_persisted_audio_config(cfg: &GlobalAudioConfig) {
+    if let Ok(json) = serde_json::to_string_pretty(cfg) {
+        let _ = std::fs::write(GLOBAL_AUDIO_CONFIG_FILE, json);
+    }
+}
+
+pub fn set_persisted_input_device(name: String) {
+    let mut cfg = load_persisted_audio_config();
+    cfg.input_device = name;
+    save_persisted_audio_config(&cfg);
+}
+
+pub fn set_persisted_output_device(name: String) {
+    let mut cfg = load_persisted_audio_config();
+    cfg.output_device = name.clone();
+    save_persisted_audio_config(&cfg);
+    set_selected_output_device(name);
+}
+
+fn get_vad_threshold_atomic() -> &'static std::sync::atomic::AtomicU32 {
+    VAD_THRESHOLD.get_or_init(|| {
+        let cfg = load_persisted_audio_config();
+        std::sync::atomic::AtomicU32::new(cfg.vad_threshold.clamp(0.0, 1.0).to_bits())
+    })
+}
+
+pub fn set_is_connected_to_voice(val: bool) {
+    IS_CONNECTED_TO_VOICE.store(val, Ordering::Relaxed);
+}
+
+pub fn is_connected_to_voice() -> bool {
+    IS_CONNECTED_TO_VOICE.load(Ordering::Relaxed)
+}
+
+pub fn set_vad_threshold(val: f32) {
+    let clamped = val.clamp(0.0, 1.0);
+    get_vad_threshold_atomic().store(clamped.to_bits(), Ordering::Relaxed);
+    let mut cfg = load_persisted_audio_config();
+    cfg.vad_threshold = clamped;
+    save_persisted_audio_config(&cfg);
+}
+
+pub fn get_vad_threshold() -> f32 {
+    f32::from_bits(get_vad_threshold_atomic().load(Ordering::Relaxed))
+}
+
+pub fn set_testing_mic(val: bool) {
+    IS_TESTING_MIC.store(val, Ordering::Relaxed);
+}
+
+pub fn is_testing_mic() -> bool {
+    IS_TESTING_MIC.load(Ordering::Relaxed)
+}
+
+pub fn get_mic_loopback_queue() -> Arc<std::sync::Mutex<VecDeque<f32>>> {
+    MIC_LOOPBACK_QUEUE.get_or_init(|| Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(48000)))).clone()
+}
 
 pub fn set_self_deaf(val: bool) {
     SELF_DEAF_STATE.store(val, Ordering::Relaxed);
@@ -152,16 +246,38 @@ pub fn set_selected_output_device(name: String) {
     }
 }
 
+const USER_AUDIO_SETTINGS_FILE: &str = ".litecord_user_settings.json";
+
+fn load_persisted_user_audio_settings() -> std::collections::HashMap<String, (bool, f32, i32)> {
+    if let Ok(data) = std::fs::read_to_string(USER_AUDIO_SETTINGS_FILE) {
+        if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, (bool, f32, i32)>>(&data) {
+            info!("⚙️ Carregadas configurações de volume e prioridade salvas para {} usuários", map.len());
+            return map;
+        }
+    }
+    std::collections::HashMap::new()
+}
+
+fn save_persisted_user_audio_settings(map: &std::collections::HashMap<String, (bool, f32, i32)>) {
+    if let Ok(json) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(USER_AUDIO_SETTINGS_FILE, json);
+    }
+}
+
 pub static USER_AUDIO_SETTINGS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32, i32)>>>> = std::sync::OnceLock::new();
 
 pub fn get_user_audio_settings_store() -> Arc<std::sync::Mutex<std::collections::HashMap<String, (bool, f32, i32)>>> {
-    USER_AUDIO_SETTINGS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+    USER_AUDIO_SETTINGS.get_or_init(|| {
+        let loaded = load_persisted_user_audio_settings();
+        Arc::new(std::sync::Mutex::new(loaded))
+    }).clone()
 }
 
 pub fn set_user_mute(user_id: &str, is_muted: bool) {
     if let Ok(mut map) = get_user_audio_settings_store().lock() {
         let entry = map.entry(user_id.to_string()).or_insert((false, 1.0, 0));
         entry.0 = is_muted;
+        save_persisted_user_audio_settings(&map);
     }
 }
 
@@ -169,6 +285,7 @@ pub fn set_user_volume(user_id: &str, volume: f32) {
     if let Ok(mut map) = get_user_audio_settings_store().lock() {
         let entry = map.entry(user_id.to_string()).or_insert((false, 1.0, 0));
         entry.1 = volume;
+        save_persisted_user_audio_settings(&map);
     }
 }
 
@@ -177,6 +294,7 @@ pub fn set_user_priority(user_id: &str, priority: i32) {
     if let Ok(mut map) = get_user_audio_settings_store().lock() {
         let entry = map.entry(user_id.to_string()).or_insert((false, 1.0, 0));
         entry.2 = safe_priority;
+        save_persisted_user_audio_settings(&map);
     }
 }
 
@@ -208,7 +326,20 @@ pub fn register_voice_participant(ssrc: u32, user_id: u64) {
 
 #[inline]
 pub fn soft_limit(s: f32) -> f32 {
-    s.clamp(-1.0, 1.0)
+    // Transparent linear response up to |s| <= 0.70 (well below distortion threshold)
+    // Smooth, natural soft-knee compression for peaks |s| > 0.70 avoiding hard clipping artifacts
+    let abs_s = s.abs();
+    if abs_s <= 0.70 {
+        s
+    } else if abs_s <= 1.25 {
+        let diff = abs_s - 0.70;
+        let compressed = 0.70 + 0.55 * (diff / (0.55 + diff));
+        if s > 0.0 { compressed.min(0.999) } else { -compressed.min(0.999) }
+    } else {
+        // High overload protection using smooth hyperbolic curve
+        let sign = if s > 0.0 { 1.0 } else { -1.0 };
+        sign * (0.95 + 0.049 * (1.0 - (- (abs_s - 1.25)).exp()))
+    }
 }
 
 #[inline]
@@ -221,6 +352,7 @@ pub fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
 }
 
 pub fn clear_voice_participants() {
+    set_is_connected_to_voice(false);
     if let Ok(mut map) = get_active_voice_participants_store().lock() {
         map.clear();
     }
@@ -982,6 +1114,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
+#[allow(dead_code)]
 pub fn format_discord_message(m: &Value) -> String {
     let (content, embed, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
@@ -1720,6 +1853,7 @@ pub async fn connect_voice_gateway(
                                 }
                                 2 => {
                                     // Voice Opcode 2: READY!
+                                    set_is_connected_to_voice(true);
                                     let ssrc = val["d"]["ssrc"].as_u64().unwrap_or(12345) as u32;
                                     *active_ssrc.lock().unwrap() = ssrc;
                                     ssrc_to_userid.lock().unwrap().insert(ssrc, uid_num);
@@ -1835,8 +1969,8 @@ pub async fn connect_voice_gateway(
                                                     let _ = w.send(Message::Text(select_proto.to_string().into())).await;
                                                 }
 
-                                                // 3. Initialize Pure Rust OpusEncoder (48000Hz, Mono 1 channel, Application::Voip)
-                                                let mut opus_encoder = OpusEncoder::new(48000, 1, Application::Voip)
+                                                // 3. Initialize Pure Rust OpusEncoder (48000Hz, Stereo 2 channels, Application::Voip)
+                                                let mut opus_encoder = OpusEncoder::new(48000, 2, Application::Voip)
                                                     .expect("Falha ao inicializar o OpusEncoder nativo em Rust");
 
                                                 // 4. Spawn incoming UDP voice receive loop
@@ -1849,7 +1983,6 @@ pub async fn connect_voice_gateway(
                                                 let rx_session_id = my_session_id;
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<u32, OpusDecoder> = HashMap::new();
-                                                    let mut ssrc_last_samples: HashMap<u32, (f32, f32)> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
                                                     let mut ssrc_expected_seq: HashMap<u32, u16> = HashMap::new();
                                                     let mut recv_buf = vec![0u8; 4096];
@@ -1965,6 +2098,7 @@ pub async fn connect_voice_gateway(
 
                                                                                 let mut decode_success = false;
                                                                                 let mut decoded_count = 0;
+                                                                                let mut plc_pairs: Vec<(f32, f32)> = Vec::new();
                                                                                 if can_decode && !opus_data.is_empty() {
                                                                                     let mut raw_opus = opus_data.as_slice();
 
@@ -1985,22 +2119,26 @@ pub async fn connect_voice_gateway(
                                                                                         OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder 48kHz Estéreo")
                                                                                     });
 
-                                                                                      // Handle sequence loss via Opus PLC (Packet Loss Concealment) as per Songbird & RFC 6716
+                                                                                      // Handle sequence loss via Opus PLC (Packet Loss Concealment) as per RFC 6716 & WebRTC
                                                                                       let rtp_seq = u16::from_be_bytes([pkt[2], pkt[3]]);
                                                                                       if let Some(last_seq) = ssrc_expected_seq.get(&ssrc_recv).copied() {
                                                                                           let missed = rtp_seq.wrapping_sub(last_seq);
-                                                                                          if missed > 0 && missed < 10 {
-                                                                                              info!("📊 [RTP PACKET LOSS] Missed {} packets for SSRC {} (Expected={}, Got={})", missed, ssrc_recv, last_seq, rtp_seq);
+                                                                                          if missed > 0 && missed < 6 {
+                                                                                              // Synthesize up to 5 lost frames using Opus PLC to prevent clicks/distortion
+                                                                                              let mut plc_buf = [0.0f32; 1920];
                                                                                               for _ in 0..missed {
-                                                                                                  let _ = dec.decode(&[], 5760, &mut pcm_out_buf[..]);
+                                                                                                  if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
+                                                                                                      for i in 0..samples {
+                                                                                                          plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                                      }
+                                                                                                  }
                                                                                               }
                                                                                           }
                                                                                       }
                                                                                       ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
 
-                                                                                      let is_dtx_silence = raw_opus.len() <= 3 || (raw_opus.len() <= 5 && (raw_opus[0] == 0xF8 || raw_opus[0] == 0xFC));
+                                                                                      let is_dtx_silence = raw_opus.len() <= 3 && raw_opus == [0xF8, 0xFF, 0xFE];
                                                                                       if is_dtx_silence {
-                                                                                           // Suppress synthetic SILK Comfort Noise (CNG) hiss during speech pauses
                                                                                            decode_success = true;
                                                                                            decoded_count = 960;
                                                                                            for s in pcm_out_buf[..1920].iter_mut() { *s = 0.0; }
@@ -2010,6 +2148,7 @@ pub async fn connect_voice_gateway(
                                                                                       };
                                                                                  }
 
+#[allow(dead_code)]
 pub fn append_raw_opus_dump(payload: &[u8]) {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -2021,6 +2160,7 @@ pub fn append_raw_opus_dump(payload: &[u8]) {
     }
 }
 
+#[allow(dead_code)]
 pub fn append_pcm_dump(samples: &[(f32, f32)]) {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -2115,6 +2255,10 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
 
                                                                                     if let Ok(mut queues) = speaker_queues_rx.lock() {
                                                                                         let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(96000));
+                                                                                        // Push synthesized PLC concealed frames first to maintain unbroken audio stream
+                                                                                        for &pair in &plc_pairs {
+                                                                                            if q.len() < 96000 { q.push_back(pair); }
+                                                                                        }
                                                                                         for &pair in &dump_vec {
                                                                                             if q.len() < 96000 { q.push_back(pair); }
                                                                                         }
@@ -2154,7 +2298,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                 let ssrc_to_userid_speaker = Arc::clone(&ssrc_to_userid_audio);
                                                 let out_session_id = my_session_id;
                                                 std::thread::spawn(move || {
-                                                    use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
+                                                    use cpal::traits::{HostTrait, DeviceTrait};
                                                     let host = cpal::default_host();
 
                                                     let target_dev_name = get_selected_output_device_store().lock().unwrap().clone();
@@ -2190,7 +2334,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                     // Fractional phase counters per SSRC for smooth Hermite cubic sample rate conversion (48kHz -> out_sample_rate)
                                                     let mut ssrc_phases: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
-                                                    let step = 48000.0f64 / out_sample_rate.max(1) as f64;
+                                                    let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
 
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
@@ -2214,9 +2358,13 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             if q.is_empty() {
                                                                                 let ticks = inactive_ticks.entry(ssrc).or_insert(0);
                                                                                 *ticks += 1;
-                                                                                // Only reset pre-buffer state after prolonged inactivity (150 ticks = 750ms of silence)
-                                                                                if *ticks > 150 {
+                                                                                // On network jitter / buffer underflow (empty for > 3 ticks / 15-30ms), reset started state so it re-buffers 40ms
+                                                                                if *ticks > 3 {
                                                                                     started_ssrcs.remove(&ssrc);
+                                                                                    ssrc_histories.remove(&ssrc);
+                                                                                    ssrc_phases.remove(&ssrc);
+                                                                                }
+                                                                                if *ticks > 150 {
                                                                                     to_remove.push(ssrc);
                                                                                 }
                                                                             } else {
@@ -2232,8 +2380,8 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
                                                                             } else if !q.is_empty() {
-                                                                                // Instant speech onset re-entry for brief pauses, or 40ms pre-buffer on initial join
-                                                                                if q.len() >= 960 { // At least 1 frame (20ms) ready for immediate playback
+                                                                                // 40ms Jitter Pre-buffer (1920 samples) to absorb network jitter from music bots and voice streams
+                                                                                if q.len() >= 1920 {
                                                                                     started_ssrcs.insert(ssrc);
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
@@ -2369,6 +2517,11 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             if q.is_empty() {
                                                                                 let ticks = inactive_ticks.entry(ssrc).or_insert(0);
                                                                                 *ticks += 1;
+                                                                                if *ticks > 3 {
+                                                                                    started_ssrcs.remove(&ssrc);
+                                                                                    ssrc_histories.remove(&ssrc);
+                                                                                    ssrc_phases.remove(&ssrc);
+                                                                                }
                                                                                 if *ticks > 150 {
                                                                                     to_remove.push(ssrc);
                                                                                 }
@@ -2379,13 +2532,8 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             if started_ssrcs.contains(&ssrc) {
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
-                                                                                } else {
-                                                                                    // Buffer underflowed during silence gap - reset state to pre-buffer 60ms for next speech onset
-                                                                                    started_ssrcs.remove(&ssrc);
-                                                                                    ssrc_histories.remove(&ssrc);
-                                                                                    ssrc_phases.remove(&ssrc);
                                                                                 }
-                                                                            } else if q.len() >= 2880 { // WebRTC Standard 60ms Jitter Pre-buffer (3 x 20ms frames)
+                                                                            } else if q.len() >= 1920 { // 40ms Jitter Pre-buffer
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
@@ -2533,10 +2681,17 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                 }
                                                 info!("Chave secreta recebida! Iniciando transmissão de áudio...");
 
+                                                // Flush any stale mic buffer accumulated before voice handshake completed
+                                                if let Ok(mut q) = pcm_queue.lock() {
+                                                    q.clear();
+                                                }
+
                                                 // Stream AES-256-GCM Encrypted Opus microphone audio RTP frames every 20ms over UDP
                                                 let mut timer = tokio::time::interval(Duration::from_millis(20));
                                                 timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                                                let mut remaining_silence_frames: usize = 0;
+                                                // Send initial 10 silence frames (200ms) to immediately punch UDP NAT hole and activate SFU downstream routing
+                                                let mut remaining_silence_frames: usize = 10;
+                                                let mut silence_keepalive_counter: u32 = 0;
 
                                                 loop {
                                                     timer.tick().await;
@@ -2545,50 +2700,63 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                         break;
                                                     }
 
-                                                    let is_muted = *self_mute_rx.lock().unwrap();
-                                                    if is_muted {
-                                                        if let Ok(mut q) = pcm_queue.lock() {
-                                                            q.clear();
-                                                        }
-                                                        remaining_silence_frames = 0;
-                                                        continue;
-                                                    }
+                                                    // Monotonically advance media timestamp on every 20ms tick (RFC 3550 & WebRTC standard)
+                                                    timestamp = timestamp.wrapping_add(960);
 
-                                                    // Extract 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer
+                                                    let is_muted = *self_mute_rx.lock().unwrap();
+
+                                                    // Extract full 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer
                                                     let mut pcm_frame = [0.0f32; 960];
                                                     let mut has_audio = false;
                                                     {
                                                         if let Ok(mut q) = pcm_queue.lock() {
-                                                            let avail = q.len();
-                                                            if avail >= 240 { // If at least 5ms of audio is available, process frame
-                                                                let count = avail.min(960);
-                                                                for i in 0..count {
-                                                                    if let Some(s) = q.pop_front() {
-                                                                        pcm_frame[i] = s;
+                                                            if is_muted {
+                                                                q.clear();
+                                                            } else {
+                                                                // Keep queue latency ultra-low (cap at <= 40ms max backlog)
+                                                                if q.len() > 960 * 2 {
+                                                                    let drop_count = q.len() - 960;
+                                                                    q.drain(0..drop_count);
+                                                                }
+                                                                // Only extract when full 20ms (960 samples) frame is available
+                                                                if q.len() >= 960 {
+                                                                    for i in 0..960 {
+                                                                        pcm_frame[i] = q.pop_front().unwrap_or(0.0);
+                                                                    }
+                                                                    // Enforce VAD threshold gating
+                                                                    let mut sum_sq = 0.0f32;
+                                                                    for &s in pcm_frame.iter() {
+                                                                        sum_sq += s * s;
+                                                                    }
+                                                                    let rms = (sum_sq / 960.0).sqrt();
+                                                                    let level = (rms * 6.0).min(1.0);
+                                                                    if level >= get_vad_threshold() {
+                                                                        has_audio = true;
                                                                     }
                                                                 }
-                                                                // Pad remaining samples with clean silence (zeroes)
-                                                                for i in count..960 {
-                                                                    pcm_frame[i] = 0.0;
-                                                                }
-                                                                has_audio = true;
                                                             }
                                                         }
                                                     }
 
                                                     let is_silence_packet = if has_audio {
                                                         remaining_silence_frames = 5;
+                                                        silence_keepalive_counter = 0;
                                                         false
                                                     } else if remaining_silence_frames > 0 {
                                                         remaining_silence_frames -= 1;
                                                         true
                                                     } else {
-                                                        // Stop sending UDP packets during prolonged silence as per WebRTC & Discord spec
-                                                        continue;
+                                                        silence_keepalive_counter = silence_keepalive_counter.wrapping_add(1);
+                                                        // Send a keepalive silence packet every 2.5 seconds (125 frames) to keep NAT route open
+                                                        if silence_keepalive_counter >= 125 {
+                                                            silence_keepalive_counter = 0;
+                                                            true
+                                                        } else {
+                                                            continue;
+                                                        }
                                                     };
 
                                                     seq = seq.wrapping_add(1);
-                                                    timestamp = timestamp.wrapping_add(960);
                                                     nonce_cnt = nonce_cnt.wrapping_add(1);
 
                                                     let mut audio_header = [0u8; 12];
@@ -2598,8 +2766,15 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                     audio_header[4..8].copy_from_slice(&timestamp.to_be_bytes());
                                                     audio_header[8..12].copy_from_slice(&ssrc_bytes);
 
+                                                    // Prepare 1920 interleaved stereo samples for 48kHz Stereo Opus encoding
+                                                    let mut pcm_stereo = [0.0f32; 1920];
+                                                    for (i, &s) in pcm_frame.iter().enumerate() {
+                                                        pcm_stereo[i * 2] = s;
+                                                        pcm_stereo[i * 2 + 1] = s;
+                                                    }
+
                                                     let opus_bytes: &[u8] = if !is_silence_packet {
-                                                        if let Ok(encoded_len) = opus_encoder.encode(&pcm_frame, 960, &mut opus_out) {
+                                                        if let Ok(encoded_len) = opus_encoder.encode(&pcm_stereo, 960, &mut opus_out) {
                                                             &opus_out[..encoded_len]
                                                         } else {
                                                             &[0xF8, 0xFF, 0xFE] // Silence frame fallback

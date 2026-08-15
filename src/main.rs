@@ -1,20 +1,21 @@
 mod gateway;
 mod http;
 mod tray;
+mod i18n;
 
-use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message, format_discord_message_parts};
+use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
 use tray::SystemTrayManager;
 
 use slint::{SharedString, Model, Image};
-use i_slint_backend_winit::WinitWindowAccessor;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use log::{info, error};
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    ShowWindow, SetForegroundWindow, GetForegroundWindow, SetWindowPos,
+    ShowWindow, SetForegroundWindow, SetWindowPos,
     SW_HIDE, SW_SHOW, SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, HWND_TOP
 };
 
@@ -54,6 +55,80 @@ struct RawGuildItem {
     icon_path: Option<String>,
 }
 
+fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
+    let resolved = match lang {
+        i18n::Language::Auto => i18n::detect_os_language(),
+        specific => specific,
+    };
+
+    let tr = match resolved {
+        i18n::Language::Portuguese => &i18n::PT_TRANSLATIONS,
+        i18n::Language::Spanish => &i18n::ES_TRANSLATIONS,
+        i18n::Language::German => &i18n::DE_TRANSLATIONS,
+        i18n::Language::French => &i18n::FR_TRANSLATIONS,
+        i18n::Language::Russian => &i18n::RU_TRANSLATIONS,
+        i18n::Language::Japanese => &i18n::JA_TRANSLATIONS,
+        _ => &i18n::EN_TRANSLATIONS,
+    };
+
+    ui.set_current_language_code(lang.code().into());
+    ui.set_tr_login_title(tr.login_title.into());
+    ui.set_tr_login_desc(tr.login_desc.into());
+    ui.set_tr_login_placeholder(tr.login_placeholder.into());
+    ui.set_tr_login_btn_connect(tr.login_btn_connect.into());
+    ui.set_tr_login_btn_detect(tr.login_btn_detect.into());
+    ui.set_tr_server_channels(tr.server_channels.into());
+    ui.set_tr_leave(tr.leave.into());
+    ui.set_tr_view_text_chat(tr.view_text_chat.into());
+    ui.set_tr_leave_call(tr.leave_call.into());
+    ui.set_tr_voice_participants_title(tr.voice_participants_title.into());
+    ui.set_tr_badge_you(tr.you.into());
+    ui.set_tr_view_voice_room(tr.view_voice_room.into());
+    ui.set_tr_replying_to(tr.replying_to.into());
+    ui.set_tr_chat_placeholder_prefix(tr.chat_placeholder_prefix.into());
+    ui.set_tr_send(tr.send.into());
+    ui.set_tr_settings_title(tr.settings_title.into());
+    ui.set_tr_settings_language_label(tr.settings_language_label.into());
+    ui.set_tr_settings_input_device(tr.settings_input_device.into());
+    ui.set_tr_settings_output_device(tr.settings_output_device.into());
+    ui.set_tr_settings_threshold(tr.settings_threshold.into());
+    ui.set_tr_settings_mic_level(tr.settings_mic_level.into());
+    ui.set_tr_settings_btn_test_start(match resolved {
+        i18n::Language::Portuguese => "🎧 Testar Microfone (\"Se Ouvir\")".into(),
+        i18n::Language::Spanish => "🎧 Probar Micrófono (\"Escucharse\")".into(),
+        i18n::Language::German => "🎧 Mikrofon testen (\"Sich hören\")".into(),
+        i18n::Language::French => "🎧 Tester le Micro (\"S'entendre\")".into(),
+        i18n::Language::Russian => "🎧 Проверить микрофон (\"Слышать себя\")".into(),
+        i18n::Language::Japanese => "🎧 マイクをテスト (自分の声を聞く)".into(),
+        _ => "🎧 Test Microphone (\"Hear Yourself\")".into(),
+    });
+    ui.set_tr_settings_btn_test_stop(match resolved {
+        i18n::Language::Portuguese => "🎙️ Parar Teste (Ouvindo...)".into(),
+        i18n::Language::Spanish => "🎙️ Detener Prueba (Escuchando...)".into(),
+        i18n::Language::German => "🎙️ Test beenden (Hören...)".into(),
+        i18n::Language::French => "🎙️ Arrêter le Test (Écoute...)".into(),
+        i18n::Language::Russian => "🎙️ Остановить тест (Слушаем...)".into(),
+        i18n::Language::Japanese => "🎙️ テスト停止 (聴取中...)".into(),
+        _ => "🎙️ Stop Testing (Listening...)".into(),
+    });
+    ui.set_tr_settings_done(tr.settings_done.into());
+    ui.set_tr_logout_title(tr.logout_title.into());
+    ui.set_tr_logout_confirm_prefix(tr.logout_confirm_prefix.into());
+    ui.set_tr_cancel(tr.cancel.into());
+    ui.set_tr_confirm_logout(tr.confirm_logout.into());
+
+    let lang_items: Vec<LanguageItem> = i18n::Language::all_available().iter().map(|&l| {
+        let (display, native) = l.display_info();
+        LanguageItem {
+            code: l.code().into(),
+            name: display.into(),
+            native_name: native.into(),
+            is_selected: l == lang,
+        }
+    }).collect();
+    ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
+}
+
 fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     let host = cpal::default_host();
     let mut inputs = Vec::new();
@@ -90,6 +165,17 @@ fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     (inputs, outputs)
 }
 
+fn push_to_mic_queues(q: &mut VecDeque<f32>, s: f32, level: f32) {
+    if q.len() < 96000 { q.push_back(s); }
+    if gateway::is_testing_mic() {
+        if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
+            // Apply VAD threshold to loopback test: play silence if level is below threshold!
+            let sample_to_play = if level >= gateway::get_vad_threshold() { s } else { 0.0 };
+            if loop_q.len() < 96000 { loop_q.push_back(sample_to_play); }
+        }
+    }
+}
+
 fn start_mic_capture(
     device_name: String,
     level_tx: mpsc::Sender<f32>,
@@ -119,18 +205,20 @@ fn start_mic_capture(
                 &config.into(),
                 move |data: &[f32], _: &_| {
                     let mut sum_sq = 0.0f32;
-                    if let Ok(mut q) = q_arc.lock() {
-                        // Downmix to mono and resample to 48000Hz
-                        let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
-                            let s = frame.iter().sum::<f32>() / frame.len() as f32;
-                            sum_sq += s * s;
-                            s.clamp(-1.0, 1.0)
-                        }).collect();
+                    let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                        let s = frame.iter().sum::<f32>() / frame.len() as f32;
+                        sum_sq += s * s;
+                        s.clamp(-1.0, 1.0)
+                    }).collect();
 
-                        // Linear interpolation resample to 48000Hz
+                    let rms = (sum_sq / mono_samples.len().max(1) as f32).sqrt();
+                    let level = (rms * 6.0).min(1.0);
+                    let _ = level_tx.try_send(level);
+
+                    if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for s in mono_samples {
-                                if q.len() < 96000 { q.push_back(s); }
+                            for &s in &mono_samples {
+                                push_to_mic_queues(&mut q, s, level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
@@ -142,13 +230,10 @@ fn start_mic_capture(
                                 let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
                                 let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
                                 let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
-                                if q.len() < 96000 { q.push_back(resampled); }
+                                push_to_mic_queues(&mut q, resampled, level);
                             }
                         }
                     }
-                    let rms = (sum_sq / (data.len() / channels.max(1)).max(1) as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    let _ = level_tx.try_send(level);
                 },
                 move |err| {
                     log::error!("Erro no Stream de Microfone: {:?}", err);
@@ -162,16 +247,20 @@ fn start_mic_capture(
                 &config.into(),
                 move |data: &[i16], _: &_| {
                     let mut sum_sq = 0.0f32;
-                    if let Ok(mut q) = q_arc.lock() {
-                        let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
-                            let s = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32;
-                            sum_sq += s * s;
-                            s.clamp(-1.0, 1.0)
-                        }).collect();
+                    let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                        let s = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32;
+                        sum_sq += s * s;
+                        s.clamp(-1.0, 1.0)
+                    }).collect();
 
+                    let rms = (sum_sq / mono_samples.len().max(1) as f32).sqrt();
+                    let level = (rms * 6.0).min(1.0);
+                    let _ = level_tx.try_send(level);
+
+                    if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for s in mono_samples {
-                                if q.len() < 96000 { q.push_back(s); }
+                            for &s in &mono_samples {
+                                push_to_mic_queues(&mut q, s, level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
@@ -183,13 +272,10 @@ fn start_mic_capture(
                                 let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
                                 let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
                                 let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
-                                if q.len() < 96000 { q.push_back(resampled); }
+                                push_to_mic_queues(&mut q, resampled, level);
                             }
                         }
                     }
-                    let rms = (sum_sq / (data.len() / channels.max(1)).max(1) as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    let _ = level_tx.try_send(level);
                 },
                 move |err| {
                     log::error!("Erro no Stream de Microfone I16: {:?}", err);
@@ -203,16 +289,20 @@ fn start_mic_capture(
                 &config.into(),
                 move |data: &[i32], _: &_| {
                     let mut sum_sq = 0.0f32;
-                    if let Ok(mut q) = q_arc.lock() {
-                        let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
-                            let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32;
-                            sum_sq += s * s;
-                            s.clamp(-1.0, 1.0)
-                        }).collect();
+                    let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                        let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32;
+                        sum_sq += s * s;
+                        s.clamp(-1.0, 1.0)
+                    }).collect();
 
+                    let rms = (sum_sq / mono_samples.len().max(1) as f32).sqrt();
+                    let level = (rms * 6.0).min(1.0);
+                    let _ = level_tx.try_send(level);
+
+                    if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for s in mono_samples {
-                                if q.len() < 96000 { q.push_back(s); }
+                            for &s in &mono_samples {
+                                push_to_mic_queues(&mut q, s, level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
@@ -224,13 +314,10 @@ fn start_mic_capture(
                                 let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
                                 let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
                                 let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
-                                if q.len() < 96000 { q.push_back(resampled); }
+                                push_to_mic_queues(&mut q, resampled, level);
                             }
                         }
                     }
-                    let rms = (sum_sq / (data.len() / channels.max(1)).max(1) as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    let _ = level_tx.try_send(level);
                 },
                 move |err| {
                     log::error!("Erro no Stream de Microfone I32: {:?}", err);
@@ -246,6 +333,84 @@ fn start_mic_capture(
         Some(stream)
     } else {
         log::error!("Falha ao executar stream.play() no microfone!");
+        None
+    }
+}
+
+fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
+    let host = cpal::default_host();
+    let devices = host.output_devices().ok()?;
+
+    let target_dev = if device_name.is_empty() || device_name.contains("Padrão") {
+        host.default_output_device()?
+    } else {
+        devices.into_iter().find(|d| {
+            d.name().map(|n| n == device_name).unwrap_or(false)
+        })?
+    };
+
+    let config = target_dev.default_output_config().ok()?;
+    let channels = config.channels() as usize;
+
+    let loop_q_arc = gateway::get_mic_loopback_queue();
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let q_arc = Arc::clone(&loop_q_arc);
+            target_dev.build_output_stream(
+                &config.into(),
+                move |output: &mut [f32], _| {
+                    if !gateway::is_testing_mic() {
+                        for s in output.iter_mut() { *s = 0.0; }
+                        return;
+                    }
+                    if let Ok(mut loop_q) = q_arc.lock() {
+                        for frame in output.chunks_mut(channels.max(1)) {
+                            let sample = loop_q.pop_front().unwrap_or(0.0);
+                            for s in frame.iter_mut() {
+                                *s = sample;
+                            }
+                        }
+                    } else {
+                        for s in output.iter_mut() { *s = 0.0; }
+                    }
+                },
+                move |err| { log::error!("Erro no Stream Loopback F32: {:?}", err); },
+                None,
+            ).ok()?
+        }
+        cpal::SampleFormat::I16 => {
+            let q_arc = Arc::clone(&loop_q_arc);
+            target_dev.build_output_stream(
+                &config.into(),
+                move |output: &mut [i16], _| {
+                    if !gateway::is_testing_mic() {
+                        for s in output.iter_mut() { *s = 0; }
+                        return;
+                    }
+                    if let Ok(mut loop_q) = q_arc.lock() {
+                        for frame in output.chunks_mut(channels.max(1)) {
+                            let sample = loop_q.pop_front().unwrap_or(0.0);
+                            let val = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                            for s in frame.iter_mut() {
+                                *s = val;
+                            }
+                        }
+                    } else {
+                        for s in output.iter_mut() { *s = 0; }
+                    }
+                },
+                move |err| { log::error!("Erro no Stream Loopback I16: {:?}", err); },
+                None,
+            ).ok()?
+        }
+        _ => return None,
+    };
+
+    if stream.play().is_ok() {
+        info!("🎧 Stream Loopback ('Se Ouvir') iniciado com sucesso!");
+        Some(stream)
+    } else {
         None
     }
 }
@@ -676,6 +841,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Iniciando Litecord v0.1.0...");
 
     let app = AppWindow::new()?;
+    let initial_lang = i18n::load_persisted_language_config();
+    apply_i18n_translations(&app, initial_lang);
+    info!("🌐 Idioma inicial configurado: {:?}", initial_lang);
+
+    let saved_audio_cfg = gateway::load_persisted_audio_config();
+    app.set_vad_threshold(saved_audio_cfg.vad_threshold);
     let app_weak = app.as_weak();
 
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
@@ -696,9 +867,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guilds_map: Arc<Mutex<HashMap<String, GuildData>>> = Arc::new(Mutex::new(HashMap::new()));
     let cmd_tx_store: Arc<Mutex<Option<mpsc::Sender<GatewayCommand>>>> = Arc::new(Mutex::new(None));
 
-    let selected_input: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let selected_output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let selected_input: Arc<Mutex<String>> = Arc::new(Mutex::new(saved_audio_cfg.input_device.clone()));
+    let selected_output: Arc<Mutex<String>> = Arc::new(Mutex::new(saved_audio_cfg.output_device.clone()));
+    if !saved_audio_cfg.input_device.is_empty() {
+        app.set_selected_input_device(saved_audio_cfg.input_device.into());
+    }
+    if !saved_audio_cfg.output_device.is_empty() {
+        gateway::set_selected_output_device(saved_audio_cfg.output_device.clone());
+        app.set_selected_output_device(saved_audio_cfg.output_device.into());
+    }
     let active_mic_stream: Arc<Mutex<Option<cpal::Stream>>> = Arc::new(Mutex::new(None));
+    let active_loopback_stream: Arc<Mutex<Option<cpal::Stream>>> = Arc::new(Mutex::new(None));
 
     let tray = SystemTrayManager::setup();
     let show_id = tray.show_item_id.clone();
@@ -758,7 +937,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(120));
         }
     });
 
@@ -772,21 +951,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Tokio MPSC Channel for Microphone Volume Level (0.0 to 1.0)
     let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
 
-    // Dispatch Microphone Volume Level to Slint UI Thread
+    // Dispatch Microphone Volume Level to Slint UI Thread with high efficiency (throttled to 30 FPS / 33ms)
     let app_weak_level = app_weak.clone();
     tokio::spawn(async move {
+        let mut last_send = std::time::Instant::now();
+        let mut last_level = -1.0f32;
         while let Some(level) = level_rx.recv().await {
             gateway::set_self_mic_level(level);
             // Deep-sleep guard: drain the channel without invoking Slint
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                 continue;
             }
-            let app_w_inner = app_weak_level.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = app_w_inner.upgrade() {
-                    ui.set_mic_level(level);
-                }
-            });
+            let now = std::time::Instant::now();
+            let delta = (level - last_level).abs();
+            // Cap visual UI property dispatch to 30 FPS (33ms) or significant transitions
+            if now.duration_since(last_send).as_millis() >= 33 || (delta >= 0.05 && now.duration_since(last_send).as_millis() >= 16) {
+                last_send = now;
+                last_level = level;
+                let app_w_inner = app_weak_level.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w_inner.upgrade() {
+                        ui.set_mic_level(level);
+                    }
+                });
+            }
         }
     });
 
@@ -800,12 +988,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     app.on_open_link(move |url_str: SharedString| {
-        let url = url_str.to_string();
-        info!("Abrindo link no navegador: {}", url);
+        let url = url_str.trim().to_string();
+        // Strict URL protocol validation: only allow HTTP and HTTPS
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            log::warn!("Tentativa de abrir link não-HTTP rejeitada por segurança: {}", url);
+            return;
+        }
+
+        info!("Abrindo link seguro no navegador padrão: {}", url);
         #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("cmd")
-            .args(&["/C", "start", &url])
-            .spawn();
+        unsafe {
+            let op: Vec<u16> = "open\0".encode_utf16().collect();
+            let file: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+            ShellExecuteW(0, op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1 /* SW_SHOWNORMAL */);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        }
     });
 
     let app_weak_mute = app_weak.clone();
@@ -876,8 +1076,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             interval.tick().await;
 
-            // Deep-sleep guard: skip all RMS calculation and UI invoke when hidden.
-            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+            // Deep-sleep & Voice-session guard: skip when UI is hidden or when not in a voice call
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
                 continue;
             }
 
@@ -947,84 +1147,118 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
+                    let my_user_id = gateway::get_my_user_id();
                     let mut sorted_users: Vec<_> = user_best.into_iter().collect();
                     sorted_users.sort_by(|(id_a, _), (id_b, _)| {
-                        let name_a = gateway::get_user_name(*id_a);
-                        let name_b = gateway::get_user_name(*id_b);
-                        name_a.cmp(&name_b)
+                        let is_self_a = (*id_a == my_user_id && my_user_id != 0) || *id_a == 999999;
+                        let is_self_b = (*id_b == my_user_id && my_user_id != 0) || *id_b == 999999;
+                        if is_self_a && !is_self_b {
+                            std::cmp::Ordering::Less
+                        } else if !is_self_a && is_self_b {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            let name_a = gateway::get_user_name(*id_a);
+                            let name_b = gateway::get_user_name(*id_b);
+                            name_a.cmp(&name_b)
+                        }
                     });
 
                     for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
                         let uid_str = user_id.to_string();
-                        let username = gateway::get_user_name(user_id);
-                        if username.starts_with("Participante #") {
-                            let http_opt = http_client_voice_loop_inner.lock().unwrap().clone();
-                            if let Some(http) = http_opt {
-                                static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();
-                                let fetching_store = FETCHING_USERS.get_or_init(|| Arc::new(Mutex::new(std::collections::HashSet::new())));
-                                if let Ok(mut set) = fetching_store.lock() {
-                                    if set.insert(user_id) {
-                                        let uid_str_task = uid_str.clone();
-                                        let active_gid = active_guild_voice_loop_inner.lock().unwrap().clone();
-                                        let store_arc = Arc::clone(fetching_store);
-                                        tokio::spawn(async move {
-                                            let mut resolved_name = String::new();
+                        let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
 
-                                            // 1. Try GET /guilds/{guild_id}/members/{user_id} first (returns nick, user object)
-                                            if !active_gid.is_empty() {
-                                                if let Ok(member_json) = http.get_guild_member(&active_gid, &uid_str_task).await {
-                                                    if let Some(nick) = member_json["nick"].as_str() {
-                                                        if !nick.is_empty() { resolved_name = nick.to_string(); }
-                                                    }
-                                                    if resolved_name.is_empty() {
-                                                        if let Some(gname) = member_json["user"]["global_name"].as_str() {
-                                                            if !gname.is_empty() { resolved_name = gname.to_string(); }
+                        let username = if is_self {
+                            let resolved = if my_user_id != 0 { gateway::get_user_name(my_user_id) } else { String::new() };
+                            if resolved.is_empty() || resolved.starts_with("Participante #") {
+                                "Você".to_string()
+                            } else {
+                                resolved
+                            }
+                        } else {
+                            let uname = gateway::get_user_name(user_id);
+                            if uname.starts_with("Participante #") {
+                                let http_opt = http_client_voice_loop_inner.lock().unwrap().clone();
+                                if let Some(http) = http_opt {
+                                    static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();
+                                    let fetching_store = FETCHING_USERS.get_or_init(|| Arc::new(Mutex::new(std::collections::HashSet::new())));
+                                    if let Ok(mut set) = fetching_store.lock() {
+                                        if set.insert(user_id) {
+                                            let uid_str_task = uid_str.clone();
+                                            let active_gid = active_guild_voice_loop_inner.lock().unwrap().clone();
+                                            let store_arc = Arc::clone(fetching_store);
+                                            tokio::spawn(async move {
+                                                let mut resolved_name = String::new();
+
+                                                // 1. Try GET /guilds/{guild_id}/members/{user_id} first (returns nick, user object)
+                                                if !active_gid.is_empty() {
+                                                    if let Ok(member_json) = http.get_guild_member(&active_gid, &uid_str_task).await {
+                                                        if let Some(nick) = member_json["nick"].as_str() {
+                                                            if !nick.is_empty() { resolved_name = nick.to_string(); }
+                                                        }
+                                                        if resolved_name.is_empty() {
+                                                            if let Some(gname) = member_json["user"]["global_name"].as_str() {
+                                                                if !gname.is_empty() { resolved_name = gname.to_string(); }
+                                                            }
+                                                        }
+                                                        if resolved_name.is_empty() {
+                                                            if let Some(uname) = member_json["user"]["username"].as_str() {
+                                                                if !uname.is_empty() { resolved_name = uname.to_string(); }
+                                                            }
                                                         }
                                                     }
-                                                    if resolved_name.is_empty() {
-                                                        if let Some(uname) = member_json["user"]["username"].as_str() {
-                                                            if !uname.is_empty() { resolved_name = uname.to_string(); }
-                                                        }
+                                                }
+
+                                                // 2. Fallback to GET /users/{user_id}
+                                                if resolved_name.is_empty() {
+                                                    if let Ok(profile) = http.get_user_profile(&uid_str_task).await {
+                                                        resolved_name = profile["global_name"].as_str()
+                                                            .or_else(|| profile["username"].as_str())
+                                                            .unwrap_or("")
+                                                            .to_string();
                                                     }
                                                 }
-                                            }
 
-                                            // 2. Fallback to GET /users/{user_id}
-                                            if resolved_name.is_empty() {
-                                                if let Ok(profile) = http.get_user_profile(&uid_str_task).await {
-                                                    resolved_name = profile["global_name"].as_str()
-                                                        .or_else(|| profile["username"].as_str())
-                                                        .unwrap_or("")
-                                                        .to_string();
+                                                if !resolved_name.is_empty() {
+                                                    gateway::register_user_name(user_id, resolved_name.clone());
+                                                    info!("✅ Nome de usuário/bot resolvido via REST API: {} -> {}", user_id, resolved_name);
+                                                } else {
+                                                    if let Ok(mut set) = store_arc.lock() {
+                                                        set.remove(&user_id);
+                                                    }
                                                 }
-                                            }
-
-                                            if !resolved_name.is_empty() {
-                                                gateway::register_user_name(user_id, resolved_name.clone());
-                                                info!("✅ Nome de usuário/bot resolvido via REST API: {} -> {}", user_id, resolved_name);
-                                            } else {
-                                                if let Ok(mut set) = store_arc.lock() {
-                                                    set.remove(&user_id);
-                                                }
-                                            }
-                                        });
+                                            });
+                                        }
                                     }
                                 }
                             }
-                        }
+                            uname
+                        };
 
                         let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
-                        let (is_muted, vol, prio) = gateway::get_user_audio_settings(&uid_str);
+                        let (is_muted_saved, vol, prio) = gateway::get_user_audio_settings(&uid_str);
+
+                        let (final_audio_level, final_is_speaking, final_is_muted) = if is_self {
+                            let mic_lvl = ui.get_mic_level();
+                            let is_self_muted = ui.get_is_muted();
+                            if is_self_muted {
+                                (0.0, false, true)
+                            } else {
+                                (mic_lvl, mic_lvl >= gateway::get_vad_threshold(), false)
+                            }
+                        } else {
+                            (audio_level, is_speaking, is_muted_saved)
+                        };
 
                         participants.push(VoiceParticipant {
                             user_id: uid_str.into(),
                             username: username.into(),
                             avatar_text: avatar_text.into(),
-                            is_speaking,
-                            audio_level,
-                            is_muted,
+                            is_speaking: final_is_speaking,
+                            audio_level: final_audio_level,
+                            is_muted: final_is_muted,
                             volume: vol,
                             priority: prio,
+                            is_self,
                         });
                     }
                 }
@@ -1034,7 +1268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !need_full_rebuild {
                     for (i, p) in participants.iter().enumerate() {
                         if let Some(old) = cur_model.row_data(i) {
-                            if old.user_id != p.user_id || old.username != p.username || old.priority != p.priority {
+                            if old.user_id != p.user_id || old.username != p.username || old.priority != p.priority || old.is_self != p.is_self {
                                 need_full_rebuild = true;
                                 break;
                             }
@@ -1057,12 +1291,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Periodic update for voice channel participant badges in sidebar
+    // Periodic update for voice channel participant badges in sidebar (fingerprinted delta check)
     let app_weak_ch_badges = app_weak.clone();
     let guilds_map_badges = Arc::clone(&guilds_map);
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
+        let mut last_fingerprint: Vec<(String, i32)> = Vec::new();
+        let mut last_gid = String::new();
         loop {
             interval.tick().await;
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) { continue; }
@@ -1078,39 +1314,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if let Some(chans) = channels_opt {
-                let ui_channels: Vec<ChannelItem> = chans.iter().map(|ch| {
+                let mut current_fingerprint = Vec::with_capacity(chans.len());
+                for ch in &chans {
                     let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
-                    ChannelItem {
-                        id: ch.id.clone().into(),
-                        name: ch.name.clone().into(),
-                        is_voice: ch.is_voice,
-                        voice_count: vcount,
-                    }
-                }).collect();
+                    current_fingerprint.push((ch.id.clone(), vcount));
+                }
 
-                let app_w = app_weak_ch_badges.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = app_w.upgrade() {
-                        let cur_chans = ui.get_channels();
-                        let mut needs_rebuild = cur_chans.row_count() != ui_channels.len();
-                        if !needs_rebuild {
-                            for (i, new_c) in ui_channels.iter().enumerate() {
-                                if let Some(old_c) = cur_chans.row_data(i) {
-                                    if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
-                                        cur_chans.set_row_data(i, new_c.clone());
+                let guild_changed = gid != last_gid;
+                if guild_changed || current_fingerprint != last_fingerprint {
+                    last_gid = gid;
+                    last_fingerprint = current_fingerprint;
+
+                    let ui_channels: Vec<ChannelItem> = chans.iter().map(|ch| {
+                        let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
+                        ChannelItem {
+                            id: ch.id.clone().into(),
+                            name: ch.name.clone().into(),
+                            is_voice: ch.is_voice,
+                            voice_count: vcount,
+                        }
+                    }).collect();
+
+                    let app_w = app_weak_ch_badges.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            let cur_chans = ui.get_channels();
+                            let mut needs_rebuild = cur_chans.row_count() != ui_channels.len();
+                            if !needs_rebuild {
+                                for (i, new_c) in ui_channels.iter().enumerate() {
+                                    if let Some(old_c) = cur_chans.row_data(i) {
+                                        if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
+                                            cur_chans.set_row_data(i, new_c.clone());
+                                        }
+                                    } else {
+                                        needs_rebuild = true;
+                                        break;
                                     }
-                                } else {
-                                    needs_rebuild = true;
-                                    break;
                                 }
                             }
+                            if needs_rebuild {
+                                let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
+                                ui.set_channels(model.into());
+                            }
                         }
-                        if needs_rebuild {
-                            let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
-                            ui.set_channels(model.into());
-                        }
-                    }
-                });
+                    });
+                }
             }
         }
     });
@@ -1148,8 +1396,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }).collect();
 
+            let current_lang = i18n::load_persisted_language_config();
+            let lang_items: Vec<LanguageItem> = i18n::Language::all_available().iter().map(|&l| {
+                let (display, native) = l.display_info();
+                LanguageItem {
+                    code: l.code().into(),
+                    name: display.into(),
+                    native_name: native.into(),
+                    is_selected: l == current_lang,
+                }
+            }).collect();
+            ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
+
             ui.set_input_devices(std::rc::Rc::new(slint::VecModel::from(ui_inputs)).into());
             ui.set_output_devices(std::rc::Rc::new(slint::VecModel::from(ui_outputs)).into());
+            ui.set_vad_threshold(gateway::get_vad_threshold());
+            ui.set_is_testing_mic(gateway::is_testing_mic());
             ui.set_show_settings_modal(true);
 
             // Start hardware microphone stream capture for live volume meter
@@ -1162,9 +1424,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_weak_close_settings = app_weak.clone();
     let active_stream_close = Arc::clone(&active_mic_stream);
+    let active_loopback_close = Arc::clone(&active_loopback_stream);
     app.on_close_settings(move || {
         if let Some(ui) = app_weak_close_settings.upgrade() {
             ui.set_show_settings_modal(false);
+            gateway::set_testing_mic(false);
+            ui.set_is_testing_mic(false);
+            *active_loopback_close.lock().unwrap() = None;
+            if let Ok(mut q) = gateway::get_mic_loopback_queue().lock() {
+                q.clear();
+            }
             if !ui.get_is_in_voice() {
                 *active_stream_close.lock().unwrap() = None; // Only stop test stream if not in voice
             }
@@ -1180,6 +1449,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name_str = dev_name.to_string();
         info!("Microfone selecionado: {}", name_str);
         *selected_input_store.lock().unwrap() = name_str.clone();
+        gateway::set_persisted_input_device(name_str.clone());
 
         if let Some(ui) = app_weak_select_input.upgrade() {
             let current_devs: Vec<AudioDeviceItem> = ui.get_input_devices().iter().map(|mut item| {
@@ -1198,11 +1468,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_weak_select_output = app_weak.clone();
     let selected_output_store = Arc::clone(&selected_output);
+    let active_loopback_output = Arc::clone(&active_loopback_stream);
     app.on_select_output_device(move |dev_name: SharedString| {
         let name_str = dev_name.to_string();
         info!("Alto-falante selecionado: {}", name_str);
         *selected_output_store.lock().unwrap() = name_str.clone();
-        gateway::set_selected_output_device(name_str.clone());
+        gateway::set_persisted_output_device(name_str.clone());
 
         if let Some(ui) = app_weak_select_output.upgrade() {
             let current_devs: Vec<AudioDeviceItem> = ui.get_output_devices().iter().map(|mut item| {
@@ -1210,8 +1481,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 item
             }).collect();
             ui.set_output_devices(std::rc::Rc::new(slint::VecModel::from(current_devs)).into());
-            ui.set_selected_output_device(name_str.into());
+            ui.set_selected_output_device(name_str.clone().into());
+
+            // If mic testing ("se ouvir") is active, restart output loopback stream for new device
+            if gateway::is_testing_mic() {
+                if let Some(stream) = start_mic_loopback_stream(name_str) {
+                    *active_loopback_output.lock().unwrap() = Some(stream);
+                }
+            }
         }
+    });
+
+    app.on_set_vad_threshold(move |threshold: f32| {
+        gateway::set_vad_threshold(threshold);
+    });
+
+    let app_weak_test_mic = app_weak.clone();
+    let selected_output_test = Arc::clone(&selected_output);
+    let active_loopback_test = Arc::clone(&active_loopback_stream);
+
+    app.on_toggle_test_mic(move || {
+        let now_testing = !gateway::is_testing_mic();
+        gateway::set_testing_mic(now_testing);
+        if let Some(ui) = app_weak_test_mic.upgrade() {
+            ui.set_is_testing_mic(now_testing);
+        }
+        if now_testing {
+            let cur_output = selected_output_test.lock().unwrap().clone();
+            if let Some(stream) = start_mic_loopback_stream(cur_output) {
+                *active_loopback_test.lock().unwrap() = Some(stream);
+            }
+        } else {
+            *active_loopback_test.lock().unwrap() = None;
+            if let Ok(mut q) = gateway::get_mic_loopback_queue().lock() {
+                q.clear();
+            }
+        }
+    });
+
+    let app_weak_lang = app_weak.clone();
+    app.on_change_language(move |code: SharedString| {
+        let selected = i18n::Language::from_code(code.as_str());
+        i18n::save_persisted_language_config(selected);
+        if let Some(ui) = app_weak_lang.upgrade() {
+            apply_i18n_translations(&ui, selected);
+        }
+        info!("🌐 Idioma alterado para: {:?} (código: {})", selected, code.as_str());
     });
 
     // Leave Voice Callback
@@ -1255,6 +1570,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Logout Callback from UI
+    let app_weak_logout = app_weak.clone();
+    let http_client_logout = Arc::clone(&http_client);
+    let last_token_logout = Arc::clone(&last_token);
+    let guilds_map_logout = Arc::clone(&guilds_map);
+    let active_guild_logout = Arc::clone(&active_guild_id);
+    let active_channel_logout = Arc::clone(&active_channel_id);
+    let cmd_tx_logout = Arc::clone(&cmd_tx_store);
+    let active_mic_logout = Arc::clone(&active_mic_stream);
+    let active_loopback_logout = Arc::clone(&active_loopback_stream);
+
+    app.on_logout(move || {
+        info!("Usuário solicitou Logout da conta...");
+        // 1. Remove saved token file so auto-login is cancelled
+        let _ = std::fs::remove_file(".litecord_token");
+
+        // 2. Disconnect voice session if active
+        gateway::clear_voice_participants();
+        gateway::CURRENT_VOICE_SESSION_ID.store(0, std::sync::atomic::Ordering::SeqCst);
+        gateway::set_testing_mic(false);
+
+        // 3. Send disconnect command if gateway is active
+        let gid = active_guild_logout.lock().unwrap().clone();
+        if let Some(cmd_tx) = cmd_tx_logout.lock().unwrap().as_ref() {
+            let _ = cmd_tx.try_send(GatewayCommand::UpdateVoiceState {
+                guild_id: gid,
+                channel_id: None,
+                self_mute: false,
+                self_deaf: false,
+            });
+        }
+
+        // 4. Reset backend states
+        *cmd_tx_logout.lock().unwrap() = None;
+        *http_client_logout.lock().unwrap() = None;
+        *last_token_logout.lock().unwrap() = String::new();
+        *guilds_map_logout.lock().unwrap() = std::collections::HashMap::new();
+        *active_guild_logout.lock().unwrap() = String::new();
+        *active_channel_logout.lock().unwrap() = String::new();
+        *active_mic_logout.lock().unwrap() = None;
+        *active_loopback_logout.lock().unwrap() = None;
+        if let Ok(mut q) = gateway::get_mic_loopback_queue().lock() {
+            q.clear();
+        }
+
+        // 5. Update Slint UI to login state
+        if let Some(ui) = app_weak_logout.upgrade() {
+            ui.set_is_logged_in(false);
+            ui.set_user_tag("Não conectado".into());
+            ui.set_connection_status("Você saiu da conta. Insira seu token para entrar.".into());
+            ui.set_is_in_voice(false);
+            ui.set_current_voice_channel("".into());
+            ui.set_show_user_menu(false);
+            ui.set_show_settings_modal(false);
+            ui.set_is_testing_mic(false);
+            ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+        }
+    });
+
     // Login Callback from UI
     let event_tx_clone = event_tx.clone();
     let http_client_clone = Arc::clone(&http_client);
@@ -1289,7 +1665,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(user_info) => {
                     let username = user_info["username"].as_str().unwrap_or("User");
                     info!("Token VÁLIDO! Usuário autenticado: {}", username);
-                    let _ = std::fs::write(".litecord_token", &token_str);
+                    save_secure_token(&token_str);
 
                     let app_w = app_weak_inner.clone();
                     let username_clone = username.to_string();
@@ -1404,11 +1780,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         let mut candidates = Vec::new();
-        if let Ok(saved_token) = std::fs::read_to_string(".litecord_token") {
-            let saved = saved_token.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
-            if !saved.is_empty() {
-                candidates.push(saved);
-            }
+        if let Some(saved) = load_secure_token() {
+            candidates.push(saved);
         }
 
         let detected = auto_detect_discord_tokens();
@@ -1643,20 +2016,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
         let app_w = app_weak_tray_min.clone();
-        let hwnd_opt = *hwnd_store_minimize.lock().unwrap();
+        let hwnd_store_c = Arc::clone(&hwnd_store_minimize);
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            let mut target_hwnd = *hwnd_store_c.lock().unwrap();
             if let Some(ui) = app_w.upgrade() {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
+                    if target_hwnd.is_none() {
+                        if let Ok(handle) = winit_win.window_handle() {
+                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                target_hwnd = Some(win32_handle.hwnd.get() as isize);
+                            }
+                        }
+                    }
                 });
             }
-            let hwnd_target = hwnd_opt.or_else(|| {
-                unsafe {
-                    let h = GetForegroundWindow();
-                    if !h.is_null() { Some(h as isize) } else { None }
-                }
-            });
-            if let Some(hwnd) = hwnd_target {
+            if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
                 }
@@ -1682,20 +2058,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
         let app_w = app_weak_min.clone();
-        let hwnd_opt = *hwnd_store_min.lock().unwrap();
+        let hwnd_store_c = Arc::clone(&hwnd_store_min);
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            let mut target_hwnd = *hwnd_store_c.lock().unwrap();
             if let Some(ui) = app_w.upgrade() {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
+                    if target_hwnd.is_none() {
+                        if let Ok(handle) = winit_win.window_handle() {
+                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                target_hwnd = Some(win32_handle.hwnd.get() as isize);
+                            }
+                        }
+                    }
                 });
             }
-            let hwnd_target = hwnd_opt.or_else(|| {
-                unsafe {
-                    let h = GetForegroundWindow();
-                    if !h.is_null() { Some(h as isize) } else { None }
-                }
-            });
-            if let Some(hwnd) = hwnd_target {
+            if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
                 }
@@ -1736,7 +2115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.set_is_logged_in(true);
                             ui.set_user_tag(user_tag.into());
                             if let Ok(tok) = last_token_inner.lock() {
-                                let _ = std::fs::write(".litecord_token", tok.as_str());
+                                save_secure_token(tok.as_str());
                             }
                         }
                     });
@@ -1843,14 +2222,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 #[repr(C)]
+#[allow(non_snake_case)]
 struct DATA_BLOB {
     cbData: u32,
     pbData: *mut u8,
 }
 
+#[cfg(target_os = "windows")]
 #[link(name = "crypt32")]
 extern "system" {
+    fn CryptProtectData(
+        pDataIn: *const DATA_BLOB,
+        szDataDescr: *const u16,
+        pOptionalEntropy: *const DATA_BLOB,
+        pvReserved: *mut std::ffi::c_void,
+        pPromptStruct: *mut std::ffi::c_void,
+        dwFlags: u32,
+        pDataOut: *mut DATA_BLOB,
+    ) -> i32;
     fn CryptUnprotectData(
         pDataIn: *const DATA_BLOB,
         ppszDataDescr: *mut *mut u16,
@@ -1862,11 +2253,64 @@ extern "system" {
     ) -> i32;
 }
 
+#[cfg(target_os = "windows")]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: isize,
+        lpOperation: *const u16,
+        lpFile: *const u16,
+        lpParameters: *const u16,
+        lpDirectory: *const u16,
+        nShowCmd: i32,
+    ) -> isize;
+}
+
+#[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 extern "system" {
     fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
 }
 
+#[cfg(target_os = "windows")]
+fn dpapi_protect(data: &[u8]) -> Option<Vec<u8>> {
+    let mut in_blob = DATA_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut out_blob = DATA_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    let res = unsafe {
+        CryptProtectData(
+            &mut in_blob,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            &mut out_blob,
+        )
+    };
+
+    if res != 0 && !out_blob.pbData.is_null() {
+        let slice = unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) };
+        let result = slice.to_vec();
+        unsafe { LocalFree(out_blob.pbData as _) };
+        Some(result)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dpapi_protect(_data: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
+#[cfg(target_os = "windows")]
 fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
     let mut in_blob = DATA_BLOB {
         cbData: data.len() as u32,
@@ -1894,6 +2338,44 @@ fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
         let result = slice.to_vec();
         unsafe { LocalFree(out_blob.pbData as _) };
         Some(result)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dpapi_unprotect(_data: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
+fn save_secure_token(token_str: &str) {
+    if let Some(encrypted) = dpapi_protect(token_str.as_bytes()) {
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
+        let _ = std::fs::write(".litecord_token", format!("DPAPI:{}", b64));
+    } else {
+        let _ = std::fs::write(".litecord_token", token_str);
+    }
+}
+
+fn load_secure_token() -> Option<String> {
+    let raw = std::fs::read_to_string(".litecord_token").ok()?;
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("DPAPI:") {
+        if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
+            if let Some(decrypted_bytes) = dpapi_unprotect(&encrypted_bytes) {
+                if let Ok(tok) = String::from_utf8(decrypted_bytes) {
+                    let clean = tok.trim().to_string();
+                    if !clean.is_empty() {
+                        return Some(clean);
+                    }
+                }
+            }
+        }
+    }
+    // Fallback to plain string if legacy unencrypted format
+    let clean = trimmed.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
+    if !clean.is_empty() {
+        Some(clean)
     } else {
         None
     }
@@ -2076,7 +2558,7 @@ async fn try_login_with_candidates(
                 let username = user_info["username"].as_str().unwrap_or("User");
                 info!("Token VÁLIDO ENCONTRADO! Conectado como {}", username);
 
-                let _ = std::fs::write(".litecord_token", &token_str);
+                save_secure_token(&token_str);
                 *last_token.lock().unwrap() = token_str.clone();
                 *http_client.lock().unwrap() = Some(http.clone());
 

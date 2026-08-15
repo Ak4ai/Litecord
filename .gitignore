@@ -1,6 +1,11 @@
 /target
+.litecord_*
 .litecord_token
 .litecord_cache
+.litecord_user_settings.json
+.litecord_audio_config.json
+backup_*
+backup_*/
 build_*.txt
 *.log
 *.wav

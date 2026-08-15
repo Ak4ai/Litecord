@@ -5,6 +5,7 @@ use log::{info, error};
 #[derive(Clone)]
 pub struct DiscordHttpClient {
     client: reqwest::Client,
+    #[allow(dead_code)]
     token: String,
 }
 
@@ -130,6 +131,7 @@ impl DiscordHttpClient {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn update_my_voice_state(&self, guild_id: &str, channel_id: &str) -> Result<(), String> {
         let url = format!("https://discord.com/api/v10/guilds/{}/voice-states/@me", guild_id);
         let payload = json!({
