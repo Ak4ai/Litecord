@@ -926,6 +926,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             winit_win.focus_window();
                         });
                     }
+                    #[cfg(target_os = "windows")]
                     if let Some(hwnd) = *hwnd_store_inner.lock().unwrap() {
                         unsafe {
                             ShowWindow(hwnd as _, SW_SHOW);
@@ -2032,6 +2033,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+            #[cfg(target_os = "windows")]
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
@@ -2074,6 +2076,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+            #[cfg(target_os = "windows")]
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
@@ -2384,6 +2387,9 @@ fn load_secure_token() -> Option<String> {
 fn is_valid_token_chars(token: &str) -> bool {
     token.len() >= 50 && token.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
+
+#[cfg(not(target_os = "windows"))]
+fn set_dark_titlebar_color(_hwnd: isize) {}
 
 #[cfg(target_os = "windows")]
 fn set_dark_titlebar_color(hwnd: isize) {
