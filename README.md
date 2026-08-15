@@ -54,11 +54,11 @@
 
 ### 👑 2. Dynamic Speech Priority & Smart Ducking
 Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N [ + ]`):
-- **Hierarchical Attenuation**: When multiple people talk at once, lower-priority speakers are automatically attenuated smoothly based on priority difference ($\Delta = \text{max\_priority} - \text{user\_priority}$):
-  - $\Delta = 1$ (e.g., Priority 1 vs 0): Volume reduced to **50%**.
-  - $\Delta = 2$ (e.g., Priority 2 vs 0): Volume reduced to **40%**.
-  - $\Delta = 3$ (e.g., Priority 3 vs 0): Volume reduced to **30%**.
-  - $\Delta \ge 5$: Volume ducked to protection floor (**5% - 10%**).
+- **Hierarchical Attenuation**: When multiple people talk at once, lower-priority speakers are automatically attenuated smoothly based on the priority difference (`Delta = max_priority - user_priority`):
+  - **Delta = 1** (e.g., Priority 1 vs 0): Volume reduced to **50%**.
+  - **Delta = 2** (e.g., Priority 2 vs 0): Volume reduced to **40%**.
+  - **Delta = 3** (e.g., Priority 3 vs 0): Volume reduced to **30%**.
+  - **Delta >= 5**: Volume ducked to protection floor (**5% - 10%**).
 - **Independent Volume & Mute**: Per-user volume sliders (0% - 200%) and instant mute buttons, saved automatically across sessions.
 
 ### ⚡ 3. DeepSleep Mode & Extreme Efficiency
@@ -117,15 +117,19 @@ Litecord/
 │   └── build.yml              # Automated multi-platform CI/CD release workflow
 ├── assets/
 │   ├── app_icon.ico           # Multi-resolution Windows PE application icon (16-256px)
-│   └── app_icon.png           # Embedded high-res application & tray icon
+│   ├── app_icon.png           # Embedded high-res application & tray icon
+│   └── globe.svg              # Language selector vector icon
 ├── src/
 │   ├── main.rs                # Application lifecycle, Slint UI bindings, tray & auth
 │   ├── gateway.rs             # Discord Gateway WS, CPAL/Opus voice pipeline, ducking & VAD
 │   ├── http.rs                # Discord HTTP REST client (guilds, channels, messages)
+│   ├── i18n.rs                # Internationalization module with 7 languages & OS detection
 │   └── tray.rs                # Native Windows System Tray integration
 ├── ui/
 │   └── appwindow.slint        # Modern, fluid, reactive UI declared in Slint
 ├── Cargo.toml                 # Rust dependencies & build target configurations
+├── CONTRIBUTING.md            # Contributor guidelines and Pull Request policy
+├── index.html                 # Official GitHub Pages web landing page
 ├── installer.iss              # Inno Setup Windows installer specification
 └── README.md                  # Project documentation & reference
 ```
