@@ -1114,80 +1114,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let self_level = gateway::get_self_mic_level();
                 let mut participants = Vec::new();
 
-                if let Ok(parts_map) = active_parts.lock() {
-                    let queues_guard = queues_arc.lock().ok();
-                    let mut user_best: HashMap<u64, (u32, f32, bool)> = HashMap::new();
+                // Use try_lock() everywhere — never block the UI thread waiting for audio locks
+                let parts_snapshot: Vec<(u32, u64)> = match active_parts.try_lock() {
+                    Ok(map) => map.iter().filter(|(&s, _)| s != 999999).map(|(&s, &u)| (s, u)).collect(),
+                    Err(_) => return, // Skip this frame; audio thread holds the lock
+                };
 
-                    for (&ssrc, &user_id) in parts_map.iter() {
-                        if ssrc == 999999 || user_id == 999999 { continue; }
-
-                        let mut audio_level = 0.0f32;
-                        let mut is_speaking = false;
-
-                        if user_id == my_uid && my_uid > 0 {
-                            audio_level = self_level;
-                            is_speaking = audio_level > 0.03;
-                        } else if let Some(ref queues) = queues_guard {
-                            if let Some(q) = queues.get(&ssrc) {
-                                let sample_cnt = q.len().min(480);
-                                if sample_cnt > 0 {
-                                    let mut sum_sq = 0.0f32;
-                                    for i in 0..sample_cnt {
-                                        let (l, r) = q[i];
-                                        let s = (l + r) * 0.5;
-                                        sum_sq += s * s;
-                                    }
-                                    let rms = (sum_sq / sample_cnt as f32).sqrt();
-                                    audio_level = if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) };
-                                    is_speaking = audio_level > 0.03;
-                                }
+                // Pre-compute audio levels using try_lock() so we never block on the CPAL-held speaker queue
+                let mut ssrc_levels: HashMap<u32, f32> = HashMap::new();
+                if let Ok(queues) = queues_arc.try_lock() {
+                    for &(ssrc, user_id) in &parts_snapshot {
+                        if user_id == my_uid && my_uid > 0 { continue; }
+                        if let Some(q) = queues.get(&ssrc) {
+                            let sample_cnt = q.len().min(480);
+                            if sample_cnt > 0 {
+                                let sum_sq: f32 = q.iter().take(sample_cnt).map(|&(l, r)| { let s = (l + r) * 0.5; s * s }).sum();
+                                let rms = (sum_sq / sample_cnt as f32).sqrt();
+                                ssrc_levels.insert(ssrc, if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) });
                             }
-                        }
-
-                        let entry = user_best.entry(user_id).or_insert((ssrc, audio_level, is_speaking));
-                        if audio_level > entry.1 {
-                            *entry = (ssrc, audio_level, is_speaking);
                         }
                     }
+                }
+                // If try_lock failed, ssrc_levels stays empty → we just won't update bars this frame
 
-                    let my_user_id = gateway::get_my_user_id();
-                    let mut sorted_users: Vec<_> = user_best.into_iter().collect();
-                    sorted_users.sort_by(|(id_a, _), (id_b, _)| {
-                        let is_self_a = (*id_a == my_user_id && my_user_id != 0) || *id_a == 999999;
-                        let is_self_b = (*id_b == my_user_id && my_user_id != 0) || *id_b == 999999;
-                        if is_self_a && !is_self_b {
-                            std::cmp::Ordering::Less
-                        } else if !is_self_a && is_self_b {
-                            std::cmp::Ordering::Greater
+                let mut user_best: HashMap<u64, (u32, f32, bool)> = HashMap::new();
+                for (ssrc, user_id) in parts_snapshot {
+                    if user_id == 999999 { continue; }
+                    let (audio_level, is_speaking) = if user_id == my_uid && my_uid > 0 {
+                        (self_level, self_level > 0.03)
+                    } else {
+                        let lvl = ssrc_levels.get(&ssrc).copied().unwrap_or(0.0);
+                        (lvl, lvl > 0.03)
+                    };
+                    let entry = user_best.entry(user_id).or_insert((ssrc, audio_level, is_speaking));
+                    if audio_level > entry.1 { *entry = (ssrc, audio_level, is_speaking); }
+                }
+
+                let my_user_id = gateway::get_my_user_id();
+                let mut sorted_users: Vec<_> = user_best.into_iter().collect();
+                sorted_users.sort_by(|(id_a, _), (id_b, _)| {
+                    let is_self_a = (*id_a == my_user_id && my_user_id != 0) || *id_a == 999999;
+                    let is_self_b = (*id_b == my_user_id && my_user_id != 0) || *id_b == 999999;
+                    if is_self_a && !is_self_b {
+                        std::cmp::Ordering::Less
+                    } else if !is_self_a && is_self_b {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        let name_a = gateway::get_user_name(*id_a);
+                        let name_b = gateway::get_user_name(*id_b);
+                        name_a.cmp(&name_b)
+                    }
+                });
+
+                for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
+                    let uid_str = user_id.to_string();
+                    let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
+
+                    let username = if is_self {
+                        let resolved = if my_user_id != 0 { gateway::get_user_name(my_user_id) } else { String::new() };
+                        if resolved.is_empty() || resolved.starts_with("Participante #") {
+                            "Você".to_string()
                         } else {
-                            let name_a = gateway::get_user_name(*id_a);
-                            let name_b = gateway::get_user_name(*id_b);
-                            name_a.cmp(&name_b)
+                            resolved
                         }
-                    });
-
-                    for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
-                        let uid_str = user_id.to_string();
-                        let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
-
-                        let username = if is_self {
-                            let resolved = if my_user_id != 0 { gateway::get_user_name(my_user_id) } else { String::new() };
-                            if resolved.is_empty() || resolved.starts_with("Participante #") {
-                                "Você".to_string()
-                            } else {
-                                resolved
-                            }
-                        } else {
-                            let uname = gateway::get_user_name(user_id);
-                            if uname.starts_with("Participante #") {
-                                let http_opt = http_client_voice_loop_inner.lock().unwrap().clone();
-                                if let Some(http) = http_opt {
+                    } else {
+                        let uname = gateway::get_user_name(user_id);
+                        if uname.starts_with("Participante #") {
+                            if let Ok(http_opt) = http_client_voice_loop_inner.try_lock() {
+                                if let Some(http) = http_opt.clone() {
                                     static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();
                                     let fetching_store = FETCHING_USERS.get_or_init(|| Arc::new(Mutex::new(std::collections::HashSet::new())));
-                                    if let Ok(mut set) = fetching_store.lock() {
+                                    if let Ok(mut set) = fetching_store.try_lock() {
                                         if set.insert(user_id) {
                                             let uid_str_task = uid_str.clone();
-                                            let active_gid = active_guild_voice_loop_inner.lock().unwrap().clone();
+                                            let active_gid = match active_guild_voice_loop_inner.try_lock() {
+                                                Ok(g) => g.clone(),
+                                                Err(_) => String::new(),
+                                            };
                                             let store_arc = Arc::clone(fetching_store);
                                             tokio::spawn(async move {
                                                 let mut resolved_name = String::new();
@@ -1234,36 +1237,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            uname
-                        };
+                        }
+                        uname
+                    };
 
-                        let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
-                        let (is_muted_saved, vol, prio) = gateway::get_user_audio_settings(&uid_str);
+                    let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
+                    let (is_muted_saved, vol, prio) = gateway::get_user_audio_settings(&uid_str);
 
-                        let (final_audio_level, final_is_speaking, final_is_muted) = if is_self {
-                            let mic_lvl = ui.get_mic_level();
-                            let is_self_muted = ui.get_is_muted();
-                            if is_self_muted {
-                                (0.0, false, true)
-                            } else {
-                                (mic_lvl, mic_lvl >= gateway::get_vad_threshold(), false)
-                            }
+                    let (final_audio_level, final_is_speaking, final_is_muted) = if is_self {
+                        let mic_lvl = ui.get_mic_level();
+                        let is_self_muted = ui.get_is_muted();
+                        if is_self_muted {
+                            (0.0, false, true)
                         } else {
-                            (audio_level, is_speaking, is_muted_saved)
-                        };
+                            (mic_lvl, mic_lvl >= gateway::get_vad_threshold(), false)
+                        }
+                    } else {
+                        (audio_level, is_speaking, is_muted_saved)
+                    };
 
-                        participants.push(VoiceParticipant {
-                            user_id: uid_str.into(),
-                            username: username.into(),
-                            avatar_text: avatar_text.into(),
-                            is_speaking: final_is_speaking,
-                            audio_level: final_audio_level,
-                            is_muted: final_is_muted,
-                            volume: vol,
-                            priority: prio,
-                            is_self,
-                        });
-                    }
+                    participants.push(VoiceParticipant {
+                        user_id: uid_str.into(),
+                        username: username.into(),
+                        avatar_text: avatar_text.into(),
+                        is_speaking: final_is_speaking,
+                        audio_level: final_audio_level,
+                        is_muted: final_is_muted,
+                        volume: vol,
+                        priority: prio,
+                        is_self,
+                    });
                 }
 
                 let cur_model = ui.get_voice_participants();

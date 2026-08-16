@@ -1913,31 +1913,46 @@ pub async fn connect_voice_gateway(
                                                 let target_addr = format!("{}:{}", voice_ip, voice_port);
                                                 info!("Socket UDP de Voz conectado a {}", target_addr);
 
-                                                // 1. Send 70-byte UDP IP Discovery Packet
-                                                let mut discovery = [0u8; 70];
-                                                discovery[0] = 0x00;
-                                                discovery[1] = 0x01;
-                                                discovery[2] = 0x00;
-                                                discovery[3] = 0x46;
-                                                let ssrc_bytes = ssrc.to_be_bytes();
-                                                discovery[4..8].copy_from_slice(&ssrc_bytes);
+                                                // 1. Send 74-byte UDP IP Discovery Packet (RFC / Discord spec: 2 bytes type, 2 bytes len, 4 bytes ssrc, 64 bytes addr, 2 bytes port)
+                                                let mut discovery = [0u8; 74];
+                                                discovery[0..2].copy_from_slice(&1u16.to_be_bytes());
+                                                discovery[2..4].copy_from_slice(&70u16.to_be_bytes());
+                                                discovery[4..8].copy_from_slice(&ssrc.to_be_bytes());
 
                                                 let mut my_pub_ip = String::new();
                                                 let mut my_pub_port = 0u16;
 
-                                                if let Ok(_) = socket.send_to(&discovery, &target_addr).await {
-                                                    let mut buf = [0u8; 128];
+                                                for attempt in 1..=5 {
+                                                    if socket.send_to(&discovery, &target_addr).await.is_ok() {
+                                                        let mut buf = [0u8; 128];
+                                                        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(600), socket.recv_from(&mut buf)).await {
+                                                            if len >= 70 {
+                                                                let ip_slice = &buf[8..len.saturating_sub(2)];
+                                                                let ip_end = ip_slice.iter().position(|&b| b == 0).unwrap_or(ip_slice.len());
+                                                                let parsed_ip = String::from_utf8_lossy(&ip_slice[..ip_end]).trim().to_string();
+                                                                let parsed_port = u16::from_be_bytes([buf[len - 2], buf[len - 1]]);
 
-                                                    if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(150), socket.recv_from(&mut buf)).await {
-                                                        if len >= 70 {
-                                                            let ip_slice = &buf[8..64.min(len)];
-                                                            let ip_end = ip_slice.iter().position(|&b| b == 0).unwrap_or(ip_slice.len());
-                                                            let parsed_ip = String::from_utf8_lossy(&ip_slice[..ip_end]).trim().to_string();
-                                                            let parsed_port = u16::from_be_bytes([buf[68], buf[69]]);
+                                                                if !parsed_ip.is_empty() && parsed_port > 0 {
+                                                                    my_pub_ip = parsed_ip;
+                                                                    my_pub_port = parsed_port;
+                                                                    info!("UDP IP Discovery resolvido com sucesso na tentativa {}: {}:{}", attempt, my_pub_ip, my_pub_port);
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    warn!("Tentativa {} de UDP IP Discovery falhou/timeout, tentando novamente...", attempt);
+                                                }
 
-                                                            if !parsed_ip.is_empty() {
-                                                                my_pub_ip = parsed_ip;
-                                                                my_pub_port = parsed_port;
+                                                if my_pub_ip.is_empty() {
+                                                    // Fallback to fetching public IP via HTTP if UDP discovery failed completely
+                                                    if let Ok(res) = reqwest::get("https://api.ipify.org").await {
+                                                        if let Ok(ip_text) = res.text().await {
+                                                            let ip_trimmed = ip_text.trim().to_string();
+                                                            if !ip_trimmed.is_empty() {
+                                                                my_pub_ip = ip_trimmed;
+                                                                my_pub_port = socket.local_addr().map(|a| a.port()).unwrap_or(50000);
+                                                                warn!("Usando fallback HTTP para IP público: {}:{}", my_pub_ip, my_pub_port);
                                                             }
                                                         }
                                                     }
@@ -1946,6 +1961,7 @@ pub async fn connect_voice_gateway(
                                                 if my_pub_ip.is_empty() {
                                                     my_pub_ip = voice_ip.clone();
                                                     my_pub_port = socket.local_addr().map(|a| a.port()).unwrap_or(50000);
+                                                    error!("CRÍTICO: Não foi possível determinar o IP público local!");
                                                 }
 
                                                 info!("UDP IP Discovery Concluído! IP: {}:{}", my_pub_ip, my_pub_port);
@@ -1982,7 +1998,7 @@ pub async fn connect_voice_gateway(
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
                                                 tokio::spawn(async move {
-                                                    let mut opus_decoders: HashMap<u32, OpusDecoder> = HashMap::new();
+                                                    let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
                                                     let mut ssrc_expected_seq: HashMap<u32, u16> = HashMap::new();
                                                     let mut recv_buf = vec![0u8; 4096];
@@ -1991,6 +2007,8 @@ pub async fn connect_voice_gateway(
                                                     let mut total_pkts_recv = 0u64;
                                                     let mut decrypt_err_cnt = 0u64;
                                                     let mut opus_err_cnt = 0u64;
+                                                    let mut dave_decrypt_fail_cnt = 0u64;
+                                                    let mut dave_not_ready_cnt = 0u64;
 
                                                     info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
 
@@ -2016,21 +2034,16 @@ pub async fn connect_voice_gateway(
                                                                     info!("🎙️ NOVO SSRC DE VOZ REMOTO RECEBIDO! SSRC={} de {}", ssrc_recv, addr);
                                                                 }
 
-                                                                // Parse dynamic header size & extension (RFC 8285 / rtpsize format)
-                                                                let cc = (pkt[0] & 0x0F) as usize;
+                                                                 let cc = (pkt[0] & 0x0F) as usize;
                                                                 let has_ext = (pkt[0] & 0x10) != 0;
                                                                 let base_header_len = 12 + 4 * cc;
 
-                                                                // In aead_aes256_gcm_rtpsize:
-                                                                // Unencrypted AAD header = base RTP header + CSRCs + extension header (if has_ext is true).
-                                                                let aad_len = if has_ext {
-                                                                    if len < base_header_len + 4 { continue; }
-                                                                    let ext_len_words = u16::from_be_bytes([pkt[base_header_len + 2], pkt[base_header_len + 3]]) as usize;
-                                                                    let ext_bytes_len = ext_len_words * 4;
-                                                                    base_header_len + 4 + ext_bytes_len
+                                                                let ext_len_words = if has_ext && len >= base_header_len + 4 {
+                                                                    u16::from_be_bytes([pkt[base_header_len + 2], pkt[base_header_len + 3]]) as usize
                                                                 } else {
-                                                                    base_header_len
+                                                                    0
                                                                 };
+                                                                let ext_bytes_len = ext_len_words * 4;
 
                                                                 // rtpsize nonce: last 4 bytes of packet, padding byte before nonce if P bit set
                                                                 let has_padding = (pkt[0] & 0x20) != 0;
@@ -2040,178 +2053,201 @@ pub async fn connect_voice_gateway(
                                                                     0
                                                                 };
 
-                                                                let ciphertext_end = if len >= 4 + padding_len && len - 4 - padding_len > aad_len {
+                                                                let ciphertext_end = if len >= 4 + padding_len && len - 4 - padding_len > base_header_len {
                                                                     len - 4 - padding_len
                                                                 } else {
                                                                     len - 4
                                                                 };
 
-                                                                if ciphertext_end <= aad_len { continue; }
+                                                                if ciphertext_end <= base_header_len { continue; }
 
-                                                                let nonce_bytes_rx = &pkt[len-4..len];
-                                                                let mut nonce_arr = [0u8; 12];
-                                                                nonce_arr[0..4].copy_from_slice(nonce_bytes_rx);
+                                                                let nonce_bytes_rx: [u8; 4] = [pkt[len-4], pkt[len-3], pkt[len-2], pkt[len-1]];
+                                                                let nonce_u32_le = u32::from_le_bytes(nonce_bytes_rx);
+                                                                let nonce_u32_be = u32::from_be_bytes(nonce_bytes_rx);
+
+                                                                let mut n1 = [0u8; 12]; n1[0..4].copy_from_slice(&nonce_bytes_rx);
+                                                                let mut n2 = [0u8; 12]; n2[8..12].copy_from_slice(&nonce_bytes_rx);
+                                                                let mut n3 = [0u8; 12]; n3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                let mut n4 = [0u8; 12]; n4[8..12].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                let mut n5 = [0u8; 12]; n5[0..4].copy_from_slice(&nonce_u32_be.to_le_bytes());
+                                                                let mut n6 = [0u8; 12]; n6[8..12].copy_from_slice(&nonce_u32_be.to_le_bytes());
+
+                                                                let nonce_candidates = [&n1, &n2, &n3, &n4, &n5, &n6];
 
                                                                 let key_opt = secret_key_rx.lock().unwrap().clone();
                                                                 if let Some(key_bytes) = key_opt {
                                                                     if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
-                                                                        let nonce = Nonce::from_slice(&nonce_arr);
-                                                                        let header = &pkt[..aad_len];
-                                                                        let ciphertext = &pkt[aad_len..ciphertext_end];
-                                                                        let payload_decrypt = aes_gcm::aead::Payload {
-                                                                            msg: ciphertext,
-                                                                            aad: header,
+                                                                        let candidates: &[(usize, usize)] = if has_ext {
+                                                                            &[
+                                                                                (base_header_len + 4, ext_bytes_len),
+                                                                                (base_header_len + 4 + ext_bytes_len, 0),
+                                                                                (base_header_len, ext_bytes_len + 4),
+                                                                                (base_header_len, 0),
+                                                                            ]
+                                                                        } else {
+                                                                            &[(base_header_len, 0)]
                                                                         };
 
-                                                                        match cipher.decrypt(nonce, payload_decrypt) {
-                                                                            Ok(decrypted) => {
-                                                                                let transport_payload = &decrypted[..];
+                                                                        let mut decrypted_opt: Option<(Vec<u8>, usize)> = None;
 
-                                                                                // Get mapped Discord User ID for this SSRC (or primary SSRC 9979)
-                                                                                let user_id_opt = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied();
-                                                                                if user_id_opt.is_none() && ssrc_recv != 9979 {
-                                                                                    // Random DAVE control/MLS frame SSRC - NOT an audio stream! Skip to prevent noise!
-                                                                                    continue;
-                                                                                }
-                                                                                let sender_user_id = user_id_opt.unwrap_or(ssrc_recv as u64);
+                                                                        'try_decrypt: for &(test_aad_len, test_ext_len) in candidates {
+                                                                            if test_aad_len >= ciphertext_end { continue; }
+                                                                            let header = &pkt[..test_aad_len];
+                                                                            let ciphertext = &pkt[test_aad_len..ciphertext_end];
 
-                                                                                let (opus_data, can_decode, was_dave_passthrough) = {
-                                                                                    let mut sess = dave_session_rx.lock().unwrap();
-                                                                                    if let Some(ref mut s) = *sess {
-                                                                                        if s.is_ready() {
-                                                                                            let is_dave_encrypted = transport_payload.len() >= 2
-                                                                                                && transport_payload[transport_payload.len() - 2] == 0xFA
-                                                                                                && transport_payload[transport_payload.len() - 1] == 0xFA;
-
-                                                                                            if is_dave_encrypted {
-                                                                                                match s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload) {
-                                                                                                    Ok(d) => (d, true, false),
-                                                                                                    Err(_) => (Vec::new(), false, false),
-                                                                                                }
-                                                                                            } else {
-                                                                                                // Passthrough unencrypted frame / silence frame (e.g. 0xF8FFFE)
-                                                                                                (transport_payload.to_vec(), true, true)
-                                                                                            }
-                                                                                        } else { (Vec::new(), false, false) }
-                                                                                    } else { (transport_payload.to_vec(), true, false) }
-                                                                                };
-
-                                                                                let mut decode_success = false;
-                                                                                let mut decoded_count = 0;
-                                                                                let mut plc_pairs: Vec<(f32, f32)> = Vec::new();
-                                                                                if can_decode && !opus_data.is_empty() {
-                                                                                    let mut raw_opus = opus_data.as_slice();
-
-                                                                                    // Strip DAVE 1-byte Opus codec header (0x00) ONLY for DAVE passthrough frames
-                                                                                    if was_dave_passthrough && raw_opus.first() == Some(&0x00) && raw_opus.len() > 1 {
-                                                                                        raw_opus = &raw_opus[1..];
+                                                                            for &nonce_cand in &nonce_candidates {
+                                                                                let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                if let Ok(dec) = cipher.decrypt(Nonce::from_slice(nonce_cand), payload) {
+                                                                                    if dec.len() >= test_ext_len {
+                                                                                        decrypted_opt = Some((dec, test_ext_len));
+                                                                                        break 'try_decrypt;
                                                                                     }
+                                                                                }
+                                                                            }
+                                                                        }
 
-                                                                                    // Strip RTP Padding if P bit set (Bit 5 of RTP Header byte 0)
-                                                                                    if (pkt[0] & 0x20) != 0 && !raw_opus.is_empty() {
-                                                                                        let pad_len = raw_opus[raw_opus.len() - 1] as usize;
-                                                                                        if pad_len > 0 && pad_len <= raw_opus.len() {
-                                                                                            raw_opus = &raw_opus[..raw_opus.len() - pad_len];
+                                                                        let (decrypted_raw, ext_skip) = match decrypted_opt {
+                                                                            Some(res) => {
+                                                                                static LOGGED_SUCCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                                                                                if !LOGGED_SUCCESS.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                                                                    info!("🎉 Descriptografia AES-GCM BEM-SUCEDIDA para SSRC {}! ext_skip={} bytes", ssrc_recv, res.1);
+                                                                                }
+                                                                                res
+                                                                            },
+                                                                            None => {
+                                                                                decrypt_err_cnt += 1;
+                                                                                if decrypt_err_cnt % 50 == 1 {
+                                                                                    warn!("Descriptografia AES-GCM falhou para SSRC {}: len={} has_ext={} cc={} base_len={} ext_words={} header={:02X?} nonce={:02X?}",
+                                                                                        ssrc_recv, len, has_ext, cc, base_header_len, ext_len_words, &pkt[..16.min(len)], nonce_bytes_rx);
+                                                                                }
+                                                                                continue;
+                                                                            }
+                                                                        };
+
+                                                                        if decrypted_raw.len() < ext_skip { continue; }
+                                                                        let transport_payload = &decrypted_raw[ext_skip..];
+
+                                                                        let user_id_opt = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied();
+                                                                        if user_id_opt.is_none() && ssrc_recv != 9979 { continue; }
+                                                                        let sender_user_id = user_id_opt.unwrap_or(ssrc_recv as u64);
+
+                                                                        let (opus_data, can_decode) = {
+                                                                            let mut sess = dave_session_rx.lock().unwrap();
+                                                                            if let Some(ref mut s) = *sess {
+                                                                                if s.is_ready() {
+                                                                                    let res = s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload);
+                                                                                    let res = match res {
+                                                                                        Ok(d) => Ok(d),
+                                                                                        Err(_) => {
+                                                                                            let swapped_uid = u64::from_be_bytes(sender_user_id.to_le_bytes());
+                                                                                            s.decrypt(swapped_uid, MediaType::AUDIO, transport_payload)
+                                                                                        }
+                                                                                    };
+                                                                                    let res = match res {
+                                                                                        Ok(d) => Ok(d),
+                                                                                        Err(_) => {
+                                                                                            if let Some(uids) = s.get_user_ids() {
+                                                                                                let mut found = None;
+                                                                                                for &alt_uid in &uids {
+                                                                                                    if alt_uid != s.user_id() {
+                                                                                                        if let Ok(d) = s.decrypt(alt_uid, MediaType::AUDIO, transport_payload) {
+                                                                                                            found = Some(d);
+                                                                                                            break;
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                                if let Some(d) = found { Ok(d) } else { Err(davey::errors::DecryptError::NoDecryptorForUser) }
+                                                                                            } else {
+                                                                                                Err(davey::errors::DecryptError::NoDecryptorForUser)
+                                                                                            }
+                                                                                        }
+                                                                                    };
+
+                                                                                    match res {
+                                                                                        Ok(d) => (d, true),
+                                                                                        Err(e) => {
+                                                                                            dave_decrypt_fail_cnt += 1;
+                                                                                            if dave_decrypt_fail_cnt % 50 == 1 {
+                                                                                                warn!("🔑 [DAVE DIAG] decrypt() FALHOU para SSRC={} UserID={} (payload_len={}, group_users={:?}): {:?}",
+                                                                                                    ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
+                                                                                            }
+                                                                                            (Vec::new(), false)
                                                                                         }
                                                                                     }
+                                                                                } else {
+                                                                                    dave_not_ready_cnt += 1;
+                                                                                    (transport_payload.to_vec(), true)
+                                                                                }
+                                                                            } else { (transport_payload.to_vec(), true) }
+                                                                        };
 
-                                                                                    let dec = opus_decoders.entry(ssrc_recv).or_insert_with(|| {
-                                                                                        OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder 48kHz Estéreo")
-                                                                                    });
+                                                                        let mut decode_success = false;
+                                                                        let mut decoded_count = 0;
+                                                                        let mut plc_pairs: Vec<(f32, f32)> = Vec::new();
+                                                                        let mut stream_chans = 2usize;
+                                                                        if can_decode && !opus_data.is_empty() {
+                                                                            let mut raw_opus = opus_data.as_slice();
 
-                                                                                      // Handle sequence loss via Opus PLC (Packet Loss Concealment) as per RFC 6716 & WebRTC
-                                                                                      let rtp_seq = u16::from_be_bytes([pkt[2], pkt[3]]);
-                                                                                      if let Some(last_seq) = ssrc_expected_seq.get(&ssrc_recv).copied() {
-                                                                                          let missed = rtp_seq.wrapping_sub(last_seq);
-                                                                                          if missed > 0 && missed < 6 {
-                                                                                              // Synthesize up to 5 lost frames using Opus PLC to prevent clicks/distortion
-                                                                                              let mut plc_buf = [0.0f32; 1920];
-                                                                                              for _ in 0..missed {
-                                                                                                  if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
-                                                                                                      for i in 0..samples {
-                                                                                                          plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
-                                                                                                      }
-                                                                                                  }
-                                                                                              }
-                                                                                          }
-                                                                                      }
-                                                                                      ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
+                                                                            if raw_opus.first() == Some(&0x00) && raw_opus.len() > 1 {
+                                                                                raw_opus = &raw_opus[1..];
+                                                                            }
 
-                                                                                      let is_dtx_silence = raw_opus.len() <= 3 && raw_opus == [0xF8, 0xFF, 0xFE];
-                                                                                      if is_dtx_silence {
-                                                                                           decode_success = true;
-                                                                                           decoded_count = 960;
-                                                                                           for s in pcm_out_buf[..1920].iter_mut() { *s = 0.0; }
-                                                                                      } else if let Ok(samples) = dec.decode(raw_opus, 5760, &mut pcm_out_buf[..]) {
-                                                                                           decode_success = true;
-                                                                                           decoded_count = samples;
-                                                                                      };
-                                                                                 }
+                                                                            if (pkt[0] & 0x20) != 0 && !raw_opus.is_empty() {
+                                                                                let pad_len = raw_opus[raw_opus.len() - 1] as usize;
+                                                                                if pad_len > 0 && pad_len <= raw_opus.len() {
+                                                                                    raw_opus = &raw_opus[..raw_opus.len() - pad_len];
+                                                                                }
+                                                                            }
 
-#[allow(dead_code)]
-pub fn append_raw_opus_dump(payload: &[u8]) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    let path = "discord_raw_opus.bin";
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-        let len_bytes = (payload.len() as u16).to_le_bytes();
-        let _ = f.write_all(&len_bytes);
-        let _ = f.write_all(payload);
-    }
-}
+                                                                            let pkt_channels = if (raw_opus[0] & 0x04) != 0 { 2 } else { 1 };
+                                                                            let dec = opus_decoders.entry((ssrc_recv, pkt_channels)).or_insert_with(|| {
+                                                                                OpusDecoder::new(48000, pkt_channels).expect("Falha ao inicializar OpusDecoder 48kHz")
+                                                                            });
 
-#[allow(dead_code)]
-pub fn append_pcm_dump(samples: &[(f32, f32)]) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    static WAV_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                                                                            let rtp_seq = u16::from_be_bytes([pkt[2], pkt[3]]);
+                                                                            if let Some(last_seq) = ssrc_expected_seq.get(&ssrc_recv).copied() {
+                                                                                let missed = rtp_seq.wrapping_sub(last_seq);
+                                                                                if missed > 0 && missed < 6 {
+                                                                                    let mut plc_buf = [0.0f32; 1920];
+                                                                                    for _ in 0..missed {
+                                                                                        if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
+                                                                                            for i in 0..samples {
+                                                                                                if pkt_channels == 2 {
+                                                                                                    plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                                } else {
+                                                                                                    let m = plc_buf[i].clamp(-1.0, 1.0);
+                                                                                                    plc_pairs.push((m, m));
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
 
-    let path = "debug_audio_dump.wav";
-    if !WAV_INIT.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        if let Ok(mut f) = std::fs::File::create(path) {
-            let mut header = [0u8; 44];
-            header[0..4].copy_from_slice(b"RIFF");
-            let file_size: u32 = 36;
-            header[4..8].copy_from_slice(&file_size.to_le_bytes());
-            header[8..12].copy_from_slice(b"WAVE");
-            header[12..16].copy_from_slice(b"fmt ");
-            let fmt_size: u32 = 16;
-            header[16..20].copy_from_slice(&fmt_size.to_le_bytes());
-            let format_tag: u16 = 1;
-            header[20..22].copy_from_slice(&format_tag.to_le_bytes());
-            let channels: u16 = 2;
-            header[22..24].copy_from_slice(&channels.to_le_bytes());
-            let sample_rate: u32 = 48000;
-            header[24..28].copy_from_slice(&sample_rate.to_le_bytes());
-            let byte_rate: u32 = 48000 * 2 * 2;
-            header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
-            let block_align: u16 = 4;
-            header[32..34].copy_from_slice(&block_align.to_le_bytes());
-            let bits_per_sample: u16 = 16;
-            header[34..36].copy_from_slice(&bits_per_sample.to_le_bytes());
-            header[36..40].copy_from_slice(b"data");
-            let data_size: u32 = 0;
-            header[40..44].copy_from_slice(&data_size.to_le_bytes());
-            let _ = f.write_all(&header);
-        }
-    }
+                                                                            let is_dtx_silence = raw_opus.len() <= 3 && raw_opus == [0xF8, 0xFF, 0xFE];
+                                                                            if is_dtx_silence {
+                                                                                decode_success = true;
+                                                                                decoded_count = 960;
+                                                                                stream_chans = 2;
+                                                                                for s in pcm_out_buf[..1920].iter_mut() { *s = 0.0; }
+                                                                            } else {
+                                                                                match dec.decode(raw_opus, 5760, &mut pcm_out_buf[..]) {
+                                                                                    Ok(samples) => {
+                                                                                        decode_success = true;
+                                                                                        decoded_count = samples;
+                                                                                        stream_chans = pkt_channels;
+                                                                                    }
+                                                                                    Err(e) => {
+                                                                                        warn!("📊 [OPUS DIAG] Decode FALHOU: {:?}", e);
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
 
-    if let Ok(mut f) = OpenOptions::new().append(true).open(path) {
-        let mut bytes = Vec::with_capacity(samples.len() * 4);
-        for &(l, r) in samples {
-            let i_l = (l.clamp(-1.0, 1.0) * 32767.0) as i16;
-            let i_r = (r.clamp(-1.0, 1.0) * 32767.0) as i16;
-            bytes.extend_from_slice(&i_l.to_le_bytes());
-            bytes.extend_from_slice(&i_r.to_le_bytes());
-        }
-        let _ = f.write_all(&bytes);
-    }
-}
-
-                                                                                if decode_success && decoded_count > 0 {
-                                                                                    register_voice_participant(ssrc_recv, sender_user_id);
-                                                                                    let stream_chans = 2usize;
-                                                                                    let total_samples = if stream_chans == 2 { decoded_count * 2 } else { decoded_count };
+                                                                        if decode_success && decoded_count > 0 {
+                                                                            register_voice_participant(ssrc_recv, sender_user_id);
+                                                                            let total_samples = if stream_chans == 2 { decoded_count * 2 } else { decoded_count };
                                                                                     let mut sum_sq = 0.0f32;
                                                                                     let mut max_peak = 0.0f32;
                                                                                     let mut zc_count = 0usize;
@@ -2247,20 +2283,21 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                             let mono = s.clamp(-1.0, 1.0);
                                                                                             dump_vec.push((mono, mono));
                                                                                         }
-                                                                                        ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
                                                                                     }
-
-                                                                                    // Diagnostic WAV dump disabled for zero-latency real-time receiving
-                                                                                    // append_pcm_dump(&dump_vec);
+                                                                                    ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
 
                                                                                     if let Ok(mut queues) = speaker_queues_rx.lock() {
-                                                                                        let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(96000));
+                                                                                        let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(48000));
+                                                                                        // Maintain real-time jitter buffer: cap at 1s (48000 samples)
+                                                                                        while q.len() > 48000 {
+                                                                                            q.pop_front();
+                                                                                        }
                                                                                         // Push synthesized PLC concealed frames first to maintain unbroken audio stream
                                                                                         for &pair in &plc_pairs {
-                                                                                            if q.len() < 96000 { q.push_back(pair); }
+                                                                                            q.push_back(pair);
                                                                                         }
                                                                                         for &pair in &dump_vec {
-                                                                                            if q.len() < 96000 { q.push_back(pair); }
+                                                                                            q.push_back(pair);
                                                                                         }
 
                                                                                         if total_pkts_recv % 100 == 0 {
@@ -2275,15 +2312,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                     }
                                                                                 }
                                                                             }
-                                                                            Err(err) => {
-                                                                                decrypt_err_cnt += 1;
-                                                                                if decrypt_err_cnt % 50 == 1 {
-                                                                                    warn!("Descriptografia AES-GCM falhou para SSRC {}: {:?}", ssrc_recv, err);
-                                                                                }
-                                                                            }
                                                                         }
-                                                                    }
-                                                                }
                                                             }
                                                             Ok(Err(e)) => {
                                                                 warn!("Erro socket.recv_from: {:?}", e);
@@ -2358,7 +2387,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                             if q.is_empty() {
                                                                                 let ticks = inactive_ticks.entry(ssrc).or_insert(0);
                                                                                 *ticks += 1;
-                                                                                // On network jitter / buffer underflow (empty for > 3 ticks / 15-30ms), reset started state so it re-buffers 40ms
+                                                                                // Buffer underflow: reset state so it re-buffers 10ms
                                                                                 if *ticks > 3 {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
@@ -2371,17 +2400,13 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                 inactive_ticks.insert(ssrc, 0);
                                                                             }
 
-                                                                            if ssrc == 999999 {
-                                                                                if !q.is_empty() {
-                                                                                    ready_ssrcs.push(ssrc);
-                                                                                }
-                                                                            } else if started_ssrcs.contains(&ssrc) {
+                                                                            if started_ssrcs.contains(&ssrc) {
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
                                                                             } else if !q.is_empty() {
-                                                                                // 40ms Jitter Pre-buffer (1920 samples) to absorb network jitter from music bots and voice streams
-                                                                                if q.len() >= 1920 {
+                                                                                // 10ms pre-buffer (480 samples) to start playback quickly without underruns
+                                                                                if q.len() >= 480 {
                                                                                     started_ssrcs.insert(ssrc);
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
@@ -2628,8 +2653,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                                 for ch in 2..out_channels {
                                                                                     output[f * out_channels + ch] = 0;
                                                                                 }
-                                                                            } else {
-                                                                                output[f] = (soft_limit((mixed_l + mixed_r) * 0.5) * 32767.0) as i16;
+                                                                                    output[f] = (soft_limit((mixed_l + mixed_r) * 0.5) * 32767.0) as i16;
                                                                             }
                                                                         }
                                                                     }
@@ -2652,6 +2676,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                                 return;
                                                             }
                                                             info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
+                                                            // Keep stream alive until voice session ends (dropping stream stops playback)
                                                             loop {
                                                                 std::thread::sleep(std::time::Duration::from_millis(100));
                                                                 if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
@@ -2664,6 +2689,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                     }
                                                 });
 
+                                                tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();
                                                 let mut seq: u16 = 0;
                                                 let mut timestamp: u32 = 0;
@@ -2764,7 +2790,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                     audio_header[1] = 0x78; // Opus Payload 120
                                                     audio_header[2..4].copy_from_slice(&seq.to_be_bytes());
                                                     audio_header[4..8].copy_from_slice(&timestamp.to_be_bytes());
-                                                    audio_header[8..12].copy_from_slice(&ssrc_bytes);
+                                                    audio_header[8..12].copy_from_slice(&ssrc.to_be_bytes());
 
                                                     // Prepare 1920 interleaved stereo samples for 48kHz Stereo Opus encoding
                                                     let mut pcm_stereo = [0.0f32; 1920];
@@ -2811,7 +2837,6 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                     if let Some(key_bytes) = key_opt {
                                                         if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
                                                             // 12-byte AES-GCM Nonce for aead_aes256_gcm_rtpsize:
-                                                            // First 4 bytes = nonce counter (big-endian), last 8 bytes = zeros
                                                             let mut nonce_bytes = [0u8; 12];
                                                             nonce_bytes[0..4].copy_from_slice(&nonce_cnt.to_be_bytes());
 
@@ -2852,6 +2877,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                                         }
                                                     }
                                                 }
+                                            });
                                         });
                                     }
                                 }
@@ -2930,7 +2956,7 @@ pub fn append_pcm_dump(samples: &[(f32, f32)]) {
                                     }
                                     info!("DAVE Prepare Transition (op=18): transition_id={}, protocol_version={}, payload={}",
                                         transition_id, protocol_version, val["d"]);
-                                    // Respond with op=21 (Execute Transition) to acknowledge readiness
+
                                     let ready = serde_json::json!({
                                         "op": 21,
                                         "d": { "transition_id": transition_id }
