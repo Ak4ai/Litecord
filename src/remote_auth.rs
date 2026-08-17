@@ -103,12 +103,12 @@ async fn run_remote_auth_loop(
     // 1. Generate RSA 2048-bit key pair (in synchronous block so rng is not held across await)
     let (private_key, encoded_public_key) = generate_rsa_key_pair()?;
 
-    // 2. Connect to Discord Remote Auth Gateway WebSocket
+    // 2. Connect to Discord Remote Auth Gateway WebSocket with browser Origin header
     let req = tokio_tungstenite::tungstenite::http::Request::builder()
         .uri("wss://remote-auth-gateway.discord.gg/?v=2")
         .header("Host", "remote-auth-gateway.discord.gg")
         .header("Origin", "https://discord.com")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
@@ -210,43 +210,45 @@ async fn handle_auth_steps(
                 "nonce_proof" => {
                     if let Some(enc_nonce_b64) = json["encrypted_nonce"].as_str() {
                         if let Ok(enc_bytes) = base64::engine::general_purpose::STANDARD.decode(enc_nonce_b64) {
-                            let decrypted = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes)
-                                .map_err(|e| format!("Falha ao decifrar nonce: {:?}", e))?;
-                            let hash = Sha256::digest(&decrypted);
-                            let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
+                            if let Ok(decrypted) = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes) {
+                                let hash = Sha256::digest(&decrypted);
+                                let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
 
-                            let proof_msg = serde_json::json!({
-                                "op": "nonce_proof",
-                                "proof": proof
-                            });
-                            let mut w = write_arc.lock().await;
-                            let _ = w.send(Message::Text(proof_msg.to_string().into())).await;
+                                let proof_msg = serde_json::json!({
+                                    "op": "nonce_proof",
+                                    "proof": proof
+                                });
+                                let mut w = write_arc.lock().await;
+                                let _ = w.send(Message::Text(proof_msg.to_string().into())).await;
+                            }
                         }
                     }
                 }
-                "fingerprint" => {
+                "fingerprint" | "pending_remote_init" if json["fingerprint"].is_string() => {
                     if let Some(fingerprint) = json["fingerprint"].as_str() {
                         let qr_url = format!("https://discord.com/ra/{}", fingerprint);
-                        info!("📷 QR Code URL gerada: {}", qr_url);
+                        info!("📷 QR Code URL gerada com sucesso: {}", qr_url);
                         let _ = event_tx.send(RemoteAuthEvent::QrCodeUrl(qr_url)).await;
                     }
                 }
-                "pending_remote_init" => {
+                "pending_ticket" | "pending_login" | "pending_remote_init" if json["user"].is_object() => {
                     let username = json["user"]["username"].as_str().unwrap_or("Discord User").to_string();
                     info!("📲 QR Code escaneado pelo usuário: {}!", username);
                     let _ = event_tx.send(RemoteAuthEvent::UserScanned { username }).await;
                 }
-                "finish" => {
-                    if let Some(enc_token_b64) = json["encrypted_token"].as_str() {
-                        if let Ok(enc_bytes) = base64::engine::general_purpose::STANDARD.decode(enc_token_b64) {
-                            let decrypted = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes)
-                                .map_err(|e| format!("Falha ao decifrar token: {:?}", e))?;
-                            let token_str = String::from_utf8(decrypted)
-                                .map_err(|e| format!("Token inválido: {:?}", e))?;
+                "finish" | "pending_finish" => {
+                    let enc_token_opt = json["encrypted_token"].as_str()
+                        .or_else(|| json["encrypted_user_payload"].as_str());
 
-                            info!("🎉 Token de acesso recebido via QR Code com sucesso!");
-                            let _ = event_tx.send(RemoteAuthEvent::TokenReceived(token_str)).await;
-                            return Ok(());
+                    if let Some(enc_token_b64) = enc_token_opt {
+                        if let Ok(enc_bytes) = base64::engine::general_purpose::STANDARD.decode(enc_token_b64) {
+                            if let Ok(decrypted) = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes) {
+                                if let Ok(token_str) = String::from_utf8(decrypted) {
+                                    info!("🎉 Token de acesso recebido via QR Code com sucesso!");
+                                    let _ = event_tx.send(RemoteAuthEvent::TokenReceived(token_str)).await;
+                                    return Ok(());
+                                }
+                            }
                         }
                     }
                 }

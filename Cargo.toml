@@ -34,6 +34,12 @@ rsa = { version = "0.9", features = ["sha2"] }
 sha2 = "0.10"
 rand = "0.8"
 
+[[bin]]
+name = "litecord"
+path = "src/main.rs"
+
+
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Globalization", "Win32_Security_Cryptography"] }
 

@@ -1930,19 +1930,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_qr_startup = Arc::clone(&active_qr_session);
 
     tokio::spawn(async move {
-        let mut candidates = Vec::new();
-        if let Some(saved) = load_secure_token() {
-            candidates.push(saved);
-        }
+        // Only auto-connect if user explicitly saved their token previously
+        let saved_opt = load_secure_token();
 
-        let detected = auto_detect_discord_tokens();
-        for d in detected {
-            if !candidates.contains(&d) {
-                candidates.push(d);
-            }
-        }
-
-        if !candidates.is_empty() {
+        if let Some(saved) = saved_opt {
             let app_w_status = app_weak_startup.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w_status.upgrade() {
@@ -1951,7 +1942,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let success = try_login_with_candidates(
-                candidates,
+                vec![saved],
                 app_weak_startup.clone(),
                 http_client_startup,
                 last_token_startup,
@@ -1968,6 +1959,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *active_qr_startup.lock().unwrap() = Some(session);
             }
         } else {
+            // No saved token (e.g. fresh install or after explicit logout): start QR session immediately!
+            info!("Nenhum token salvo em disco. Iniciando sessão de QR Code...");
             let session = remote_auth::RemoteAuthSession::start(qr_tx_startup.clone());
             *active_qr_startup.lock().unwrap() = Some(session);
         }
@@ -2553,7 +2546,8 @@ fn set_dark_titlebar_color(hwnd: isize) {
         DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, WS_THICKFRAME,
+        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
     let dark_mode: u32 = 1;
@@ -2592,7 +2586,11 @@ fn set_dark_titlebar_color(hwnd: isize) {
             std::mem::size_of::<u32>() as u32,
         );
 
-        // Force DWM to re-calculate and redraw the non-client title bar frame immediately!
+        // Enable native Windows resizing borders (WS_THICKFRAME) on frameless window
+        let style = GetWindowLongW(hwnd as _, GWL_STYLE);
+        SetWindowLongW(hwnd as _, GWL_STYLE, style | WS_THICKFRAME as i32);
+
+        // Force DWM to re-calculate and redraw the frame immediately!
         SetWindowPos(
             hwnd as _,
             std::ptr::null_mut(),
