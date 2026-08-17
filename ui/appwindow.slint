@@ -386,11 +386,24 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 spacing: 14px;
 
-                                Text {
-                                    text: root.tr_login_title;
-                                    color: #f2f3f5;
-                                    font-size: 20px;
-                                    font-weight: 700;
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 10px;
+
+                                    Image {
+                                        source: @image-url("../assets/app_icon.png");
+                                        width: 26px;
+                                        height: 26px;
+                                        image-fit: contain;
+                                    }
+
+                                    Text {
+                                        text: root.tr_login_title;
+                                        color: #f2f3f5;
+                                        font-size: 20px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
                                 }
 
                                 Text {
