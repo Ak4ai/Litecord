@@ -362,176 +362,181 @@ export component AppWindow inherits Window {
         if !root.is_logged_in: Rectangle {
             background: #1e1f22;
 
-            HorizontalLayout {
+            VerticalLayout {
                 alignment: center;
 
-                Rectangle {
-                    width: 760px;
-                    height: 400px;
-                    background: #2b2d31;
-                    border-radius: 12px;
-                    border-width: 1px;
-                    border-color: #383a40;
-                    y: (parent.height - self.height) / 2;
+                HorizontalLayout {
+                    alignment: center;
 
-                    HorizontalLayout {
-                        padding: 28px;
-                        spacing: 24px;
+                    Rectangle {
+                        width: 720px;
+                        height: 380px;
+                        background: #2b2d31;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: #383a40;
 
-                        // Left Column: Token / Auto-Detect Login
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            spacing: 14px;
+                        HorizontalLayout {
+                            padding: 32px;
+                            spacing: 32px;
 
-                            Text {
-                                text: root.tr_login_title;
-                                color: #f2f3f5;
-                                font-size: 20px;
-                                font-weight: 700;
-                            }
+                            // Left Column: Token / Auto-Detect Login
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 14px;
 
-                            Text {
-                                text: root.tr_login_desc;
-                                color: #949ba4;
-                                font-size: 12px;
-                                wrap: word-wrap;
-                            }
-
-                            token_input := LineEdit {
-                                placeholder-text: root.tr_login_placeholder;
-                                input-type: password;
-                                accepted => {
-                                    if (token_input.text != "") {
-                                        root.login(token_input.text);
-                                    }
+                                Text {
+                                    text: root.tr_login_title;
+                                    color: #f2f3f5;
+                                    font-size: 20px;
+                                    font-weight: 700;
                                 }
-                            }
 
-                            HorizontalLayout {
-                                spacing: 10px;
+                                Text {
+                                    text: root.tr_login_desc;
+                                    color: #949ba4;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
 
-                                Button {
-                                    icon: @image-url("../assets/rocket.svg");
-                                    text: root.tr_login_btn_connect;
-                                    primary: true;
-                                    clicked => {
+                                token_input := LineEdit {
+                                    placeholder-text: root.tr_login_placeholder;
+                                    input-type: password;
+                                    accepted => {
                                         if (token_input.text != "") {
                                             root.login(token_input.text);
                                         }
                                     }
                                 }
 
-                                Button {
-                                    icon: @image-url("../assets/search.svg");
-                                    text: root.tr_login_btn_detect;
-                                    clicked => {
-                                        root.auto_detect_token();
+                                HorizontalLayout {
+                                    spacing: 12px;
+
+                                    Button {
+                                        horizontal-stretch: 1;
+                                        icon: @image-url("../assets/rocket.svg");
+                                        text: root.tr_login_btn_connect;
+                                        primary: true;
+                                        clicked => {
+                                            if (token_input.text != "") {
+                                                root.login(token_input.text);
+                                            }
+                                        }
+                                    }
+
+                                    Button {
+                                        horizontal-stretch: 1;
+                                        icon: @image-url("../assets/search.svg");
+                                        text: root.tr_login_btn_detect;
+                                        clicked => {
+                                            root.auto_detect_token();
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        // Middle Divider
-                        Rectangle {
-                            width: 1px;
-                            background: #383a40;
-                        }
+                            // Middle Divider
+                            Rectangle {
+                                width: 1px;
+                                background: #383a40;
+                            }
 
-                        // Right Column: Official QR Code Login
-                        VerticalLayout {
-                            width: 240px;
-                            alignment: center;
-                            spacing: 10px;
-
-                            // QR Code Card Container
-                            HorizontalLayout {
+                            // Right Column: Official QR Code Login
+                            VerticalLayout {
+                                width: 230px;
                                 alignment: center;
+                                spacing: 12px;
 
-                                Rectangle {
-                                    width: 160px;
-                                    height: 160px;
-                                    background: #ffffff;
-                                    border-radius: 8px;
-                                    clip: true;
+                                // QR Code Card Container
+                                HorizontalLayout {
+                                    alignment: center;
 
-                                    if root.has_qr_code: Image {
-                                        source: root.qr_code_image;
+                                    Rectangle {
                                         width: 160px;
                                         height: 160px;
-                                        image-fit: contain;
-                                    }
+                                        background: #ffffff;
+                                        border-radius: 8px;
+                                        clip: true;
 
-                                    if !root.has_qr_code: VerticalLayout {
-                                        alignment: center;
-                                        spacing: 8px;
+                                        if root.has_qr_code: Image {
+                                            source: root.qr_code_image;
+                                            width: 160px;
+                                            height: 160px;
+                                            image-fit: contain;
+                                        }
 
-                                        HorizontalLayout {
+                                        if !root.has_qr_code: VerticalLayout {
                                             alignment: center;
-                                            Image {
-                                                source: @image-url("../assets/qr.svg");
-                                                width: 32px;
-                                                height: 32px;
-                                                colorize: #5865f2;
+                                            spacing: 8px;
+
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Image {
+                                                    source: @image-url("../assets/qr.svg");
+                                                    width: 32px;
+                                                    height: 32px;
+                                                    colorize: #5865f2;
+                                                }
+                                            }
+
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Button {
+                                                    text: "Gerar QR";
+                                                    clicked => { root.refresh_qr_code(); }
+                                                }
                                             }
                                         }
 
-                                        HorizontalLayout {
-                                            alignment: center;
-                                            Button {
-                                                text: "Gerar QR";
-                                                clicked => { root.refresh_qr_code(); }
-                                            }
-                                        }
-                                    }
+                                        // User Scanned Overlay Badge
+                                        if root.qr_scanned_user != "": Rectangle {
+                                            background: #111214e6;
+                                            width: 100%;
+                                            height: 100%;
 
-                                    // User Scanned Overlay Badge
-                                    if root.qr_scanned_user != "": Rectangle {
-                                        background: #111214e6;
-                                        width: 100%;
-                                        height: 100%;
+                                            VerticalLayout {
+                                                alignment: center;
+                                                spacing: 6px;
+                                                padding: 8px;
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 6px;
-                                            padding: 8px;
+                                                Text {
+                                                    text: "✅ " + root.qr_scanned_user;
+                                                    color: #23a55a;
+                                                    font-size: 13px;
+                                                    font-weight: 700;
+                                                    horizontal-alignment: center;
+                                                    overflow: elide;
+                                                }
 
-                                            Text {
-                                                text: "✅ " + root.qr_scanned_user;
-                                                color: #23a55a;
-                                                font-size: 13px;
-                                                font-weight: 700;
-                                                horizontal-alignment: center;
-                                                overflow: elide;
-                                            }
-
-                                            Text {
-                                                text: root.tr_qr_confirm;
-                                                color: #ffffff;
-                                                font-size: 11px;
-                                                font-weight: 600;
-                                                horizontal-alignment: center;
-                                                wrap: word-wrap;
+                                                Text {
+                                                    text: root.tr_qr_confirm;
+                                                    color: #ffffff;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    horizontal-alignment: center;
+                                                    wrap: word-wrap;
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            Text {
-                                text: root.tr_qr_title;
-                                color: #f2f3f5;
-                                font-size: 15px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                            }
+                                Text {
+                                    text: root.tr_qr_title;
+                                    color: #f2f3f5;
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                }
 
-                            Text {
-                                text: root.tr_qr_desc;
-                                color: #949ba4;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                wrap: word-wrap;
+                                Text {
+                                    text: root.tr_qr_desc;
+                                    color: #949ba4;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
                             }
                         }
                     }
@@ -2020,77 +2025,109 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Window Drag Resize Borders & Corner Handles
+    // Window Drag Resize Borders & Corner Handles (on PointerEventKind.down for 0-latency instant resize)
     // Left edge
     TouchArea {
         x: 0px;
-        y: 8px;
-        width: 5px;
-        height: parent.height - 16px;
+        y: 12px;
+        width: 7px;
+        height: parent.height - 24px;
         mouse-cursor: ew-resize;
-        moved => { root.drag_resize("left"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("left");
+            }
+        }
     }
     // Right edge
     TouchArea {
-        x: parent.width - 5px;
-        y: 8px;
-        width: 5px;
-        height: parent.height - 16px;
+        x: parent.width - 7px;
+        y: 12px;
+        width: 7px;
+        height: parent.height - 24px;
         mouse-cursor: ew-resize;
-        moved => { root.drag_resize("right"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("right");
+            }
+        }
     }
     // Top edge
     TouchArea {
-        x: 8px;
+        x: 12px;
         y: 0px;
-        width: parent.width - 16px;
-        height: 5px;
+        width: parent.width - 24px;
+        height: 7px;
         mouse-cursor: ns-resize;
-        moved => { root.drag_resize("top"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top");
+            }
+        }
     }
     // Bottom edge
     TouchArea {
-        x: 8px;
-        y: parent.height - 5px;
-        width: parent.width - 16px;
-        height: 5px;
+        x: 12px;
+        y: parent.height - 7px;
+        width: parent.width - 24px;
+        height: 7px;
         mouse-cursor: ns-resize;
-        moved => { root.drag_resize("bottom"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("bottom");
+            }
+        }
     }
     // Top-Left Corner
     TouchArea {
         x: 0px;
         y: 0px;
-        width: 8px;
-        height: 8px;
+        width: 12px;
+        height: 12px;
         mouse-cursor: nwse-resize;
-        moved => { root.drag_resize("top-left"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top-left");
+            }
+        }
     }
     // Top-Right Corner
     TouchArea {
-        x: parent.width - 8px;
+        x: parent.width - 12px;
         y: 0px;
-        width: 8px;
-        height: 8px;
+        width: 12px;
+        height: 12px;
         mouse-cursor: nesw-resize;
-        moved => { root.drag_resize("top-right"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top-right");
+            }
+        }
     }
     // Bottom-Left Corner
     TouchArea {
         x: 0px;
-        y: parent.height - 8px;
-        width: 8px;
-        height: 8px;
+        y: parent.height - 12px;
+        width: 12px;
+        height: 12px;
         mouse-cursor: nesw-resize;
-        moved => { root.drag_resize("bottom-left"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("bottom-left");
+            }
+        }
     }
     // Bottom-Right Corner
     TouchArea {
-        x: parent.width - 8px;
-        y: parent.height - 8px;
-        width: 8px;
-        height: 8px;
+        x: parent.width - 12px;
+        y: parent.height - 12px;
+        width: 12px;
+        height: 12px;
         mouse-cursor: nwse-resize;
-        moved => { root.drag_resize("bottom-right"); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("bottom-right");
+            }
+        }
     }
 }

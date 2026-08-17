@@ -2565,11 +2565,6 @@ fn set_dark_titlebar_color(hwnd: isize) {
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, WS_THICKFRAME,
-        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    };
-
     let dark_mode: u32 = 1;
     unsafe {
         // Attribute 20 (Win11 / Win10 20H1+)
@@ -2604,21 +2599,6 @@ fn set_dark_titlebar_color(hwnd: isize) {
             DWMWA_TEXT_COLOR as _,
             &text_color as *const u32 as _,
             std::mem::size_of::<u32>() as u32,
-        );
-
-        // Enable native Windows resizing borders (WS_THICKFRAME) on frameless window
-        let style = GetWindowLongW(hwnd as _, GWL_STYLE);
-        SetWindowLongW(hwnd as _, GWL_STYLE, style | WS_THICKFRAME as i32);
-
-        // Force DWM to re-calculate and redraw the frame immediately!
-        SetWindowPos(
-            hwnd as _,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
     }
 }
