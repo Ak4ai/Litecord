@@ -1998,7 +1998,7 @@ pub async fn connect_voice_gateway(
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
                                                 tokio::spawn(async move {
-                                                    let mut opus_decoders: HashMap<u32, OpusDecoder> = HashMap::new();
+                                                    let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
                                                     let mut ssrc_expected_seq: HashMap<u32, u16> = HashMap::new();
                                                     let mut recv_buf = vec![0u8; 4096];
@@ -2184,6 +2184,7 @@ pub async fn connect_voice_gateway(
                                                                         let mut decode_success = false;
                                                                         let mut decoded_count = 0;
                                                                         let mut plc_pairs: Vec<(f32, f32)> = Vec::new();
+                                                                        let mut pkt_channels = 2usize;
                                                                         if can_decode && !opus_data.is_empty() {
                                                                             let mut raw_opus = opus_data.as_slice();
 
@@ -2198,8 +2199,9 @@ pub async fn connect_voice_gateway(
                                                                                 }
                                                                             }
 
-                                                                            let dec = opus_decoders.entry(ssrc_recv).or_insert_with(|| {
-                                                                                OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder 48kHz Stereo")
+                                                                            pkt_channels = if (raw_opus[0] & 0x04) != 0 { 2 } else { 1 };
+                                                                            let dec = opus_decoders.entry((ssrc_recv, pkt_channels)).or_insert_with(|| {
+                                                                                OpusDecoder::new(48000, pkt_channels).expect("Falha ao inicializar OpusDecoder 48kHz")
                                                                             });
 
                                                                             let now = std::time::Instant::now();
@@ -2221,7 +2223,12 @@ pub async fn connect_voice_gateway(
                                                                                         for _ in 0..missed {
                                                                                             if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
                                                                                                 for i in 0..samples {
-                                                                                                    plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                                    if pkt_channels == 2 {
+                                                                                                        plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                                    } else {
+                                                                                                        let m = plc_buf[i].clamp(-1.0, 1.0);
+                                                                                                        plc_pairs.push((m, m));
+                                                                                                    }
                                                                                                 }
                                                                                             }
                                                                                         }
@@ -2251,7 +2258,7 @@ pub async fn connect_voice_gateway(
 
                                                                         if decode_success && decoded_count > 0 {
                                                                             register_voice_participant(ssrc_recv, sender_user_id);
-                                                                            let total_samples = decoded_count * 2;
+                                                                            let total_samples = if pkt_channels == 2 { decoded_count * 2 } else { decoded_count };
                                                                             let mut sum_sq = 0.0f32;
                                                                             let mut max_peak = 0.0f32;
                                                                             let mut zc_count = 0usize;
@@ -2278,9 +2285,14 @@ pub async fn connect_voice_gateway(
                                                                             let mut dump_vec = Vec::with_capacity(decoded_count);
                                                                             if is_silence {
                                                                                 for _ in 0..decoded_count { dump_vec.push((0.0, 0.0)); }
-                                                                            } else {
+                                                                            } else if pkt_channels == 2 {
                                                                                 for i in 0..decoded_count {
                                                                                     dump_vec.push((pcm_out_buf[i * 2].clamp(-1.0, 1.0), pcm_out_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                }
+                                                                            } else {
+                                                                                for &s in &pcm_out_buf[..decoded_count] {
+                                                                                    let mono = s.clamp(-1.0, 1.0);
+                                                                                    dump_vec.push((mono, mono));
                                                                                 }
                                                                             }
                                                                                     ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
@@ -2404,8 +2416,8 @@ pub async fn connect_voice_gateway(
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
                                                                             } else if !q.is_empty() {
-                                                                                // 25ms pre-buffer (1200 samples) to absorb network UDP jitter and eliminate initial speech pops/underruns
-                                                                                if q.len() >= 1200 {
+                                                                                // 10ms pre-buffer (480 samples) to start playback immediately with zero latency
+                                                                                if q.len() >= 480 {
                                                                                     started_ssrcs.insert(ssrc);
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }

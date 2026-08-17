@@ -800,27 +800,7 @@ async fn load_messages_for_channel(
     }
 }
 
-struct MultiWriter {
-    file: std::sync::Mutex<std::fs::File>,
-}
 
-impl std::io::Write for MultiWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::stdout().write(buf);
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.write(buf);
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::stdout().flush();
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.flush();
-        }
-        Ok(())
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -841,14 +821,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }));
 
-    if let Ok(log_file) = std::fs::File::create("litecord_app.log") {
-        let writer = MultiWriter { file: std::sync::Mutex::new(log_file) };
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-            .target(env_logger::Target::Pipe(Box::new(writer)))
-            .init();
-    } else {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    }
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
     info!("Iniciando Litecord v0.1.0...");
 
     let app = AppWindow::new()?;
