@@ -148,6 +148,10 @@ export component AppWindow inherits Window {
     in-out property <string> tr_logout_confirm_prefix: "Do you want to log out from ";
     in-out property <string> tr_cancel: "Cancel";
     in-out property <string> tr_confirm_logout: "Sign Out";
+    in-out property <string> tr_voice_connecting: "Connecting...";
+    in-out property <string> tr_voice_connecting_title: "Connecting to Voice Channel...";
+    in-out property <string> tr_voice_connecting_desc: "Authenticating with Voice Gateway v9 and negotiating DAVE E2EE encryption...";
+    in-out property <string> tr_voice_connected: "Voice Connected";
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
@@ -157,6 +161,7 @@ export component AppWindow inherits Window {
     in-out property <bool> is_muted: false;
     in-out property <bool> is_deafened: false;
     in-out property <bool> is_in_voice: false;
+    in-out property <bool> is_voice_connecting: false;
     in-out property <string> current_voice_channel: "";
     in-out property <bool> is_voice_focused: false;
     in-out property <[VoiceParticipant]> voice_participants: [];
@@ -549,12 +554,12 @@ export component AppWindow inherits Window {
                     // Active Voice Channel Banner
                     if root.is_in_voice: Rectangle {
                         height: 44px;
-                        background: #23a55a;
+                        background: root.is_voice_connecting ? #d97706 : #23a55a;
                         border-radius: 6px;
 
                         HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
+                            padding-left: 10px;
+                            padding-right: 10px;
                             spacing: 8px;
 
                             VerticalLayout {
@@ -570,11 +575,19 @@ export component AppWindow inherits Window {
 
                             VerticalLayout {
                                 alignment: center;
+                                spacing: 1px;
+                                Text {
+                                    text: root.is_voice_connecting ? root.tr_voice_connecting : root.tr_voice_connected;
+                                    color: #ffffff;
+                                    font-size: 11px;
+                                    font-weight: 800;
+                                    overflow: elide;
+                                }
                                 Text {
                                     text: root.current_voice_channel;
-                                    color: #ffffff;
-                                    font-size: 12px;
-                                    font-weight: 700;
+                                    color: #f1f5f9;
+                                    font-size: 10px;
+                                    font-weight: 500;
                                     overflow: elide;
                                 }
                             }
@@ -720,8 +733,69 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Voice Room Connecting Loading State
+                    if root.is_voice_connecting: Rectangle {
+                        vertical-stretch: 1;
+                        background: #1e1f22;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 16px;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 68px;
+                                    height: 68px;
+                                    border-radius: 34px;
+                                    background: #2b2d31;
+                                    border-width: 2px;
+                                    border-color: #5865f2;
+
+                                    Image {
+                                        source: @image-url("../assets/speaker.svg");
+                                        width: 28px;
+                                        height: 28px;
+                                        colorize: #5865f2;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+
+                                Text {
+                                    text: root.tr_voice_connecting_title;
+                                    color: #ffffff;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.tr_voice_connecting_desc;
+                                    color: #949ba4;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Button {
+                                    icon: @image-url("../assets/log-out.svg");
+                                    text: root.tr_cancel;
+                                    clicked => { root.leave_voice(); }
+                                }
+                            }
+                        }
+                    }
+
                     // Voice Room Participants List View
-                    Rectangle {
+                    if !root.is_voice_connecting: Rectangle {
                         vertical-stretch: 1;
                         background: #313338;
 

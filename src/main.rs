@@ -118,6 +118,10 @@ fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_tr_logout_confirm_prefix(tr.logout_confirm_prefix.into());
     ui.set_tr_cancel(tr.cancel.into());
     ui.set_tr_confirm_logout(tr.confirm_logout.into());
+    ui.set_tr_voice_connecting(tr.voice_connecting.into());
+    ui.set_tr_voice_connecting_title(tr.voice_connecting_title.into());
+    ui.set_tr_voice_connecting_desc(tr.voice_connecting_desc.into());
+    ui.set_tr_voice_connected(tr.voice_connected.into());
 
     let lang_items: Vec<LanguageItem> = i18n::Language::all_available().iter().map(|&l| {
         let (display, native) = l.display_info();
@@ -1079,13 +1083,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             interval.tick().await;
 
-            // Deep-sleep & Voice-session guard: skip when UI is hidden or when not in a voice call
-            if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
+            // Deep-sleep guard: skip when UI is hidden
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                 continue;
             }
 
+            let is_connected = gateway::is_connected_to_voice();
+
             // On-restore refresh: re-fetch active channel messages via REST
-            if NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            if is_connected && NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
                 let pending = PENDING_MESSAGES.swap(0, Ordering::Relaxed);
                 let ch_id = active_channel_voice_loop.lock().unwrap().clone();
                 if !ch_id.is_empty() {
@@ -1107,6 +1113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = app_w_inner.upgrade() else { return; };
                 if !ui.get_is_in_voice() { return; }
+
+                if is_connected {
+                    if ui.get_is_voice_connecting() {
+                        ui.set_is_voice_connecting(false);
+                    }
+                } else {
+                    return;
+                }
 
                 let active_parts = gateway::get_active_voice_participants_store();
                 let queues_arc = gateway::get_speaker_pcm_queues();
@@ -1544,6 +1558,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Usuário solicitou desconexão da sala de voz...");
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
+            ui.set_is_voice_connecting(false);
             ui.set_current_voice_channel("".into());
             gateway::clear_voice_participants();
 
@@ -1890,6 +1905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_chan_select.upgrade() {
             if is_voice {
                 ui.set_is_in_voice(true);
+                ui.set_is_voice_connecting(true);
                 ui.set_is_voice_focused(true);
                 ui.set_current_voice_channel(ch_name.clone().into());
                 gateway::sync_voice_channel_participants(&ch_id);

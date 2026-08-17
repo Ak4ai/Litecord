@@ -93,6 +93,10 @@ pub struct Translations {
     pub logout_confirm_prefix: &'static str,
     pub cancel: &'static str,
     pub confirm_logout: &'static str,
+    pub voice_connecting: &'static str,
+    pub voice_connecting_title: &'static str,
+    pub voice_connecting_desc: &'static str,
+    pub voice_connected: &'static str,
 }
 
 pub const EN_TRANSLATIONS: Translations = Translations {
@@ -122,6 +126,10 @@ pub const EN_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "Do you want to log out from ",
     cancel: "Cancel",
     confirm_logout: "Sign Out",
+    voice_connecting: "Connecting...",
+    voice_connecting_title: "Connecting to Voice Channel...",
+    voice_connecting_desc: "Authenticating with Voice Gateway v9 and negotiating DAVE E2EE encryption...",
+    voice_connected: "Voice Connected",
 };
 
 pub const PT_TRANSLATIONS: Translations = Translations {
@@ -151,6 +159,10 @@ pub const PT_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "Deseja desconectar de ",
     cancel: "Voltar",
     confirm_logout: "Sair",
+    voice_connecting: "Conectando...",
+    voice_connecting_title: "Conectando à Sala de Voz...",
+    voice_connecting_desc: "Autenticando na Voice Gateway v9 e negociando criptografia ponta-a-ponta (DAVE)...",
+    voice_connected: "Voz Conectada",
 };
 
 pub const ES_TRANSLATIONS: Translations = Translations {
@@ -180,6 +192,10 @@ pub const ES_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "¿Deseas desconectarte de ",
     cancel: "Cancelar",
     confirm_logout: "Cerrar Sesión",
+    voice_connecting: "Conectando...",
+    voice_connecting_title: "Conectando a la Sala de Voz...",
+    voice_connecting_desc: "Autenticando en Voice Gateway v9 y negociando cifrado E2EE (DAVE)...",
+    voice_connected: "Voz Conectada",
 };
 
 pub const DE_TRANSLATIONS: Translations = Translations {
@@ -209,6 +225,10 @@ pub const DE_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "Möchtest du dich abmelden von ",
     cancel: "Abbrechen",
     confirm_logout: "Abmelden",
+    voice_connecting: "Verbinden...",
+    voice_connecting_title: "Verbindung zum Sprachkanal...",
+    voice_connecting_desc: "Authentifizierung mit Voice Gateway v9 und Aushandlung der DAVE E2EE-Verschlüsselung...",
+    voice_connected: "Sprache verbunden",
 };
 
 pub const FR_TRANSLATIONS: Translations = Translations {
@@ -238,6 +258,10 @@ pub const FR_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "Voulez-vous vous déconnecter de ",
     cancel: "Annuler",
     confirm_logout: "Déconnexion",
+    voice_connecting: "Connexion...",
+    voice_connecting_title: "Connexion au Salon Vocal...",
+    voice_connecting_desc: "Authentification auprès de la Voice Gateway v9 et négociation du chiffrement DAVE E2EE...",
+    voice_connected: "Vocal Connecté",
 };
 
 pub const RU_TRANSLATIONS: Translations = Translations {
@@ -267,6 +291,10 @@ pub const RU_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "Вы действительно хотите выйти из ",
     cancel: "Отмена",
     confirm_logout: "Выйти",
+    voice_connecting: "Подключение...",
+    voice_connecting_title: "Подключение к голосовому каналу...",
+    voice_connecting_desc: "Аутентификация в Voice Gateway v9 и согласование E2EE шифрования (DAVE)...",
+    voice_connected: "Голос подключен",
 };
 
 pub const JA_TRANSLATIONS: Translations = Translations {
@@ -296,6 +324,10 @@ pub const JA_TRANSLATIONS: Translations = Translations {
     logout_confirm_prefix: "本当にログアウトしますか: ",
     cancel: "キャンセル",
     confirm_logout: "ログアウト",
+    voice_connecting: "接続中...",
+    voice_connecting_title: "ボイスチャンネルに接続中...",
+    voice_connecting_desc: "Voice Gateway v9 に認証し、DAVE E2EE 暗号化を確立しています...",
+    voice_connected: "音声接続完了",
 };
 
 const LANGUAGE_CONFIG_FILE: &str = ".litecord_language.json";
