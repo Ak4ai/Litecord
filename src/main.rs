@@ -2201,6 +2201,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_resize = app_weak.clone();
+    app.on_drag_resize(move |edge: SharedString| {
+        if let Some(app_instance) = app_weak_resize.upgrade() {
+            let _ = app_instance.window().with_winit_window(|winit_window| {
+                let dir = match edge.as_str() {
+                    "top" => winit::window::ResizeDirection::North,
+                    "bottom" => winit::window::ResizeDirection::South,
+                    "left" => winit::window::ResizeDirection::West,
+                    "right" => winit::window::ResizeDirection::East,
+                    "top-left" => winit::window::ResizeDirection::NorthWest,
+                    "top-right" => winit::window::ResizeDirection::NorthEast,
+                    "bottom-left" => winit::window::ResizeDirection::SouthWest,
+                    "bottom-right" => winit::window::ResizeDirection::SouthEast,
+                    _ => return,
+                };
+                let _ = winit_window.drag_resize_window(dir);
+            });
+        }
+    });
+
     let app_weak_min = app_weak.clone();
     let hwnd_store_min = Arc::clone(&hwnd_store);
     app.on_minimize_window(move || {

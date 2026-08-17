@@ -94,6 +94,37 @@ impl RemoteAuthSession {
     }
 }
 
+async fn exchange_ticket_for_token(
+    http_client: &reqwest::Client,
+    ticket: &str,
+    private_key: &RsaPrivateKey,
+) -> Result<String, String> {
+    let res = http_client.post("https://discord.com/api/v9/users/@me/remote-auth/login")
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://discord.com")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        .json(&serde_json::json!({ "ticket": ticket }))
+        .send()
+        .await
+        .map_err(|e| format!("Erro HTTP ao trocar ticket: {:?}", e))?;
+
+    let json: serde_json::Value = res.json()
+        .await
+        .map_err(|e| format!("Erro JSON na resposta de login: {:?}", e))?;
+
+    if let Some(enc_token_b64) = json["encrypted_token"].as_str() {
+        let enc_bytes = base64::engine::general_purpose::STANDARD.decode(enc_token_b64)
+            .map_err(|e| format!("Erro ao decodificar Base64 do token: {:?}", e))?;
+        let decrypted = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes)
+            .map_err(|e| format!("Erro ao decifrar token: {:?}", e))?;
+        let token_str = String::from_utf8(decrypted)
+            .map_err(|e| format!("Token inválido UTF-8: {:?}", e))?;
+        Ok(token_str)
+    } else {
+        Err(format!("Resposta sem encrypted_token: {:?}", json))
+    }
+}
+
 async fn run_remote_auth_loop(
     event_tx: mpsc::Sender<RemoteAuthEvent>,
     cancel_flag: Arc<AtomicBool>,
@@ -188,6 +219,8 @@ async fn handle_auth_steps(
     event_tx: mpsc::Sender<RemoteAuthEvent>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let http_client = reqwest::Client::new();
+
     while let Some(msg_res) = read.next().await {
         if cancel_flag.load(Ordering::SeqCst) {
             let _ = event_tx.send(RemoteAuthEvent::Cancelled).await;
@@ -231,10 +264,38 @@ async fn handle_auth_steps(
                         let _ = event_tx.send(RemoteAuthEvent::QrCodeUrl(qr_url)).await;
                     }
                 }
-                "pending_ticket" | "pending_login" | "pending_remote_init" if json["user"].is_object() => {
-                    let username = json["user"]["username"].as_str().unwrap_or("Discord User").to_string();
-                    info!("📲 QR Code escaneado pelo usuário: {}!", username);
-                    let _ = event_tx.send(RemoteAuthEvent::UserScanned { username }).await;
+                "pending_ticket" => {
+                    // Mobile client scanned the QR code! Decrypt the user info payload
+                    if let Some(enc_user_payload) = json["ticket"].as_str() {
+                        if let Ok(enc_bytes) = base64::engine::general_purpose::STANDARD.decode(enc_user_payload) {
+                            if let Ok(decrypted) = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes) {
+                                if let Ok(user_info) = String::from_utf8(decrypted) {
+                                    // format: user_id:discriminator:avatar:username
+                                    let parts: Vec<&str> = user_info.split(':').collect();
+                                    let username = if parts.len() >= 4 { parts[3].to_string() } else { user_info };
+                                    info!("📲 QR Code escaneado pelo usuário: {}!", username);
+                                    let _ = event_tx.send(RemoteAuthEvent::UserScanned { username }).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                "pending_login" => {
+                    // User tapped "Yes, Log In" on mobile! Exchange ticket via REST API
+                    if let Some(ticket) = json["ticket"].as_str() {
+                        info!("🔑 Usuário aprovou o login no celular! Trocando ticket pelo token...");
+                        match exchange_ticket_for_token(&http_client, ticket, &private_key).await {
+                            Ok(token) => {
+                                info!("🎉 Token de acesso recebido via QR Code com sucesso!");
+                                let _ = event_tx.send(RemoteAuthEvent::TokenReceived(token)).await;
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                error!("❌ Falha ao trocar ticket por token: {}", e);
+                                let _ = event_tx.send(RemoteAuthEvent::Error(e)).await;
+                            }
+                        }
+                    }
                 }
                 "finish" | "pending_finish" => {
                     let enc_token_opt = json["encrypted_token"].as_str()
@@ -244,7 +305,7 @@ async fn handle_auth_steps(
                         if let Ok(enc_bytes) = base64::engine::general_purpose::STANDARD.decode(enc_token_b64) {
                             if let Ok(decrypted) = private_key.decrypt(Oaep::new::<Sha256>(), &enc_bytes) {
                                 if let Ok(token_str) = String::from_utf8(decrypted) {
-                                    info!("🎉 Token de acesso recebido via QR Code com sucesso!");
+                                    info!("🎉 Token de acesso recebido via finish opcode!");
                                     let _ = event_tx.send(RemoteAuthEvent::TokenReceived(token_str)).await;
                                     return Ok(());
                                 }
