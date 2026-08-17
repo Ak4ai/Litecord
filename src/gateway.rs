@@ -2008,7 +2008,7 @@ pub async fn connect_voice_gateway(
                                                     let mut decrypt_err_cnt = 0u64;
                                                     let mut opus_err_cnt = 0u64;
                                                     let mut dave_decrypt_fail_cnt = 0u64;
-                                                    let mut dave_not_ready_cnt = 0u64;
+                                                    let mut _dave_not_ready_cnt = 0u64;
 
                                                     info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
 
@@ -2175,7 +2175,7 @@ pub async fn connect_voice_gateway(
                                                                                         }
                                                                                     }
                                                                                 } else {
-                                                                                    dave_not_ready_cnt += 1;
+                                                                                    _dave_not_ready_cnt += 1;
                                                                                     (transport_payload.to_vec(), true)
                                                                                 }
                                                                             } else { (transport_payload.to_vec(), true) }
