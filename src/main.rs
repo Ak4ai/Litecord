@@ -4,16 +4,18 @@ mod gateway;
 mod http;
 mod tray;
 mod i18n;
+mod remote_auth;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
 use tray::SystemTrayManager;
+use remote_auth::RemoteAuthEvent;
 
 use slint::{SharedString, Model, Image};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
-use log::{info, error};
+use log::{info, warn, error};
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -122,6 +124,9 @@ fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_tr_voice_connecting_title(tr.voice_connecting_title.into());
     ui.set_tr_voice_connecting_desc(tr.voice_connecting_desc.into());
     ui.set_tr_voice_connected(tr.voice_connected.into());
+    ui.set_tr_qr_title(tr.qr_title.into());
+    ui.set_tr_qr_desc(tr.qr_desc.into());
+    ui.set_tr_qr_confirm(tr.qr_confirm.into());
 
     let lang_items: Vec<LanguageItem> = i18n::Language::all_available().iter().map(|&l| {
         let (display, native) = l.display_info();
@@ -1591,6 +1596,108 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Active QR Code Remote Auth Session
+    let (qr_tx, mut qr_rx) = mpsc::channel::<RemoteAuthEvent>(50);
+    let active_qr_session: Arc<Mutex<Option<remote_auth::RemoteAuthSession>>> = Arc::new(Mutex::new(None));
+
+    let qr_tx_refresh = qr_tx.clone();
+    let active_qr_refresh = Arc::clone(&active_qr_session);
+    let app_weak_refresh = app_weak.clone();
+    app.on_refresh_qr_code(move || {
+        info!("🔄 Atualizando / reiniciando QR Code de login...");
+        if let Some(ui) = app_weak_refresh.upgrade() {
+            ui.set_has_qr_code(false);
+            ui.set_qr_scanned_user("".into());
+        }
+        if let Some(old) = active_qr_refresh.lock().unwrap().take() {
+            old.cancel();
+        }
+        let session = remote_auth::RemoteAuthSession::start(qr_tx_refresh.clone());
+        *active_qr_refresh.lock().unwrap() = Some(session);
+    });
+
+    // QR Code Event Processing Loop
+    let app_weak_qr = app_weak.clone();
+    let http_client_qr = Arc::clone(&http_client);
+    let last_token_qr = Arc::clone(&last_token);
+    let guilds_map_qr = Arc::clone(&guilds_map);
+    let active_guild_qr = Arc::clone(&active_guild_id);
+    let active_channel_qr = Arc::clone(&active_channel_id);
+    let cmd_tx_qr = Arc::clone(&cmd_tx_store);
+    let event_tx_qr = event_tx.clone();
+    let active_qr_session_qr = Arc::clone(&active_qr_session);
+
+    tokio::spawn(async move {
+        while let Some(evt) = qr_rx.recv().await {
+            match evt {
+                RemoteAuthEvent::QrCodeUrl(url) => {
+                    let app_w = app_weak_qr.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Ok(img) = remote_auth::generate_qr_image(&url) {
+                            if let Some(ui) = app_w.upgrade() {
+                                ui.set_qr_code_image(img);
+                                ui.set_has_qr_code(true);
+                                ui.set_qr_scanned_user("".into());
+                            }
+                        }
+                    });
+                }
+                RemoteAuthEvent::UserScanned { username, .. } => {
+                    let app_w = app_weak_qr.clone();
+                    let uname = username.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            ui.set_qr_scanned_user(uname.into());
+                        }
+                    });
+                }
+                RemoteAuthEvent::TokenReceived(token) => {
+                    info!("🎉 Token de acesso recebido via QR Code com sucesso! Conectando...");
+                    let app_w = app_weak_qr.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            ui.set_has_qr_code(false);
+                            ui.set_qr_scanned_user("".into());
+                            ui.set_connection_status("Conectando via QR Code...".into());
+                        }
+                    });
+                    if let Some(old) = active_qr_session_qr.lock().unwrap().take() {
+                        old.cancel();
+                    }
+                    try_login_with_candidates(
+                        vec![token],
+                        app_weak_qr.clone(),
+                        Arc::clone(&http_client_qr),
+                        Arc::clone(&last_token_qr),
+                        Arc::clone(&guilds_map_qr),
+                        Arc::clone(&active_guild_qr),
+                        Arc::clone(&active_channel_qr),
+                        Arc::clone(&cmd_tx_qr),
+                        event_tx_qr.clone(),
+                    ).await;
+                }
+                RemoteAuthEvent::Cancelled => {
+                    let app_w = app_weak_qr.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            ui.set_has_qr_code(false);
+                            ui.set_qr_scanned_user("".into());
+                        }
+                    });
+                }
+                RemoteAuthEvent::Error(err) => {
+                    warn!("⚠️ Erro na sessão de QR Auth: {}", err);
+                    let app_w = app_weak_qr.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            ui.set_has_qr_code(false);
+                        }
+                    });
+                }
+            }
+        }
+    });
+
     // Logout Callback from UI
     let app_weak_logout = app_weak.clone();
     let http_client_logout = Arc::clone(&http_client);
@@ -1601,6 +1708,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd_tx_logout = Arc::clone(&cmd_tx_store);
     let active_mic_logout = Arc::clone(&active_mic_stream);
     let active_loopback_logout = Arc::clone(&active_loopback_stream);
+    let qr_tx_logout = qr_tx.clone();
+    let active_qr_logout = Arc::clone(&active_qr_session);
 
     app.on_logout(move || {
         info!("Usuário solicitou Logout da conta...");
@@ -1640,7 +1749,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_logout.upgrade() {
             ui.set_is_logged_in(false);
             ui.set_user_tag("Não conectado".into());
-            ui.set_connection_status("Você saiu da conta. Insira seu token para entrar.".into());
+            ui.set_connection_status("Você saiu da conta. Insira seu token ou escaneie o QR Code.".into());
             ui.set_is_in_voice(false);
             ui.set_current_voice_channel("".into());
             ui.set_show_user_menu(false);
@@ -1649,7 +1758,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_has_qr_code(false);
+            ui.set_qr_scanned_user("".into());
         }
+
+        // 6. Start fresh QR Code session for fast re-login
+        if let Some(old) = active_qr_logout.lock().unwrap().take() {
+            old.cancel();
+        }
+        let session = remote_auth::RemoteAuthSession::start(qr_tx_logout.clone());
+        *active_qr_logout.lock().unwrap() = Some(session);
     });
 
     // Login Callback from UI
@@ -1661,11 +1779,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_login = Arc::clone(&active_guild_id);
     let active_channel_login = Arc::clone(&active_channel_id);
     let cmd_tx_login = Arc::clone(&cmd_tx_store);
+    let active_qr_login = Arc::clone(&active_qr_session);
 
     app.on_login(move |token: SharedString| {
         let token_str = token.to_string().chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
         info!("Token fornecido. Validando via API HTTP...");
         *last_token_login.lock().unwrap() = token_str.clone();
+
+        if let Some(old) = active_qr_login.lock().unwrap().take() {
+            old.cancel();
+        }
 
         let http = DiscordHttpClient::new(token_str.clone());
         *http_client_clone.lock().unwrap() = Some(http.clone());
@@ -1737,8 +1860,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_auto_btn = Arc::clone(&active_guild_id);
     let active_channel_auto_btn = Arc::clone(&active_channel_id);
     let cmd_tx_auto_btn = Arc::clone(&cmd_tx_store);
+    let active_qr_auto = Arc::clone(&active_qr_session);
 
     app.on_auto_detect_token(move || {
+        if let Some(old) = active_qr_auto.lock().unwrap().take() {
+            old.cancel();
+        }
+
         let app_w = app_weak_auto_btn.clone();
         let event_tx_gw = event_tx_auto_btn.clone();
         let http_client_inner = Arc::clone(&http_client_auto_btn);
@@ -1798,6 +1926,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_startup = Arc::clone(&active_guild_id);
     let active_channel_startup = Arc::clone(&active_channel_id);
     let cmd_tx_startup = Arc::clone(&cmd_tx_store);
+    let qr_tx_startup = qr_tx.clone();
+    let active_qr_startup = Arc::clone(&active_qr_session);
 
     tokio::spawn(async move {
         let mut candidates = Vec::new();
@@ -1834,7 +1964,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if !success {
                 let _ = std::fs::remove_file(".litecord_token");
+                let session = remote_auth::RemoteAuthSession::start(qr_tx_startup.clone());
+                *active_qr_startup.lock().unwrap() = Some(session);
             }
+        } else {
+            let session = remote_auth::RemoteAuthSession::start(qr_tx_startup.clone());
+            *active_qr_startup.lock().unwrap() = Some(session);
         }
     });
 

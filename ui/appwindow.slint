@@ -117,6 +117,7 @@ export component AppWindow inherits Window {
     callback toggle_test_mic();
     callback logout();
     callback change_language(string /* "auto", "en", "pt" */);
+    callback refresh_qr_code();
 
     // Translations (i18n)
     in-out property <string> current_language_code: "auto";
@@ -152,6 +153,15 @@ export component AppWindow inherits Window {
     in-out property <string> tr_voice_connecting_title: "Connecting to Voice Channel...";
     in-out property <string> tr_voice_connecting_desc: "Authenticating with Voice Gateway v9 and negotiating DAVE E2EE encryption...";
     in-out property <string> tr_voice_connected: "Voice Connected";
+    in-out property <string> tr_qr_title: "Log in with QR Code";
+    in-out property <string> tr_qr_desc: "Scan this with the Discord mobile app to log in instantly.";
+    in-out property <string> tr_qr_confirm: "Approve login on your phone!";
+
+    // QR Code Login Properties
+    in-out property <image> qr_code_image;
+    in-out property <bool> has_qr_code: false;
+    in-out property <bool> is_qr_loading: false;
+    in-out property <string> qr_scanned_user: "";
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
@@ -347,59 +357,179 @@ export component AppWindow inherits Window {
 
         // Body Content
         if !root.is_logged_in: Rectangle {
-            background: #2b2d31;
+            background: #1e1f22;
 
-            VerticalBox {
+            HorizontalLayout {
                 alignment: center;
-                spacing: 16px;
-                width: 420px;
 
-                Text {
-                    text: root.tr_login_title;
-                    color: #f2f3f5;
-                    font-size: 22px;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                }
+                Rectangle {
+                    width: 760px;
+                    height: 400px;
+                    background: #2b2d31;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: #383a40;
+                    y: (parent.height - self.height) / 2;
 
-                Text {
-                    text: root.tr_login_desc;
-                    color: #b5bac1;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                }
+                    HorizontalLayout {
+                        padding: 28px;
+                        spacing: 24px;
 
-                token_input := LineEdit {
-                    placeholder-text: root.tr_login_placeholder;
-                    input-type: password;
-                    accepted => {
-                        if (token_input.text != "") {
-                            root.login(token_input.text);
-                        }
-                    }
-                }
+                        // Left Column: Token / Auto-Detect Login
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 14px;
 
-                HorizontalBox {
-                    alignment: center;
-                    spacing: 10px;
+                            Text {
+                                text: root.tr_login_title;
+                                color: #f2f3f5;
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
 
-                    Button {
-                        icon: @image-url("../assets/rocket.svg");
-                        text: root.tr_login_btn_connect;
-                        primary: true;
-                        clicked => {
-                            if (token_input.text != "") {
-                                root.login(token_input.text);
+                            Text {
+                                text: root.tr_login_desc;
+                                color: #949ba4;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+
+                            token_input := LineEdit {
+                                placeholder-text: root.tr_login_placeholder;
+                                input-type: password;
+                                accepted => {
+                                    if (token_input.text != "") {
+                                        root.login(token_input.text);
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                Button {
+                                    icon: @image-url("../assets/rocket.svg");
+                                    text: root.tr_login_btn_connect;
+                                    primary: true;
+                                    clicked => {
+                                        if (token_input.text != "") {
+                                            root.login(token_input.text);
+                                        }
+                                    }
+                                }
+
+                                Button {
+                                    icon: @image-url("../assets/search.svg");
+                                    text: root.tr_login_btn_detect;
+                                    clicked => {
+                                        root.auto_detect_token();
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    Button {
-                        icon: @image-url("../assets/search.svg");
-                        text: root.tr_login_btn_detect;
-                        clicked => {
-                            root.auto_detect_token();
+                        // Middle Divider
+                        Rectangle {
+                            width: 1px;
+                            background: #383a40;
+                        }
+
+                        // Right Column: Official QR Code Login
+                        VerticalLayout {
+                            width: 240px;
+                            alignment: center;
+                            spacing: 10px;
+
+                            // QR Code Card Container
+                            HorizontalLayout {
+                                alignment: center;
+
+                                Rectangle {
+                                    width: 160px;
+                                    height: 160px;
+                                    background: #ffffff;
+                                    border-radius: 8px;
+                                    clip: true;
+
+                                    if root.has_qr_code: Image {
+                                        source: root.qr_code_image;
+                                        width: 160px;
+                                        height: 160px;
+                                        image-fit: contain;
+                                    }
+
+                                    if !root.has_qr_code: VerticalLayout {
+                                        alignment: center;
+                                        spacing: 8px;
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/qr.svg");
+                                                width: 32px;
+                                                height: 32px;
+                                                colorize: #5865f2;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Button {
+                                                text: "Gerar QR";
+                                                clicked => { root.refresh_qr_code(); }
+                                            }
+                                        }
+                                    }
+
+                                    // User Scanned Overlay Badge
+                                    if root.qr_scanned_user != "": Rectangle {
+                                        background: #111214e6;
+                                        width: 100%;
+                                        height: 100%;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 6px;
+                                            padding: 8px;
+
+                                            Text {
+                                                text: "✅ " + root.qr_scanned_user;
+                                                color: #23a55a;
+                                                font-size: 13px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: root.tr_qr_confirm;
+                                                color: #ffffff;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.tr_qr_title;
+                                color: #f2f3f5;
+                                font-size: 15px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                            }
+
+                            Text {
+                                text: root.tr_qr_desc;
+                                color: #949ba4;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }

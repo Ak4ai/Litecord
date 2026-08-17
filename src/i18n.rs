@@ -97,6 +97,9 @@ pub struct Translations {
     pub voice_connecting_title: &'static str,
     pub voice_connecting_desc: &'static str,
     pub voice_connected: &'static str,
+    pub qr_title: &'static str,
+    pub qr_desc: &'static str,
+    pub qr_confirm: &'static str,
 }
 
 pub const EN_TRANSLATIONS: Translations = Translations {
@@ -130,6 +133,9 @@ pub const EN_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "Connecting to Voice Channel...",
     voice_connecting_desc: "Authenticating with Voice Gateway v9 and negotiating DAVE E2EE encryption...",
     voice_connected: "Voice Connected",
+    qr_title: "Log in with QR Code",
+    qr_desc: "Scan this with the Discord mobile app to log in instantly.",
+    qr_confirm: "Approve login on your phone!",
 };
 
 pub const PT_TRANSLATIONS: Translations = Translations {
@@ -163,6 +169,9 @@ pub const PT_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "Conectando à Sala de Voz...",
     voice_connecting_desc: "Autenticando na Voice Gateway v9 e negociando criptografia ponta-a-ponta (DAVE)...",
     voice_connected: "Voz Conectada",
+    qr_title: "Entrar com QR Code",
+    qr_desc: "Escaneie pelo aplicativo móvel do Discord para entrar instantaneamente.",
+    qr_confirm: "Confirme o login no seu celular!",
 };
 
 pub const ES_TRANSLATIONS: Translations = Translations {
@@ -196,6 +205,9 @@ pub const ES_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "Conectando a la Sala de Voz...",
     voice_connecting_desc: "Autenticando en Voice Gateway v9 y negociando cifrado E2EE (DAVE)...",
     voice_connected: "Voz Conectada",
+    qr_title: "Iniciar sesión con código QR",
+    qr_desc: "Escanéalo con la app móvil de Discord para entrar al instante.",
+    qr_confirm: "¡Confirma el acceso en tu móvil!",
 };
 
 pub const DE_TRANSLATIONS: Translations = Translations {
@@ -229,6 +241,9 @@ pub const DE_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "Verbindung zum Sprachkanal...",
     voice_connecting_desc: "Authentifizierung mit Voice Gateway v9 und Aushandlung der DAVE E2EE-Verschlüsselung...",
     voice_connected: "Sprache verbunden",
+    qr_title: "Mit QR-Code anmelden",
+    qr_desc: "Mit der mobilen Discord-App scannen, um dich sofort anzumelden.",
+    qr_confirm: "Bestätige die Anmeldung auf deinem Handy!",
 };
 
 pub const FR_TRANSLATIONS: Translations = Translations {
@@ -262,6 +277,9 @@ pub const FR_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "Connexion au Salon Vocal...",
     voice_connecting_desc: "Authentification auprès de la Voice Gateway v9 et négociation du chiffrement DAVE E2EE...",
     voice_connected: "Vocal Connecté",
+    qr_title: "Se connecter avec un code QR",
+    qr_desc: "Scannez avec l'application mobile Discord pour vous connecter instantanément.",
+    qr_confirm: "Confirmez la connexion sur votre téléphone !",
 };
 
 pub const RU_TRANSLATIONS: Translations = Translations {
@@ -295,6 +313,9 @@ pub const RU_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "Подключение к голосовому каналу...",
     voice_connecting_desc: "Аутентификация в Voice Gateway v9 и согласование E2EE шифрования (DAVE)...",
     voice_connected: "Голос подключен",
+    qr_title: "Вход с помощью QR-кода",
+    qr_desc: "Сканируйте в мобильном приложении Discord для мгновенного входа.",
+    qr_confirm: "Подтвердите вход на телефоне!",
 };
 
 pub const JA_TRANSLATIONS: Translations = Translations {
@@ -328,6 +349,9 @@ pub const JA_TRANSLATIONS: Translations = Translations {
     voice_connecting_title: "ボイスチャンネルに接続中...",
     voice_connecting_desc: "Voice Gateway v9 に認証し、DAVE E2EE 暗号化を確立しています...",
     voice_connected: "音声接続完了",
+    qr_title: "QR コードでログイン",
+    qr_desc: "Discord モバイルアプリでスキャンしてすぐにログインできます。",
+    qr_confirm: "スマホでログインを承認してください！",
 };
 
 const LANGUAGE_CONFIG_FILE: &str = ".litecord_language.json";
