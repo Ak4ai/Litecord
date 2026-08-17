@@ -1998,7 +1998,7 @@ pub async fn connect_voice_gateway(
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
                                                 tokio::spawn(async move {
-                                                    let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
+                                                    let mut opus_decoders: HashMap<u32, OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
                                                     let mut ssrc_expected_seq: HashMap<u32, u16> = HashMap::new();
                                                     let mut recv_buf = vec![0u8; 4096];
@@ -2184,7 +2184,6 @@ pub async fn connect_voice_gateway(
                                                                         let mut decode_success = false;
                                                                         let mut decoded_count = 0;
                                                                         let mut plc_pairs: Vec<(f32, f32)> = Vec::new();
-                                                                        let mut stream_chans = 2usize;
                                                                         if can_decode && !opus_data.is_empty() {
                                                                             let mut raw_opus = opus_data.as_slice();
 
@@ -2199,44 +2198,49 @@ pub async fn connect_voice_gateway(
                                                                                 }
                                                                             }
 
-                                                                            let pkt_channels = if (raw_opus[0] & 0x04) != 0 { 2 } else { 1 };
-                                                                            let dec = opus_decoders.entry((ssrc_recv, pkt_channels)).or_insert_with(|| {
-                                                                                OpusDecoder::new(48000, pkt_channels).expect("Falha ao inicializar OpusDecoder 48kHz")
+                                                                            let dec = opus_decoders.entry(ssrc_recv).or_insert_with(|| {
+                                                                                OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder 48kHz Stereo")
                                                                             });
 
+                                                                            let now = std::time::Instant::now();
                                                                             let rtp_seq = u16::from_be_bytes([pkt[2], pkt[3]]);
-                                                                            if let Some(last_seq) = ssrc_expected_seq.get(&ssrc_recv).copied() {
-                                                                                let missed = rtp_seq.wrapping_sub(last_seq);
-                                                                                if missed > 0 && missed < 6 {
-                                                                                    let mut plc_buf = [0.0f32; 1920];
-                                                                                    for _ in 0..missed {
-                                                                                        if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
-                                                                                            for i in 0..samples {
-                                                                                                if pkt_channels == 2 {
+                                                                            let last_time_opt = ssrc_last_pkt_time.get(&ssrc_recv).copied();
+                                                                            let is_new_talkspurt = match last_time_opt {
+                                                                                Some(t) => now.duration_since(t) > Duration::from_millis(100),
+                                                                                None => true,
+                                                                            };
+
+                                                                            if is_new_talkspurt {
+                                                                                // New burst of speech after silence/VAD gap: sync sequence and skip false PLC to avoid pops
+                                                                                ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
+                                                                            } else {
+                                                                                if let Some(last_seq) = ssrc_expected_seq.get(&ssrc_recv).copied() {
+                                                                                    let missed = rtp_seq.wrapping_sub(last_seq);
+                                                                                    if missed > 0 && missed <= 4 {
+                                                                                        let mut plc_buf = [0.0f32; 1920];
+                                                                                        for _ in 0..missed {
+                                                                                            if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
+                                                                                                for i in 0..samples {
                                                                                                     plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
-                                                                                                } else {
-                                                                                                    let m = plc_buf[i].clamp(-1.0, 1.0);
-                                                                                                    plc_pairs.push((m, m));
                                                                                                 }
                                                                                             }
                                                                                         }
                                                                                     }
                                                                                 }
+                                                                                ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
                                                                             }
-                                                                            ssrc_expected_seq.insert(ssrc_recv, rtp_seq.wrapping_add(1));
+                                                                            ssrc_last_pkt_time.insert(ssrc_recv, now);
 
                                                                             let is_dtx_silence = raw_opus.len() <= 3 && raw_opus == [0xF8, 0xFF, 0xFE];
                                                                             if is_dtx_silence {
                                                                                 decode_success = true;
                                                                                 decoded_count = 960;
-                                                                                stream_chans = 2;
                                                                                 for s in pcm_out_buf[..1920].iter_mut() { *s = 0.0; }
                                                                             } else {
                                                                                 match dec.decode(raw_opus, 5760, &mut pcm_out_buf[..]) {
                                                                                     Ok(samples) => {
                                                                                         decode_success = true;
                                                                                         decoded_count = samples;
-                                                                                        stream_chans = pkt_channels;
                                                                                     }
                                                                                     Err(e) => {
                                                                                         warn!("📊 [OPUS DIAG] Decode FALHOU: {:?}", e);
@@ -2247,43 +2251,38 @@ pub async fn connect_voice_gateway(
 
                                                                         if decode_success && decoded_count > 0 {
                                                                             register_voice_participant(ssrc_recv, sender_user_id);
-                                                                            let total_samples = if stream_chans == 2 { decoded_count * 2 } else { decoded_count };
-                                                                                    let mut sum_sq = 0.0f32;
-                                                                                    let mut max_peak = 0.0f32;
-                                                                                    let mut zc_count = 0usize;
-                                                                                    let mut prev_s = 0.0f32;
-                                                                                    let mut diff_energy = 0.0f32;
+                                                                            let total_samples = decoded_count * 2;
+                                                                            let mut sum_sq = 0.0f32;
+                                                                            let mut max_peak = 0.0f32;
+                                                                            let mut zc_count = 0usize;
+                                                                            let mut prev_s = 0.0f32;
+                                                                            let mut diff_energy = 0.0f32;
 
-                                                                                    for (idx, &s) in pcm_out_buf[..total_samples].iter().enumerate() {
-                                                                                        let abs_s = s.abs();
-                                                                                        if abs_s > max_peak { max_peak = abs_s; }
-                                                                                        sum_sq += s * s;
-                                                                                        if idx > 0 {
-                                                                                            if (s >= 0.0 && prev_s < 0.0) || (s < 0.0 && prev_s >= 0.0) {
-                                                                                                zc_count += 1;
-                                                                                            }
-                                                                                            let diff = s - prev_s;
-                                                                                            diff_energy += diff * diff;
-                                                                                        }
-                                                                                        prev_s = s;
+                                                                            for (idx, &s) in pcm_out_buf[..total_samples].iter().enumerate() {
+                                                                                let abs_s = s.abs();
+                                                                                if abs_s > max_peak { max_peak = abs_s; }
+                                                                                sum_sq += s * s;
+                                                                                if idx > 0 {
+                                                                                    if (s >= 0.0 && prev_s < 0.0) || (s < 0.0 && prev_s >= 0.0) {
+                                                                                        zc_count += 1;
                                                                                     }
-                                                                                    let frame_rms = (sum_sq / total_samples.max(1) as f32).sqrt();
-                                                                                    let hf_noise_ratio = (diff_energy / (sum_sq + 1e-6)).sqrt();
-                                                                                    let is_silence = frame_rms < 0.003 || opus_data.len() <= 3;
+                                                                                    let diff = s - prev_s;
+                                                                                    diff_energy += diff * diff;
+                                                                                }
+                                                                                prev_s = s;
+                                                                            }
+                                                                            let frame_rms = (sum_sq / total_samples.max(1) as f32).sqrt();
+                                                                            let hf_noise_ratio = (diff_energy / (sum_sq + 1e-6)).sqrt();
+                                                                            let is_silence = frame_rms < 0.003 || opus_data.len() <= 3;
 
-                                                                                    let mut dump_vec = Vec::with_capacity(decoded_count);
-                                                                                    if is_silence {
-                                                                                        for _ in 0..decoded_count { dump_vec.push((0.0, 0.0)); }
-                                                                                    } else if stream_chans == 2 {
-                                                                                        for i in 0..decoded_count {
-                                                                                            dump_vec.push((pcm_out_buf[i * 2].clamp(-1.0, 1.0), pcm_out_buf[i * 2 + 1].clamp(-1.0, 1.0)));
-                                                                                        }
-                                                                                    } else {
-                                                                                        for &s in &pcm_out_buf[..decoded_count] {
-                                                                                            let mono = s.clamp(-1.0, 1.0);
-                                                                                            dump_vec.push((mono, mono));
-                                                                                        }
-                                                                                    }
+                                                                            let mut dump_vec = Vec::with_capacity(decoded_count);
+                                                                            if is_silence {
+                                                                                for _ in 0..decoded_count { dump_vec.push((0.0, 0.0)); }
+                                                                            } else {
+                                                                                for i in 0..decoded_count {
+                                                                                    dump_vec.push((pcm_out_buf[i * 2].clamp(-1.0, 1.0), pcm_out_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                }
+                                                                            }
                                                                                     ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
 
                                                                                     if let Ok(mut queues) = speaker_queues_rx.lock() {
@@ -2405,8 +2404,8 @@ pub async fn connect_voice_gateway(
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
                                                                             } else if !q.is_empty() {
-                                                                                // 10ms pre-buffer (480 samples) to start playback quickly without underruns
-                                                                                if q.len() >= 480 {
+                                                                                // 25ms pre-buffer (1200 samples) to absorb network UDP jitter and eliminate initial speech pops/underruns
+                                                                                if q.len() >= 1200 {
                                                                                     started_ssrcs.insert(ssrc);
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
