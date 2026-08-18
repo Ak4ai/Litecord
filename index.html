@@ -1147,21 +1147,21 @@
 
     .downloads-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(4, 220px);
       gap: 16px;
-      max-width: 960px;
+      justify-content: center;
       margin: 0 auto;
     }
 
-    @media (max-width: 900px) {
+    @media (max-width: 940px) {
       .downloads-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, 220px);
       }
     }
 
     @media (max-width: 520px) {
       .downloads-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: 220px;
       }
     }
 
