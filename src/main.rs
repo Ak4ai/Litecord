@@ -979,7 +979,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
 
                 let app_weak_inner = app_weak_tray.clone();
-                let hwnd_store_inner = Arc::clone(&hwnd_store_tray);
+                let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui_inner) = app_weak_inner.upgrade() {
                         let _ = ui_inner.window().with_winit_window(|winit_win| {
@@ -989,7 +989,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                     #[cfg(target_os = "windows")]
-                    if let Some(hwnd) = *hwnd_store_inner.lock().unwrap() {
+                    if let Some(hwnd) = *_hwnd_store_inner.lock().unwrap() {
                         unsafe {
                             ShowWindow(hwnd as _, SW_SHOW);
                             ShowWindow(hwnd as _, SW_RESTORE);

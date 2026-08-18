@@ -45,6 +45,9 @@ path = "src/main.rs"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_System_Console"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [build-dependencies]
 slint-build = "1.9"
 

@@ -4184,6 +4184,7 @@ dependencies = [
  "davey",
  "env_logger",
  "futures-util",
+ "gtk",
  "i-slint-backend-winit",
  "image",
  "log",

@@ -40,6 +40,11 @@ fn create_default_icon() -> Icon {
 
 impl SystemTrayManager {
     pub fn setup() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = gtk::init();
+        }
+
         let tray_menu = Menu::new();
         let show_item = MenuItem::new("Exibir Litecord", true, None);
         let quit_item = MenuItem::new("Sair", true, None);
