@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Litecord — Ultra-Lightweight Native Discord Client in Rust</title>
-  <meta name="description" content="Experience Discord with < 0.1% CPU idle, sub-35 MB RAM, studio-grade voice audio with true Opus PLC, and custom speech priority ducking." />
+  <meta name="description"
+    content="Experience Discord with < 0.1% CPU idle, sub-35 MB RAM, studio-grade voice audio with true Opus PLC, and custom speech priority ducking." />
   <meta name="theme-color" content="#0b0c0e" />
 
   <!-- Favicon -->
@@ -13,7 +15,9 @@
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
 
   <style>
     :root {
@@ -22,31 +26,31 @@
       --bg-elevated: #1a1c22;
       --bg-card: #15171d;
       --bg-card-hover: #1e2028;
-      
+
       --border-subtle: #242730;
       --border-focus: #383c48;
-      
+
       --accent: #5865F2;
       --accent-hover: #4752C4;
       --accent-glow: rgba(88, 101, 242, 0.22);
-      
+
       --success: #23a55a;
       --warning: #f0b232;
       --danger: #f23f43;
-      
+
       --text-primary: #f2f3f5;
       --text-secondary: #949ba4;
       --text-muted: #6e7681;
-      
+
       --font-display: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
-      
+
       --radius-sm: 6px;
       --radius-md: 10px;
       --radius-lg: 16px;
       --radius-xl: 24px;
-      
+
       --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
       --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
       --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.7);
@@ -213,7 +217,7 @@
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 0 24px;
       position: relative;
@@ -398,6 +402,7 @@
       .app-main-layout {
         grid-template-columns: 60px 1fr;
       }
+
       .app-channels-sidebar {
         display: none;
       }
@@ -960,8 +965,13 @@
       background: #35373c;
     }
 
-    .p-btn.minus { color: #f23f43; }
-    .p-btn.plus { color: #23a55a; }
+    .p-btn.minus {
+      color: #f23f43;
+    }
+
+    .p-btn.plus {
+      color: #23a55a;
+    }
 
     .p-value-label {
       font-size: 12px;
@@ -986,9 +996,17 @@
     }
 
     @keyframes pulseAudio {
-      0% { width: 35%; }
-      50% { width: 95%; }
-      100% { width: 60%; }
+      0% {
+        width: 35%;
+      }
+
+      50% {
+        width: 95%;
+      }
+
+      100% {
+        width: 60%;
+      }
     }
 
     /* Benchmarks Section */
@@ -1147,9 +1165,9 @@
 
     .downloads-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 24px;
-      max-width: 1100px;
+      max-width: 1400px;
       margin: 0 auto;
     }
 
@@ -1271,6 +1289,7 @@
     }
   </style>
 </head>
+
 <body>
 
   <!-- Ambient Glow -->
@@ -1294,7 +1313,8 @@
       <div class="nav-actions">
         <a href="https://github.com/Ak4ai/Litecord" target="_blank" rel="noopener" class="btn btn-secondary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+            <path fill-rule="evenodd" clip-rule="evenodd"
+              d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
           </svg>
           GitHub
         </a>
@@ -1311,17 +1331,21 @@
       </div>
 
       <h1 class="hero-title">Game without Discord dropping your FPS.</h1>
-      
+
       <p class="hero-subtitle">
-        Say goodbye to Electron bloat. Experience zero in-game micro-stutters with <b>< 0.1% CPU idle</b>, sub-35 MB RAM, studio-grade Opus audio, and competitive <b>Squad Leader speech priority ducking</b>.
+        Say goodbye to Electron bloat. Experience zero in-game micro-stutters with <b>
+          < 0.1% CPU idle</b>, sub-35 MB RAM, studio-grade Opus audio, and competitive <b>Squad Leader speech priority
+              ducking</b>.
       </p>
 
       <div class="hero-cta">
-        <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/Litecord-Setup-x64.exe" class="btn btn-primary btn-lg">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
+        <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/Litecord-Setup-x64.exe"
+          class="btn btn-primary btn-lg">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
           Download for Windows (.exe)
         </a>
@@ -1374,13 +1398,16 @@
 
         <!-- 2. Application 3-Column Body -->
         <div class="app-main-layout">
-          
+
           <!-- Column 1: Guilds / Servers (#1e1f22) -->
           <div class="app-guilds-sidebar">
             <div class="guild-icon-wrapper">
               <div class="guild-pill"></div>
               <div class="guild-icon" style="background:#5865F2;color:#fff">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.893.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                  <path
+                    d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.893.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+                </svg>
               </div>
             </div>
 
@@ -1426,7 +1453,8 @@
                 </div>
 
                 <div class="channel-category">Voice Channels</div>
-                <div class="channel-item" id="ch-item-voice" onclick="switchMockView('voice')" style="color:#23a55a;font-weight:600">
+                <div class="channel-item" id="ch-item-voice" onclick="switchMockView('voice')"
+                  style="color:#23a55a;font-weight:600">
                   <div class="channel-left">
                     <span>🔊</span>
                     <span>General Voice</span>
@@ -1473,7 +1501,7 @@
 
           <!-- Column 3: Main Content View (INTERCHANGES BETWEEN CHAT AND VOICE ROOM) -->
           <div class="app-main-content-view">
-            
+
             <!-- ============================================== -->
             <!-- VIEW 1: TEXT CHAT VIEW (Active by default) -->
             <!-- ============================================== -->
@@ -1499,7 +1527,8 @@
                       <span class="author-name">Alex (Squad Leader)</span>
                       <span class="msg-timestamp">Today at 10:42 PM</span>
                     </div>
-                    <div class="msg-text">Check the speech priority ducking in real-time! When I talk with Priority 2, everyone else ducks seamlessly.</div>
+                    <div class="msg-text">Check the speech priority ducking in real-time! When I talk with Priority 2,
+                      everyone else ducks seamlessly.</div>
                   </div>
                 </div>
 
@@ -1508,7 +1537,8 @@
                   <div class="chat-author-avatar" style="background:#23a55a">N</div>
                   <div class="chat-msg-body">
                     <div class="chat-msg-header">
-                      <span class="author-name">Notch <span style="background:#5865F2;color:#fff;font-size:10px;padding:1px 4px;border-radius:3px;font-weight:700">BOT</span></span>
+                      <span class="author-name">Notch <span
+                          style="background:#5865F2;color:#fff;font-size:10px;padding:1px 4px;border-radius:3px;font-weight:700">BOT</span></span>
                       <span class="msg-timestamp">Today at 10:43 PM</span>
                     </div>
                     <div class="msg-text">🎵 Now streaming in studio high-fidelity (48kHz Stereo):</div>
@@ -1527,7 +1557,8 @@
                       <span class="author-name">Sarah</span>
                       <span class="msg-timestamp">Today at 10:44 PM</span>
                     </div>
-                    <div class="msg-text">The RAM usage is literally 31 MB while in voice... My game runs with +15 FPS! 🔥</div>
+                    <div class="msg-text">The RAM usage is literally 31 MB while in voice... My game runs with +15 FPS!
+                      🔥</div>
                   </div>
                 </div>
               </div>
@@ -1549,7 +1580,9 @@
                 <div class="voice-room-title">
                   <span>🔊</span>
                   <span>Voice Room: General Voice</span>
-                  <span style="color:#23a55a;font-size:11px;font-family:var(--font-mono);background:rgba(35,165,90,0.15);padding:2px 8px;border-radius:4px">48kHz Stereo • DAVE E2EE</span>
+                  <span
+                    style="color:#23a55a;font-size:11px;font-family:var(--font-mono);background:rgba(35,165,90,0.15);padding:2px 8px;border-radius:4px">48kHz
+                    Stereo • DAVE E2EE</span>
                 </div>
                 <button class="toggle-view-btn" onclick="switchMockView('chat')" title="Switch back to Text Chat">
                   <span>💬</span>
@@ -1668,12 +1701,14 @@
   </section>
 
   <!-- Performance Benchmarks Section -->
-  <section id="benchmarks" style="background:#0d0e12;border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle);">
+  <section id="benchmarks"
+    style="background:#0d0e12;border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle);">
     <div class="container">
       <div class="section-header">
         <span class="section-tag">Performance Benchmarks</span>
         <h2 class="section-title">Built for Performance. Zero Bloat.</h2>
-        <p class="section-desc">Comparing resource consumption between Official Discord (Electron) and Litecord (Native Rust + Slint).</p>
+        <p class="section-desc">Comparing resource consumption between Official Discord (Electron) and Litecord (Native
+          Rust + Slint).</p>
       </div>
 
       <div class="benchmarks-grid">
@@ -1686,11 +1721,15 @@
           <div class="comparison-bar-group">
             <div class="bar-row">
               <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">0.08%</span></div>
-              <div class="bar-track"><div class="bar-fill-litecord" style="width:3%"></div></div>
+              <div class="bar-track">
+                <div class="bar-fill-litecord" style="width:3%"></div>
+              </div>
             </div>
             <div class="bar-row">
               <div class="bar-label"><span>Official Discord</span><span style="color:#f23f43">2.8% - 4.5%</span></div>
-              <div class="bar-track"><div class="bar-fill-discord" style="width:85%"></div></div>
+              <div class="bar-track">
+                <div class="bar-fill-discord" style="width:85%"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1704,11 +1743,16 @@
           <div class="comparison-bar-group">
             <div class="bar-row">
               <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">32 MB</span></div>
-              <div class="bar-track"><div class="bar-fill-litecord" style="width:6%"></div></div>
+              <div class="bar-track">
+                <div class="bar-fill-litecord" style="width:6%"></div>
+              </div>
             </div>
             <div class="bar-row">
-              <div class="bar-label"><span>Official Discord</span><span style="color:#f23f43">550 MB - 800 MB</span></div>
-              <div class="bar-track"><div class="bar-fill-discord" style="width:95%"></div></div>
+              <div class="bar-label"><span>Official Discord</span><span style="color:#f23f43">550 MB - 800 MB</span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill-discord" style="width:95%"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1722,11 +1766,15 @@
           <div class="comparison-bar-group">
             <div class="bar-row">
               <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">&lt; 180 ms</span></div>
-              <div class="bar-track"><div class="bar-fill-litecord" style="width:4%"></div></div>
+              <div class="bar-track">
+                <div class="bar-fill-litecord" style="width:4%"></div>
+              </div>
             </div>
             <div class="bar-row">
               <div class="bar-label"><span>Official Discord</span><span style="color:#f23f43">5.2s - 8.0s</span></div>
-              <div class="bar-track"><div class="bar-fill-discord" style="width:90%"></div></div>
+              <div class="bar-track">
+                <div class="bar-fill-discord" style="width:90%"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1740,44 +1788,51 @@
       <div class="section-header">
         <span class="section-tag">Key Features</span>
         <h2 class="section-title">Everything you need, nothing you don't.</h2>
-        <p class="section-desc">Engineered from scratch for competitive gamers, streamers, and low-latency communication.</p>
+        <p class="section-desc">Engineered from scratch for competitive gamers, streamers, and low-latency
+          communication.</p>
       </div>
 
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-icon-box">🎙️</div>
           <h3>True Opus PLC & Studio Audio</h3>
-          <p>Synthesizes missing packets seamlessly via Opus Packet Loss Concealment, eliminating crackling and dropouts in music bots and unstable voice calls.</p>
+          <p>Synthesizes missing packets seamlessly via Opus Packet Loss Concealment, eliminating crackling and dropouts
+            in music bots and unstable voice calls.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon-box">👑</div>
           <h3>Custom Speech Priority Ducking</h3>
-          <p>Assign priorities to voice participants. When squad leaders or shot-callers speak, lower-priority voices duck smoothly in real time.</p>
+          <p>Assign priorities to voice participants. When squad leaders or shot-callers speak, lower-priority voices
+            duck smoothly in real time.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon-box">⚡</div>
           <h3>DeepSleep Tray Optimization</h3>
-          <p>Minimizing to system tray drops CPU consumption to 0.0%, suspending UI rendering while voice communication runs smoothly in background.</p>
+          <p>Minimizing to system tray drops CPU consumption to 0.0%, suspending UI rendering while voice communication
+            runs smoothly in background.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon-box">🛡️</div>
           <h3>Windows DPAPI Token Encryption</h3>
-          <p>Local authentication tokens are encrypted with Windows master keys at rest (`CryptProtectData`), shielding your credentials from info-stealers.</p>
+          <p>Local authentication tokens are encrypted with Windows master keys at rest (`CryptProtectData`), shielding
+            your credentials from info-stealers.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon-box">🎛️</div>
           <h3>Auto-Persistent Audio Profiles</h3>
-          <p>Mic sensitivity (VAD threshold), volume sliders, priority values, and input/output audio hardware are remembered across restarts.</p>
+          <p>Mic sensitivity (VAD threshold), volume sliders, priority values, and input/output audio hardware are
+            remembered across restarts.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon-box">🚀</div>
           <h3>Single 8 MB Standalone Binary</h3>
-          <p>Zero dependencies, zero Chromium instances, zero Node.js runtimes. Native compiled machine code built for longevity.</p>
+          <p>Zero dependencies, zero Chromium instances, zero Node.js runtimes. Native compiled machine code built for
+            longevity.</p>
         </div>
       </div>
     </div>
@@ -1798,10 +1853,14 @@
           <div class="badge-recommended">Recommended</div>
           <div class="download-header">
             <h3 class="download-os-title">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801" />
+              </svg>
               Windows Setup
             </h3>
-            <p class="download-desc">Official Inno Setup installer. Creates Desktop and Start Menu shortcuts with uninstaller support.</p>
+            <p class="download-desc">Official Inno Setup installer. Creates Desktop and Start Menu shortcuts with
+              uninstaller support.</p>
           </div>
 
           <ul class="download-details">
@@ -1810,8 +1869,13 @@
             <li><span>OS:</span> Windows 10 / 11</li>
           </ul>
 
-          <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/Litecord-Setup-x64.exe" class="btn btn-primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/Litecord-Setup-x64.exe"
+            class="btn btn-primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
             Download Installer (.exe)
           </a>
         </div>
@@ -1820,7 +1884,10 @@
         <div class="download-card">
           <div class="download-header">
             <h3 class="download-os-title">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801" />
+              </svg>
               Windows Portable
             </h3>
             <p class="download-desc">Standalone zero-install archive. Extract anywhere and launch immediately.</p>
@@ -1832,8 +1899,13 @@
             <li><span>OS:</span> Windows 10 / 11</li>
           </ul>
 
-          <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/litecord-windows-x64-portable.zip" class="btn btn-secondary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/litecord-windows-x64-portable.zip"
+            class="btn btn-secondary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
             Download Portable (.zip)
           </a>
         </div>
@@ -1842,7 +1914,10 @@
         <div class="download-card">
           <div class="download-header">
             <h3 class="download-os-title">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+              </svg>
               Linux Tarball
             </h3>
             <p class="download-desc">Native Linux x86_64 binary with ALSA audio and System Tray support.</p>
@@ -1854,10 +1929,44 @@
             <li><span>OS:</span> Ubuntu / Debian / Fedora / Arch</li>
           </ul>
 
-          <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/litecord-linux-x64.tar.gz" class="btn btn-secondary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <a href="https://github.com/Ak4ai/Litecord/releases/latest/download/litecord-linux-x64.tar.gz"
+            class="btn btn-secondary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
             Download Tarball (.tar.gz)
           </a>
+        </div>
+
+        <!-- Download 4: Linux CLI One-Line Install -->
+        <div class="download-card">
+          <div class="download-header">
+            <h3 class="download-os-title">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              Linux Terminal
+            </h3>
+            <p class="download-desc">One-line terminal installer. Auto-downloads, sets up PATH and desktop shortcut.</p>
+          </div>
+
+          <ul class="download-details">
+            <li><span>Installs to:</span> <code>~/.local/bin</code></li>
+            <li><span>Requires:</span> <code>curl &amp; tar</code></li>
+            <li><span>OS:</span> Ubuntu / Arch / Fedora</li>
+          </ul>
+
+          <button id="copy-install-btn" onclick="copyInstallCmd()" class="btn btn-secondary" style="width:100%;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+            <span id="copy-btn-label">Copy Install Command</span>
+          </button>
+        </div>
       </div>
     </div>
   </section>
@@ -1868,7 +1977,8 @@
     <div class="container">
       <div class="footer-content">
         <div style="display:flex;align-items:center;gap:10px">
-          <img src="assets/app_icon.png" alt="Litecord" style="width:24px;height:24px;aspect-ratio:1/1;object-fit:contain;border-radius:6px" />
+          <img src="assets/app_icon.png" alt="Litecord"
+            style="width:24px;height:24px;aspect-ratio:1/1;object-fit:contain;border-radius:6px" />
           <span style="font-weight:700;color:var(--text-primary)">Litecord</span>
           <span>© 2026 Litecord Project • Released under MIT License</span>
         </div>
@@ -1876,13 +1986,16 @@
         <ul class="footer-links">
           <li><a href="https://github.com/Ak4ai/Litecord" target="_blank" rel="noopener">GitHub Repository</a></li>
           <li><a href="https://github.com/Ak4ai/Litecord/releases" target="_blank" rel="noopener">Releases</a></li>
-          <li><a href="https://github.com/Ak4ai/Litecord/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a></li>
-          <li><a href="https://github.com/Ak4ai/Litecord/blob/main/LICENSE" target="_blank" rel="noopener">License</a></li>
+          <li><a href="https://github.com/Ak4ai/Litecord/blob/main/CONTRIBUTING.md" target="_blank"
+              rel="noopener">Contributing</a></li>
+          <li><a href="https://github.com/Ak4ai/Litecord/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+          </li>
         </ul>
       </div>
 
       <p class="footer-disclaimer">
-        Disclaimer: Litecord is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Discord Inc. Discord is a registered trademark of Discord Inc.
+        Disclaimer: Litecord is an independent open-source project and is not affiliated with, endorsed by, or sponsored
+        by Discord Inc. Discord is a registered trademark of Discord Inc.
       </p>
     </div>
   </footer>
@@ -1955,4 +2068,5 @@
   </script>
 
 </body>
+
 </html>
