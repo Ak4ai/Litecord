@@ -931,6 +931,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        #[cfg(not(target_os = "windows"))]
+        {
+            winit_win.set_decorations(true);
+        }
     });
     app.window().request_redraw();
 
