@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Litecord — One-Line Linux Installer
+# Usage: curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
+# =============================================================================
+set -euo pipefail
+
+REPO="Ak4ai/Litecord"
+BINARY_NAME="litecord"
+ASSET_NAME="litecord-linux-x64.tar.gz"
+INSTALL_DIR="${HOME}/.local/bin"
+DESKTOP_DIR="${HOME}/.local/share/applications"
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+RESET='\033[0m'; BOLD='\033[1m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'
+YELLOW='\033[0;33m'; RED='\033[0;31m'
+
+info()    { echo -e "${CYAN}${BOLD}[litecord]${RESET} $*"; }
+success() { echo -e "${GREEN}${BOLD}[litecord]${RESET} $*"; }
+warn()    { echo -e "${YELLOW}${BOLD}[litecord]${RESET} $*"; }
+error()   { echo -e "${RED}${BOLD}[litecord] ERROR:${RESET} $*" >&2; exit 1; }
+
+echo -e "${BOLD}"
+echo "  ╔═══════════════════════════════════════╗"
+echo "  ║       Litecord Linux Installer        ║"
+echo "  ║   Ultra-Lightweight Discord Client    ║"
+echo "  ╚═══════════════════════════════════════╝"
+echo -e "${RESET}"
+
+# ── Check required tools ─────────────────────────────────────────────────────
+for cmd in curl tar; do
+  command -v "$cmd" >/dev/null 2>&1 || error "Required tool not found: '$cmd'. Please install it first."
+done
+
+# ── Fetch latest release ──────────────────────────────────────────────────────
+info "Fetching latest release info from GitHub..."
+LATEST_URL="https://api.github.com/repos/${REPO}/releases/latest"
+RELEASE_JSON=$(curl -sSL "$LATEST_URL")
+
+DOWNLOAD_URL=$(echo "$RELEASE_JSON" \
+  | grep -o '"browser_download_url": *"[^"]*'"${ASSET_NAME}"'"' \
+  | grep -o 'https://[^"]*')
+
+[ -z "$DOWNLOAD_URL" ] && error "Could not find asset '${ASSET_NAME}'. Check: https://github.com/${REPO}/releases"
+
+VERSION=$(echo "$RELEASE_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+info "Latest version: ${BOLD}${VERSION}${RESET}"
+
+# ── Download & extract ────────────────────────────────────────────────────────
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+info "Downloading ${ASSET_NAME}..."
+curl -sSL --progress-bar "$DOWNLOAD_URL" -o "${TMP_DIR}/${ASSET_NAME}"
+
+info "Extracting archive..."
+tar -xzf "${TMP_DIR}/${ASSET_NAME}" -C "$TMP_DIR"
+
+# ── Install binary ────────────────────────────────────────────────────────────
+mkdir -p "$INSTALL_DIR"
+
+BINARY_PATH=$(find "$TMP_DIR" -name "$BINARY_NAME" -type f | head -1)
+[ -z "$BINARY_PATH" ] && error "Binary '${BINARY_NAME}' not found in archive."
+
+chmod +x "$BINARY_PATH"
+cp "$BINARY_PATH" "${INSTALL_DIR}/${BINARY_NAME}"
+success "Binary installed: ${BOLD}${INSTALL_DIR}/${BINARY_NAME}${RESET}"
+
+# ── Create .desktop entry ─────────────────────────────────────────────────────
+mkdir -p "$DESKTOP_DIR"
+cat > "${DESKTOP_DIR}/litecord.desktop" << EOF
+[Desktop Entry]
+Name=Litecord
+Comment=Ultra-Lightweight Native Discord Client
+Exec=${INSTALL_DIR}/${BINARY_NAME}
+Icon=discord
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+StartupWMClass=litecord
+EOF
+success "Desktop entry created: ${DESKTOP_DIR}/litecord.desktop"
+
+# ── PATH check ────────────────────────────────────────────────────────────────
+echo ""
+if echo ":${PATH}:" | grep -q ":${INSTALL_DIR}:"; then
+  success "All done! Run ${BOLD}litecord${RESET} to start."
+else
+  warn "${INSTALL_DIR} is not in your PATH yet."
+  echo -e "  Add to your ~/.bashrc or ~/.zshrc:\n"
+  echo -e "    ${BOLD}export PATH=\"\$HOME/.local/bin:\$PATH\"${RESET}\n"
+  echo -e "  Then reload: ${BOLD}source ~/.bashrc${RESET}  (or restart your terminal)\n"
+  info "Or run directly: ${BOLD}${INSTALL_DIR}/${BINARY_NAME}${RESET}"
+fi
+
+echo ""
+success "Litecord ${VERSION} installed successfully! 🚀"
+echo ""

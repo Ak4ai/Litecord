@@ -1863,7 +1863,68 @@
     </div>
   </section>
 
+  <!-- Linux Quick Install Terminal Block -->
+  <section style="padding:72px 0;background:linear-gradient(180deg,#0a0b0d 0%,#0d0f15 100%);border-top:1px solid var(--border-subtle);">
+    <div class="container">
+      <div style="text-align:center;margin-bottom:36px;">
+        <span style="display:inline-flex;align-items:center;gap:8px;padding:5px 14px;background:rgba(35,165,90,0.1);border:1px solid rgba(35,165,90,0.3);border-radius:20px;color:#23a55a;font-size:0.82rem;font-weight:600;font-family:var(--font-mono);">🐧 Linux Quick Install</span>
+        <h2 style="font-family:var(--font-display);font-size:clamp(1.6rem,3.5vw,2.4rem);font-weight:800;margin:16px 0 10px;letter-spacing:-0.02em;">One command. Done.</h2>
+        <p style="color:var(--text-secondary);font-size:0.97rem;max-width:520px;margin:0 auto;">No manual downloads. The script detects your latest release automatically and sets everything up in seconds.</p>
+      </div>
+
+      <!-- Terminal mockup -->
+      <div style="max-width:720px;margin:0 auto;background:#0d0f13;border:1px solid #252830;border-radius:14px;overflow:hidden;box-shadow:0 24px 72px rgba(0,0,0,0.7);">
+        <div style="background:#161820;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e2028;">
+          <div style="display:flex;gap:7px;align-items:center;">
+            <div style="width:12px;height:12px;border-radius:50%;background:#f23f43;"></div>
+            <div style="width:12px;height:12px;border-radius:50%;background:#f0b232;"></div>
+            <div style="width:12px;height:12px;border-radius:50%;background:#23a55a;"></div>
+          </div>
+          <span style="font-family:var(--font-mono);font-size:0.74rem;color:var(--text-muted);">bash — user@linux:~</span>
+          <button id="copy-install-btn" onclick="copyInstallCmd()" style="background:rgba(88,101,242,0.12);border:1px solid rgba(88,101,242,0.28);color:#9aa2ff;font-family:var(--font-mono);font-size:0.72rem;padding:4px 13px;border-radius:6px;cursor:pointer;transition:all 0.2s;font-weight:600;">Copy</button>
+        </div>
+        <div style="padding:22px 26px;font-family:var(--font-mono);font-size:0.88rem;line-height:1.9;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <span style="color:#23a55a;user-select:none;flex-shrink:0;margin-top:1px;">$</span>
+            <span id="install-cmd-text" style="color:#e3e5e8;word-break:break-all;letter-spacing:0.01em;">curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash</span>
+          </div>
+          <div style="margin-top:16px;border-top:1px solid #1e2028;padding-top:16px;display:flex;flex-direction:column;gap:4px;font-size:0.82rem;">
+            <span style="color:#3a3d48;">  ╔═══════════════════════════════════════╗</span>
+            <span style="color:#3a3d48;">  ║       Litecord Linux Installer        ║</span>
+            <span style="color:#3a3d48;">  ╚═══════════════════════════════════════╝</span>
+            <div style="margin-top:8px;"><span style="color:#5865f2;font-weight:700;">[litecord]</span> <span style="color:#949ba4;">Fetching latest release from GitHub...</span></div>
+            <div><span style="color:#5865f2;font-weight:700;">[litecord]</span> <span style="color:#949ba4;">Downloading litecord-linux-x64.tar.gz...</span></div>
+            <div><span style="color:#23a55a;font-weight:700;">[litecord]</span> <span style="color:#b5bac1;">Binary installed: <span style="color:#9aa2ff;">~/.local/bin/litecord</span></span></div>
+            <div><span style="color:#23a55a;font-weight:700;">[litecord]</span> <span style="color:#b5bac1;">Desktop entry created.</span></div>
+            <div style="margin-top:6px;"><span style="color:#23a55a;font-weight:700;">[litecord]</span> <span style="color:#f2f3f5;font-weight:700;">Litecord installed successfully! 🚀</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step cards -->
+      <div style="max-width:720px;margin:28px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:14px;">
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:10px;padding:15px 17px;display:flex;gap:11px;align-items:flex-start;">
+          <span style="font-size:1.25rem;line-height:1.2;flex-shrink:0;">📥</span>
+          <div><div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;">Auto Download</div><div style="font-size:0.76rem;color:var(--text-muted);line-height:1.4;">Fetches the latest GitHub release</div></div>
+        </div>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:10px;padding:15px 17px;display:flex;gap:11px;align-items:flex-start;">
+          <span style="font-size:1.25rem;line-height:1.2;flex-shrink:0;">📂</span>
+          <div><div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;">Installs to PATH</div><div style="font-size:0.76rem;color:var(--text-muted);line-height:1.4;">Goes to <code style="color:#9aa2ff;font-size:0.73rem;">~/.local/bin</code></div></div>
+        </div>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:10px;padding:15px 17px;display:flex;gap:11px;align-items:flex-start;">
+          <span style="font-size:1.25rem;line-height:1.2;flex-shrink:0;">🖥️</span>
+          <div><div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;">App Launcher</div><div style="font-size:0.76rem;color:var(--text-muted);line-height:1.4;">Creates .desktop entry</div></div>
+        </div>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:10px;padding:15px 17px;display:flex;gap:11px;align-items:flex-start;">
+          <span style="font-size:1.25rem;line-height:1.2;flex-shrink:0;">✅</span>
+          <div><div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:3px;">Just Works</div><div style="font-size:0.76rem;color:var(--text-muted);line-height:1.4;">Only needs <code style="color:#9aa2ff;font-size:0.73rem;">curl</code> + <code style="color:#9aa2ff;font-size:0.73rem;">tar</code></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Footer -->
+
   <footer>
     <div class="container">
       <div class="footer-content">
@@ -1932,6 +1993,20 @@
           }
         }
       }
+    }
+    function copyInstallCmd() {
+      const cmd = document.getElementById('install-cmd-text').innerText;
+      navigator.clipboard.writeText(cmd).then(() => {
+        const btn = document.getElementById('copy-install-btn');
+        btn.innerText = 'Copied!';
+        btn.style.color = '#23a55a';
+        btn.style.borderColor = 'rgba(35,165,90,0.4)';
+        setTimeout(() => {
+          btn.innerText = 'Copy';
+          btn.style.color = '#9aa2ff';
+          btn.style.borderColor = 'rgba(88,101,242,0.28)';
+        }, 2000);
+      });
     }
   </script>
 

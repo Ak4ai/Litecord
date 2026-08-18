@@ -90,7 +90,26 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 ---
 
+## 🐧 Linux — Quick Install (One-Line)
+
+Open your terminal and paste:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
+```
+
+The script will:
+1. 📥 Download the latest pre-compiled binary from GitHub Releases automatically
+2. 📂 Install it to `~/.local/bin/litecord`
+3. 🖥️ Create a `.desktop` entry for your app launcher
+4. ✅ Tell you if you need to add `~/.local/bin` to your `$PATH`
+
+> **Requirements:** `curl` and `tar` (pre-installed on virtually all Linux distros).
+
+---
+
 ## 🛠️ Building from Source
+
 
 ### Prerequisites
 - **Rust Toolchain**: 2021 Edition or later (`rustup install stable`)
