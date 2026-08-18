@@ -2006,8 +2006,7 @@ pub async fn connect_voice_gateway(
                                                     let mut detected_ssrcs = std::collections::HashSet::new();
                                                     let mut total_pkts_recv = 0u64;
                                                     let mut decrypt_err_cnt = 0u64;
-                                                    let mut opus_err_cnt = 0u64;
-                                                    let mut dave_decrypt_fail_cnt = 0u64;
+                                                    let mut _dave_decrypt_fail_cnt = 0u64;
                                                     let mut _dave_not_ready_cnt = 0u64;
 
                                                     info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
@@ -2128,7 +2127,6 @@ pub async fn connect_voice_gateway(
                                                                         let transport_payload = &decrypted_raw[ext_skip..];
 
                                                                         let user_id_opt = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied();
-                                                                        if user_id_opt.is_none() && ssrc_recv != 9979 { continue; }
                                                                         let sender_user_id = user_id_opt.unwrap_or(ssrc_recv as u64);
 
                                                                         let (opus_data, can_decode) = {
@@ -2165,13 +2163,10 @@ pub async fn connect_voice_gateway(
 
                                                                                     match res {
                                                                                         Ok(d) => (d, true),
-                                                                                        Err(e) => {
+                                                                                        Err(_e) => {
                                                                                             dave_decrypt_fail_cnt += 1;
-                                                                                            if dave_decrypt_fail_cnt % 50 == 1 {
-                                                                                                warn!("🔑 [DAVE DIAG] decrypt() FALHOU para SSRC={} UserID={} (payload_len={}, group_users={:?}): {:?}",
-                                                                                                    ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
-                                                                                            }
-                                                                                            (Vec::new(), false)
+                                                                                            // Fallback to transport payload for bots and non-DAVE participants
+                                                                                            (transport_payload.to_vec(), true)
                                                                                         }
                                                                                     }
                                                                                 } else {
