@@ -902,7 +902,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Iniciando Litecord v0.1.0 (Log persistente salvo em litecord_app.log)...");
 
+    info!("🖥️ Inicializando Slint AppWindow...");
     let app = AppWindow::new()?;
+    info!("🖥️ Exibindo janela principal (app.show())...");
+    app.show()?;
+    info!("🖥️ Janela Slint exibida com sucesso!");
+
     let initial_lang = i18n::load_persisted_language_config();
     apply_i18n_translations(&app, initial_lang);
     info!("🌐 Idioma inicial configurado: {:?}", initial_lang);
@@ -920,6 +925,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         winit_win.set_minimized(false);
         winit_win.focus_window();
         winit_win.request_redraw();
+        info!("🖥️ Propriedades da janela Winit: scale_factor={}, inner_size={:?}", winit_win.scale_factor(), winit_win.inner_size());
         #[cfg(target_os = "windows")]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
