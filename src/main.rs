@@ -918,6 +918,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         winit_win.set_visible(true);
         winit_win.set_minimized(false);
         winit_win.focus_window();
+        winit_win.request_redraw();
         #[cfg(target_os = "windows")]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -930,6 +931,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+    app.window().request_redraw();
 
     let last_token: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let guilds_map: Arc<Mutex<HashMap<String, GuildData>>> = Arc::new(Mutex::new(HashMap::new()));
