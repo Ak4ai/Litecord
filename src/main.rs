@@ -915,6 +915,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use i_slint_backend_winit::WinitWindowAccessor;
     app.window().with_winit_window(|winit_win| {
+        let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(980.0, 620.0));
         winit_win.set_visible(true);
         winit_win.set_minimized(false);
         winit_win.focus_window();
