@@ -16,6 +16,9 @@ use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use log::{info, warn, error};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -2280,6 +2283,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
+                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
         });
@@ -2343,6 +2349,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
+                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
         });
