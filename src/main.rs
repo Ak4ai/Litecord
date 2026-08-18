@@ -2280,9 +2280,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
-                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
         });
@@ -2346,9 +2343,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
-                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
         });
