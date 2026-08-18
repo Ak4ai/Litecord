@@ -914,13 +914,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     use i_slint_backend_winit::WinitWindowAccessor;
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     app.window().with_winit_window(|winit_win| {
-        if let Ok(handle) = winit_win.window_handle() {
-            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                let hwnd = win32_handle.hwnd.get() as isize;
-                *hwnd_store.lock().unwrap() = Some(hwnd);
-                set_dark_titlebar_color(hwnd);
+        winit_win.set_visible(true);
+        winit_win.set_minimized(false);
+        winit_win.focus_window();
+        #[cfg(target_os = "windows")]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = winit_win.window_handle() {
+                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                    let hwnd = win32_handle.hwnd.get() as isize;
+                    *hwnd_store.lock().unwrap() = Some(hwnd);
+                    set_dark_titlebar_color(hwnd);
+                }
             }
         }
     });
@@ -2609,6 +2615,7 @@ fn is_valid_token_chars(token: &str) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn set_dark_titlebar_color(_hwnd: isize) {}
 
 #[cfg(target_os = "windows")]
