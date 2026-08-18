@@ -84,7 +84,9 @@ jobs:
             libxkbcommon-dev \
             libwayland-dev \
             libfontconfig1-dev \
-            libfreetype6-dev
+            libfreetype6-dev \
+            libxkbcommon-x11-dev \
+            libxkbcommon-x11-0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

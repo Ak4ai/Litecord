@@ -900,7 +900,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
 
-    info!("Iniciando Litecord v0.1.0 (Log persistente salvo em litecord_app.log)...");
+    info!("Iniciando Litecord v0.2.0 (Log persistente salvo em litecord_app.log)...");
 
     info!("🖥️ Inicializando Slint AppWindow...");
     let app = AppWindow::new()?;
