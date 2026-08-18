@@ -2006,6 +2006,7 @@ pub async fn connect_voice_gateway(
                                                     let mut detected_ssrcs = std::collections::HashSet::new();
                                                     let mut total_pkts_recv = 0u64;
                                                     let mut decrypt_err_cnt = 0u64;
+                                                    let mut opus_err_cnt = 0u64;
                                                     let mut _dave_decrypt_fail_cnt = 0u64;
                                                     let mut _dave_not_ready_cnt = 0u64;
 
@@ -2164,7 +2165,7 @@ pub async fn connect_voice_gateway(
                                                                                     match res {
                                                                                         Ok(d) => (d, true),
                                                                                         Err(_e) => {
-                                                                                            dave_decrypt_fail_cnt += 1;
+                                                                                            _dave_decrypt_fail_cnt += 1;
                                                                                             // Fallback to transport payload for bots and non-DAVE participants
                                                                                             (transport_payload.to_vec(), true)
                                                                                         }
