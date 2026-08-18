@@ -919,31 +919,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     use i_slint_backend_winit::WinitWindowAccessor;
-    app.window().with_winit_window(|winit_win| {
-        let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(980.0, 620.0));
-        winit_win.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
-        winit_win.set_visible(true);
-        winit_win.set_minimized(false);
-        winit_win.focus_window();
-        winit_win.request_redraw();
-        info!("🖥️ Propriedades da janela Winit: scale_factor={}, inner_size={:?}", winit_win.scale_factor(), winit_win.inner_size());
-        #[cfg(target_os = "windows")]
-        {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = winit_win.window_handle() {
-                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                    let hwnd = win32_handle.hwnd.get() as isize;
-                    *hwnd_store.lock().unwrap() = Some(hwnd);
-                    set_dark_titlebar_color(hwnd);
+    let app_weak_init = app_weak.clone();
+    let hwnd_store_init = Arc::clone(&hwnd_store);
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_weak_init.upgrade() {
+            ui.window().with_winit_window(|winit_win| {
+                info!("🖥️ [EVENT LOOP] Configurando janela Winit no evento inicial...");
+                let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(980.0, 620.0));
+                winit_win.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
+                winit_win.set_visible(true);
+                winit_win.set_minimized(false);
+                winit_win.focus_window();
+                winit_win.request_redraw();
+                info!("🖥️ [EVENT LOOP] Propriedades Winit: scale_factor={}, inner_size={:?}", winit_win.scale_factor(), winit_win.inner_size());
+                #[cfg(target_os = "windows")]
+                {
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(handle) = winit_win.window_handle() {
+                        if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                            let hwnd = win32_handle.hwnd.get() as isize;
+                            *hwnd_store_init.lock().unwrap() = Some(hwnd);
+                            set_dark_titlebar_color(hwnd);
+                        }
+                    }
                 }
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            winit_win.set_decorations(true);
+                #[cfg(not(target_os = "windows"))]
+                {
+                    winit_win.set_decorations(true);
+                }
+            });
+            ui.window().request_redraw();
         }
     });
-    app.window().request_redraw();
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let app_weak_pulse = app_weak.clone();
+        tokio::spawn(async move {
+            for _ in 0..8 {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let app_w = app_weak_pulse.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w.upgrade() {
+                        ui.window().request_redraw();
+                    }
+                });
+            }
+        });
+    }
 
     let last_token: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let guilds_map: Arc<Mutex<HashMap<String, GuildData>>> = Arc::new(Mutex::new(HashMap::new()));
