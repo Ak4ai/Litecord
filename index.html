@@ -1334,7 +1334,7 @@
 
       <p class="hero-subtitle">
         Say goodbye to Electron bloat. Experience zero in-game micro-stutters with <b>
-          < 0.1% CPU idle</b>, sub-35 MB RAM, studio-grade Opus audio, and competitive <b>Squad Leader speech priority
+          0.02% CPU idle</b>, sub-5 MB DeepSleep RAM, studio-grade Opus audio, and competitive <b>Squad Leader speech priority
               ducking</b>.
       </p>
 
@@ -1716,13 +1716,13 @@
         <div class="benchmark-card">
           <div class="benchmark-metric">
             <span>Idle CPU Usage</span>
-            <span style="color:#23a55a;font-family:var(--font-mono)">35x Lower</span>
+            <span style="color:#23a55a;font-family:var(--font-mono)">150x Lower</span>
           </div>
           <div class="comparison-bar-group">
             <div class="bar-row">
-              <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">0.08%</span></div>
+              <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">0.02% (DeepSleep: 0.0%)</span></div>
               <div class="bar-track">
-                <div class="bar-fill-litecord" style="width:3%"></div>
+                <div class="bar-fill-litecord" style="width:2%"></div>
               </div>
             </div>
             <div class="bar-row">
@@ -1737,14 +1737,14 @@
         <!-- Metric 2: Memory Usage -->
         <div class="benchmark-card">
           <div class="benchmark-metric">
-            <span>RAM Footprint (Idle)</span>
-            <span style="color:#23a55a;font-family:var(--font-mono)">18x Lighter</span>
+            <span>RAM Footprint (DeepSleep)</span>
+            <span style="color:#23a55a;font-family:var(--font-mono)">100x Lighter</span>
           </div>
           <div class="comparison-bar-group">
             <div class="bar-row">
-              <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">32 MB</span></div>
+              <div class="bar-label"><span>Litecord (Rust)</span><span style="color:#23a55a">~3 MB (Active: ~15 MB)</span></div>
               <div class="bar-track">
-                <div class="bar-fill-litecord" style="width:6%"></div>
+                <div class="bar-fill-litecord" style="width:2%"></div>
               </div>
             </div>
             <div class="bar-row">

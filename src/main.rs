@@ -16,6 +16,9 @@ use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use log::{info, warn, error};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -216,31 +219,40 @@ fn start_mic_capture(
                 &config.into(),
                 move |data: &[f32], _: &_| {
                     let mut sum_sq = 0.0f32;
-                    let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                    let num_channels = channels.max(1);
+                    let frames = data.len() / num_channels;
+                    for frame in data.chunks(num_channels) {
                         let s = frame.iter().sum::<f32>() / frame.len() as f32;
                         sum_sq += s * s;
-                        s.clamp(-1.0, 1.0)
-                    }).collect();
+                    }
 
-                    let rms = (sum_sq / mono_samples.len().max(1) as f32).sqrt();
+                    let rms = (sum_sq / frames.max(1) as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
                     let _ = level_tx.try_send(level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for &s in &mono_samples {
+                            for frame in data.chunks(num_channels) {
+                                let s = (frame.iter().sum::<f32>() / frame.len() as f32).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, s, level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
-                            let out_len = (mono_samples.len() as f64 * ratio) as usize;
+                            let out_len = (frames as f64 * ratio) as usize;
                             for i in 0..out_len {
                                 let src_pos = i as f64 / ratio;
-                                let src_idx = src_pos as usize;
-                                let frac = src_pos - src_idx as f64;
-                                let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
-                                let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
-                                let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
+                                let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
+                                let frac = (src_pos - src_idx as f64) as f32;
+                                
+                                let get_sample = |idx: usize| -> f32 {
+                                    if let Some(frame) = data.chunks(num_channels).nth(idx) {
+                                        frame.iter().sum::<f32>() / frame.len() as f32
+                                    } else { 0.0 }
+                                };
+                                
+                                let s0 = get_sample(src_idx);
+                                let s1 = get_sample((src_idx + 1).min(frames.saturating_sub(1)));
+                                let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, resampled, level);
                             }
                         }
@@ -258,31 +270,40 @@ fn start_mic_capture(
                 &config.into(),
                 move |data: &[i16], _: &_| {
                     let mut sum_sq = 0.0f32;
-                    let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                    let num_channels = channels.max(1);
+                    let frames = data.len() / num_channels;
+                    for frame in data.chunks(num_channels) {
                         let s = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32;
                         sum_sq += s * s;
-                        s.clamp(-1.0, 1.0)
-                    }).collect();
+                    }
 
-                    let rms = (sum_sq / mono_samples.len().max(1) as f32).sqrt();
+                    let rms = (sum_sq / frames.max(1) as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
                     let _ = level_tx.try_send(level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for &s in &mono_samples {
+                            for frame in data.chunks(num_channels) {
+                                let s = (frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, s, level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
-                            let out_len = (mono_samples.len() as f64 * ratio) as usize;
+                            let out_len = (frames as f64 * ratio) as usize;
                             for i in 0..out_len {
                                 let src_pos = i as f64 / ratio;
-                                let src_idx = src_pos as usize;
-                                let frac = src_pos - src_idx as f64;
-                                let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
-                                let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
-                                let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
+                                let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
+                                let frac = (src_pos - src_idx as f64) as f32;
+                                
+                                let get_sample = |idx: usize| -> f32 {
+                                    if let Some(frame) = data.chunks(num_channels).nth(idx) {
+                                        frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32
+                                    } else { 0.0 }
+                                };
+                                
+                                let s0 = get_sample(src_idx);
+                                let s1 = get_sample((src_idx + 1).min(frames.saturating_sub(1)));
+                                let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, resampled, level);
                             }
                         }
@@ -300,31 +321,40 @@ fn start_mic_capture(
                 &config.into(),
                 move |data: &[i32], _: &_| {
                     let mut sum_sq = 0.0f32;
-                    let mono_samples: Vec<f32> = data.chunks(channels.max(1)).map(|frame| {
+                    let num_channels = channels.max(1);
+                    let frames = data.len() / num_channels;
+                    for frame in data.chunks(num_channels) {
                         let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32;
                         sum_sq += s * s;
-                        s.clamp(-1.0, 1.0)
-                    }).collect();
+                    }
 
-                    let rms = (sum_sq / mono_samples.len().max(1) as f32).sqrt();
+                    let rms = (sum_sq / frames.max(1) as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
                     let _ = level_tx.try_send(level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for &s in &mono_samples {
+                            for frame in data.chunks(num_channels) {
+                                let s = (frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, s, level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
-                            let out_len = (mono_samples.len() as f64 * ratio) as usize;
+                            let out_len = (frames as f64 * ratio) as usize;
                             for i in 0..out_len {
                                 let src_pos = i as f64 / ratio;
-                                let src_idx = src_pos as usize;
-                                let frac = src_pos - src_idx as f64;
-                                let s0 = mono_samples.get(src_idx).copied().unwrap_or(0.0);
-                                let s1 = mono_samples.get(src_idx + 1).copied().unwrap_or(s0);
-                                let resampled = (s0 * (1.0 - frac as f32) + s1 * frac as f32).clamp(-1.0, 1.0);
+                                let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
+                                let frac = (src_pos - src_idx as f64) as f32;
+                                
+                                let get_sample = |idx: usize| -> f32 {
+                                    if let Some(frame) = data.chunks(num_channels).nth(idx) {
+                                        frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32
+                                    } else { 0.0 }
+                                };
+                                
+                                let s0 = get_sample(src_idx);
+                                let s1 = get_sample((src_idx + 1).min(frames.saturating_sub(1)));
+                                let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, resampled, level);
                             }
                         }
@@ -931,7 +961,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 winit_win.set_minimized(false);
                 winit_win.focus_window();
                 winit_win.request_redraw();
-                info!("🖥️ [EVENT LOOP] Propriedades Winit: scale_factor={}, inner_size={:?}", winit_win.scale_factor(), winit_win.inner_size());
+                // Set native window and taskbar/dock icon (Linux X11/Wayland & Windows)
+                let icon_bytes = include_bytes!("../assets/app_icon.png");
+                if let Ok(img) = image::load_from_memory(icon_bytes) {
+                    let rgba = img.into_rgba8();
+                    let (width, height) = rgba.dimensions();
+                    if let Ok(winit_icon) = winit::window::Icon::from_rgba(rgba.into_raw(), width, height) {
+                        winit_win.set_window_icon(Some(winit_icon));
+                    }
+                }
+
                 #[cfg(target_os = "windows")]
                 {
                     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1066,6 +1105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             gateway::set_self_mic_level(level);
             // Deep-sleep guard: drain the channel without invoking Slint
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                continue;
+            }
+            // Skip UI redraw if microphone was silent and is still silent
+            if level < 0.005 && last_level < 0.005 {
                 continue;
             }
             let now = std::time::Instant::now();
@@ -1403,7 +1446,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_voice_participants(model.into());
                 } else {
                     for (i, p) in participants.into_iter().enumerate() {
-                        cur_model.set_row_data(i, p);
+                        if let Some(old) = cur_model.row_data(i) {
+                            let level_diff = (old.audio_level - p.audio_level).abs();
+                            let both_zero = old.audio_level < 0.01 && p.audio_level < 0.01;
+                            let level_changed = !both_zero && level_diff >= 0.03;
+                            let state_changed = old.is_speaking != p.is_speaking
+                                || old.is_muted != p.is_muted
+                                || old.volume != p.volume
+                                || old.priority != p.priority
+                                || old.username != p.username;
+                            if level_changed || state_changed {
+                                cur_model.set_row_data(i, p);
+                            }
+                        }
                     }
                 }
             });
@@ -2280,6 +2335,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
+                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
         });
@@ -2343,6 +2401,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
+                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
         });
@@ -2840,6 +2901,16 @@ async fn try_login_with_candidates(
 
                 let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
                 gw.start(cmd_rx).await;
+
+                #[cfg(target_os = "windows")]
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    unsafe {
+                        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+                        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+                        K32EmptyWorkingSet(GetCurrentProcess());
+                    }
+                });
 
                 return true;
             }

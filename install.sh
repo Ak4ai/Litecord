@@ -66,6 +66,22 @@ chmod +x "$BINARY_PATH"
 cp "$BINARY_PATH" "${INSTALL_DIR}/${BINARY_NAME}"
 success "Binary installed: ${BOLD}${INSTALL_DIR}/${BINARY_NAME}${RESET}"
 
+# ── Install application icon ──────────────────────────────────────────────────
+ICON_DIR="${HOME}/.local/share/icons/hicolor/256x256/apps"
+mkdir -p "$ICON_DIR"
+mkdir -p "${HOME}/.local/share/icons"
+
+ICON_SRC=$(find "$TMP_DIR" -name "app_icon.png" -type f | head -1)
+if [ -n "$ICON_SRC" ] && [ -f "$ICON_SRC" ]; then
+  cp "$ICON_SRC" "${ICON_DIR}/litecord.png"
+  cp "$ICON_SRC" "${HOME}/.local/share/icons/litecord.png"
+else
+  # Fallback download icon directly from GitHub repository
+  curl -sSL "https://raw.githubusercontent.com/${REPO}/main/assets/app_icon.png" -o "${ICON_DIR}/litecord.png" 2>/dev/null || true
+  cp "${ICON_DIR}/litecord.png" "${HOME}/.local/share/icons/litecord.png" 2>/dev/null || true
+fi
+success "Icon installed: ${BOLD}${ICON_DIR}/litecord.png${RESET}"
+
 # ── Create .desktop entry ─────────────────────────────────────────────────────
 mkdir -p "$DESKTOP_DIR"
 cat > "${DESKTOP_DIR}/litecord.desktop" << EOF
@@ -73,13 +89,17 @@ cat > "${DESKTOP_DIR}/litecord.desktop" << EOF
 Name=Litecord
 Comment=Ultra-Lightweight Native Discord Client
 Exec=${INSTALL_DIR}/${BINARY_NAME}
-Icon=discord
+Icon=litecord
 Terminal=false
 Type=Application
 Categories=Network;InstantMessaging;
 StartupWMClass=litecord
 EOF
 success "Desktop entry created: ${DESKTOP_DIR}/litecord.desktop"
+
+# Refresh desktop database / icon cache if tools available
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
 
 # ── PATH check ────────────────────────────────────────────────────────────────
 echo ""

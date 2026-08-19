@@ -48,6 +48,30 @@ jobs:
         run: |
           iscc installer.iss
 
+      # Sign Windows Installer if SignPath secrets are configured
+      - name: Submit Signing Request to SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file-path: target/installer/Litecord-Setup-x64.exe
+          output-artifact-directory: target/installer-signed
+          wait-for-completion: true
+
+      - name: Use Signed Installer if Available
+        shell: pwsh
+        run: |
+          if (Test-Path "target/installer-signed/Litecord-Setup-x64.exe") {
+              Copy-Item "target/installer-signed/Litecord-Setup-x64.exe" "target/installer/Litecord-Setup-x64.exe" -Force
+              Write-Host "✅ Instalador assinado digitalmente com sucesso!"
+          }
+
       - name: Upload Windows Portable Artifact
         uses: actions/upload-artifact@v4
         with:
