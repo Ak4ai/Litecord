@@ -121,6 +121,17 @@ export component AppWindow inherits Window {
     callback change_language(string /* "auto", "en", "pt" */);
     callback refresh_qr_code();
     callback drag_resize(string /* "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right" */);
+    callback update_app_accept();
+    callback update_app_dismiss();
+    callback update_app_ignore();
+
+    // Auto-Update Properties
+    in-out property <bool> show_update_dialog: false;
+    in-out property <string> update_version: "";
+    in-out property <string> update_release_name: "";
+    in-out property <bool> is_updating: false;
+    in-out property <float> update_progress: 0.0;
+    in-out property <string> update_status_text: "Baixando atualização...";
 
     // Translations (i18n)
     in-out property <string> current_language_code: "auto";
@@ -2140,6 +2151,194 @@ export component AppWindow inherits Window {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                 root.drag_resize("bottom-right");
+            }
+        }
+    }
+
+    // Modal Update Available Dialog
+    if root.show_update_dialog: Rectangle {
+        background: #000000aa;
+        width: 100%;
+        height: 100%;
+        z: 9999;
+
+        TouchArea {
+            // Block background click events
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 440px;
+                    background: #2b2d31;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: #383a40;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: #00000099;
+
+                    VerticalBox {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        // Header Icon and Title
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 12px;
+
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 20px;
+                                background: #5865f222;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/rocket.svg");
+                                        width: 22px;
+                                        height: 22px;
+                                        colorize: #5865f2;
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: "Nova Atualização Disponível! 🚀";
+                                    color: #f2f3f5;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                }
+
+                                Text {
+                                    text: "Litecord " + root.update_version;
+                                    color: #23a55a;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Body Description
+                        Text {
+                            text: root.is_updating ? root.update_status_text : "Uma nova versão do Litecord com melhorias e correções está pronta para instalação. Deseja atualizar agora?";
+                            color: #b5bac1;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+
+                        // Progress Bar (when downloading)
+                        if root.is_updating: VerticalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                height: 8px;
+                                background: #1e1f22;
+                                border-radius: 4px;
+                                clip: true;
+
+                                Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    height: 8px;
+                                    width: root.update_progress * parent.width;
+                                    background: #23a55a;
+                                    border-radius: 4px;
+                                }
+                            }
+
+                            Text {
+                                text: Math.round(root.update_progress * 100) + "%";
+                                color: #80848e;
+                                font-size: 11px;
+                                horizontal-alignment: right;
+                            }
+                        }
+
+                        // Action Buttons
+                        if !root.is_updating: HorizontalLayout {
+                            spacing: 10px;
+
+                            // Não Mostrar Mais (Ignore)
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: ignore_touch.has-hover ? #35373c : #2b2d31;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: #3f4147;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "Não mostrar mais";
+                                        color: #949ba4;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                ignore_touch := TouchArea {
+                                    clicked => { root.update_app_ignore(); }
+                                }
+                            }
+
+                            // Lembrar Depois (Não)
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: dismiss_touch.has-hover ? #3b3e45 : #35373c;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "Lembrar Depois";
+                                        color: #dbdee1;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                dismiss_touch := TouchArea {
+                                    clicked => { root.update_app_dismiss(); }
+                                }
+                            }
+
+                            // Sim, Atualizar
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: accept_touch.has-hover ? #4752c4 : #5865f2;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Sim, Atualizar";
+                                        color: #ffffff;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                accept_touch := TouchArea {
+                                    clicked => { root.update_app_accept(); }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

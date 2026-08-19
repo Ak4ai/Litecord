@@ -1,0 +1,294 @@
+use std::path::PathBuf;
+use tokio::sync::mpsc;
+use log::{info, warn};
+use serde::{Deserialize, Serialize};
+
+const REPO_OWNER: &str = "Ak4ai";
+const REPO_NAME: &str = "Litecord";
+const CONFIG_FILE: &str = ".litecord_updater_config.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub tag_name: String,
+    pub version: String,
+    pub download_url: String,
+    pub release_name: String,
+    pub release_body: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct UpdaterConfig {
+    ignored_version: Option<String>,
+}
+
+fn get_config_path() -> PathBuf {
+    PathBuf::from(CONFIG_FILE)
+}
+
+pub fn is_version_ignored(tag: &str) -> bool {
+    let path = get_config_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str::<UpdaterConfig>(&data) {
+                if let Some(ref ignored) = cfg.ignored_version {
+                    return ignored == tag;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn save_ignored_version(tag: &str) {
+    let cfg = UpdaterConfig {
+        ignored_version: Some(tag.to_string()),
+    };
+    if let Ok(data) = serde_json::to_string_pretty(&cfg) {
+        let _ = std::fs::write(get_config_path(), data);
+        info!("🏷️ Versão {} marcada como ignorada em {}", tag, CONFIG_FILE);
+    }
+}
+
+/// Compares version string a with b (e.g., "0.2.2" > "0.2.1")
+pub fn is_newer_version(remote_ver: &str, current_ver: &str) -> bool {
+    let parse_ver = |v: &str| -> Vec<u64> {
+        v.trim_start_matches('v')
+            .split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+
+    let remote_parts = parse_ver(remote_ver);
+    let current_parts = parse_ver(current_ver);
+
+    let max_len = remote_parts.len().max(current_parts.len());
+    for i in 0..max_len {
+        let r = remote_parts.get(i).copied().unwrap_or(0);
+        let c = current_parts.get(i).copied().unwrap_or(0);
+        if r > c {
+            return true;
+        } else if r < c {
+            return false;
+        }
+    }
+    false
+}
+
+/// Checks GitHub API for the latest release
+pub async fn check_for_updates() -> Option<ReleaseInfo> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let url = format!("https://api.github.com/repos/{}/{}/releases/latest", REPO_OWNER, REPO_NAME);
+
+    info!("🔍 Verificando se há novas versões do Litecord no GitHub (Atual: v{})...", current_version);
+
+    let client = match reqwest::Client::builder()
+        .user_agent("Litecord-App-Updater")
+        .timeout(std::time::Duration::from_secs(10))
+        .build() {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Não foi possível verificar atualizações: {:?}", e);
+            return None;
+        }
+    };
+
+    if !resp.status().is_success() {
+        warn!("API de releases retornou status: {}", resp.status());
+        return None;
+    }
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(e) => {
+            warn!("Erro ao decodificar JSON de release: {:?}", e);
+            return None;
+        }
+    };
+
+    let tag_name = json["tag_name"].as_str()?.to_string();
+    let clean_ver = tag_name.trim_start_matches('v').to_string();
+
+    if is_version_ignored(&tag_name) {
+        info!("Versão remota {} está marcada como ignorada pelo usuário.", tag_name);
+        return None;
+    }
+
+    if !is_newer_version(&clean_ver, current_version) {
+        info!("O Litecord já está na versão mais recente (v{}).", current_version);
+        return None;
+    }
+
+    info!("🚀 NOVA VERSÃO ENCONTRADA: {} (Atual: v{})!", tag_name, current_version);
+
+    // Target asset selection based on OS
+    let target_asset_name = if cfg!(target_os = "windows") {
+        "Litecord-Setup-x64.exe"
+    } else {
+        "litecord-linux-x64.tar.gz"
+    };
+
+    let mut download_url = String::new();
+    if let Some(assets) = json["assets"].as_array() {
+        for asset in assets {
+            if let Some(name) = asset["name"].as_str() {
+                if name == target_asset_name {
+                    if let Some(durl) = asset["browser_download_url"].as_str() {
+                        download_url = durl.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback URL if asset not matched directly
+    if download_url.is_empty() {
+        download_url = format!(
+            "https://github.com/{}/{}/releases/download/{}/{}",
+            REPO_OWNER, REPO_NAME, tag_name, target_asset_name
+        );
+    }
+
+    Some(ReleaseInfo {
+        tag_name: tag_name.clone(),
+        version: clean_ver,
+        download_url,
+        release_name: json["name"].as_str().unwrap_or(&tag_name).to_string(),
+        release_body: json["body"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+/// Downloads the release file and launches the updater/installer
+pub async fn download_and_install_update(
+    download_url: String,
+    progress_tx: mpsc::Sender<f32>,
+) -> Result<(), String> {
+    info!("Iniciando download da atualização: {}", download_url);
+    let client = reqwest::Client::builder()
+        .user_agent("Litecord-App-Updater")
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP: {:?}", e))?;
+
+    let mut response = client.get(&download_url).send().await
+        .map_err(|e| format!("Falha na conexão de download: {:?}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download falhou com status HTTP {}", response.status()));
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    let temp_dir = std::env::temp_dir();
+
+    if cfg!(target_os = "windows") {
+        let installer_path = temp_dir.join("Litecord-Update-Setup.exe");
+        let mut file = tokio::fs::File::create(&installer_path).await
+            .map_err(|e| format!("Falha ao criar arquivo temporário: {:?}", e))?;
+
+        let mut downloaded: u64 = 0;
+
+        while let Some(chunk) = response.chunk().await.map_err(|e| format!("Erro no download: {:?}", e))? {
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
+                .map_err(|e| format!("Erro ao gravar dados: {:?}", e))?;
+
+            downloaded += chunk.len() as u64;
+            if total_size > 0 {
+                let progress = (downloaded as f32 / total_size as f32).clamp(0.0, 1.0);
+                let _ = progress_tx.try_send(progress);
+            }
+        }
+
+        tokio::io::AsyncWriteExt::flush(&mut file).await
+            .map_err(|e| format!("Erro no flush do arquivo: {:?}", e))?;
+        drop(file);
+
+        let _ = progress_tx.try_send(1.0);
+        info!("Download concluído! Executando instalador: {:?}", installer_path);
+
+        // Run installer and terminate current application
+        #[cfg(target_os = "windows")]
+        {
+            use std::process::Command;
+            let res = Command::new(&installer_path)
+                .args(["/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+                .spawn();
+
+            match res {
+                Ok(_) => {
+                    info!("Instalador iniciado com sucesso. Encerrando o Litecord para atualização...");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    // Fallback try without args
+                    let _ = Command::new(&installer_path).spawn();
+                    return Err(format!("Falha ao iniciar o instalador: {:?}", e));
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(())
+        }
+    } else {
+        // Linux: Download .tar.gz and extract binary to ~/.local/bin/litecord
+        let tar_path = temp_dir.join("litecord-update.tar.gz");
+        let mut file = tokio::fs::File::create(&tar_path).await
+            .map_err(|e| format!("Falha ao criar arquivo temporário: {:?}", e))?;
+
+        let mut downloaded: u64 = 0;
+
+        while let Some(chunk) = response.chunk().await.map_err(|e| format!("Erro no download: {:?}", e))? {
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
+                .map_err(|e| format!("Erro ao gravar dados: {:?}", e))?;
+
+            downloaded += chunk.len() as u64;
+            if total_size > 0 {
+                let progress = (downloaded as f32 / total_size as f32).clamp(0.0, 1.0);
+                let _ = progress_tx.try_send(progress);
+            }
+        }
+
+        tokio::io::AsyncWriteExt::flush(&mut file).await
+            .map_err(|e| format!("Erro no flush do arquivo: {:?}", e))?;
+        drop(file);
+
+        let _ = progress_tx.try_send(1.0);
+        info!("Download concluído! Atualizando binário Linux...");
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let install_bin_dir = PathBuf::from(&home).join(".local/bin");
+        let _ = std::fs::create_dir_all(&install_bin_dir);
+
+        // Extract tar.gz in temp directory
+        let extract_dir = temp_dir.join("litecord_extracted");
+        let _ = std::fs::remove_dir_all(&extract_dir);
+        let _ = std::fs::create_dir_all(&extract_dir);
+
+        let extract_res = std::process::Command::new("tar")
+            .args(["-xzf", tar_path.to_str().unwrap(), "-C", extract_dir.to_str().unwrap()])
+            .status();
+
+        if let Ok(status) = extract_res {
+            if status.success() {
+                let new_bin = extract_dir.join("litecord");
+                let target_bin = install_bin_dir.join("litecord");
+                if new_bin.exists() {
+                    let _ = std::fs::copy(&new_bin, &target_bin);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&target_bin, std::fs::Permissions::from_mode(0o755));
+                    }
+                    info!("✅ Litecord atualizado com sucesso em {:?}! Reiniciando...", target_bin);
+                    let _ = std::process::Command::new(&target_bin).spawn();
+                    std::process::exit(0);
+                }
+            }
+        }
+        Err("Falha ao descompactar e instalar a atualização no Linux.".to_string())
+    }
+}
