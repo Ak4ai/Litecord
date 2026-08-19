@@ -1094,7 +1094,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tokio MPSC Channel for Gateway Events -> Slint UI
     let (event_tx, mut event_rx) = mpsc::channel::<GatewayEvent>(100);
-    let pending_update_info: Arc<Mutex<Option<updater::ReleaseInfo>>> = Arc::new(Mutex::new(None));
+
+    // Initial background update check on app launch
+    trigger_update_check(app_weak.clone());
 
     // Tokio MPSC Channel for Microphone Volume Level (0.0 to 1.0)
     let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
@@ -1750,9 +1752,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Auto-Update Callbacks
     let app_weak_update_acc = app_weak.clone();
-    let pending_update_acc = Arc::clone(&pending_update_info);
     app.on_update_app_accept(move || {
-        let rel_opt = pending_update_acc.lock().unwrap().clone();
+        let rel_opt = get_pending_update_store().lock().unwrap().clone();
         if let Some(rel) = rel_opt {
             if let Some(ui) = app_weak_update_acc.upgrade() {
                 ui.set_is_updating(true);
@@ -1798,9 +1799,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app_weak_update_ign = app_weak.clone();
-    let pending_update_ign = Arc::clone(&pending_update_info);
     app.on_update_app_ignore(move || {
-        if let Some(rel) = pending_update_ign.lock().unwrap().as_ref() {
+        if let Some(rel) = get_pending_update_store().lock().unwrap().as_ref() {
             updater::save_ignored_version(&rel.tag_name);
         }
         if let Some(ui) = app_weak_update_ign.upgrade() {
@@ -1810,10 +1810,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Manual "Check for Updates" Button Callback
     let app_weak_manual_chk = app_weak.clone();
-    let pending_update_manual = Arc::clone(&pending_update_info);
     app.on_check_for_updates(move || {
         let app_w = app_weak_manual_chk.clone();
-        let pending_store = Arc::clone(&pending_update_manual);
 
         if let Some(ui) = app_w.upgrade() {
             ui.set_is_checking_update(true);
@@ -1829,7 +1827,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_is_checking_update(false);
                     match res {
                         Ok(Some(rel)) => {
-                            *pending_store.lock().unwrap() = Some(rel.clone());
+                            *get_pending_update_store().lock().unwrap() = Some(rel.clone());
                             ui.set_update_check_feedback(format!("Nova versão disponível: v{}", rel.version).into());
                             ui.set_update_version(format!("v{}", rel.version).into());
                             ui.set_update_release_name(rel.release_name.into());
@@ -2989,6 +2987,8 @@ async fn try_login_with_candidates(
                     }
                 });
 
+                trigger_update_check(app_weak.clone());
+
                 let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
                 *cmd_tx_store.lock().unwrap() = Some(cmd_tx);
 
@@ -3003,8 +3003,6 @@ async fn try_login_with_candidates(
 
                 let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
                 gw.start(cmd_rx).await;
-
-                trigger_update_check(app_weak.clone());
 
                 #[cfg(target_os = "windows")]
                 tokio::spawn(async move {
@@ -3026,11 +3024,18 @@ async fn try_login_with_candidates(
     false
 }
 
+static PENDING_UPDATE_STORE: std::sync::OnceLock<Arc<Mutex<Option<updater::ReleaseInfo>>>> = std::sync::OnceLock::new();
+
+pub fn get_pending_update_store() -> Arc<Mutex<Option<updater::ReleaseInfo>>> {
+    PENDING_UPDATE_STORE.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+}
+
 fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
         if let Some(rel) = updater::check_for_updates().await {
             info!("🔔 Atualização v{} pronta para ser exibida ao usuário!", rel.version);
+            *get_pending_update_store().lock().unwrap() = Some(rel.clone());
             let app_w = app_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {

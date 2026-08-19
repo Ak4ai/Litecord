@@ -208,23 +208,49 @@ pub async fn download_and_install_update(
         let _ = progress_tx.try_send(1.0);
         info!("Download concluído! Executando instalador: {:?}", installer_path);
 
-        // Run installer and terminate current application
+        // Run installer and terminate current application cleanly
         #[cfg(target_os = "windows")]
         {
             use std::process::Command;
-            let res = Command::new(&installer_path)
-                .args(["/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+            let installer_str = installer_path.to_string_lossy().to_string();
+
+            // Run detached via cmd with a 1-second delay so this process terminates and unlocks all files
+            let res = Command::new("cmd")
+                .args([
+                    "/c",
+                    "timeout",
+                    "/t",
+                    "1",
+                    "/nobreak",
+                    ">nul",
+                    "&",
+                    "start",
+                    "",
+                    &installer_str,
+                    "/SP-",
+                    "/SILENT",
+                    "/FORCECLOSEAPPLICATIONS",
+                    "/RESTARTAPPLICATIONS",
+                ])
                 .spawn();
 
             match res {
                 Ok(_) => {
-                    info!("Instalador iniciado com sucesso. Encerrando o Litecord para atualização...");
+                    info!("Instalador agendado com sucesso. Encerrando processo do Litecord para atualização...");
+                    unsafe {
+                        windows_sys::Win32::System::Threading::TerminateProcess(
+                            windows_sys::Win32::System::Threading::GetCurrentProcess(),
+                            0,
+                        );
+                    }
                     std::process::exit(0);
                 }
-                Err(e) => {
-                    // Fallback try without args
-                    let _ = Command::new(&installer_path).spawn();
-                    return Err(format!("Falha ao iniciar o instalador: {:?}", e));
+                Err(_e) => {
+                    // Fallback direct spawn
+                    let _ = Command::new(&installer_path)
+                        .args(["/SP-", "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+                        .spawn();
+                    std::process::exit(0);
                 }
             }
         }

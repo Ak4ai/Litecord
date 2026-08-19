@@ -1,6 +1,6 @@
 ; Inno Setup Script for Litecord Windows Installer
 #define MyAppName "Litecord"
-#define MyAppVersion "0.2.3"
+#define MyAppVersion "0.2.4"
 #define MyAppPublisher "Litecord Project"
 #define MyAppURL "https://github.com/Ak4ai/Litecord"
 #define MyAppExeName "litecord.exe"
@@ -26,6 +26,9 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=force
+CloseApplicationsFilter=litecord.exe
+RestartApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
