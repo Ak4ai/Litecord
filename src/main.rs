@@ -945,6 +945,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let saved_audio_cfg = gateway::load_persisted_audio_config();
     app.set_vad_threshold(saved_audio_cfg.vad_threshold);
+    app.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     let app_weak = app.as_weak();
 
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
@@ -1805,6 +1806,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_update_ign.upgrade() {
             ui.set_show_update_dialog(false);
         }
+    });
+
+    // Manual "Check for Updates" Button Callback
+    let app_weak_manual_chk = app_weak.clone();
+    let pending_update_manual = Arc::clone(&pending_update_info);
+    app.on_check_for_updates(move || {
+        let app_w = app_weak_manual_chk.clone();
+        let pending_store = Arc::clone(&pending_update_manual);
+
+        if let Some(ui) = app_w.upgrade() {
+            ui.set_is_checking_update(true);
+            ui.set_update_check_feedback("Verificando atualizações no GitHub...".into());
+        }
+
+        tokio::spawn(async move {
+            let res = updater::check_for_updates_manual().await;
+            let app_w_inner = app_w.clone();
+
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_inner.upgrade() {
+                    ui.set_is_checking_update(false);
+                    match res {
+                        Ok(Some(rel)) => {
+                            *pending_store.lock().unwrap() = Some(rel.clone());
+                            ui.set_update_check_feedback(format!("Nova versão disponível: v{}", rel.version).into());
+                            ui.set_update_version(format!("v{}", rel.version).into());
+                            ui.set_update_release_name(rel.release_name.into());
+                            ui.set_show_update_dialog(true);
+                        }
+                        Ok(None) => {
+                            ui.set_update_check_feedback(format!("✅ Você já está na versão mais recente (v{})!", env!("CARGO_PKG_VERSION")).into());
+                        }
+                        Err(e) => {
+                            ui.set_update_check_feedback(format!("⚠️ {}", e).into());
+                        }
+                    }
+                }
+            });
+        });
     });
 
     // Active QR Code Remote Auth Session

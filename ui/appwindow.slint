@@ -124,6 +124,7 @@ export component AppWindow inherits Window {
     callback update_app_accept();
     callback update_app_dismiss();
     callback update_app_ignore();
+    callback check_for_updates();
 
     // Auto-Update Properties
     in-out property <bool> show_update_dialog: false;
@@ -132,6 +133,9 @@ export component AppWindow inherits Window {
     in-out property <bool> is_updating: false;
     in-out property <float> update_progress: 0.0;
     in-out property <string> update_status_text: "Baixando atualização...";
+    in-out property <string> app_version: "v0.2.2";
+    in-out property <string> update_check_feedback: "";
+    in-out property <bool> is_checking_update: false;
 
     // Translations (i18n)
     in-out property <string> current_language_code: "auto";
@@ -1906,9 +1910,80 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+
+                    // 5. Section: Version & Auto-Updates
+                    VerticalBox {
+                        spacing: 8px;
+                        padding: 0px;
+
+                        Text {
+                            text: "VERSÃO E ATUALIZAÇÕES";
+                            color: #949ba4;
+                            font-size: 11px;
+                            font-weight: 700;
+                        }
+
+                        Rectangle {
+                            background: #232428;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #383a40;
+
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 3px;
+                                    horizontal-stretch: 1;
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: "Litecord";
+                                            color: #f2f3f5;
+                                            font-size: 13px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Rectangle {
+                                            background: #5865f233;
+                                            border-radius: 4px;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                padding-top: 2px;
+                                                padding-bottom: 2px;
+                                                Text {
+                                                    text: root.app_version;
+                                                    color: #5865f2;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if root.update_check_feedback != "": Text {
+                                        text: root.update_check_feedback;
+                                        color: #23a55a;
+                                        font-size: 11px;
+                                    }
+                                }
+
+                                Button {
+                                    text: root.is_checking_update ? "Verificando..." : "Verificar Atualizações";
+                                    enabled: !root.is_checking_update;
+                                    clicked => { root.check_for_updates(); }
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // 5. Pinned Footer Action Bar (Always Visible!)
+                // 6. Pinned Footer Action Bar (Always Visible!)
                 HorizontalBox {
                     spacing: 10px;
 

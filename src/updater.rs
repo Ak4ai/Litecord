@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use log::{info, warn};
+use log::info;
 use serde::{Deserialize, Serialize};
 
 const REPO_OWNER: &str = "Ak4ai";
@@ -74,53 +74,52 @@ pub fn is_newer_version(remote_ver: &str, current_ver: &str) -> bool {
     false
 }
 
-/// Checks GitHub API for the latest release
+/// Checks GitHub API for the latest release (respecting ignored versions)
 pub async fn check_for_updates() -> Option<ReleaseInfo> {
+    check_for_updates_internal(true).await.ok().flatten()
+}
+
+/// Manually checks GitHub API for the latest release (ignoring the skip list)
+pub async fn check_for_updates_manual() -> Result<Option<ReleaseInfo>, String> {
+    check_for_updates_internal(false).await
+}
+
+async fn check_for_updates_internal(respect_ignored: bool) -> Result<Option<ReleaseInfo>, String> {
     let current_version = env!("CARGO_PKG_VERSION");
     let url = format!("https://api.github.com/repos/{}/{}/releases/latest", REPO_OWNER, REPO_NAME);
 
     info!("🔍 Verificando se há novas versões do Litecord no GitHub (Atual: v{})...", current_version);
 
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .user_agent("Litecord-App-Updater")
         .timeout(std::time::Duration::from_secs(10))
-        .build() {
-            Ok(c) => c,
-            Err(_) => return None,
-        };
+        .build()
+        .map_err(|e| format!("Erro ao inicializar cliente HTTP: {:?}", e))?;
 
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Não foi possível verificar atualizações: {:?}", e);
-            return None;
-        }
-    };
+    let resp = client.get(&url).send().await
+        .map_err(|e| format!("Falha de conexão com o GitHub: {:?}", e))?;
 
     if !resp.status().is_success() {
-        warn!("API de releases retornou status: {}", resp.status());
-        return None;
+        return Err(format!("API do GitHub retornou status {}", resp.status()));
     }
 
-    let json: serde_json::Value = match resp.json().await {
-        Ok(j) => j,
-        Err(e) => {
-            warn!("Erro ao decodificar JSON de release: {:?}", e);
-            return None;
-        }
-    };
+    let json: serde_json::Value = resp.json().await
+        .map_err(|e| format!("Erro ao decodificar JSON do GitHub: {:?}", e))?;
 
-    let tag_name = json["tag_name"].as_str()?.to_string();
+    let tag_name = match json["tag_name"].as_str() {
+        Some(t) => t.to_string(),
+        None => return Err("Formato de release inválido no GitHub.".to_string()),
+    };
     let clean_ver = tag_name.trim_start_matches('v').to_string();
 
-    if is_version_ignored(&tag_name) {
+    if respect_ignored && is_version_ignored(&tag_name) {
         info!("Versão remota {} está marcada como ignorada pelo usuário.", tag_name);
-        return None;
+        return Ok(None);
     }
 
     if !is_newer_version(&clean_ver, current_version) {
         info!("O Litecord já está na versão mais recente (v{}).", current_version);
-        return None;
+        return Ok(None);
     }
 
     info!("🚀 NOVA VERSÃO ENCONTRADA: {} (Atual: v{})!", tag_name, current_version);
@@ -154,13 +153,13 @@ pub async fn check_for_updates() -> Option<ReleaseInfo> {
         );
     }
 
-    Some(ReleaseInfo {
+    Ok(Some(ReleaseInfo {
         tag_name: tag_name.clone(),
         version: clean_ver,
         download_url,
         release_name: json["name"].as_str().unwrap_or(&tag_name).to_string(),
         release_body: json["body"].as_str().unwrap_or("").to_string(),
-    })
+    }))
 }
 
 /// Downloads the release file and launches the updater/installer
