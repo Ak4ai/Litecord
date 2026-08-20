@@ -30,6 +30,7 @@ struct LinkItem {
 }
 
 struct ChatMessage {
+    id: string,
     author: string,
     timestamp: string,
     content: string,
@@ -82,6 +83,268 @@ struct VoiceParticipant {
     is_self: bool,
 }
 
+component ChatMessagesView inherits Rectangle {
+    in-out property <[ChatMessage]> messages;
+    in-out property <bool> has_more_older_messages: false;
+    in-out property <bool> is_loading_older_messages: false;
+    in-out property <string> tr_replying_to: "Replying to ";
+    in-out property <length> scroll_y: 0px;
+    in-out property <int> scroll_trigger: 0;
+    callback load_older_messages();
+    callback open_link(string);
+
+    changed scroll_trigger => {
+        root.scroll_to_bottom();
+    }
+
+    public function scroll_to_bottom() {
+        scroll_y = Math.min(0.0, (msg_scroll.visible-height - msg_scroll.viewport-height) / 1px) * 1px;
+    }
+
+    msg_scroll := ScrollView {
+        viewport-y <=> root.scroll_y;
+        height: 100%;
+        width: 100%;
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+            alignment: end;
+
+            // Load Older Messages Button / Header
+            if root.has_more_older_messages: HorizontalLayout {
+                alignment: center;
+                padding-top: 2px;
+                padding-bottom: 6px;
+
+                Rectangle {
+                    height: 28px;
+                    background: older_btn_touch.has-hover ? #35373c : #2b2d31;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #3f4147;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 6px;
+                        alignment: center;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/arrow-up.svg");
+                                width: 12px;
+                                height: 12px;
+                                colorize: #5865f2;
+                                image-fit: contain;
+                            }
+                        }
+
+                        Text {
+                            text: root.is_loading_older_messages ? "Carregando mensagens anteriores..." : "Carregar mensagens mais antigas";
+                            color: #5865f2;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    older_btn_touch := TouchArea {
+                        enabled: !root.is_loading_older_messages;
+                        clicked => { root.load_older_messages(); }
+                    }
+                }
+            }
+
+            for msg in root.messages: Rectangle {
+                background: #2b2d31;
+                border-radius: 6px;
+                property <bool> is-collapsed: true;
+
+                VerticalBox {
+                    padding: 8px;
+                    spacing: 4px;
+
+                    if msg.reply-author != "": Rectangle {
+                        background: #1e293b;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #3b82f6;
+
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/reply.svg");
+                                        width: 11px;
+                                        height: 11px;
+                                        colorize: #3b82f6;
+                                        image-fit: contain;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.tr_replying_to + msg.reply-author;
+                                    color: #3b82f6;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: msg.reply-content;
+                                color: #94a3b8;
+                                font-size: 10.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text {
+                            text: msg.author;
+                            color: #5865f2;
+                            font-size: 13px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: msg.timestamp;
+                            color: #80848e;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+
+                        if msg.links.length > 0 : Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            background: transparent;
+                            Text {
+                                text: is-collapsed ? "▼" : "▲";
+                                color: #949ba4;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    is-collapsed = !is-collapsed;
+                                }
+                            }
+                        }
+                    }
+
+                    if msg.content != "": Text {
+                        text: msg.content;
+                        color: #dbdee1;
+                        font-size: 13.5px;
+                        wrap: word-wrap;
+                    }
+
+                    if msg.code-block != "": Rectangle {
+                        background: #1e1f22;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #383a40;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            Text {
+                                text: msg.code-block;
+                                color: #23a55a;
+                                font-family: "Courier New";
+                                font-size: 12.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
+                        background: #232428;
+                        border-radius: 4px;
+
+                        HorizontalLayout {
+                            Rectangle {
+                                width: 4px;
+                                background: msg.embed_color;
+                                border-top-left-radius: 4px;
+                                border-bottom-left-radius: 4px;
+                            }
+
+                            VerticalLayout {
+                                padding: 10px;
+                                padding-left: 12px;
+                                spacing: 8px;
+
+                                if msg.embed-content != "": Text {
+                                    text: msg.embed-content;
+                                    color: #d2d5d9;
+                                    font-size: 12.5px;
+                                    wrap: word-wrap;
+                                }
+
+                                if msg.embed-footer != "": Rectangle {
+                                    height: 1px;
+                                    background: #3f4147;
+                                }
+
+                                if msg.embed-footer != "": Text {
+                                    text: msg.embed-footer;
+                                    color: #949ba4;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    if msg.links.length > 0 && !is-collapsed : VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 4px;
+                        for link in msg.links : Rectangle {
+                            height: 20px;
+                            background: transparent;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "🔗";
+                                    color: #00b0f4;
+                                    vertical-alignment: center;
+                                    font-size: 11px;
+                                }
+                                Text {
+                                    text: link.label;
+                                    color: #00b0f4;
+                                    vertical-alignment: center;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.open_link(link.url);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Litecord - Ultra-Lightweight Discord Client";
     icon: @image-url("../assets/app_icon.png");
@@ -125,6 +388,7 @@ export component AppWindow inherits Window {
     callback update_app_dismiss();
     callback update_app_ignore();
     callback check_for_updates();
+    callback load_older_messages();
 
     // Auto-Update Properties
     in-out property <bool> show_update_dialog: false;
@@ -133,9 +397,18 @@ export component AppWindow inherits Window {
     in-out property <bool> is_updating: false;
     in-out property <float> update_progress: 0.0;
     in-out property <string> update_status_text: "Baixando atualização...";
-    in-out property <string> app_version: "v0.2.4";
+    in-out property <string> app_version: "v0.2.5";
     in-out property <string> update_check_feedback: "";
     in-out property <bool> is_checking_update: false;
+
+    // Chat Pagination Properties
+    in-out property <bool> is_loading_older_messages: false;
+    in-out property <bool> has_more_older_messages: false;
+    in-out property <int> scroll_to_bottom_trigger: 0;
+
+    public function scroll_chat_to_bottom() {
+        root.scroll_to_bottom_trigger += 1;
+    }
 
     // Translations (i18n)
     in-out property <string> current_language_code: "auto";
@@ -1280,215 +1553,16 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Messages Scroll View
-                    Rectangle {
+                    // Messages Chat Feed View
+                    chat_view := ChatMessagesView {
                         vertical-stretch: 1;
-
-                        ScrollView {
-                            height: 100%;
-                            width: 100%;
-
-                            VerticalBox {
-                                padding: 12px;
-                                spacing: 10px;
-
-                                for msg in root.messages: Rectangle {
-                                    background: #2b2d31;
-                                    border-radius: 6px;
-                                    property <bool> is-collapsed: true;
-
-                                     VerticalBox {
-                                         padding: 8px;
-                                         spacing: 4px;
-
-                                         if msg.reply-author != "": Rectangle {
-                                             background: #1e293b;
-                                             border-radius: 4px;
-                                             border-width: 1px;
-                                             border-color: #3b82f6;
-
-                                             VerticalLayout {
-                                                 padding: 6px;
-                                                 spacing: 4px;
-
-                                                 HorizontalLayout {
-                                                     spacing: 6px;
-
-                                                     VerticalLayout {
-                                                         alignment: center;
-                                                         Image {
-                                                             source: @image-url("../assets/reply.svg");
-                                                             width: 11px;
-                                                             height: 11px;
-                                                             colorize: #3b82f6;
-                                                             image-fit: contain;
-                                                         }
-                                                     }
-
-                                                     Text {
-                                                         text: root.tr_replying_to + msg.reply-author;
-                                                         color: #3b82f6;
-                                                         font-size: 10px;
-                                                         font-weight: 700;
-                                                         vertical-alignment: center;
-                                                     }
-                                                 }
-
-                                                 Text {
-                                                     text: msg.reply-content;
-                                                     color: #94a3b8;
-                                                     font-size: 10.5px;
-                                                     wrap: word-wrap;
-                                                 }
-                                             }
-                                         }
-
-                                         HorizontalLayout {
-                                             spacing: 8px;
-                                            Text {
-                                                text: msg.author;
-                                                color: #5865f2;
-                                                font-weight: 700;
-                                                font-size: 13px;
-                                            }
-
-                                            Text {
-                                                text: msg.timestamp;
-                                                color: #949ba4;
-                                                font-size: 10px;
-                                                vertical-alignment: center;
-                                            }
-
-                                            // Push the button to the right end
-                                            Rectangle { }
-
-                                            // Collapse/Expand button (only if links are present)
-                                            if msg.links.length > 0 : Rectangle {
-                                                width: 20px;
-                                                height: 20px;
-                                                background: transparent;
-                                                Text {
-                                                    text: is-collapsed ? "▼" : "▲";
-                                                    color: #949ba4;
-                                                    font-size: 10px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                                TouchArea {
-                                                    mouse-cursor: pointer;
-                                                    clicked => {
-                                                        is-collapsed = !is-collapsed;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Regular message content
-                                        if msg.content != "": Text {
-                                            text: msg.content;
-                                            color: #dbdee1;
-                                            font-size: 13px;
-                                            wrap: word-wrap;
-                                        }
-
-                                        // Monospaced Code Block Box (visual representation of block code)
-                                        if msg.code-block != "": Rectangle {
-                                            background: #1e1f22;
-                                            border-radius: 4px;
-                                            border-width: 1px;
-                                            border-color: #2b2d31;
-
-                                            VerticalLayout {
-                                                padding: 8px;
-                                                Text {
-                                                    text: msg.code-block;
-                                                    color: #e6c07b;
-                                                    font-family: "Courier New";
-                                                    font-size: 12.5px;
-                                                    wrap: word-wrap;
-                                                }
-                                            }
-                                        }
-
-                                        // Embed box with colored left bar (always visible if present)
-                                        if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
-                                            background: #232428;
-                                            border-radius: 4px;
-
-                                            HorizontalLayout {
-                                                // Colored left bar
-                                                Rectangle {
-                                                    width: 4px;
-                                                    background: msg.embed_color;
-                                                    border-top-left-radius: 4px;
-                                                    border-bottom-left-radius: 4px;
-                                                }
-
-                                                // Embed content layout
-                                                VerticalLayout {
-                                                    padding: 10px;
-                                                    padding-left: 12px;
-                                                    spacing: 8px;
-
-                                                    if msg.embed-content != "": Text {
-                                                        text: msg.embed-content;
-                                                        color: #d2d5d9;
-                                                        font-size: 12.5px;
-                                                        wrap: word-wrap;
-                                                    }
-
-                                                    // Horizontal separator (representing dashes)
-                                                    if msg.embed-footer != "": Rectangle {
-                                                        height: 1px;
-                                                        background: #3f4147;
-                                                    }
-
-                                                    // Footer content
-                                                    if msg.embed-footer != "": Text {
-                                                        text: msg.embed-footer;
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Clickable attachments / links list (toggled by is-collapsed, starts hidden)
-                                        if msg.links.length > 0 && !is-collapsed : VerticalLayout {
-                                            spacing: 6px;
-                                            padding-top: 4px;
-                                            for link in msg.links : Rectangle {
-                                                height: 20px;
-                                                background: transparent;
-                                                HorizontalLayout {
-                                                    spacing: 6px;
-                                                    Text {
-                                                        text: "🔗";
-                                                        color: #00b0f4;
-                                                        vertical-alignment: center;
-                                                        font-size: 11px;
-                                                    }
-                                                    Text {
-                                                        text: link.label;
-                                                        color: #00b0f4;
-                                                        vertical-alignment: center;
-                                                        font-size: 13px;
-                                                        font-weight: 500;
-                                                    }
-                                                }
-                                                TouchArea {
-                                                    mouse-cursor: pointer;
-                                                    clicked => {
-                                                        root.open_link(link.url);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        messages: root.messages;
+                        has_more_older_messages: root.has_more_older_messages;
+                        is_loading_older_messages: root.is_loading_older_messages;
+                        tr_replying_to: root.tr_replying_to;
+                        scroll_trigger: root.scroll_to_bottom_trigger;
+                        load_older_messages => { root.load_older_messages(); }
+                        open_link(url) => { root.open_link(url); }
                     }
 
                     // Message Input Box

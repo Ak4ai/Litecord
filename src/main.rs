@@ -721,8 +721,8 @@ async fn fetch_and_populate_channels(
                 let ch_id = text_ch.id.clone();
                 let ch_name = text_ch.name.clone();
 
+                *active_channel_id.lock().unwrap() = ch_id.clone();
                 if load_messages_for_channel(http, app_weak.clone(), &ch_id).await {
-                    *active_channel_id.lock().unwrap() = ch_id;
                     let app_w2 = app_weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w2.upgrade() {
@@ -735,9 +735,29 @@ async fn fetch_and_populate_channels(
             }
 
             if !loaded_readable {
-                if let Some(ui) = app_weak.upgrade() {
-                    ui.set_active_channel_name("Nenhum canal de texto acessível".into());
-                }
+                *active_channel_id.lock().unwrap() = String::new();
+                let app_w_none = app_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w_none.upgrade() {
+                        ui.set_active_channel_name("Nenhum canal de texto acessível".into());
+                        let empty_msgs = vec![ChatMessage {
+                            id: "".into(),
+                            author: "Litecord System".into(),
+                            content: "🔒 Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                            embed_content: "".into(),
+                            embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                            embed_footer: "".into(),
+                            code_block: "".into(),
+                            reply_author: "".into(),
+                            reply_content: "".into(),
+                            links: slint::ModelRc::default(),
+                            timestamp: "Agora".into(),
+                        }];
+                        let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
+                        ui.set_messages(model.into());
+                        ui.set_has_more_older_messages(false);
+                    }
+                });
             }
         }
         Err(e) => {
@@ -754,10 +774,21 @@ async fn load_messages_for_channel(
     info!("Carregando mensagens do canal {}...", channel_id);
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
+            let has_more = msgs_val.len() >= 30;
+            if let Some(oldest) = msgs_val.last() {
+                if let Some(id_str) = oldest["id"].as_str() {
+                    get_oldest_message_map().lock().unwrap().insert(channel_id.to_string(), id_str.to_string());
+                }
+            }
+
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_has_more_older_messages(has_more);
+                    ui.set_is_loading_older_messages(false);
+
                     let ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
                         vec![ChatMessage {
+                            id: "".into(),
                             author: "Litecord System".into(),
                             content: "Este canal está vazio ou não possui mensagens recentes.".into(),
                             embed_content: "".into(),
@@ -771,6 +802,7 @@ async fn load_messages_for_channel(
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
+                            let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
                             let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
                             
@@ -781,6 +813,7 @@ async fn load_messages_for_channel(
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
                             ChatMessage {
+                                id: msg_id.into(),
                                 author: author.into(),
                                 content: content.into(),
                                 embed_content: embed_content.into(),
@@ -796,6 +829,13 @@ async fn load_messages_for_channel(
                     };
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
+
+                    let app_w_scroll = app_weak.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
+                        if let Some(ui) = app_w_scroll.upgrade() {
+                            ui.invoke_scroll_chat_to_bottom();
+                        }
+                    });
                 }
             });
             true
@@ -810,7 +850,9 @@ async fn load_messages_for_channel(
 
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_has_more_older_messages(false);
                     let ui_msgs = vec![ChatMessage {
+                        id: "".into(),
                         author: "Litecord System".into(),
                         content: friendly_msg.into(),
                         embed_content: "".into(),
@@ -1734,6 +1776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
             current_msgs.push(ChatMessage {
+                id: "".into(),
                 author: "Litecord Voice".into(),
                 content: "🔴 Desconectado da sala de voz.".into(),
                 embed_content: "".into(),
@@ -1843,6 +1886,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
         });
+    });
+
+    // Chat Pagination: Load Older Messages Callback
+    let app_weak_older = app_weak.clone();
+    let http_client_older = Arc::clone(&http_client);
+    let active_ch_older = Arc::clone(&active_channel_id);
+    app.on_load_older_messages(move || {
+        let app_w = app_weak_older.clone();
+        let http_opt = http_client_older.lock().unwrap().clone();
+        let ch_id = active_ch_older.lock().unwrap().clone();
+
+        if ch_id.is_empty() {
+            return;
+        }
+
+        let oldest_id_opt = get_oldest_message_map().lock().unwrap().get(&ch_id).cloned();
+        let oldest_id = match oldest_id_opt {
+            Some(id) if !id.is_empty() => id,
+            _ => return,
+        };
+
+        if let Some(http) = http_opt {
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_is_loading_older_messages(true);
+            }
+
+            let app_w_inner = app_w.clone();
+            let ch_id_clone = ch_id.clone();
+            tokio::spawn(async move {
+                match http.get_channel_messages_before(&ch_id_clone, &oldest_id).await {
+                    Ok(msgs_val) => {
+                        let has_more = msgs_val.len() >= 30;
+                        if let Some(oldest) = msgs_val.last() {
+                            if let Some(id_str) = oldest["id"].as_str() {
+                                get_oldest_message_map().lock().unwrap().insert(ch_id_clone, id_str.to_string());
+                            }
+                        }
+
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w_inner.upgrade() {
+                                ui.set_is_loading_older_messages(false);
+                                ui.set_has_more_older_messages(has_more);
+
+                                let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
+                                    let msg_id = m["id"].as_str().unwrap_or("");
+                                    let author = format_discord_author(m);
+                                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
+                                    
+                                    let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
+                                        label: l.label.clone().into(),
+                                        url: l.url.clone().into(),
+                                    }).collect();
+                                    let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                                    ChatMessage {
+                                        id: msg_id.into(),
+                                        author: author.into(),
+                                        content: content.into(),
+                                        embed_content: embed_content.into(),
+                                        embed_color: parse_hex_color(&embed_color),
+                                        embed_footer: embed_footer.into(),
+                                        code_block: code_block.into(),
+                                        reply_author: reply_author.into(),
+                                        reply_content: reply_content.into(),
+                                        links: slint::ModelRc::from(links_model),
+                                        timestamp: "Anterior".into(),
+                                    }
+                                }).collect();
+
+                                let current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+                                let mut combined = older_slint_msgs;
+                                combined.extend(current_msgs);
+                                let model = std::rc::Rc::new(slint::VecModel::from(combined));
+                                ui.set_messages(model.into());
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("Erro ao carregar mensagens anteriores: {}", e);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w_inner.upgrade() {
+                                ui.set_is_loading_older_messages(false);
+                            }
+                        });
+                    }
+                }
+            });
+        }
     });
 
     // Active QR Code Remote Auth Session
@@ -2309,6 +2440,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
                 current_msgs.push(ChatMessage {
+                    id: "".into(),
                     author: "Litecord Voice".into(),
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
                     embed_content: "".into(),
@@ -2526,6 +2658,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_gw_events = app_weak.clone();
     let last_token_gw_save = Arc::clone(&last_token);
     let active_guild_gw_events = Arc::clone(&active_guild_id);
+    let active_channel_gw_events = Arc::clone(&active_channel_id);
     let guilds_map_gw_events = Arc::clone(&guilds_map);
 
     tokio::spawn(async move {
@@ -2533,6 +2666,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_weak_inner = app_weak_gw_events.clone();
             let last_token_inner = Arc::clone(&last_token_gw_save);
             let active_guild_inner = Arc::clone(&active_guild_gw_events);
+            let active_channel_inner = Arc::clone(&active_channel_gw_events);
             let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
 
             match event {
@@ -2555,7 +2689,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, timestamp, .. } => {
+                GatewayEvent::MessageCreated { channel_id, author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, timestamp } => {
+                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    if channel_id != current_active_ch {
+                        // Message is for a different channel or different server — IGNORE from current chat UI!
+                        continue;
+                    }
+
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
                         // Messages will be re-fetched via REST when the window is restored.
@@ -2573,6 +2713,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
                                 current_msgs.push(ChatMessage {
+                                    id: "".into(),
                                     author: author.into(),
                                     content: content.into(),
                                     embed_content: embed_content.into(),
@@ -2586,6 +2727,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 });
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                                 ui.set_messages(model.into());
+
+                                let app_w_scroll = app_weak_inner.clone();
+                                slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
+                                    if let Some(ui) = app_w_scroll.upgrade() {
+                                        ui.invoke_scroll_chat_to_bottom();
+                                    }
+                                });
                             }
                         });
                     }
@@ -3028,6 +3176,12 @@ static PENDING_UPDATE_STORE: std::sync::OnceLock<Arc<Mutex<Option<updater::Relea
 
 pub fn get_pending_update_store() -> Arc<Mutex<Option<updater::ReleaseInfo>>> {
     PENDING_UPDATE_STORE.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+}
+
+static OLDEST_MESSAGE_MAP: std::sync::OnceLock<Arc<Mutex<HashMap<String, String>>>> = std::sync::OnceLock::new();
+
+pub fn get_oldest_message_map() -> Arc<Mutex<HashMap<String, String>>> {
+    OLDEST_MESSAGE_MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
 }
 
 fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {

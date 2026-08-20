@@ -78,7 +78,23 @@ impl DiscordHttpClient {
     }
 
     pub async fn get_channel_messages(&self, channel_id: &str) -> Result<Vec<serde_json::Value>, String> {
-        let url = format!("https://discord.com/api/v10/channels/{}/messages?limit=50", channel_id);
+        let url = format!("https://discord.com/api/v10/channels/{}/messages?limit=30", channel_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(msgs) = resp.json::<Vec<serde_json::Value>>().await {
+                        return Ok(msgs);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+        }
+    }
+
+    pub async fn get_channel_messages_before(&self, channel_id: &str, before_msg_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        let url = format!("https://discord.com/api/v10/channels/{}/messages?limit=30&before={}", channel_id, before_msg_id);
         match self.client.get(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
