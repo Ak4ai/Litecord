@@ -2150,12 +2150,20 @@ pub async fn connect_voice_gateway(
                                                                                                 for &alt_uid in &uids {
                                                                                                     if alt_uid != s.user_id() {
                                                                                                         if let Ok(d) = s.decrypt(alt_uid, MediaType::AUDIO, transport_payload) {
-                                                                                                            found = Some(d);
+                                                                                                            found = Some((d, alt_uid));
                                                                                                             break;
                                                                                                         }
                                                                                                     }
                                                                                                 }
-                                                                                                if let Some(d) = found { Ok(d) } else { Err(davey::errors::DecryptError::NoDecryptorForUser) }
+                                                                                                if let Some((d, matched_uid)) = found {
+                                                                                                    if let Ok(mut m) = ssrc_to_userid_rx.lock() {
+                                                                                                        m.insert(ssrc_recv, matched_uid);
+                                                                                                    }
+                                                                                                    register_voice_participant(ssrc_recv, matched_uid);
+                                                                                                    Ok(d)
+                                                                                                } else {
+                                                                                                    Err(davey::errors::DecryptError::NoDecryptorForUser)
+                                                                                                }
                                                                                             } else {
                                                                                                 Err(davey::errors::DecryptError::NoDecryptorForUser)
                                                                                             }
@@ -2953,6 +2961,17 @@ pub async fn connect_voice_gateway(
                                  }
                                  11 | 12 => {
                                      // Voice Opcode 11/12: User Joined / Client Connect
+                                     if let Some(arr) = val["d"]["user_ids"].as_array() {
+                                         for v in arr {
+                                             if let Some(uid_str) = v.as_str() {
+                                                 if let Ok(uid) = uid_str.parse::<u64>() {
+                                                     let ssrc = (uid & 0xFFFFFFFF) as u32;
+                                                     register_voice_participant(ssrc, uid);
+                                                     info!("Voice Gateway OP 11/12 (user_ids): Registrado participante User ID {}", uid);
+                                                 }
+                                             }
+                                         }
+                                     }
                                      let s_ssrc = val["d"]["audio_ssrc"].as_u64().or_else(|| val["d"]["ssrc"].as_u64()).unwrap_or(0) as u32;
                                      let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
                                          s.parse().unwrap_or(0)
@@ -2983,12 +3002,12 @@ pub async fn connect_voice_gateway(
                                         transition_id, protocol_version, val["d"]);
 
                                     let ready = serde_json::json!({
-                                        "op": 21,
+                                        "op": 23,
                                         "d": { "transition_id": transition_id }
                                     });
                                     let mut w = write_arc.lock().await;
                                     let _ = w.send(Message::Text(ready.to_string().into())).await;
-                                    info!("DAVE Execute Transition (op=21) enviado para transition_id={}", transition_id);
+                                    info!("DAVE: Ready For Transition (op=23) enviado para transition_id={}", transition_id);
                                 }
                                 19 => {
                                     // DAVE Opcode 19: DAVE_EXECUTE_TRANSITION
@@ -2998,6 +3017,19 @@ pub async fn connect_voice_gateway(
                                 20 => {
                                     // DAVE Opcode 20: DAVE_TRANSITION_READY
                                     // DAVE Transition Ready (op=20): payload={}", val["d"]);
+                                }
+                                21 => {
+                                    // DAVE Opcode 21: DAVE_PREPARE_TRANSITION (Server -> Client)
+                                    let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
+                                    let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(0);
+                                    info!("DAVE Prepare Transition (op=21): transition_id={}, protocol_version={}", transition_id, protocol_version);
+                                    let ready = serde_json::json!({
+                                        "op": 23,
+                                        "d": { "transition_id": transition_id }
+                                    });
+                                    let mut w = write_arc.lock().await;
+                                    let _ = w.send(Message::Text(ready.to_string().into())).await;
+                                    info!("DAVE: Ready For Transition (op=23) enviado para op=21 transition_id={}", transition_id);
                                 }
                                 _ => {
                                     info!("Voice Gateway opcode JSON ignorado: op={}, data={}", op, val["d"]);
@@ -3080,12 +3112,29 @@ pub async fn connect_voice_gateway(
                                 } else { 0 };
                                 let commit_payload = if data.len() > 3 { &data[3..] } else { &[][..] };
                                 info!("DAVE: AnnounceCommitTransition (op=29) recebido: transition_id={}", transition_id);
-                                let mut sess = dave_session.lock().unwrap();
-                                if let Some(ref mut s) = *sess {
-                                    match s.process_commit(commit_payload) {
-                                        Ok(()) => info!("DAVE: Commit processado com sucesso! is_ready={}", s.is_ready()),
-                                        Err(e) => warn!("DAVE: Falha ao processar commit: {:?}", e),
-                                    }
+                                let commit_ok = {
+                                    let mut sess = dave_session.lock().unwrap();
+                                    if let Some(ref mut s) = *sess {
+                                        match s.process_commit(commit_payload) {
+                                            Ok(()) => {
+                                                info!("DAVE: Commit processado com sucesso! is_ready={}", s.is_ready());
+                                                true
+                                            }
+                                            Err(e) => {
+                                                warn!("DAVE: Falha ao processar commit: {:?}", e);
+                                                false
+                                            }
+                                        }
+                                    } else { false }
+                                };
+                                if commit_ok {
+                                    let ready = serde_json::json!({
+                                        "op": 23,
+                                        "d": { "transition_id": transition_id }
+                                    });
+                                    let mut w = write_arc.lock().await;
+                                    let _ = w.send(Message::Text(ready.to_string().into())).await;
+                                    info!("DAVE: Ready For Transition (op=23) enviado para AnnounceCommit transition_id={}", transition_id);
                                 }
                             }
                             30 => {
@@ -3112,12 +3161,12 @@ pub async fn connect_voice_gateway(
                                 };
                                 if is_active {
                                     let ready = serde_json::json!({
-                                        "op": 21,
+                                        "op": 23,
                                         "d": { "transition_id": transition_id }
                                     });
                                     let mut w = write_arc.lock().await;
                                     let _ = w.send(Message::Text(ready.to_string().into())).await;
-                                    info!("DAVE: Execute Transition (op=21) enviado para Welcome transition_id={}", transition_id);
+                                    info!("DAVE: Ready For Transition (op=23) enviado para Welcome transition_id={}", transition_id);
                                 }
                             }
                             _ => {
