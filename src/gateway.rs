@@ -2737,6 +2737,7 @@ pub async fn connect_voice_gateway(
                                                 timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                                                 // Send initial 10 silence frames (200ms) to immediately punch UDP NAT hole and activate SFU downstream routing
                                                 let mut remaining_silence_frames: usize = 10;
+                                                let mut speech_hangover_frames: usize = 0;
                                                 let mut silence_keepalive_counter: u32 = 0;
 
                                                 loop {
@@ -2785,8 +2786,12 @@ pub async fn connect_voice_gateway(
                                                     }
 
                                                     let is_silence_packet = if has_audio {
+                                                        speech_hangover_frames = 12; // 240ms hangover
                                                         remaining_silence_frames = 5;
                                                         silence_keepalive_counter = 0;
+                                                        false
+                                                    } else if speech_hangover_frames > 0 {
+                                                        speech_hangover_frames -= 1;
                                                         false
                                                     } else if remaining_silence_frames > 0 {
                                                         remaining_silence_frames -= 1;

@@ -2080,7 +2080,7 @@ export component AppWindow inherits Window {
                                 spacing: 0px;
 
                                 Rectangle {
-                                    width: Math.max(4px, (root.mic_level * 460) * 1px);
+                                    width: root.mic_level <= 0.01 ? 0px : Math.max(2px, (root.mic_level * 460) * 1px);
                                     height: 14px;
                                     background: root.mic_level >= root.vad_threshold ? #23a55a : #f0b232;
                                     border-radius: 4px;

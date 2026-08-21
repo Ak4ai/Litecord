@@ -1495,7 +1495,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if is_self_muted {
                             (0.0, false, true)
                         } else {
-                            (mic_lvl, mic_lvl >= gateway::get_vad_threshold(), false)
+                            let is_spk = mic_lvl >= gateway::get_vad_threshold();
+                            let lvl = if is_spk { mic_lvl } else { 0.0 };
+                            (lvl, is_spk, false)
                         }
                     } else {
                         (audio_level, is_speaking, is_muted_saved)
