@@ -1822,7 +1822,7 @@ pub async fn connect_voice_gateway(
                                             "token": token,
                                             "video": false,
                                             "streams": [],
-                                            "max_dave_protocol_version": 1
+                                            "max_dave_protocol_version": 0
                                         }
                                     });
 
@@ -2188,6 +2188,14 @@ pub async fn connect_voice_gateway(
                                                                         if can_decode && !opus_data.is_empty() {
                                                                             let mut raw_opus = opus_data.as_slice();
 
+                                                                            if raw_opus.len() >= 4 && (raw_opus.starts_with(&[0xBE, 0xDE]) || raw_opus.starts_with(&[0x10, 0x00])) {
+                                                                                let ext_words = u16::from_be_bytes([raw_opus[2], raw_opus[3]]) as usize;
+                                                                                let ext_total_bytes = 4 + ext_words * 4;
+                                                                                if raw_opus.len() > ext_total_bytes {
+                                                                                    raw_opus = &raw_opus[ext_total_bytes..];
+                                                                                }
+                                                                            }
+
                                                                             if raw_opus.first() == Some(&0x00) && raw_opus.len() > 1 {
                                                                                 raw_opus = &raw_opus[1..];
                                                                             }
@@ -2198,6 +2206,8 @@ pub async fn connect_voice_gateway(
                                                                                     raw_opus = &raw_opus[..raw_opus.len() - pad_len];
                                                                                 }
                                                                             }
+
+                                                                            if raw_opus.is_empty() { continue; }
 
                                                                             pkt_channels = if (raw_opus[0] & 0x04) != 0 { 2 } else { 1 };
                                                                             let dec = opus_decoders.entry((ssrc_recv, pkt_channels)).or_insert_with(|| {
