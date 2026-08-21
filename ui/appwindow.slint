@@ -389,6 +389,9 @@ export component AppWindow inherits Window {
     callback update_app_ignore();
     callback check_for_updates();
     callback load_older_messages();
+    callback toggle_screen_share();
+    callback toggle_stream_fullscreen();
+    callback focus_stream(string /* user_id */);
 
     // Auto-Update Properties
     in-out property <bool> show_update_dialog: false;
@@ -478,6 +481,18 @@ export component AppWindow inherits Window {
     in-out property <float> mic_level: 0.0; // Real-time mic volume level (0.0 to 1.0)
     in-out property <float> vad_threshold: 0.05; // Voice Activity Detection Threshold (0.0 to 1.0)
     in-out property <bool> is_testing_mic: false; // Mic loopback ("Se ouvir") test active
+
+    // Screen Share / Live Video Grid Properties
+    in-out property <bool> is_screen_sharing: false;
+    in-out property <bool> has_active_stream: false;
+    in-out property <string> active_stream_user: "";
+    in-out property <image> active_stream_frame;
+    in-out property <bool> is_stream_fullscreen: false;
+    in-out property <string> tr_start_screen_share: "Transmitir Tela";
+    in-out property <string> tr_stop_screen_share: "Parar Transmissão";
+    in-out property <string> tr_live_badge: "AO VIVO";
+    in-out property <string> tr_watching_stream: "Assistindo Transmissão";
+    in-out property <string> tr_stream_quality: "30 FPS • HD";
 
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
@@ -1155,6 +1170,15 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 Button {
+                                    icon: @image-url("../assets/qr.svg");
+                                    text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
+                                    clicked => { root.toggle_screen_share(); }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                Button {
                                     icon: @image-url("../assets/message-square.svg");
                                     text: root.tr_view_text_chat;
                                     clicked => { root.toggle_voice_focus(); }
@@ -1241,6 +1265,97 @@ export component AppWindow inherits Window {
                         VerticalBox {
                             padding: 12px;
                             spacing: 8px;
+
+                            // Live Screen Stream Video Viewport (Discord Style Stage)
+                            if root.has_active_stream: Rectangle {
+                                height: root.is_stream_fullscreen ? 460px : 260px;
+                                background: #111214;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: #5865f2;
+                                clip: true;
+
+                                Image {
+                                    source: root.active_stream_frame;
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                }
+
+                                // Stream Overlay Header (Live Badge + User Tag + Fullscreen Button)
+                                HorizontalLayout {
+                                    x: 8px;
+                                    y: 8px;
+                                    width: parent.width - 16px;
+                                    spacing: 8px;
+
+                                    Rectangle {
+                                        background: #f23f43;
+                                        border-radius: 4px;
+                                        height: 22px;
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            spacing: 5px;
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Rectangle {
+                                                    width: 6px;
+                                                    height: 6px;
+                                                    border-radius: 3px;
+                                                    background: #ffffff;
+                                                }
+                                            }
+                                            Text {
+                                                text: root.tr_live_badge;
+                                                color: #ffffff;
+                                                font-size: 10px;
+                                                font-weight: 800;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        background: #000000aa;
+                                        border-radius: 4px;
+                                        height: 22px;
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            Text {
+                                                text: root.active_stream_user + " • " + root.tr_stream_quality;
+                                                color: #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+
+                                    // Fullscreen / Theater Mode Toggle
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 22px;
+                                        border-radius: 4px;
+                                        background: #000000aa;
+
+                                        Text {
+                                            text: root.is_stream_fullscreen ? "🗗" : "⛶";
+                                            color: #ffffff;
+                                            font-size: 12px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        TouchArea {
+                                            clicked => { root.toggle_stream_fullscreen(); }
+                                        }
+                                    }
+                                }
+                            }
 
                             Text {
                                 text: root.tr_voice_participants_title + " (" + root.voice_participants.length + ")";

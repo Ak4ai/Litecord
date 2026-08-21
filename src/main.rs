@@ -6,11 +6,13 @@ mod tray;
 mod i18n;
 mod remote_auth;
 mod updater;
+mod screen_capture;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
 use tray::SystemTrayManager;
 use remote_auth::RemoteAuthEvent;
+use screen_capture::ScreenCaptureManager;
 
 use slint::{SharedString, Model, Image};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
@@ -1204,6 +1206,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Screen Share / Live Stream Video Callbacks
+    let screen_manager = Arc::new(ScreenCaptureManager::new());
+    let sm_clone = Arc::clone(&screen_manager);
+    let app_weak_ss = app_weak.clone();
+
+    app.on_toggle_screen_share(move || {
+        let sm = Arc::clone(&sm_clone);
+        if let Some(ui) = app_weak_ss.upgrade() {
+            let active = sm.is_active();
+            if active {
+                sm.stop();
+                ui.set_is_screen_sharing(false);
+                ui.set_has_active_stream(false);
+            } else {
+                let app_weak_frame = app_weak_ss.clone();
+                sm.start(move |pixel_buffer| {
+                    let app_w = app_weak_frame.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            let frame = Image::from_rgba8(pixel_buffer);
+                            ui.set_active_stream_frame(frame);
+                        }
+                    });
+                });
+                ui.set_is_screen_sharing(true);
+                ui.set_has_active_stream(true);
+                ui.set_active_stream_user(slint::SharedString::from("Você (Sua Tela)"));
+            }
+        }
+    });
+
+    let app_weak_fs = app_weak.clone();
+    app.on_toggle_stream_fullscreen(move || {
+        if let Some(ui) = app_weak_fs.upgrade() {
+            let cur = ui.get_is_stream_fullscreen();
+            ui.set_is_stream_fullscreen(!cur);
+        }
+    });
+
+    let app_weak_focus_stream = app_weak.clone();
+    app.on_focus_stream(move |_uid| {
+        if let Some(ui) = app_weak_focus_stream.upgrade() {
+            ui.set_has_active_stream(true);
+        }
+    });
+
     let app_weak_mute = app_weak.clone();
     app.on_toggle_user_mute(move |uid_str: SharedString| {
         let uid = uid_str.to_string();
@@ -1754,13 +1802,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd_tx_leave = Arc::clone(&cmd_tx_store);
     let active_guild_leave = Arc::clone(&active_guild_id);
     let app_weak_leave = app_weak.clone();
+    let sm_leave = Arc::clone(&screen_manager);
 
     app.on_leave_voice(move || {
         info!("Usuário solicitou desconexão da sala de voz...");
+        sm_leave.stop();
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);
             ui.set_current_voice_channel("".into());
+            ui.set_is_screen_sharing(false);
+            ui.set_has_active_stream(false);
             gateway::clear_voice_participants();
 
             let gid = active_guild_leave.lock().unwrap().clone();
