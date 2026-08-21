@@ -1539,13 +1539,13 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
-                                                      // Slider
+                                                      // Slider (0% to 200% with amplification boost like Discord)
                                                       VerticalLayout {
                                                           alignment: center;
                                                           Slider {
-                                                              width: 110px;
+                                                              width: 120px;
                                                               minimum: 0.0;
-                                                              maximum: 1.0;
+                                                              maximum: 2.0;
                                                               value: p.volume;
                                                               changed(val) => { root.set_user_volume(p.user_id, val); }
                                                           }
