@@ -221,23 +221,27 @@ fn start_mic_capture(
             target_dev.build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &_| {
-                    let mut sum_sq = 0.0f32;
                     let num_channels = channels.max(1);
                     let frames = data.len() / num_channels;
-                    for frame in data.chunks(num_channels) {
-                        let s = frame.iter().sum::<f32>() / frame.len() as f32;
+                    if frames == 0 { return; }
+
+                    let mut mono_samples = Vec::with_capacity(frames);
+                    let mut sum_sq = 0.0f32;
+
+                    for frame in data.chunks_exact(num_channels) {
+                        let s = frame.iter().sum::<f32>() / num_channels as f32;
                         sum_sq += s * s;
+                        mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames.max(1) as f32).sqrt();
+                    let rms = (sum_sq / frames as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
                     let _ = level_tx.try_send(level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for frame in data.chunks(num_channels) {
-                                let s = (frame.iter().sum::<f32>() / frame.len() as f32).clamp(-1.0, 1.0);
-                                push_to_mic_queues(&mut q, s, level);
+                            for &s in &mono_samples {
+                                push_to_mic_queues(&mut q, s.clamp(-1.0, 1.0), level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
@@ -247,14 +251,8 @@ fn start_mic_capture(
                                 let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
                                 let frac = (src_pos - src_idx as f64) as f32;
                                 
-                                let get_sample = |idx: usize| -> f32 {
-                                    if let Some(frame) = data.chunks(num_channels).nth(idx) {
-                                        frame.iter().sum::<f32>() / frame.len() as f32
-                                    } else { 0.0 }
-                                };
-                                
-                                let s0 = get_sample(src_idx);
-                                let s1 = get_sample((src_idx + 1).min(frames.saturating_sub(1)));
+                                let s0 = mono_samples[src_idx];
+                                let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
                                 let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, resampled, level);
                             }
@@ -272,23 +270,27 @@ fn start_mic_capture(
             target_dev.build_input_stream(
                 &config.into(),
                 move |data: &[i16], _: &_| {
-                    let mut sum_sq = 0.0f32;
                     let num_channels = channels.max(1);
                     let frames = data.len() / num_channels;
-                    for frame in data.chunks(num_channels) {
-                        let s = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32;
+                    if frames == 0 { return; }
+
+                    let mut mono_samples = Vec::with_capacity(frames);
+                    let mut sum_sq = 0.0f32;
+
+                    for frame in data.chunks_exact(num_channels) {
+                        let s = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / num_channels as f32;
                         sum_sq += s * s;
+                        mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames.max(1) as f32).sqrt();
+                    let rms = (sum_sq / frames as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
                     let _ = level_tx.try_send(level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for frame in data.chunks(num_channels) {
-                                let s = (frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32).clamp(-1.0, 1.0);
-                                push_to_mic_queues(&mut q, s, level);
+                            for &s in &mono_samples {
+                                push_to_mic_queues(&mut q, s.clamp(-1.0, 1.0), level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
@@ -298,14 +300,8 @@ fn start_mic_capture(
                                 let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
                                 let frac = (src_pos - src_idx as f64) as f32;
                                 
-                                let get_sample = |idx: usize| -> f32 {
-                                    if let Some(frame) = data.chunks(num_channels).nth(idx) {
-                                        frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / frame.len() as f32
-                                    } else { 0.0 }
-                                };
-                                
-                                let s0 = get_sample(src_idx);
-                                let s1 = get_sample((src_idx + 1).min(frames.saturating_sub(1)));
+                                let s0 = mono_samples[src_idx];
+                                let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
                                 let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, resampled, level);
                             }
@@ -323,23 +319,27 @@ fn start_mic_capture(
             target_dev.build_input_stream(
                 &config.into(),
                 move |data: &[i32], _: &_| {
-                    let mut sum_sq = 0.0f32;
                     let num_channels = channels.max(1);
                     let frames = data.len() / num_channels;
-                    for frame in data.chunks(num_channels) {
-                        let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32;
+                    if frames == 0 { return; }
+
+                    let mut mono_samples = Vec::with_capacity(frames);
+                    let mut sum_sq = 0.0f32;
+
+                    for frame in data.chunks_exact(num_channels) {
+                        let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / num_channels as f32;
                         sum_sq += s * s;
+                        mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames.max(1) as f32).sqrt();
+                    let rms = (sum_sq / frames as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
                     let _ = level_tx.try_send(level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for frame in data.chunks(num_channels) {
-                                let s = (frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32).clamp(-1.0, 1.0);
-                                push_to_mic_queues(&mut q, s, level);
+                            for &s in &mono_samples {
+                                push_to_mic_queues(&mut q, s.clamp(-1.0, 1.0), level);
                             }
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
@@ -349,14 +349,8 @@ fn start_mic_capture(
                                 let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
                                 let frac = (src_pos - src_idx as f64) as f32;
                                 
-                                let get_sample = |idx: usize| -> f32 {
-                                    if let Some(frame) = data.chunks(num_channels).nth(idx) {
-                                        frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / frame.len() as f32
-                                    } else { 0.0 }
-                                };
-                                
-                                let s0 = get_sample(src_idx);
-                                let s1 = get_sample((src_idx + 1).min(frames.saturating_sub(1)));
+                                let s0 = mono_samples[src_idx];
+                                let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
                                 let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
                                 push_to_mic_queues(&mut q, resampled, level);
                             }

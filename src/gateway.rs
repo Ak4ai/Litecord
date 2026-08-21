@@ -2759,9 +2759,9 @@ pub async fn connect_voice_gateway(
                                                             if is_muted {
                                                                 q.clear();
                                                             } else {
-                                                                // Keep queue latency ultra-low (cap at <= 40ms max backlog)
-                                                                if q.len() > 960 * 2 {
-                                                                    let drop_count = q.len() - 960;
+                                                                // Keep queue latency ultra-low (cap at <= 200ms max backlog)
+                                                                if q.len() > 960 * 10 {
+                                                                    let drop_count = q.len() - 960 * 2;
                                                                     q.drain(0..drop_count);
                                                                 }
                                                                 // Only extract when full 20ms (960 samples) frame is available
