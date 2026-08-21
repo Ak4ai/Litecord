@@ -3,6 +3,8 @@
 # Litecord 🚀
 ### Ultra-Lightweight, High-Performance Native Discord Client for Gamers
 
+[![Website](https://img.shields.io/badge/Website-ak4ai.github.io%2FLitecord-5865F2.svg?style=flat-square&logo=googlechrome&logoColor=white)](https://ak4ai.github.io/Litecord/)
+[![GitHub Release](https://img.shields.io/github/v/release/Ak4ai/Litecord?style=flat-square&color=blueviolet)](https://github.com/Ak4ai/Litecord/releases)
 [![Rust](https://img.shields.io/badge/Language-Rust_2021-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![GUI](https://img.shields.io/badge/GUI-Slint_1.9-blue.svg?style=flat-square)](https://slint.dev/)
 [![Audio](https://img.shields.io/badge/Audio-CPAL_%7C_Opus_%7C_DAVE_E2EE-green.svg?style=flat-square)](https://github.com/RustAudio/cpal)
@@ -14,7 +16,11 @@
   <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>< 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while giving your squad revolutionary <b>IGL / Shot-Caller Speech Priority Ducking</b>.
 </p>
 
-[Downloads](#-downloads--releases) • [Gamer Features](#-why-gamers-choose-litecord) • [Benchmarks](#-benchmarks-vs-official-discord) • [Architecture](#-project-architecture) • [Build from Source](#-building-from-source)
+[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [🛡️ Security & Safety](#-cybersecurity-privacy--account-safety) • [🛠️ Build from Source](#-building-from-source)
+
+<br/>
+
+<img src="assets/demo_preview.gif" alt="Litecord Native Interface Demo" width="760px" style="border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
 
 </div>
 
@@ -52,6 +58,12 @@
 - **Cubic Hermite Resampler**: High-fidelity 48kHz audio interpolation for smooth, crystal-clear voice output.
 - **DAVE End-to-End Encryption**: Direct support for Discord's MLS (RFC 9420) voice encryption protocol.
 
+<div align="center">
+  <img src="assets/demo_voice.gif" alt="Litecord Voice Channels & Speech Priority Ducking Demo" width="760px" style="border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
+</div>
+
+<br/>
+
 ### 👑 2. Dynamic Speech Priority & Smart Ducking
 Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N [ + ]`):
 - **Hierarchical Attenuation**: When multiple people talk at once, lower-priority speakers are automatically attenuated smoothly based on the priority difference (`Delta = max_priority - user_priority`):
@@ -75,6 +87,23 @@ Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N 
 - **Voice Activity Sensitivity (VAD Threshold)**: Slider position is written to `.litecord_audio_config.json` and restored on startup.
 - **Audio Device Memory**: Remembers your preferred microphone and speaker devices.
 - **User Audio Profiles**: Preserves volume and priority assignments per Discord user ID.
+
+---
+
+## 🛡️ Cybersecurity, Privacy & Account Safety
+
+When choosing an alternative client for Discord, **security and account integrity are paramount**. Here is an exact breakdown of how Litecord protects your machine, your credentials, and your account:
+
+### 🔒 1. Zero-Trust Security Architecture
+- **Direct Discord Connections Only (Zero Intermediaries):** Litecord connects directly from your machine to official Discord endpoints (`https://discord.com/api` and `wss://gateway.discord.gg`). There are **no proxy servers, no third-party APIs, and no telemetry backends**.
+- **Windows DPAPI Local Encryption at Rest:** On Windows, session tokens are encrypted locally using the Windows Data Protection API (`CryptProtectData`). The encrypted `.litecord_token` file is cryptographically bound to your Windows user logon credentials—preventing info-stealers, background scripts, or unauthorized accounts from reading it.
+- **Shell Injection & RCE Shield:** Chat hyperlinks are strictly validated against an `http://` and `https://` protocol whitelist and dispatched directly to your default browser via native OS APIs (`ShellExecuteW` on Windows / `xdg-open` on Linux)—never through shell interpreters (`cmd.exe` or `sh`).
+- **100% Open Source & Auditable (MIT):** Every single line of Rust code is public and open for community audit. You can inspect the entire networking, cryptographic DAVE, and token handling logic or compile the binary yourself from source.
+
+### ⚠️ 2. Discord Terms of Service (ToS) & Account Safety
+- **Strictly Human-Driven (Zero Automation / Selfbots):** Litecord is engineered purely as a lightweight interactive desktop client for human gamers. It contains **no automated scrapers, no auto-responders, no mass-messaging tools, and no bot scripts** that trigger Discord's automated anti-abuse detection heuristics.
+- **Official Gateway Protocol Compliance:** Connects via standard Discord Gateway v9 and Voice Gateway v9 channels, emitting normal human-paced interaction events and respecting API rate limits.
+- **Transparent ToS Disclaimer:** Like all third-party Discord software (*Vencord, BetterDiscord, Ripcord*), using an alternative client is technically against Discord's Terms of Service. In practice, Discord's automated enforcement systems target automated abuse, mass scraping, token raids, and spam bots rather than human users using lightweight voice clients. However, as with any third-party tool, Litecord is provided for performance and educational purposes, and users should use it with informed awareness.
 
 ---
 
