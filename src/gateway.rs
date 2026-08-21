@@ -1822,7 +1822,7 @@ pub async fn connect_voice_gateway(
                                             "token": token,
                                             "video": false,
                                             "streams": [],
-                                            "max_dave_protocol_version": 0
+                                            "max_dave_protocol_version": 1
                                         }
                                     });
 
@@ -2128,7 +2128,6 @@ pub async fn connect_voice_gateway(
                                                                         let transport_payload = &decrypted_raw[ext_skip..];
 
                                                                         let user_id_opt = ssrc_to_userid_rx.lock().unwrap().get(&ssrc_recv).copied();
-                                                                        if user_id_opt.is_none() && ssrc_recv != 9979 { continue; }
                                                                         let sender_user_id = user_id_opt.unwrap_or(ssrc_recv as u64);
 
                                                                         let (opus_data, can_decode) = {
