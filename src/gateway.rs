@@ -2183,9 +2183,21 @@ pub async fn connect_voice_gateway(
                                                                                     }
                                                                                 } else {
                                                                                     _dave_not_ready_cnt += 1;
+                                                                                    let has_dave_magic = transport_payload.len() >= 4 && transport_payload.ends_with(&[0xFA, 0xFA]);
+                                                                                    if has_dave_magic {
+                                                                                        (Vec::new(), false)
+                                                                                    } else {
+                                                                                        (transport_payload.to_vec(), true)
+                                                                                    }
+                                                                                }
+                                                                            } else {
+                                                                                let has_dave_magic = transport_payload.len() >= 4 && transport_payload.ends_with(&[0xFA, 0xFA]);
+                                                                                if has_dave_magic {
+                                                                                    (Vec::new(), false)
+                                                                                } else {
                                                                                     (transport_payload.to_vec(), true)
                                                                                 }
-                                                                            } else { (transport_payload.to_vec(), true) }
+                                                                            }
                                                                         };
 
                                                                         let mut decode_success = false;
