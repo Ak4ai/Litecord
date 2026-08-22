@@ -430,7 +430,7 @@ impl ScreenCaptureManager {
                                 continue;
                             }
                             let op = recv_buf[8];
-                            let _pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
+                            let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
                             let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
 
                             match op {
@@ -519,6 +519,10 @@ impl ScreenCaptureManager {
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
+                                    // Only accept video chunks if we are in the same voice channel
+                                    if current_cid == 0 || (pkt_cid != 0 && pkt_cid != current_cid) {
+                                        continue;
+                                    }
                                     if len > 33 {
                                         let seq = u32::from_be_bytes(recv_buf[25..29].try_into().unwrap());
                                         let total = u16::from_be_bytes(recv_buf[29..31].try_into().unwrap());
@@ -588,7 +592,15 @@ impl ScreenCaptureManager {
                                 }
                                 OP_AUDIO_FRAME => {
                                     if len >= 36 {
-                                        // If this instance is actively transmitting screen/audio, do not play back stream audio to avoid acoustic feedback
+                                        // 1. If we are not connected to any voice room, do not play stream audio
+                                        if current_cid == 0 {
+                                            continue;
+                                        }
+                                        // 2. If packet is from a different voice room, ignore
+                                        if pkt_cid != 0 && pkt_cid != current_cid {
+                                            continue;
+                                        }
+                                        // 3. If this instance is actively transmitting screen/audio, do not play back stream audio to avoid acoustic feedback
                                         if is_tx_running.load(Ordering::Relaxed) {
                                             continue;
                                         }
