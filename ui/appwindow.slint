@@ -161,10 +161,12 @@ component ChatMessagesView inherits Rectangle {
 
     msg_scroll := ScrollView {
         viewport-y <=> root.scroll_y;
+        viewport-width: self.visible-width;
         height: 100%;
         width: 100%;
 
         VerticalLayout {
+            width: 100%;
             padding: 12px;
             spacing: 10px;
             alignment: end;
@@ -216,11 +218,13 @@ component ChatMessagesView inherits Rectangle {
             }
 
             for msg in root.messages: Rectangle {
+                width: 100%;
                 background: #2b2d31;
                 border-radius: 6px;
                 property <bool> is-collapsed: true;
 
                 VerticalBox {
+                    width: 100%;
                     padding: 8px;
                     spacing: 4px;
 
@@ -318,10 +322,12 @@ component ChatMessagesView inherits Rectangle {
                             if line.blocks.length > 1 || line.blocks[0].is_link || line.blocks[0].is_command: HorizontalLayout {
                                 alignment: start;
                                 spacing: 4px;
+                                width: 100%;
 
                                 for block in line.blocks: HorizontalLayout {
                                     alignment: start;
                                     spacing: 0px;
+                                    horizontal-stretch: block.is_link || block.is_command ? 0 : 1;
 
                                     if block.is_command: Rectangle {
                                         background: cmd_ta.has-hover ? #4752c4 : #5865f233;
@@ -366,7 +372,7 @@ component ChatMessagesView inherits Rectangle {
                                                 font-weight: 600;
                                                 vertical-alignment: center;
                                                 overflow: elide;
-                                                max-width: 450px;
+                                                max-width: 400px;
                                             }
                                             VerticalLayout {
                                                 alignment: center;
@@ -390,6 +396,8 @@ component ChatMessagesView inherits Rectangle {
                                         color: #dbdee1;
                                         font-size: 13.5px;
                                         vertical-alignment: center;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
                                     }
                                 }
                             }
@@ -397,6 +405,7 @@ component ChatMessagesView inherits Rectangle {
                     }
 
                     if msg.content_lines.length == 0 && msg.content != "": Text {
+                        width: 100%;
                         text: msg.content;
                         color: #dbdee1;
                         font-size: 13.5px;
@@ -404,14 +413,17 @@ component ChatMessagesView inherits Rectangle {
                     }
 
                     if msg.code-block != "": Rectangle {
+                        width: 100%;
                         background: #1e1f22;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: #383a40;
 
                         HorizontalLayout {
+                            width: 100%;
                             padding: 8px;
                             Text {
+                                width: 100%;
                                 text: msg.code-block;
                                 color: #23a55a;
                                 font-family: "Courier New";
@@ -422,6 +434,7 @@ component ChatMessagesView inherits Rectangle {
                     }
 
                     if msg.embed-content != "" || msg.embed_lines.length > 0 || msg.embed-footer != "": Rectangle {
+                        width: 100%;
                         background: #232428;
                         border-radius: 4px;
 
@@ -453,10 +466,12 @@ component ChatMessagesView inherits Rectangle {
                                         if line.blocks.length > 1 || line.blocks[0].is_link || line.blocks[0].is_command: HorizontalLayout {
                                             alignment: start;
                                             spacing: 4px;
+                                            width: 100%;
 
                                             for block in line.blocks: HorizontalLayout {
                                                 alignment: start;
                                                 spacing: 0px;
+                                                horizontal-stretch: block.is_link || block.is_command ? 0 : 1;
 
                                                 if block.is_command: Rectangle {
                                                     background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
@@ -501,7 +516,7 @@ component ChatMessagesView inherits Rectangle {
                                                             font-weight: 600;
                                                             vertical-alignment: center;
                                                             overflow: elide;
-                                                            max-width: 450px;
+                                                            max-width: 380px;
                                                         }
                                                         VerticalLayout {
                                                             alignment: center;
@@ -525,6 +540,8 @@ component ChatMessagesView inherits Rectangle {
                                                     color: #d2d5d9;
                                                     font-size: 12.5px;
                                                     vertical-alignment: center;
+                                                    wrap: word-wrap;
+                                                    horizontal-stretch: 1;
                                                 }
                                             }
                                         }
@@ -532,6 +549,7 @@ component ChatMessagesView inherits Rectangle {
                                 }
 
                                 if msg.embed_lines.length == 0 && msg.embed-content != "": Text {
+                                    width: 100%;
                                     text: msg.embed-content;
                                     color: #d2d5d9;
                                     font-size: 12.5px;
@@ -544,6 +562,7 @@ component ChatMessagesView inherits Rectangle {
                                 }
 
                                 if msg.embed-footer != "": Text {
+                                    width: 100%;
                                     text: msg.embed-footer;
                                     color: #949ba4;
                                     font-size: 11px;
