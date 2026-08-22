@@ -29,10 +29,18 @@ struct LinkItem {
     url: string,
 }
 
+struct CommandSuggestion {
+    name: string,
+    desc: string,
+    usage: string,
+}
+
 struct MessageBlock {
     text: string,
     is_link: bool,
+    is_command: bool,
     url: string,
+    command_name: string,
 }
 
 struct MessageButton {
@@ -131,6 +139,7 @@ component ChatMessagesView inherits Rectangle {
     in-out property <int> scroll_trigger: 0;
     callback load_older_messages();
     callback open_link(string);
+    callback click_command(string);
 
     changed scroll_trigger => {
         root.scroll_to_bottom();
@@ -290,6 +299,33 @@ component ChatMessagesView inherits Rectangle {
                             alignment: start;
                             spacing: 4px;
 
+                            if block.is_command: Rectangle {
+                                background: cmd_ta.has-hover ? #4752c4 : #5865f233;
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: #5865f2;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    padding-top: 1px;
+                                    padding-bottom: 1px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: block.text;
+                                        color: cmd_ta.has-hover ? #ffffff : #58a6ff;
+                                        font-size: 12.5px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                cmd_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.click_command(block.command_name);
+                                    }
+                                }
+                            }
+
                             if block.is_link: Rectangle {
                                 background: block_ta.has-hover ? #1e293b : transparent;
                                 border-radius: 3px;
@@ -321,7 +357,7 @@ component ChatMessagesView inherits Rectangle {
                                 }
                             }
 
-                            if !block.is_link: Text {
+                            if !block.is_link && !block.is_command: Text {
                                 text: block.text;
                                 color: #dbdee1;
                                 font-size: 13.5px;
@@ -378,6 +414,33 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: start;
                                         spacing: 4px;
 
+                                        if block.is_command: Rectangle {
+                                            background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: #5865f2;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                padding-top: 1px;
+                                                padding-bottom: 1px;
+                                                spacing: 4px;
+                                                Text {
+                                                    text: block.text;
+                                                    color: ecmd_ta.has-hover ? #ffffff : #58a6ff;
+                                                    font-size: 12px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            ecmd_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.click_command(block.command_name);
+                                                }
+                                            }
+                                        }
+
                                         if block.is_link: Rectangle {
                                             background: eblock_ta.has-hover ? #1e293b : transparent;
                                             border-radius: 3px;
@@ -409,7 +472,7 @@ component ChatMessagesView inherits Rectangle {
                                             }
                                         }
 
-                                        if !block.is_link: Text {
+                                        if !block.is_link && !block.is_command: Text {
                                             text: block.text;
                                             color: #d2d5d9;
                                             font-size: 12.5px;
@@ -612,6 +675,31 @@ export component AppWindow inherits Window {
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
     callback unhide_stream(string /* user_id */);
+    callback click_command(string /* command_name */);
+    callback handle_input_change(string /* text */);
+
+    // Smart Command Autocomplete Properties
+    in-out property <string> chat_input_text: "";
+    in-out property <bool> show_command_suggestions: false;
+    in-out property <[CommandSuggestion]> command_suggestions: [
+        { name: "/play", desc: "Tocar música, áudio ou playlist (YouTube/Spotify/SoundCloud)", usage: "/play <nome ou link>" },
+        { name: "/skip", desc: "Pular para a próxima faixa da fila", usage: "/skip" },
+        { name: "/stop", desc: "Parar reprodução do bot e limpar a fila", usage: "/stop" },
+        { name: "/pause", desc: "Pausar a música em reprodução", usage: "/pause" },
+        { name: "/resume", desc: "Retomar a reprodução pausada", usage: "/resume" },
+        { name: "/queue", desc: "Visualizar a lista de músicas na fila", usage: "/queue" },
+        { name: "/nowplaying", desc: "Exibir detalhes da música que está tocando agora", usage: "/nowplaying" },
+        { name: "/volume", desc: "Ajustar o volume de reprodução do bot", usage: "/volume <1-100>" },
+        { name: "/loop", desc: "Ativar ou desativar repetição da música ou fila", usage: "/loop" },
+        { name: "/shuffle", desc: "Embaralhar a fila de músicas", usage: "/shuffle" },
+        { name: "/lyrics", desc: "Buscar e exibir a letra da música atual", usage: "/lyrics" },
+        { name: "/help", desc: "Exibir o menu de ajuda e comandos do bot", usage: "/help" },
+        { name: "/ping", desc: "Verificar a latência e tempo de resposta", usage: "/ping" },
+        { name: "/clear", desc: "Limpar mensagens recentes do canal", usage: "/clear <quantidade>" },
+        { name: "/avatar", desc: "Exibir o avatar ampliado de um usuário", usage: "/avatar [@usuario]" },
+        { name: "/userinfo", desc: "Ver informações detalhadas da conta de um usuário", usage: "/userinfo [@usuario]" },
+        { name: "/serverinfo", desc: "Ver estatísticas e informações do servidor atual", usage: "/serverinfo" }
+    ];
 
     // Auto-Update Properties
     in-out property <bool> show_update_dialog: false;
@@ -2304,6 +2392,120 @@ export component AppWindow inherits Window {
                         scroll_trigger: root.scroll_to_bottom_trigger;
                         load_older_messages => { root.load_older_messages(); }
                         open_link(url) => { root.open_link(url); }
+                        click_command(cmd) => {
+                            root.click_command(cmd);
+                        }
+                    }
+
+                    // Smart Slash Command Autocomplete / Suggestions Box (Discord Style)
+                    if root.show_command_suggestions : Rectangle {
+                        height: Math.min(220px, (root.command_suggestions.length * 44 + 36) * 1px);
+                        background: #2b2d31;
+                        border-top-left-radius: 8px;
+                        border-top-right-radius: 8px;
+                        border-width: 1px;
+                        border-color: #383a40;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: #00000066;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                padding-bottom: 4px;
+                                spacing: 6px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/terminal.svg");
+                                        width: 13px;
+                                        height: 13px;
+                                        colorize: #5865f2;
+                                        image-fit: contain;
+                                    }
+                                }
+                                Text {
+                                    text: "COMANDOS INTELIGENTES DO DISCORD";
+                                    color: #949ba4;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                Text {
+                                    text: "Clique para autocompletar";
+                                    color: #5865f2;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            ScrollView {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    for cmd in root.command_suggestions: Rectangle {
+                                        height: 38px;
+                                        background: cmd_sug_ta.has-hover ? #35373c : #1e1f22;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: cmd_sug_ta.has-hover ? #5865f2 : transparent;
+
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            spacing: 10px;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: cmd.name;
+                                                    color: #58a6ff;
+                                                    font-size: 13px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: cmd.desc;
+                                                    color: #949ba4;
+                                                    font-size: 11.5px;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                }
+                                            }
+
+                                            Rectangle { horizontal-stretch: 1; }
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: cmd.usage;
+                                                    color: #636b75;
+                                                    font-size: 10.5px;
+                                                    font-family: "Courier New";
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        cmd_sug_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.chat_input_text = cmd.name + " ";
+                                                root.show_command_suggestions = false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Message Input Box
@@ -2316,11 +2518,16 @@ export component AppWindow inherits Window {
                             spacing: 8px;
 
                             msg_input := LineEdit {
+                                text <=> root.chat_input_text;
                                 placeholder-text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
+                                edited(val) => {
+                                    root.handle_input_change(val);
+                                }
                                 accepted => {
-                                    if (msg_input.text != "") {
-                                        root.send_message(msg_input.text);
-                                        msg_input.text = "";
+                                    if (root.chat_input_text != "") {
+                                        root.send_message(root.chat_input_text);
+                                        root.chat_input_text = "";
+                                        root.show_command_suggestions = false;
                                     }
                                 }
                             }
@@ -2329,9 +2536,10 @@ export component AppWindow inherits Window {
                                 text: root.tr_send;
                                 primary: true;
                                 clicked => {
-                                    if (msg_input.text != "") {
-                                        root.send_message(msg_input.text);
-                                        msg_input.text = "";
+                                    if (root.chat_input_text != "") {
+                                        root.send_message(root.chat_input_text);
+                                        root.chat_input_text = "";
+                                        root.show_command_suggestions = false;
                                     }
                                 }
                             }

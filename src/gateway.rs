@@ -775,7 +775,9 @@ pub struct LinkData {
 pub struct MessageBlockData {
     pub text: String,
     pub is_link: bool,
+    pub is_command: bool,
     pub url: String,
+    pub command_name: String,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -795,53 +797,166 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
 
     for line in input.split('\n') {
         let mut rem = line;
-        let mut line_has_links = false;
+        let mut line_has_special = false;
 
-        while let Some(bracket_start) = rem.find('[') {
-            let before = &rem[..bracket_start];
-            let after_bracket = &rem[bracket_start + 1..];
-            if let Some(bracket_end) = after_bracket.find(']') {
-                let label = &after_bracket[..bracket_end];
-                let after_label = &after_bracket[bracket_end + 1..];
-                if after_label.starts_with('(') {
-                    if let Some(paren_end) = after_label.find(')') {
-                        let url = &after_label[1..paren_end];
-                        if url.starts_with("http") {
-                            line_has_links = true;
+        while !rem.is_empty() {
+            let next_bracket = rem.find('[');
+            let next_cmd = rem.find("</");
+
+            match (next_bracket, next_cmd) {
+                (Some(b_idx), Some(c_idx)) if c_idx < b_idx => {
+                    let before = &rem[..c_idx];
+                    let after_tag = &rem[c_idx + 2..];
+                    if let Some(gt_idx) = after_tag.find('>') {
+                        let inside = &after_tag[..gt_idx];
+                        let (cmd_name, _cmd_id) = if let Some(colon) = inside.find(':') {
+                            (&inside[..colon], &inside[colon + 1..])
+                        } else {
+                            (inside, "")
+                        };
+                        let clean_cmd = cmd_name.trim();
+                        if !clean_cmd.is_empty() {
+                            line_has_special = true;
                             if !before.is_empty() {
                                 blocks.push(MessageBlockData {
                                     text: parse_discord_markdown(before),
                                     is_link: false,
+                                    is_command: false,
                                     url: String::new(),
+                                    command_name: String::new(),
                                 });
                             }
-                            let display_label = if label.is_empty() { url } else { label };
                             blocks.push(MessageBlockData {
-                                text: display_label.to_string(),
-                                is_link: true,
-                                url: url.to_string(),
+                                text: format!("</{}>", clean_cmd),
+                                is_link: false,
+                                is_command: true,
+                                url: String::new(),
+                                command_name: format!("/{}", clean_cmd),
                             });
-                            if !links.iter().any(|l| l.url == url) {
-                                links.push(LinkData {
-                                    label: display_label.to_string(),
-                                    url: url.to_string(),
-                                });
-                            }
-                            rem = &after_label[paren_end + 1..];
+                            rem = &after_tag[gt_idx + 1..];
                             continue;
                         }
                     }
+                    if !before.is_empty() {
+                        blocks.push(MessageBlockData {
+                            text: parse_discord_markdown(before),
+                            is_link: false,
+                            is_command: false,
+                            url: String::new(),
+                            command_name: String::new(),
+                        });
+                    }
+                    rem = after_tag;
+                }
+                (Some(b_idx), _) => {
+                    let before = &rem[..b_idx];
+                    let after_bracket = &rem[b_idx + 1..];
+                    if let Some(bracket_end) = after_bracket.find(']') {
+                        let label = &after_bracket[..bracket_end];
+                        let after_label = &after_bracket[bracket_end + 1..];
+                        if after_label.starts_with('(') {
+                            if let Some(paren_end) = after_label.find(')') {
+                                let url = &after_label[1..paren_end];
+                                if url.starts_with("http") {
+                                    line_has_special = true;
+                                    if !before.is_empty() {
+                                        blocks.push(MessageBlockData {
+                                            text: parse_discord_markdown(before),
+                                            is_link: false,
+                                            is_command: false,
+                                            url: String::new(),
+                                            command_name: String::new(),
+                                        });
+                                    }
+                                    let display_label = if label.is_empty() { url } else { label };
+                                    blocks.push(MessageBlockData {
+                                        text: display_label.to_string(),
+                                        is_link: true,
+                                        is_command: false,
+                                        url: url.to_string(),
+                                        command_name: String::new(),
+                                    });
+                                    if !links.iter().any(|l| l.url == url) {
+                                        links.push(LinkData {
+                                            label: display_label.to_string(),
+                                            url: url.to_string(),
+                                        });
+                                    }
+                                    rem = &after_label[paren_end + 1..];
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    if !before.is_empty() {
+                        blocks.push(MessageBlockData {
+                            text: parse_discord_markdown(before),
+                            is_link: false,
+                            is_command: false,
+                            url: String::new(),
+                            command_name: String::new(),
+                        });
+                    }
+                    rem = after_bracket;
+                }
+                (None, Some(c_idx)) => {
+                    let before = &rem[..c_idx];
+                    let after_tag = &rem[c_idx + 2..];
+                    if let Some(gt_idx) = after_tag.find('>') {
+                        let inside = &after_tag[..gt_idx];
+                        let (cmd_name, _cmd_id) = if let Some(colon) = inside.find(':') {
+                            (&inside[..colon], &inside[colon + 1..])
+                        } else {
+                            (inside, "")
+                        };
+                        let clean_cmd = cmd_name.trim();
+                        if !clean_cmd.is_empty() {
+                            line_has_special = true;
+                            if !before.is_empty() {
+                                blocks.push(MessageBlockData {
+                                    text: parse_discord_markdown(before),
+                                    is_link: false,
+                                    is_command: false,
+                                    url: String::new(),
+                                    command_name: String::new(),
+                                });
+                            }
+                            blocks.push(MessageBlockData {
+                                text: format!("</{}>", clean_cmd),
+                                is_link: false,
+                                is_command: true,
+                                url: String::new(),
+                                command_name: format!("/{}", clean_cmd),
+                            });
+                            rem = &after_tag[gt_idx + 1..];
+                            continue;
+                        }
+                    }
+                    if !before.is_empty() {
+                        blocks.push(MessageBlockData {
+                            text: parse_discord_markdown(before),
+                            is_link: false,
+                            is_command: false,
+                            url: String::new(),
+                            command_name: String::new(),
+                        });
+                    }
+                    rem = after_tag;
+                }
+                (None, None) => {
+                    break;
                 }
             }
-            break;
         }
 
-        if line_has_links {
+        if line_has_special {
             if !rem.is_empty() {
                 blocks.push(MessageBlockData {
                     text: parse_discord_markdown(rem),
                     is_link: false,
+                    is_command: false,
                     url: String::new(),
+                    command_name: String::new(),
                 });
             }
         } else {
@@ -864,20 +979,26 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                     blocks.push(MessageBlockData {
                         text: trimmed.to_string(),
                         is_link: true,
+                        is_command: false,
                         url: trimmed.to_string(),
+                        command_name: String::new(),
                     });
                 } else {
                     blocks.push(MessageBlockData {
                         text: parse_discord_markdown(line),
                         is_link: false,
+                        is_command: false,
                         url: String::new(),
+                        command_name: String::new(),
                     });
                 }
             } else if !line.is_empty() {
                 blocks.push(MessageBlockData {
                     text: parse_discord_markdown(line),
                     is_link: false,
+                    is_command: false,
                     url: String::new(),
+                    command_name: String::new(),
                 });
             }
         }
@@ -945,6 +1066,30 @@ pub fn extract_and_clean_links(input: &str, links: &mut Vec<LinkData>) -> String
                     url: clean_word.to_string(),
                 });
             }
+        }
+    }
+
+    // Clean </name:id> to </name> for clean text representation
+    while let Some(tag_start) = out.find("</") {
+        let after = &out[tag_start + 2..];
+        if let Some(tag_end) = after.find('>') {
+            let inside = &after[..tag_end];
+            if inside.contains(':') {
+                let name = if let Some(colon) = inside.find(':') {
+                    &inside[..colon]
+                } else {
+                    inside
+                };
+                let mut new_out = String::with_capacity(out.len());
+                new_out.push_str(&out[..tag_start]);
+                new_out.push_str(&format!("</{}>", name.trim()));
+                new_out.push_str(&after[tag_end + 1..]);
+                out = new_out;
+            } else {
+                break;
+            }
+        } else {
+            break;
         }
     }
 
@@ -1093,7 +1238,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
                             embed_blocks.push(MessageBlockData {
                                 text: parsed_title.clone(),
                                 is_link: true,
+                                is_command: false,
                                 url: url.to_string(),
+                                command_name: String::new(),
                             });
                             if !links.iter().any(|l| l.url == url) {
                                 links.push(LinkData {

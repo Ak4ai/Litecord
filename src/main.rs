@@ -836,14 +836,18 @@ async fn load_messages_for_channel(
                             let slint_cblocks: Vec<MessageBlock> = content_blocks.iter().map(|b| MessageBlock {
                                 text: b.text.clone().into(),
                                 is_link: b.is_link,
+                                is_command: b.is_command,
                                 url: b.url.clone().into(),
+                                command_name: b.command_name.clone().into(),
                             }).collect();
                             let cblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_cblocks));
 
                             let slint_eblocks: Vec<MessageBlock> = embed_blocks.iter().map(|b| MessageBlock {
                                 text: b.text.clone().into(),
                                 is_link: b.is_link,
+                                is_command: b.is_command,
                                 url: b.url.clone().into(),
+                                command_name: b.command_name.clone().into(),
                             }).collect();
                             let eblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_eblocks));
 
@@ -2695,14 +2699,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let slint_cblocks: Vec<MessageBlock> = content_blocks.iter().map(|b| MessageBlock {
                                         text: b.text.clone().into(),
                                         is_link: b.is_link,
+                                        is_command: b.is_command,
                                         url: b.url.clone().into(),
+                                        command_name: b.command_name.clone().into(),
                                     }).collect();
                                     let cblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_cblocks));
 
                                     let slint_eblocks: Vec<MessageBlock> = embed_blocks.iter().map(|b| MessageBlock {
                                         text: b.text.clone().into(),
                                         is_link: b.is_link,
+                                        is_command: b.is_command,
                                         url: b.url.clone().into(),
+                                        command_name: b.command_name.clone().into(),
                                     }).collect();
                                     let eblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_eblocks));
 
@@ -3317,6 +3325,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Click Command Callback (fills input with command and shows suggestions)
+    let app_weak_cmd = app_weak.clone();
+    app.on_click_command(move |cmd: SharedString| {
+        if let Some(ui) = app_weak_cmd.upgrade() {
+            let cmd_str = cmd.to_string();
+            let filled = if cmd_str.ends_with(' ') { cmd_str } else { format!("{} ", cmd_str) };
+            ui.set_chat_input_text(filled.into());
+            ui.set_show_command_suggestions(true);
+        }
+    });
+
+    // Handle Input Change Callback (detects '/' to show/hide smart command suggestions)
+    let app_weak_inp = app_weak.clone();
+    app.on_handle_input_change(move |text: SharedString| {
+        if let Some(ui) = app_weak_inp.upgrade() {
+            let t = text.to_string();
+            ui.set_show_command_suggestions(t.starts_with('/'));
+        }
+    });
+
     // Minimize to Tray Callback using Win32 ShowWindow(SW_HIDE)
     let app_weak_tray_min = app_weak.clone();
     let hwnd_store_minimize = Arc::clone(&hwnd_store);
@@ -3525,14 +3553,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let slint_cblocks: Vec<MessageBlock> = content_blocks.iter().map(|b| MessageBlock {
                                     text: b.text.clone().into(),
                                     is_link: b.is_link,
+                                    is_command: b.is_command,
                                     url: b.url.clone().into(),
+                                    command_name: b.command_name.clone().into(),
                                 }).collect();
                                 let cblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_cblocks));
 
                                 let slint_eblocks: Vec<MessageBlock> = embed_blocks.iter().map(|b| MessageBlock {
                                     text: b.text.clone().into(),
                                     is_link: b.is_link,
+                                    is_command: b.is_command,
                                     url: b.url.clone().into(),
+                                    command_name: b.command_name.clone().into(),
                                 }).collect();
                                 let eblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_eblocks));
 
