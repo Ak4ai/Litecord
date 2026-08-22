@@ -347,12 +347,15 @@ component ChatMessagesView inherits Rectangle {
                                         padding-left: 2px;
                                         padding-right: 2px;
                                         spacing: 4px;
+                                        alignment: start;
                                         Text {
                                             text: block.text;
                                             color: block_ta.has-hover ? #58a6ff : #00a8fc;
                                             font-size: 13.5px;
                                             font-weight: 600;
                                             vertical-alignment: center;
+                                            overflow: elide;
+                                            max-width: 500px;
                                         }
                                         VerticalLayout {
                                             alignment: center;
@@ -467,12 +470,15 @@ component ChatMessagesView inherits Rectangle {
                                                     padding-left: 2px;
                                                     padding-right: 2px;
                                                     spacing: 4px;
+                                                    alignment: start;
                                                     Text {
                                                         text: block.text;
                                                         color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
                                                         font-size: 12.5px;
                                                         font-weight: 600;
                                                         vertical-alignment: center;
+                                                        overflow: elide;
+                                                        max-width: 450px;
                                                     }
                                                     VerticalLayout {
                                                         alignment: center;
@@ -2483,10 +2489,21 @@ export component AppWindow inherits Window {
                                         border-width: 1px;
                                         border-color: cmd_sug_ta.has-hover ? #5865f2 : transparent;
 
-                                        HorizontalLayout {
+                                         HorizontalLayout {
                                             padding-left: 10px;
                                             padding-right: 10px;
                                             spacing: 10px;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Image {
+                                                    source: @image-url("../assets/terminal.svg");
+                                                    width: 14px;
+                                                    height: 14px;
+                                                    colorize: #58a6ff;
+                                                    image-fit: contain;
+                                                }
+                                            }
 
                                             VerticalLayout {
                                                 alignment: center;
@@ -2567,6 +2584,19 @@ export component AppWindow inherits Window {
                                         padding-left: 8px;
                                         padding-right: 8px;
                                         spacing: 6px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/terminal.svg");
+                                                width: 12px;
+                                                height: 12px;
+                                                colorize: #58a6ff;
+                                                image-fit: contain;
+                                            }
+                                        }
+
                                         Text {
                                             text: root.active_command_name;
                                             color: #58a6ff;
@@ -2574,14 +2604,19 @@ export component AppWindow inherits Window {
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
-                                        Text {
-                                            text: "✕";
-                                            color: #949ba4;
-                                            font-size: 11px;
-                                            vertical-alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/x.svg");
+                                                width: 10px;
+                                                height: 10px;
+                                                colorize: close_cmd_ta.has-hover ? #ffffff : #949ba4;
+                                                image-fit: contain;
+                                            }
                                         }
                                     }
-                                    TouchArea {
+                                    close_cmd_ta := TouchArea {
                                         mouse-cursor: pointer;
                                         clicked => {
                                             root.active_command_name = "";
@@ -2599,11 +2634,25 @@ export component AppWindow inherits Window {
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
+                                        spacing: 5px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/param.svg");
+                                                width: 11px;
+                                                height: 11px;
+                                                colorize: #5865f2;
+                                                image-fit: contain;
+                                            }
+                                        }
+
                                         Text {
                                             text: root.active_param_name + ":";
-                                            color: #949ba4;
-                                            font-size: 12.5px;
-                                            font-weight: 600;
+                                            color: #5865f2;
+                                            font-size: 12px;
+                                            font-weight: 700;
                                             vertical-alignment: center;
                                         }
                                     }

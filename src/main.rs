@@ -778,6 +778,94 @@ async fn fetch_and_populate_channels(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CommandSuggestionItem {
+    pub name: String,
+    pub desc: String,
+    pub usage: String,
+    pub app_id: String,
+    pub cmd_id: String,
+    pub version: String,
+    pub param_name: String,
+    pub param_desc: String,
+    pub is_required: bool,
+}
+
+pub static MASTER_COMMAND_SUGGESTIONS: std::sync::OnceLock<Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>>> = std::sync::OnceLock::new();
+
+pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>> {
+    MASTER_COMMAND_SUGGESTIONS.get_or_init(|| {
+        Arc::new(std::sync::Mutex::new(vec![
+            CommandSuggestionItem {
+                name: "/play".to_string(),
+                desc: "Tocar música ou adicionar à fila".to_string(),
+                usage: "/play <query>".to_string(),
+                app_id: "".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "query".to_string(),
+                param_desc: "Nome da música ou link do YouTube/Spotify".to_string(),
+                is_required: true,
+            },
+            CommandSuggestionItem {
+                name: "/247".to_string(),
+                desc: "Manter o bot 24/7 conectado no canal de voz".to_string(),
+                usage: "/247".to_string(),
+                app_id: "".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/pause".to_string(),
+                desc: "Pausar a reprodução atual".to_string(),
+                usage: "/pause".to_string(),
+                app_id: "".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/skip".to_string(),
+                desc: "Pular para a próxima música".to_string(),
+                usage: "/skip".to_string(),
+                app_id: "".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/stop".to_string(),
+                desc: "Parar reprodução e limpar a fila".to_string(),
+                usage: "/stop".to_string(),
+                app_id: "".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/queue".to_string(),
+                desc: "Ver a fila de músicas atual".to_string(),
+                usage: "/queue".to_string(),
+                app_id: "".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+        ]))
+    }).clone()
+}
+
 async fn load_guild_command_index(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
@@ -789,7 +877,7 @@ async fn load_guild_command_index(
     match http.get_guild_application_command_index(guild_id).await {
         Ok(data) => {
             if let Some(cmds) = data["application_commands"].as_array() {
-                let mut suggestions: Vec<CommandSuggestion> = Vec::new();
+                let mut items: Vec<CommandSuggestionItem> = Vec::new();
                 for cmd in cmds {
                     let name = cmd["name"].as_str().unwrap_or("");
                     if name.is_empty() { continue; }
@@ -818,24 +906,41 @@ async fn load_guild_command_index(
                         format!("/{} [{}]", name, param_name)
                     };
                     
-                    suggestions.push(CommandSuggestion {
-                        name: format!("/{}", name).into(),
-                        desc: desc.into(),
-                        usage: usage.into(),
-                        app_id: app_id.into(),
-                        cmd_id: cmd_id.into(),
-                        version: version.into(),
-                        param_name: param_name.into(),
-                        param_desc: param_desc.into(),
+                    items.push(CommandSuggestionItem {
+                        name: format!("/{}", name),
+                        desc: desc.to_string(),
+                        usage,
+                        app_id: app_id.to_string(),
+                        cmd_id: cmd_id.to_string(),
+                        version: version.to_string(),
+                        param_name,
+                        param_desc,
                         is_required,
                     });
                 }
                 
-                if !suggestions.is_empty() {
+                if !items.is_empty() {
+                    let count = items.len();
+                    if let Ok(mut master) = get_master_command_suggestions().lock() {
+                        master.clear();
+                        master.extend(items.clone());
+                    }
+
+                    let slint_suggestions: Vec<CommandSuggestion> = items.into_iter().map(|item| CommandSuggestion {
+                        name: item.name.into(),
+                        desc: item.desc.into(),
+                        usage: item.usage.into(),
+                        app_id: item.app_id.into(),
+                        cmd_id: item.cmd_id.into(),
+                        version: item.version.into(),
+                        param_name: item.param_name.into(),
+                        param_desc: item.param_desc.into(),
+                        is_required: item.is_required,
+                    }).collect();
+
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak.upgrade() {
-                            let count = suggestions.len();
-                            let model = std::rc::Rc::new(slint::VecModel::from(suggestions));
+                            let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
                             ui.set_command_suggestions(model.into());
                             info!("✅ Carregados {} comandos inteligentes reais dos bots do servidor!", count);
                         }
@@ -3386,14 +3491,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cmd_str = cmd.to_string();
             let clean_cmd = if cmd_str.starts_with('/') { cmd_str } else { format!("/{}", cmd_str) };
             
-            let suggestions: Vec<CommandSuggestion> = ui.get_command_suggestions().iter().collect();
-            if let Some(found) = suggestions.iter().find(|s| s.name.to_string().to_lowercase() == clean_cmd.to_lowercase()) {
-                ui.set_active_command_name(found.name.clone());
-                ui.set_active_param_name(if found.param_name.is_empty() { "query".into() } else { found.param_name.clone() });
-                ui.set_active_param_desc(if found.param_desc.is_empty() { found.desc.clone() } else { found.param_desc.clone() });
-                ui.set_active_command_app_id(found.app_id.clone());
-                ui.set_active_command_cmd_id(found.cmd_id.clone());
-                ui.set_active_command_version(found.version.clone());
+            let master = get_master_command_suggestions().lock().unwrap().clone();
+            if let Some(found) = master.iter().find(|s| s.name.to_lowercase() == clean_cmd.to_lowercase()) {
+                ui.set_active_command_name(found.name.clone().into());
+                ui.set_active_param_name(if found.param_name.is_empty() { "query".into() } else { found.param_name.clone().into() });
+                ui.set_active_param_desc(if found.param_desc.is_empty() { found.desc.clone().into() } else { found.param_desc.clone().into() });
+                ui.set_active_command_app_id(found.app_id.clone().into());
+                ui.set_active_command_cmd_id(found.cmd_id.clone().into());
+                ui.set_active_command_version(found.version.clone().into());
             } else {
                 ui.set_active_command_name(clean_cmd.into());
                 ui.set_active_param_name("query".into());
@@ -3408,12 +3513,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Handle Input Change Callback (detects '/' to show/hide smart command suggestions)
+    // Handle Input Change Callback (ranked real-time autocomplete filtering)
     let app_weak_inp = app_weak.clone();
     app.on_handle_input_change(move |text: SharedString| {
         if let Some(ui) = app_weak_inp.upgrade() {
             let t = text.to_string();
-            ui.set_show_command_suggestions(t.starts_with('/'));
+            let trimmed = t.trim();
+            if trimmed.starts_with('/') {
+                let query = trimmed.to_lowercase();
+                let master = get_master_command_suggestions().lock().unwrap().clone();
+                
+                // If user typed "/play " (with trailing space and matched a command):
+                if t.ends_with(' ') && t.starts_with('/') {
+                    let cmd_word = t.trim();
+                    if let Some(found) = master.iter().find(|c| c.name.to_lowercase() == cmd_word.to_lowercase()) {
+                        ui.set_active_command_name(found.name.clone().into());
+                        ui.set_active_param_name(if found.param_name.is_empty() { "query".into() } else { found.param_name.clone().into() });
+                        ui.set_active_param_desc(if found.param_desc.is_empty() { found.desc.clone().into() } else { found.param_desc.clone().into() });
+                        ui.set_active_command_app_id(found.app_id.clone().into());
+                        ui.set_active_command_cmd_id(found.cmd_id.clone().into());
+                        ui.set_active_command_version(found.version.clone().into());
+                        ui.set_command_arg_text("".into());
+                        ui.set_chat_input_text("".into());
+                        ui.set_show_command_suggestions(false);
+                        return;
+                    }
+                }
+
+                let mut scored: Vec<(i32, CommandSuggestionItem)> = master.into_iter().filter_map(|cmd| {
+                    let name_lower = cmd.name.to_lowercase();
+                    let desc_lower = cmd.desc.to_lowercase();
+                    
+                    if name_lower == query {
+                        Some((1000, cmd))
+                    } else if name_lower.starts_with(&query) {
+                        Some((500 - (name_lower.len() as i32), cmd))
+                    } else if name_lower.contains(&query) {
+                        Some((200, cmd))
+                    } else if desc_lower.contains(&query.trim_start_matches('/')) {
+                        Some((100, cmd))
+                    } else if query == "/" {
+                        Some((50, cmd))
+                    } else {
+                        None
+                    }
+                }).collect();
+
+                scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+                let filtered_suggestions: Vec<CommandSuggestion> = scored.into_iter().map(|(_, item)| CommandSuggestion {
+                    name: item.name.into(),
+                    desc: item.desc.into(),
+                    usage: item.usage.into(),
+                    app_id: item.app_id.into(),
+                    cmd_id: item.cmd_id.into(),
+                    version: item.version.into(),
+                    param_name: item.param_name.into(),
+                    param_desc: item.param_desc.into(),
+                    is_required: item.is_required,
+                }).collect();
+
+                let is_empty = filtered_suggestions.is_empty();
+                let model = std::rc::Rc::new(slint::VecModel::from(filtered_suggestions));
+                ui.set_command_suggestions(model.into());
+                ui.set_show_command_suggestions(!is_empty);
+            } else {
+                ui.set_show_command_suggestions(false);
+            }
         }
     });
 
