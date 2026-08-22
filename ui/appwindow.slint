@@ -971,6 +971,26 @@ export component AppWindow inherits Window {
         root.scroll_to_bottom_trigger += 1;
     }
 
+    public function move_suggestion_up() {
+        if (root.command_suggestions.length > 0) {
+            if (root.active_suggestion_index > 0) {
+                root.active_suggestion_index -= 1;
+            } else {
+                root.active_suggestion_index = root.command_suggestions.length - 1;
+            }
+        }
+    }
+
+    public function move_suggestion_down() {
+        if (root.command_suggestions.length > 0) {
+            if (root.active_suggestion_index < root.command_suggestions.length - 1) {
+                root.active_suggestion_index += 1;
+            } else {
+                root.active_suggestion_index = 0;
+            }
+        }
+    }
+
     public function select_suggestion(idx: int) {
         if (idx >= 0 && idx < root.command_suggestions.length) {
             root.active_command_name = root.command_suggestions[idx].name;
@@ -2928,27 +2948,36 @@ export component AppWindow inherits Window {
                                 background: #1e1f22;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: chat_fs.has-focus ? #5865f2 : #383a40;
+                                border-color: chat_text_input.has-focus ? #5865f2 : #383a40;
                                 clip: true;
 
-                                chat_fs := FocusScope {
-                                    forward-focus: chat_text_input;
+                                if root.chat_input_text == "" : Text {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    height: 100%;
+                                    text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
+                                    color: #80848e;
+                                    font-size: 13.5px;
+                                    vertical-alignment: center;
+                                }
+
+                                chat_text_input := TextInput {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    height: 100%;
+                                    text <=> root.chat_input_text;
+                                    color: #dbdee1;
+                                    font-size: 13.5px;
+                                    vertical-alignment: center;
+                                    single-line: true;
                                     key-pressed(event) => {
                                         if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                             if (event.text == Key.UpArrow) {
-                                                if (root.active_suggestion_index > 0) {
-                                                    root.active_suggestion_index -= 1;
-                                                } else {
-                                                    root.active_suggestion_index = root.command_suggestions.length - 1;
-                                                }
+                                                root.move_suggestion_up();
                                                 return accept;
                                             }
                                             if (event.text == Key.DownArrow) {
-                                                if (root.active_suggestion_index < root.command_suggestions.length - 1) {
-                                                    root.active_suggestion_index += 1;
-                                                } else {
-                                                    root.active_suggestion_index = 0;
-                                                }
+                                                root.move_suggestion_down();
                                                 return accept;
                                             }
                                             if (event.text == Key.Tab) {
@@ -2962,38 +2991,17 @@ export component AppWindow inherits Window {
                                         }
                                         reject
                                     }
-
-                                    if root.chat_input_text == "" : Text {
-                                        x: 10px;
-                                        width: parent.width - 20px;
-                                        height: 100%;
-                                        text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
-                                        color: #80848e;
-                                        font-size: 13.5px;
-                                        vertical-alignment: center;
+                                    edited => {
+                                        root.active_suggestion_index = 0;
+                                        root.handle_input_change(self.text);
                                     }
-
-                                    chat_text_input := TextInput {
-                                        x: 10px;
-                                        width: parent.width - 20px;
-                                        height: 100%;
-                                        text <=> root.chat_input_text;
-                                        color: #dbdee1;
-                                        font-size: 13.5px;
-                                        vertical-alignment: center;
-                                        single-line: true;
-                                        edited => {
-                                            root.active_suggestion_index = 0;
-                                            root.handle_input_change(self.text);
-                                        }
-                                        accepted => {
-                                            if (root.show_command_suggestions && root.command_suggestions.length > 0) {
-                                                root.select_suggestion(root.active_suggestion_index);
-                                            } else if (root.chat_input_text != "") {
-                                                root.send_message(root.chat_input_text);
-                                                root.chat_input_text = "";
-                                                root.show_command_suggestions = false;
-                                            }
+                                    accepted => {
+                                        if (root.show_command_suggestions && root.command_suggestions.length > 0) {
+                                            root.select_suggestion(root.active_suggestion_index);
+                                        } else if (root.chat_input_text != "") {
+                                            root.send_message(root.chat_input_text);
+                                            root.chat_input_text = "";
+                                            root.show_command_suggestions = false;
                                         }
                                     }
                                 }
