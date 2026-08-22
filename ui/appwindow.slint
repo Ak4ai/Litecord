@@ -2833,6 +2833,14 @@ export component PopoutStreamWindow inherits Window {
     min-height: 240px;
     default-font-family: "gg sans";
 
+    // Visual boundary border
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: 1px;
+        border-color: #2b2d31;
+    }
+
     in-out property <image> stream_frame;
     in-out property <string> username: "Transmissão";
     in-out property <bool> show_controls: true;

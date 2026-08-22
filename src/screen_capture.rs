@@ -339,6 +339,8 @@ impl ScreenCaptureManager {
 
                 info!("📡 Receptor UDP P2P de vídeo escutando na porta {}...", P2P_VIDEO_PORT);
 
+                let local_socket_addr = socket.local_addr().ok();
+
                 while is_running.load(Ordering::Relaxed) {
                     let current_cid = channel_id_atomic.load(Ordering::Relaxed);
                     let my_uid = my_user_id_atomic.load(Ordering::Relaxed);
@@ -348,15 +350,17 @@ impl ScreenCaptureManager {
                             if len < 5 || &recv_buf[0..4] != MAGIC {
                                 continue;
                             }
+                            if let Some(l_addr) = local_socket_addr {
+                                if src_addr == l_addr {
+                                    continue;
+                                }
+                            }
                             let op = recv_buf[4];
 
                             match op {
                                 OP_ANNOUNCE => {
                                     if len >= 24 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[13..21].try_into().unwrap());
-                                        if pkt_uid == my_uid && my_uid > 0 {
-                                            continue;
-                                        }
 
                                         let is_streaming = recv_buf[21] == 1;
                                         let name_len = recv_buf[23] as usize;
@@ -396,9 +400,6 @@ impl ScreenCaptureManager {
                                 OP_VIDEO_CHUNK => {
                                     if len > 29 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[13..21].try_into().unwrap());
-                                        if pkt_uid == my_uid && my_uid > 0 {
-                                            continue;
-                                        }
 
                                         let seq = u32::from_be_bytes(recv_buf[21..25].try_into().unwrap());
                                         let total = u16::from_be_bytes(recv_buf[25..27].try_into().unwrap());

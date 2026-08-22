@@ -1029,6 +1029,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let hwnd = win32_handle.hwnd.get() as isize;
                                     *pop_hwnd_c.lock().unwrap() = Some(hwnd);
                                     set_dark_titlebar_color(hwnd);
+                                    unsafe {
+                                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+                                        };
+                                        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+                                        SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
+                                    }
                                 }
                             }
                         }
