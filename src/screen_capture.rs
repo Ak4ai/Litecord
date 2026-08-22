@@ -812,26 +812,30 @@ fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32, quality: u8) -> Option<
 
 fn decode_jpeg(jpeg_data: &[u8]) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u32, u32)> {
     let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_data);
-    let pixels = decoder.decode().ok()?;
+    let rgb_pixels = decoder.decode().ok()?;
     let info = decoder.info()?;
     let (width, height) = (info.width as u32, info.height as u32);
     let total_pixels = (width * height) as usize;
 
-    let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-    let slice = pixel_buffer.make_mut_slice();
-
-    if pixels.len() >= total_pixels * 3 {
-        for (i, pixel) in slice.iter_mut().enumerate() {
-            let offset = i * 3;
-            let r = pixels[offset];
-            let g = pixels[offset + 1];
-            let b = pixels[offset + 2];
-            *pixel = Rgba8Pixel::new(r, g, b, 255);
-        }
-        Some((pixel_buffer, width, height))
-    } else {
-        None
+    if rgb_pixels.len() < total_pixels * 3 {
+        return None;
     }
+
+    let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+    let dest_bytes = pixel_buffer.make_mut_bytes();
+
+    let mut src_idx = 0;
+    let mut dst_idx = 0;
+    while src_idx + 2 < total_pixels * 3 && dst_idx + 3 < dest_bytes.len() {
+        dest_bytes[dst_idx] = rgb_pixels[src_idx];
+        dest_bytes[dst_idx + 1] = rgb_pixels[src_idx + 1];
+        dest_bytes[dst_idx + 2] = rgb_pixels[src_idx + 2];
+        dest_bytes[dst_idx + 3] = 255;
+        src_idx += 3;
+        dst_idx += 4;
+    }
+
+    Some((pixel_buffer, width, height))
 }
 
 #[cfg(windows)]

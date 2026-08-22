@@ -54,6 +54,19 @@ slint-build = "1.9"
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package.jpeg-encoder]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 codegen-units = 16
