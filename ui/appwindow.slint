@@ -191,7 +191,6 @@ component ChatMessagesView inherits Rectangle {
             for msg in root.messages: Rectangle {
                 background: #2b2d31;
                 border-radius: 6px;
-                property <bool> is-collapsed: true;
 
                 VerticalBox {
                     padding: 8px;
@@ -255,25 +254,6 @@ component ChatMessagesView inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
-
-                        if msg.links.length > 0 : Rectangle {
-                            width: 20px;
-                            height: 20px;
-                            background: transparent;
-                            Text {
-                                text: is-collapsed ? "▼" : "▲";
-                                color: #949ba4;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    is-collapsed = !is-collapsed;
-                                }
-                            }
-                        }
                     }
 
                     if msg.content != "": Text {
@@ -372,10 +352,13 @@ component ChatMessagesView inherits Rectangle {
                                 spacing: 6px;
                                 alignment: center;
 
-                                if btn.emoji != "": Text {
-                                    text: btn.emoji;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
+                                if btn.emoji != "": VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: btn.emoji;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                    }
                                 }
 
                                 Text {
@@ -386,12 +369,15 @@ component ChatMessagesView inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                if btn.url != "": Image {
-                                    source: @image-url("../assets/external-link.svg");
-                                    width: 12px;
-                                    height: 12px;
-                                    colorize: btn.is_disabled ? #80848e : #b5bac1;
-                                    image-fit: contain;
+                                if btn.url != "": VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/external-link.svg");
+                                        width: 12px;
+                                        height: 12px;
+                                        colorize: btn.is_disabled ? #80848e : #b5bac1;
+                                        image-fit: contain;
+                                    }
                                 }
                             }
 
@@ -407,29 +393,37 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.links.length > 0 && !is-collapsed : VerticalLayout {
-                        spacing: 6px;
+                    if msg.links.length > 0 : VerticalLayout {
+                        spacing: 4px;
                         padding-top: 4px;
                         for link in msg.links : Rectangle {
-                            height: 20px;
-                            background: transparent;
+                            height: 24px;
+                            background: link_ta.has-hover ? #1e293b : transparent;
+                            border-radius: 4px;
                             HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
                                 spacing: 6px;
-                                Text {
-                                    text: "🔗";
-                                    color: #00b0f4;
-                                    vertical-alignment: center;
-                                    font-size: 11px;
+                                alignment: start;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/external-link.svg");
+                                        width: 12px;
+                                        height: 12px;
+                                        colorize: link_ta.has-hover ? #58a6ff : #00a8fc;
+                                        image-fit: contain;
+                                    }
                                 }
                                 Text {
                                     text: link.label;
-                                    color: #00b0f4;
+                                    color: link_ta.has-hover ? #58a6ff : #00a8fc;
                                     vertical-alignment: center;
-                                    font-size: 13px;
+                                    font-size: 12.5px;
                                     font-weight: 500;
                                 }
                             }
-                            TouchArea {
+                            link_ta := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => {
                                     root.open_link(link.url);

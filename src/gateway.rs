@@ -802,14 +802,17 @@ pub fn extract_and_clean_links(input: &str, links: &mut Vec<LinkData>) -> String
                 if let Some(paren_end) = after_label.find(')') {
                     let url = &after_label[1..paren_end];
                     if url.starts_with("http") {
-                        links.push(LinkData {
-                            label: if label.is_empty() { "Link".to_string() } else { label.to_string() },
-                            url: url.to_string(),
-                        });
+                        let link_label = if label.is_empty() { url.to_string() } else { label.to_string() };
+                        if !links.iter().any(|l| l.url == url) {
+                            links.push(LinkData {
+                                label: link_label.clone(),
+                                url: url.to_string(),
+                            });
+                        }
                         if label.is_empty() {
                             out.push_str(url);
                         } else {
-                            out.push_str(label);
+                            out.push_str(&format!("🔗 {}", label));
                         }
                         rem = &after_label[paren_end + 1..];
                         continue;
@@ -823,6 +826,20 @@ pub fn extract_and_clean_links(input: &str, links: &mut Vec<LinkData>) -> String
         rem = &rem[bracket_start + 1..];
     }
     out.push_str(rem);
+
+    // Also extract standalone raw URLs (http:// or https://) into links if not already present
+    for word in out.split_whitespace() {
+        let clean_word = word.trim_matches(|c| c == '<' || c == '>' || c == '(' || c == ')' || c == '"' || c == '\'' || c == '[' || c == ']');
+        if (clean_word.starts_with("http://") || clean_word.starts_with("https://")) && clean_word.len() > 8 {
+            if !links.iter().any(|l| l.url == clean_word) {
+                links.push(LinkData {
+                    label: clean_word.to_string(),
+                    url: clean_word.to_string(),
+                });
+            }
+        }
+    }
+
     out
 }
 
