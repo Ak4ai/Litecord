@@ -23,7 +23,18 @@ pub fn get_process_instance_id() -> u32 {
         ((nanos as u32) ^ (pid << 16) ^ (nanos >> 32) as u32) | 1
     })
 }
- // Litecord P2P Video
+
+static MY_RX_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(P2P_VIDEO_PORT);
+
+pub fn get_my_rx_port() -> u16 {
+    MY_RX_PORT.load(Ordering::Relaxed)
+}
+
+pub fn set_my_rx_port(port: u16) {
+    MY_RX_PORT.store(port, Ordering::Relaxed);
+}
+
+// Litecord P2P Video
 const CHUNK_SIZE: usize = 1200; // Safe MTU for local & VPN UDP transmission
 
 // Protocol Opcodes
@@ -31,6 +42,15 @@ const OP_ANNOUNCE: u8 = 1;
 const OP_VIDEO_CHUNK: u8 = 2;
 const OP_STOP: u8 = 3;
 const OP_HEARTBEAT: u8 = 4;
+
+#[derive(Debug, Clone)]
+pub struct MonitorItemInfo {
+    pub id: i32,
+    pub name: String,
+    pub resolution: String,
+    pub is_primary: bool,
+    pub hwnd: isize,
+}
 
 #[derive(Debug, Clone)]
 pub struct CapturableWindowItem {
@@ -192,7 +212,8 @@ impl ScreenCaptureManager {
                     let uname = my_username_arc.lock().unwrap().clone();
                     let uname_bytes = uname.as_bytes();
                     let inst = get_process_instance_id();
-                    let mut ann_pkt = Vec::with_capacity(28 + uname_bytes.len());
+                    let my_rx = get_my_rx_port();
+                    let mut ann_pkt = Vec::with_capacity(32 + uname_bytes.len());
                     ann_pkt.extend_from_slice(MAGIC);
                     ann_pkt.extend_from_slice(&inst.to_be_bytes());
                     ann_pkt.push(OP_ANNOUNCE);
@@ -200,16 +221,23 @@ impl ScreenCaptureManager {
                     ann_pkt.extend_from_slice(&uid.to_be_bytes());
                     ann_pkt.push(1); // is_streaming = true
                     ann_pkt.push(match res {
-                        1080 => 0,
-                        720 => 3,
-                        _ => 4,
+                        1080 => 108,
+                        480 => 48,
+                        _ => 72,
                     });
+                    ann_pkt.push(target_fps as u8);
                     ann_pkt.push(uname_bytes.len() as u8);
                     ann_pkt.extend_from_slice(uname_bytes);
+                    ann_pkt.extend_from_slice(&my_rx.to_be_bytes());
 
                     for _ in 0..3 {
                         for target in &bcast_targets {
                             let _ = socket.send_to(&ann_pkt, target);
+                        }
+                        if let Ok(peers) = peers_store.lock() {
+                            for (&_, &(addr, _)) in peers.iter() {
+                                let _ = socket.send_to(&ann_pkt, addr);
+                            }
                         }
                         std::thread::sleep(Duration::from_millis(20));
                     }
@@ -224,19 +252,24 @@ impl ScreenCaptureManager {
                     if last_announce.elapsed() > Duration::from_millis(1500) {
                         let uname = my_username_arc.lock().unwrap().clone();
                         let uname_bytes = uname.as_bytes();
-                        let mut ann_pkt = Vec::with_capacity(24 + uname_bytes.len());
+                        let my_rx = get_my_rx_port();
+                        let inst = get_process_instance_id();
+                        let mut ann_pkt = Vec::with_capacity(32 + uname_bytes.len());
                         ann_pkt.extend_from_slice(MAGIC);
+                        ann_pkt.extend_from_slice(&inst.to_be_bytes());
                         ann_pkt.push(OP_ANNOUNCE);
                         ann_pkt.extend_from_slice(&cid.to_be_bytes());
                         ann_pkt.extend_from_slice(&uid.to_be_bytes());
                         ann_pkt.push(1);
                         ann_pkt.push(match res {
-                            1080 => 0,
-                            720 => 3,
-                            _ => 4,
+                            1080 => 108,
+                            480 => 48,
+                            _ => 72,
                         });
+                        ann_pkt.push(target_fps as u8);
                         ann_pkt.push(uname_bytes.len() as u8);
                         ann_pkt.extend_from_slice(uname_bytes);
+                        ann_pkt.extend_from_slice(&my_rx.to_be_bytes());
 
                         for target in &bcast_targets {
                             let _ = socket.send_to(&ann_pkt, target);
@@ -317,27 +350,37 @@ impl ScreenCaptureManager {
         std::thread::Builder::new()
             .name("screen-capture-rx".to_string())
             .spawn(move || {
-                let socket = match UdpSocket::bind(format!("0.0.0.0:{}", P2P_VIDEO_PORT)) {
-                    Ok(s) => {
-                        let _ = s.set_broadcast(true);
-                        let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
-                        s
+                let (socket, bound_port) = {
+                    let mut bound = None;
+                    for port in P2P_VIDEO_PORT..=(P2P_VIDEO_PORT + 10) {
+                        if let Ok(s) = UdpSocket::bind(format!("0.0.0.0:{}", port)) {
+                            let _ = s.set_broadcast(true);
+                            let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+                            bound = Some((s, port));
+                            break;
+                        }
                     }
-                    Err(e) => {
-                        warn!("Porta fixa {} em uso: {:?}. Usando porta dinâmica...", P2P_VIDEO_PORT, e);
-                        match UdpSocket::bind("0.0.0.0:0") {
-                            Ok(s) => {
-                                let _ = s.set_broadcast(true);
-                                let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
-                                s
-                            }
-                            Err(e2) => {
-                                warn!("Falha ao inicializar socket UDP RX: {:?}", e2);
-                                return;
+                    match bound {
+                        Some(pair) => pair,
+                        None => {
+                            match UdpSocket::bind("0.0.0.0:0") {
+                                Ok(s) => {
+                                    let _ = s.set_broadcast(true);
+                                    let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+                                    let p = s.local_addr().map(|a| a.port()).unwrap_or(P2P_VIDEO_PORT);
+                                    (s, p)
+                                }
+                                Err(e2) => {
+                                    warn!("Falha ao inicializar socket UDP RX: {:?}", e2);
+                                    return;
+                                }
                             }
                         }
                     }
                 };
+
+                set_my_rx_port(bound_port);
+                info!("📡 Receptor UDP P2P de vídeo escutando na porta {}...", bound_port);
 
                 let mut recv_buf = vec![0u8; 65535];
                 struct InFlightFrame {
@@ -348,10 +391,9 @@ impl ScreenCaptureManager {
                 }
                 let mut in_flight: HashMap<u64, InFlightFrame> = HashMap::new();
                 let mut peer_names: HashMap<u64, String> = HashMap::new();
+                let mut peer_fps: HashMap<u64, u8> = HashMap::new();
                 let mut active_streaming_users: HashMap<u64, bool> = HashMap::new();
                 let mut last_stream_activity: HashMap<u64, Instant> = HashMap::new();
-
-                info!("📡 Receptor UDP P2P de vídeo escutando na porta {}...", P2P_VIDEO_PORT);
 
                 let my_instance_id = get_process_instance_id();
 
@@ -377,23 +419,41 @@ impl ScreenCaptureManager {
                                 OP_ANNOUNCE => {
                                     if len >= 28 {
                                         let is_streaming = recv_buf[25] == 1;
-                                        let name_len = recv_buf[27] as usize;
-                                        if len >= 28 + name_len {
-                                            if let Ok(uname) = std::str::from_utf8(&recv_buf[28..28 + name_len]) {
+                                        
+                                        // Robust parsing supporting format with explicit fps byte
+                                        let (fps_val, name_offset, name_len) = if len >= 29 && recv_buf[27] >= 10 && recv_buf[27] <= 120 {
+                                            (recv_buf[27], 29, recv_buf[28] as usize)
+                                        } else {
+                                            (30, 28, recv_buf[27] as usize)
+                                        };
+
+                                        if is_streaming {
+                                            peer_fps.insert(pkt_uid, fps_val);
+                                        }
+
+                                        if len >= name_offset + name_len {
+                                            if let Ok(uname) = std::str::from_utf8(&recv_buf[name_offset..name_offset + name_len]) {
                                                 peer_names.insert(pkt_uid, uname.to_string());
                                             }
                                         }
 
-                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), P2P_VIDEO_PORT);
+                                        let peer_port = if len >= name_offset + name_len + 2 {
+                                            u16::from_be_bytes(recv_buf[name_offset + name_len..name_offset + name_len + 2].try_into().unwrap())
+                                        } else {
+                                            src_addr.port()
+                                        };
+
+                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), peer_port);
                                         if let Ok(mut peers) = peers_store.lock() {
                                             peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
                                         }
 
-                                        // Instant reciprocal heartbeat so transmitter gets our direct IP
+                                        // Instant reciprocal heartbeat so transmitter gets our direct IP and RX port
                                         if is_streaming {
                                             let uname = my_username_arc.lock().unwrap().clone();
                                             let uname_bytes = uname.as_bytes();
-                                            let mut ack_pkt = Vec::with_capacity(28 + uname_bytes.len());
+                                            let my_rx = get_my_rx_port();
+                                            let mut ack_pkt = Vec::with_capacity(30 + uname_bytes.len());
                                             ack_pkt.extend_from_slice(MAGIC);
                                             ack_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
                                             ack_pkt.push(OP_HEARTBEAT);
@@ -403,6 +463,8 @@ impl ScreenCaptureManager {
                                             ack_pkt.push(2);
                                             ack_pkt.push(uname_bytes.len() as u8);
                                             ack_pkt.extend_from_slice(uname_bytes);
+                                            ack_pkt.extend_from_slice(&my_rx.to_be_bytes());
+
                                             let _ = socket.send_to(&ack_pkt, peer_p2p_addr);
                                             for target in get_broadcast_addresses() {
                                                 let _ = socket.send_to(&ack_pkt, target);
@@ -411,9 +473,31 @@ impl ScreenCaptureManager {
 
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
                                         if prev_state != Some(is_streaming) {
-                                            info!("📡 Usuário {} ({}) alterou estado de stream: {}", pkt_uid, src_addr, is_streaming);
+                                            info!("📡 Usuário {} ({}) alterou estado de stream: {}", pkt_uid, peer_p2p_addr, is_streaming);
                                             on_state(pkt_uid, is_streaming);
                                         }
+                                    }
+                                }
+                                OP_HEARTBEAT => {
+                                    if len >= 28 {
+                                        let name_len = recv_buf[27] as usize;
+                                        if len >= 28 + name_len {
+                                            if let Ok(uname) = std::str::from_utf8(&recv_buf[28..28 + name_len]) {
+                                                peer_names.insert(pkt_uid, uname.to_string());
+                                            }
+                                        }
+
+                                        let peer_port = if len >= 28 + name_len + 2 {
+                                            u16::from_be_bytes(recv_buf[28 + name_len..30 + name_len].try_into().unwrap())
+                                        } else {
+                                            src_addr.port()
+                                        };
+
+                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), peer_port);
+                                        if let Ok(mut peers) = peers_store.lock() {
+                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
+                                        }
+                                        info!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, peer_p2p_addr);
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
@@ -423,9 +507,8 @@ impl ScreenCaptureManager {
                                         let idx = u16::from_be_bytes(recv_buf[31..33].try_into().unwrap());
                                         let chunk_data = recv_buf[33..len].to_vec();
 
-                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), P2P_VIDEO_PORT);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
+                                            peers.entry(pkt_uid).or_insert((src_addr, Instant::now()));
                                         }
 
                                         last_stream_activity.insert(pkt_uid, Instant::now());
@@ -459,12 +542,13 @@ impl ScreenCaptureManager {
                                             }
                                             frame_entry.received.clear();
 
-                                            if let Some((pixel_buffer, w, h)) = decode_jpeg(&complete_jpeg) {
+                                            if let Some((pixel_buffer, _w, h)) = decode_jpeg(&complete_jpeg) {
                                                 if let Ok(mut f_map) = get_active_stream_frames().lock() {
                                                     f_map.insert(pkt_uid, pixel_buffer.clone());
                                                 }
                                                 let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
-                                                let quality_label = format!("{}x{}", w, h);
+                                                let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(30);
+                                                let quality_label = format!("{}p {}fps", h, fps_val);
                                                 on_frame(pkt_uid, uname, quality_label, pixel_buffer);
                                             }
                                         }
@@ -514,18 +598,28 @@ impl ScreenCaptureManager {
 
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
-    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), P2P_VIDEO_PORT));
-    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), P2P_VIDEO_PORT));
+    
+    // Broadcast to local port cluster (50005..=50010) on loopback & 255.255.255.255
+    for port in 50005..=50010 {
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
+    }
 
     // Query active adapter IPv4 address via routing table probe
     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
         if socket.connect("8.8.8.8:80").is_ok() {
             if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
                 let octets = local.ip().octets();
-                addrs.push(SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
-                    P2P_VIDEO_PORT,
-                ));
+                for port in 50005..=50008 {
+                    addrs.push(SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
+                        port,
+                    ));
+                    addrs.push(SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3])),
+                        port,
+                    ));
+                }
             }
         }
     }
@@ -579,6 +673,88 @@ fn decode_jpeg(jpeg_data: &[u8]) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u32, 
 }
 
 #[cfg(windows)]
+pub fn list_screens() -> Vec<MonitorItemInfo> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    };
+    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
+
+    struct MonitorEnumData {
+        screens: Vec<MonitorItemInfo>,
+        count: i32,
+    }
+
+    unsafe extern "system" fn monitor_proc(
+        hmon: HMONITOR,
+        _hdc: HDC,
+        _rect: *mut RECT,
+        lparam: LPARAM,
+    ) -> BOOL {
+        let data = &mut *(lparam as *mut MonitorEnumData);
+        data.count += 1;
+
+        let mut info: MONITORINFOEXW = std::mem::zeroed();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+
+        let is_primary = if GetMonitorInfoW(hmon, &mut info.monitorInfo as *mut _ as _) != 0 {
+            (info.monitorInfo.dwFlags & 1) != 0 // MONITORINFOF_PRIMARY = 1
+        } else {
+            data.count == 1
+        };
+
+        let width = (info.monitorInfo.rcMonitor.right - info.monitorInfo.rcMonitor.left).abs();
+        let height = (info.monitorInfo.rcMonitor.bottom - info.monitorInfo.rcMonitor.top).abs();
+        let (w, h) = if width > 0 && height > 0 { (width, height) } else { (1920, 1080) };
+
+        let name = if is_primary {
+            format!("Tela {} (Principal)", data.count)
+        } else {
+            format!("Tela {}", data.count)
+        };
+
+        data.screens.push(MonitorItemInfo {
+            id: data.count - 1,
+            name,
+            resolution: format!("{} × {}", w, h),
+            is_primary,
+            hwnd: 0,
+        });
+
+        TRUE
+    }
+
+    let mut data = MonitorEnumData { screens: Vec::new(), count: 0 };
+    unsafe {
+        EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(monitor_proc), &mut data as *mut _ as LPARAM);
+    }
+
+    if data.screens.is_empty() {
+        data.screens.push(MonitorItemInfo {
+            id: 0,
+            name: "Tela 1 (Principal)".to_string(),
+            resolution: "1920 × 1080".to_string(),
+            is_primary: true,
+            hwnd: 0,
+        });
+    }
+
+    data.screens
+}
+
+#[cfg(not(windows))]
+pub fn list_screens() -> Vec<MonitorItemInfo> {
+    vec![
+        MonitorItemInfo {
+            id: 0,
+            name: "Tela 1 (Principal)".to_string(),
+            resolution: "1920 × 1080".to_string(),
+            is_primary: true,
+            hwnd: 0,
+        }
+    ]
+}
+
+#[cfg(windows)]
 pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -607,11 +783,46 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
         let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 512);
         if len > 0 {
             let title = String::from_utf16_lossy(&title_buf[..len as usize]).trim().to_string();
-            if !title.is_empty() && title != "Program Manager" && title != "Settings" {
+            let lower = title.to_lowercase();
+            // Filter out internal and background overlay windows
+            if !title.is_empty() 
+                && !lower.starts_with("program manager") 
+                && !lower.starts_with("settings") 
+                && !lower.starts_with("configurações")
+                && !lower.starts_with("windows input")
+                && !lower.starts_with("msctfime ui")
+                && !lower.starts_with("default ime")
+                && !lower.starts_with("litecord - transmissão") 
+            {
+                // Clean app label based on title
+                let app_type = if lower.contains("chrome") {
+                    "Google Chrome"
+                } else if lower.contains("firefox") {
+                    "Mozilla Firefox"
+                } else if lower.contains("edge") {
+                    "Microsoft Edge"
+                } else if lower.contains("visual studio code") || lower.contains("code") {
+                    "Visual Studio Code"
+                } else if lower.contains("discord") {
+                    "Discord"
+                } else if lower.contains("spotify") {
+                    "Spotify"
+                } else if lower.contains("telegram") {
+                    "Telegram"
+                } else if lower.contains("litecord") {
+                    "Litecord"
+                } else if lower.contains("terminal") || lower.contains("powershell") || lower.contains("cmd") {
+                    "Terminal"
+                } else if lower.contains("notepad") || lower.contains("bloco de notas") {
+                    "Bloco de Notas"
+                } else {
+                    "Janela"
+                };
+
                 data.windows.push(CapturableWindowItem {
                     id: (hwnd as isize).to_string(),
                     title: title.clone(),
-                    app_name: title,
+                    app_name: app_type.to_string(),
                 });
             }
         }
@@ -631,7 +842,7 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
         CapturableWindowItem {
             id: "1".to_string(),
             title: "Navegador Web (Firefox / Chrome)".to_string(),
-            app_name: "Browser".to_string(),
+            app_name: "Google Chrome".to_string(),
         },
         CapturableWindowItem {
             id: "2".to_string(),
@@ -641,7 +852,7 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
         CapturableWindowItem {
             id: "3".to_string(),
             title: "Editor de Código".to_string(),
-            app_name: "Code Editor".to_string(),
+            app_name: "Visual Studio Code".to_string(),
         },
     ]
 }
@@ -756,6 +967,10 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
         DeleteDC(hdc_mem);
         ReleaseDC(hwnd_desktop, hdc_desktop);
 
+        if let Some(digit) = get_test_watermark_digit() {
+            draw_test_watermark(slice, &mut rgb_bytes, target_w, target_h, digit);
+        }
+
         Some((pixel_buffer, rgb_bytes))
     }
 }
@@ -785,7 +1000,165 @@ fn capture_screen_rgb(_target_hwnd: isize, target_w: u32, target_h: u32) -> Opti
         rgb_bytes[offset_rgb + 2] = b;
     }
 
+    if let Some(digit) = get_test_watermark_digit() {
+        draw_test_watermark(slice, &mut rgb_bytes, target_w, target_h, digit);
+    }
+
     Some((pixel_buffer, rgb_bytes))
+}
+
+const GLYPH_1: [u8; 12] = [
+    0b00011000,
+    0b00111000,
+    0b01111000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b01111110,
+    0b01111110,
+];
+
+const GLYPH_2: [u8; 12] = [
+    0b00111100,
+    0b01100110,
+    0b01100110,
+    0b00000110,
+    0b00001100,
+    0b00011000,
+    0b00110000,
+    0b01100000,
+    0b01100000,
+    0b01100000,
+    0b01111110,
+    0b01111110,
+];
+
+fn get_test_watermark_digit() -> Option<char> {
+    if let Ok(val) = std::env::var("LITECORD_INSTANCE_ID") {
+        let v = val.trim();
+        if v == "1" { return Some('1'); }
+        if v == "2" { return Some('2'); }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_str = cwd.to_string_lossy().to_lowercase();
+        if cwd_str.contains("instance2") || cwd_str.contains("profile2") || cwd_str.ends_with("_2") {
+            return Some('2');
+        }
+        if cwd_str.contains("instance1") || cwd_str.contains("profile1") || cwd_str.ends_with("_1") {
+            return Some('1');
+        }
+    }
+    None
+}
+
+fn draw_test_watermark(
+    slice: &mut [Rgba8Pixel],
+    rgb_bytes: &mut [u8],
+    width: u32,
+    height: u32,
+    digit: char,
+) {
+    let glyph = match digit {
+        '1' => &GLYPH_1,
+        '2' => &GLYPH_2,
+        _ => return,
+    };
+
+    let cx = (width / 2) as i32;
+    let cy = (height / 2) as i32;
+
+    // Badge Dimensions
+    let half_w = 90i32;
+    let half_h = 90i32;
+    let border_thick = 4i32;
+
+    // Accent color: Instance 1 = Blurple (#5865F2), Instance 2 = Pink/Magenta (#EB459E)
+    let (border_r, border_g, border_b) = if digit == '1' {
+        (88u8, 101u8, 242u8)
+    } else {
+        (235u8, 69u8, 158u8)
+    };
+
+    // Draw background badge (dark semi-transparent box with solid border)
+    for dy in -half_h..=half_h {
+        let y = cy + dy;
+        if y < 0 || y >= height as i32 {
+            continue;
+        }
+        for dx in -half_w..=half_w {
+            let x = cx + dx;
+            if x < 0 || x >= width as i32 {
+                continue;
+            }
+
+            let idx = (y as usize) * (width as usize) + (x as usize);
+            let offset_rgb = idx * 3;
+
+            let is_border = dx.abs() >= half_w - border_thick || dy.abs() >= half_h - border_thick;
+
+            let (r, g, b) = if is_border {
+                (border_r, border_g, border_b)
+            } else {
+                let cur_r = rgb_bytes[offset_rgb];
+                let cur_g = rgb_bytes[offset_rgb + 1];
+                let cur_b = rgb_bytes[offset_rgb + 2];
+                let bg_r = 17u8;
+                let bg_g = 18u8;
+                let bg_b = 20u8;
+                let br = ((cur_r as u16 * 2 + bg_r as u16 * 8) / 10) as u8;
+                let bg = ((cur_g as u16 * 2 + bg_g as u16 * 8) / 10) as u8;
+                let bb = ((cur_b as u16 * 2 + bg_b as u16 * 8) / 10) as u8;
+                (br, bg, bb)
+            };
+
+            slice[idx] = Rgba8Pixel::new(r, g, b, 255);
+            rgb_bytes[offset_rgb] = r;
+            rgb_bytes[offset_rgb + 1] = g;
+            rgb_bytes[offset_rgb + 2] = b;
+        }
+    }
+
+    // Draw the big scaled digit in the center of the badge
+    let scale = 9i32; // 8 cols * 9 = 72px width, 12 rows * 9 = 108px height
+    let glyph_w = 8 * scale;
+    let glyph_h = 12 * scale;
+    let start_x = cx - glyph_w / 2;
+    let start_y = cy - glyph_h / 2;
+
+    for (row_idx, &row_bits) in glyph.iter().enumerate() {
+        for col_idx in 0..8 {
+            if (row_bits & (1 << (7 - col_idx))) != 0 {
+                for sy in 0..scale {
+                    let y = start_y + (row_idx as i32) * scale + sy;
+                    if y < 0 || y >= height as i32 {
+                        continue;
+                    }
+                    for sx in 0..scale {
+                        let x = start_x + (col_idx as i32) * scale + sx;
+                        if x < 0 || x >= width as i32 {
+                            continue;
+                        }
+
+                        let idx = (y as usize) * (width as usize) + (x as usize);
+                        let offset_rgb = idx * 3;
+
+                        let r = 255u8;
+                        let g = 255u8;
+                        let b = 255u8;
+
+                        slice[idx] = Rgba8Pixel::new(r, g, b, 255);
+                        rgb_bytes[offset_rgb] = r;
+                        rgb_bytes[offset_rgb + 1] = g;
+                        rgb_bytes[offset_rgb + 2] = b;
+                    }
+                }
+            }
+        }
+    }
 }
 
 static ACTIVE_STREAM_FRAMES: std::sync::OnceLock<Arc<Mutex<HashMap<u64, SharedPixelBuffer<Rgba8Pixel>>>>> = std::sync::OnceLock::new();

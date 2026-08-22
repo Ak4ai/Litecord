@@ -82,6 +82,20 @@ struct VoiceParticipant {
     priority: int,
     is_self: bool,
     is_streaming: bool,
+    is_stream_hidden: bool,
+}
+
+export struct ScreenSourceItem {
+    id: int,
+    name: string,
+    resolution: string,
+    is_primary: bool,
+}
+
+export struct WindowSourceItem {
+    id: string,
+    title: string,
+    app_name: string,
 }
 
 component ChatMessagesView inherits Rectangle {
@@ -399,6 +413,8 @@ export component AppWindow inherits Window {
     callback close_stream_modal();
     callback popout_stream_window(string /* user_id */, string /* username */);
     callback close_popout_window();
+    callback hide_stream(string /* user_id */);
+    callback unhide_stream(string /* user_id */);
 
     // Auto-Update Properties
     in-out property <bool> show_update_dialog: false;
@@ -492,10 +508,13 @@ export component AppWindow inherits Window {
     // Screen Share / Live Video Grid Properties
     in-out property <bool> is_screen_sharing: false;
     in-out property <bool> show_stream_modal: false;
-    in-out property <int> stream_modal_tab: 0; // 0 = Monitores, 1 = Janelas
+    in-out property <string> stream_source_tab: "screens";
     in-out property <string> stream_selected_res: "720p";
     in-out property <int> stream_selected_fps: 30;
-    in-out property <int> stream_selected_monitor: 0;
+    in-out property <int> stream_selected_source_index: 0;
+    in-out property <string> stream_selected_window_id: "";
+    in-out property <[ScreenSourceItem]> available_screens: [];
+    in-out property <[WindowSourceItem]> available_windows: [];
     in-out property <string> popped_out_stream_uid: "";
     in-out property <bool> has_active_stream: false;
     in-out property <string> active_stream_user: "";
@@ -503,6 +522,7 @@ export component AppWindow inherits Window {
     in-out property <image> active_stream_frame;
     in-out property <image> remote_stream_frame;
     in-out property <bool> is_stream_fullscreen: false;
+    in-out property <string> focused_stream_uid: "";
     in-out property <string> tr_start_screen_share: "Transmitir Tela";
     in-out property <string> tr_stop_screen_share: "Parar Transmissão";
     in-out property <string> tr_watching_stream: "Assistindo Transmissão";
@@ -1185,9 +1205,15 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 Button {
-                                    icon: @image-url("../assets/qr.svg");
+                                    icon: @image-url("../assets/monitor.svg");
                                     text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
-                                    clicked => { root.toggle_screen_share(); }
+                                    clicked => {
+                                        if root.is_screen_sharing {
+                                            root.toggle_screen_share();
+                                        } else {
+                                            root.open_stream_modal();
+                                        }
+                                    }
                                 }
                             }
 
@@ -1290,9 +1316,10 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
-                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && p.is_streaming && root.popped_out_stream_uid != p.user_id));
+                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && p.is_streaming && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id));
+                                    property <bool> is_this_stream_focused: (root.focused_stream_uid == p.user_id || (p.is_self && (root.focused_stream_uid == "self" || root.focused_stream_uid == p.user_id)));
 
-                                    height: is_streaming_attached ? (root.is_stream_fullscreen ? 420px : 260px) : 76px;
+                                    height: is_streaming_attached ? (is_this_stream_focused ? 480px : 260px) : 76px;
                                     animate height { duration: 200ms; }
                                     background: #00000000;
 
@@ -1495,8 +1522,7 @@ export component AppWindow inherits Window {
                                                                 if p.is_self {
                                                                     root.toggle_screen_share();
                                                                 } else {
-                                                                    root.has_active_stream = false;
-                                                                    root.active_stream_user = "";
+                                                                    root.hide_stream(p.user_id);
                                                                 }
                                                             }
                                                         }
@@ -1532,7 +1558,7 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
 
-                                                    // Fullscreen Toggle
+                                                    // Stream Card Focus / Expand Toggle
                                                     Rectangle {
                                                         width: 28px;
                                                         height: 24px;
@@ -1544,10 +1570,10 @@ export component AppWindow inherits Window {
                                                             HorizontalLayout {
                                                                 alignment: center;
                                                                 Image {
-                                                                    source: root.is_stream_fullscreen ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
+                                                                    source: is_this_stream_focused ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
                                                                     width: 10px;
                                                                     height: 10px;
-                                                                    colorize: #ffffff;
+                                                                    colorize: is_this_stream_focused ? #5865f2 : #ffffff;
                                                                     image-fit: contain;
                                                                 }
                                                             }
@@ -1555,7 +1581,13 @@ export component AppWindow inherits Window {
 
                                                         card_fs_ta := TouchArea {
                                                             mouse-cursor: pointer;
-                                                            clicked => { root.toggle_stream_fullscreen(); }
+                                                            clicked => {
+                                                                if is_this_stream_focused {
+                                                                    root.focused_stream_uid = "";
+                                                                } else {
+                                                                    root.focused_stream_uid = p.is_self ? "self" : p.user_id;
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1653,6 +1685,36 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
+                                                     // Live Badge if streaming while card is audio-only/hidden
+                                                     if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
+                                                         background: #f23f4333;
+                                                         border-radius: 4px;
+                                                         border-width: 1px;
+                                                         border-color: #f23f43;
+                                                         height: 16px;
+                                                         HorizontalLayout {
+                                                             padding-left: 6px;
+                                                             padding-right: 6px;
+                                                             spacing: 4px;
+                                                             VerticalLayout {
+                                                                 alignment: center;
+                                                                 Rectangle {
+                                                                     width: 4px;
+                                                                     height: 4px;
+                                                                     border-radius: 2px;
+                                                                     background: #f23f43;
+                                                                 }
+                                                             }
+                                                             Text {
+                                                                 text: "AO VIVO";
+                                                                 color: #f23f43;
+                                                                 font-size: 9px;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
+
                                                      if p.is_muted: HorizontalLayout {
                                                          spacing: 4px;
                                                          alignment: start;
@@ -1668,6 +1730,37 @@ export component AppWindow inherits Window {
                                                              font-size: 11px;
                                                              font-weight: 700;
                                                              vertical-alignment: center;
+                                                         }
+                                                     }
+
+                                                     Rectangle { horizontal-stretch: 1; }
+
+                                                     // Square button in top-right corner to re-enable/unhide stream (ONLY visible if user is currently streaming!)
+                                                     if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
+                                                         width: 26px;
+                                                         height: 22px;
+                                                         border-radius: 4px;
+                                                         background: unhide_stream_ta.has-hover ? #5865f2 : #35373c;
+
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             HorizontalLayout {
+                                                                 alignment: center;
+                                                                 Image {
+                                                                     source: @image-url("../assets/window.svg");
+                                                                     width: 12px;
+                                                                     height: 12px;
+                                                                     colorize: #ffffff;
+                                                                     image-fit: contain;
+                                                                 }
+                                                             }
+                                                         }
+
+                                                         unhide_stream_ta := TouchArea {
+                                                             mouse-cursor: pointer;
+                                                             clicked => {
+                                                                 root.unhide_stream(p.user_id);
+                                                             }
                                                          }
                                                      }
                                                  }
@@ -2824,6 +2917,630 @@ export component AppWindow inherits Window {
             }
         }
     }
+
+    // ==========================================
+    // DISCORD-STYLE SCREEN SHARE SELECTION MODAL
+    // ==========================================
+    if root.show_stream_modal: Rectangle {
+        background: #000000aa;
+        width: 100%;
+        height: 100%;
+
+        // Dismiss when clicking outer backdrop
+        TouchArea {
+            clicked => { root.show_stream_modal = false; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 500px;
+                    background: #313338;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #383a40;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: #00000099;
+                    clip: true;
+
+                    VerticalBox {
+                        padding: 0px;
+                        spacing: 0px;
+
+                        // 1. Modal Header
+                        Rectangle {
+                            height: 52px;
+                            background: #313338;
+
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 16px;
+                                alignment: space-between;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "Compartilhe sua tela";
+                                        color: #f2f3f5;
+                                        font-size: 16px;
+                                        font-weight: 700;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: 4px;
+                                        background: close_modal_ta.has-hover ? #35373c : transparent;
+
+                                        Image {
+                                            source: @image-url("../assets/chrome-close.svg");
+                                            width: 12px;
+                                            height: 12px;
+                                            colorize: #b5bac1;
+                                            image-fit: contain;
+                                        }
+
+                                        close_modal_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.show_stream_modal = false; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Tabs Bar (Captura de Tela vs Captura de Janela)
+                        Rectangle {
+                            height: 38px;
+                            background: #2b2d31;
+
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 24px;
+
+                                // Tab: Telas (Captura de Tela)
+                                Rectangle {
+                                    background: transparent;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            Image {
+                                                source: @image-url("../assets/monitor.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: root.stream_source_tab == "screens" ? #ffffff : #949ba4;
+                                            }
+                                            Text {
+                                                text: "Telas";
+                                                color: root.stream_source_tab == "screens" ? #ffffff : #949ba4;
+                                                font-size: 13px;
+                                                font-weight: root.stream_source_tab == "screens" ? 700 : 500;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Active Tab Underline
+                                    if root.stream_source_tab == "screens": Rectangle {
+                                        y: parent.height - 2px;
+                                        height: 2px;
+                                        width: 100%;
+                                        background: #5865f2;
+                                        border-radius: 1px;
+                                    }
+
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.stream_source_tab = "screens";
+                                            root.stream_selected_source_index = 0;
+                                            root.stream_selected_window_id = "";
+                                        }
+                                    }
+                                }
+
+                                // Tab: Janelas (Captura de Janela)
+                                Rectangle {
+                                    background: transparent;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            Image {
+                                                source: @image-url("../assets/window.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: root.stream_source_tab == "windows" ? #ffffff : #949ba4;
+                                            }
+                                            Text {
+                                                text: "Janelas";
+                                                color: root.stream_source_tab == "windows" ? #ffffff : #949ba4;
+                                                font-size: 13px;
+                                                font-weight: root.stream_source_tab == "windows" ? 700 : 500;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Active Tab Underline
+                                    if root.stream_source_tab == "windows": Rectangle {
+                                        y: parent.height - 2px;
+                                        height: 2px;
+                                        width: 100%;
+                                        background: #5865f2;
+                                        border-radius: 1px;
+                                    }
+
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.stream_source_tab = "windows";
+                                            root.stream_selected_source_index = 0;
+                                            if root.available_windows.length > 0 {
+                                                root.stream_selected_window_id = root.available_windows[0].id;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+
+                        // 3. Source Selection Preview Area
+                        VerticalBox {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 14px;
+                            padding-bottom: 14px;
+                            spacing: 14px;
+
+                            // Source Cards (Telas vs Janelas)
+                            if root.stream_source_tab == "screens": Flickable {
+                                viewport-height: 110px;
+                                height: 110px;
+                                interactive: true;
+
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 12px;
+                                    height: 110px;
+
+                                    for scr[idx] in root.available_screens: Rectangle {
+                                        width: 140px;
+                                        height: 110px;
+                                        background: root.stream_selected_source_index == idx ? #5865f222 : #2b2d31;
+                                        border-radius: 8px;
+                                        border-width: 2px;
+                                        border-color: root.stream_selected_source_index == idx ? #5865f2 : #383a40;
+                                        clip: true;
+
+                                        VerticalBox {
+                                            padding: 8px;
+                                            alignment: center;
+                                            spacing: 6px;
+
+                                            // Screen Illustration Box
+                                            Rectangle {
+                                                height: 52px;
+                                                background: #1e1f22;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: root.stream_selected_source_index == idx ? #5865f288 : #383a40;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    HorizontalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/monitor.svg");
+                                                            width: 24px;
+                                                            height: 24px;
+                                                            colorize: root.stream_selected_source_index == idx ? #5865f2 : #80848e;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: scr.name;
+                                                color: root.stream_selected_source_index == idx ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: scr.resolution;
+                                                color: #80848e;
+                                                font-size: 10px;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.stream_selected_source_index = idx;
+                                                root.stream_selected_window_id = "";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.stream_source_tab == "windows": Flickable {
+                                viewport-height: 110px;
+                                height: 110px;
+                                interactive: true;
+
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 12px;
+                                    height: 110px;
+
+                                    for win[idx] in root.available_windows: Rectangle {
+                                        width: 140px;
+                                        height: 110px;
+                                        background: root.stream_selected_source_index == idx ? #5865f222 : #2b2d31;
+                                        border-radius: 8px;
+                                        border-width: 2px;
+                                        border-color: root.stream_selected_source_index == idx ? #5865f2 : #383a40;
+                                        clip: true;
+
+                                        VerticalBox {
+                                            padding: 8px;
+                                            alignment: center;
+                                            spacing: 6px;
+
+                                            Rectangle {
+                                                height: 52px;
+                                                background: #1e1f22;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: root.stream_selected_source_index == idx ? #5865f288 : #383a40;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    HorizontalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: win.app_name == "Google Chrome" ? @image-url("../assets/globe.svg") : (win.app_name == "Litecord" ? @image-url("../assets/app_icon.png") : @image-url("../assets/window.svg"));
+                                                            width: 24px;
+                                                            height: 24px;
+                                                            colorize: win.app_name == "Litecord" ? transparent : (root.stream_selected_source_index == idx ? #5865f2 : #80848e);
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: win.title;
+                                                color: root.stream_selected_source_index == idx ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: win.app_name;
+                                                color: #80848e;
+                                                font-size: 10px;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.stream_selected_source_index = idx;
+                                                root.stream_selected_window_id = win.id;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 4. Stream Quality Section Title
+                            Text {
+                                text: "QUALIDADE DA TRANSMISSÃO";
+                                color: #b5bac1;
+                                font-size: 11px;
+                                font-weight: 800;
+                            }
+
+                            // Resolution Selection (1080p, 720p, 480p)
+                            VerticalBox {
+                                padding: 0px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "RESOLUÇÃO";
+                                    color: #949ba4;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    height: 32px;
+
+                                    // 1080p (1920x1080)
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: root.stream_selected_res == "1080p" ? #5865f2 : (res_1080_ta.has-hover ? #35373c : #2b2d31);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.stream_selected_res == "1080p" ? #5865f2 : #383a40;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "1080p (1920×1080)";
+                                                color: root.stream_selected_res == "1080p" ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        res_1080_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.stream_selected_res = "1080p"; }
+                                        }
+                                    }
+
+                                    // 720p (1280x720)
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: root.stream_selected_res == "720p" ? #5865f2 : (res_720_ta.has-hover ? #35373c : #2b2d31);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.stream_selected_res == "720p" ? #5865f2 : #383a40;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "720p (1280×720)";
+                                                color: root.stream_selected_res == "720p" ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        res_720_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.stream_selected_res = "720p"; }
+                                        }
+                                    }
+
+                                    // 480p (854x480)
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: root.stream_selected_res == "480p" ? #5865f2 : (res_480_ta.has-hover ? #35373c : #2b2d31);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.stream_selected_res == "480p" ? #5865f2 : #383a40;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "480p (854×480)";
+                                                color: root.stream_selected_res == "480p" ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        res_480_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.stream_selected_res = "480p"; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Framerate Selection (60 FPS, 30 FPS, 15 FPS)
+                            VerticalBox {
+                                padding: 0px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "TAXA DE QUADROS (FPS)";
+                                    color: #949ba4;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    height: 32px;
+
+                                    // 60 FPS
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: root.stream_selected_fps == 60 ? #5865f2 : (fps_60_ta.has-hover ? #35373c : #2b2d31);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.stream_selected_fps == 60 ? #5865f2 : #383a40;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "60 FPS";
+                                                color: root.stream_selected_fps == 60 ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        fps_60_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.stream_selected_fps = 60; }
+                                        }
+                                    }
+
+                                    // 30 FPS
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: root.stream_selected_fps == 30 ? #5865f2 : (fps_30_ta.has-hover ? #35373c : #2b2d31);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.stream_selected_fps == 30 ? #5865f2 : #383a40;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "30 FPS";
+                                                color: root.stream_selected_fps == 30 ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        fps_30_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.stream_selected_fps = 30; }
+                                        }
+                                    }
+
+                                    // 15 FPS
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: root.stream_selected_fps == 15 ? #5865f2 : (fps_15_ta.has-hover ? #35373c : #2b2d31);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.stream_selected_fps == 15 ? #5865f2 : #383a40;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "15 FPS";
+                                                color: root.stream_selected_fps == 15 ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        fps_15_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.stream_selected_fps = 15; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 5. Pinned Modal Footer Action Bar
+                        Rectangle {
+                            height: 60px;
+                            background: #2b2d31;
+
+                            HorizontalLayout {
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                // Cancelar Button
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 36px;
+                                        border-radius: 4px;
+                                        background: modal_cancel_ta.has-hover ? #35373c : transparent;
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            Text {
+                                                text: "Cancelar";
+                                                color: #dbdee1;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        modal_cancel_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.show_stream_modal = false; }
+                                        }
+                                    }
+                                }
+
+                                // Transmitir ao Vivo (Go Live) Button
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 38px;
+                                        border-radius: 4px;
+                                        background: modal_start_ta.has-hover ? #4752c4 : #5865f2;
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            padding-left: 18px;
+                                            padding-right: 18px;
+                                            spacing: 8px;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Image {
+                                                    source: @image-url("../assets/monitor.svg");
+                                                    width: 14px;
+                                                    height: 14px;
+                                                    colorize: #ffffff;
+                                                    image-fit: contain;
+                                                }
+                                            }
+
+                                            Text {
+                                                text: "Transmitir ao Vivo";
+                                                color: #ffffff;
+                                                font-size: 13px;
+                                                font-weight: 700;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        modal_start_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.show_stream_modal = false;
+                                                root.toggle_screen_share();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Popout Detached Video Window Component
@@ -2832,7 +3549,7 @@ export component PopoutStreamWindow inherits Window {
     no-frame: true;
     background: #111214;
     min-width: 320px;
-    min-height: 240px;
+    min-height: 180px;
     default-font-family: "gg sans";
 
     // Visual boundary border
@@ -2845,8 +3562,11 @@ export component PopoutStreamWindow inherits Window {
 
     in-out property <image> stream_frame;
     in-out property <string> username: "Transmissão";
+    in-out property <string> user_id: "";
+    in-out property <bool> is_pinned: false;
     in-out property <bool> show_controls: true;
 
+    callback toggle_pin();
     callback start_window_drag();
     callback toggle_fullscreen();
     callback close_popout();
@@ -2953,6 +3673,30 @@ export component PopoutStreamWindow inherits Window {
             HorizontalLayout {
                 spacing: 4px;
                 alignment: end;
+
+                // Pin / Always-On-Top Toggle Button (Left of Minimize)
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 4px;
+                        background: root.is_pinned ? #5865f2 : (pop_pin_ta.has-hover ? #35373c : transparent);
+
+                        Image {
+                            source: @image-url("../assets/pin.svg");
+                            width: 12px;
+                            height: 12px;
+                            colorize: root.is_pinned ? #ffffff : (pop_pin_ta.has-hover ? #ffffff : #dbdee1);
+                            image-fit: contain;
+                        }
+
+                        pop_pin_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle_pin(); }
+                        }
+                    }
+                }
 
                 // Minimize Button
                 VerticalLayout {
