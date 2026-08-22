@@ -908,7 +908,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         };
                         let clean_cmd = cmd_name.trim().trim_start_matches('/');
                         if !clean_cmd.is_empty() {
-                            if !before.trim().is_empty() {
+                            if !before.is_empty() {
                                 line_blocks.push(MessageBlockData {
                                     text: parse_discord_markdown(before),
                                     is_link: false,
@@ -916,8 +916,6 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                     url: String::new(),
                                     command_name: String::new(),
                                 });
-                                lines.push(MessageLineData { blocks: line_blocks });
-                                line_blocks = Vec::new();
                             }
                             line_blocks.push(MessageBlockData {
                                 text: format!("</{}>", clean_cmd),
@@ -926,8 +924,6 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: String::new(),
                                 command_name: format!("/{}", clean_cmd),
                             });
-                            lines.push(MessageLineData { blocks: line_blocks });
-                            line_blocks = Vec::new();
                             rem = &after_tag[gt_idx + 1..];
                             continue;
                         }
