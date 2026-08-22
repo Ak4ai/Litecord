@@ -34,6 +34,7 @@ struct CommandSuggestion {
     desc: string,
     usage: string,
     app_id: string,
+    app_name: string,
     cmd_id: string,
     version: string,
     param_name: string,
@@ -929,24 +930,24 @@ export component AppWindow inherits Window {
     in-out property <string> active_command_version: "";
     in-out property <string> command_arg_text: "";
     in-out property <[CommandSuggestion]> command_suggestions: [
-        { name: "/play", desc: "Tocar música, áudio ou playlist (YouTube/Spotify/SoundCloud)", usage: "/play <nome ou link>", app_id: "", cmd_id: "", version: "", param_name: "query", param_desc: "Nome da música ou link do YouTube/Spotify/SoundCloud", is_required: true },
-        { name: "/skip", desc: "Pular para a próxima faixa da fila", usage: "/skip", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/stop", desc: "Parar reprodução do bot e limpar a fila", usage: "/stop", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/pause", desc: "Pausar a música em reprodução", usage: "/pause", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/resume", desc: "Retomar a reprodução pausada", usage: "/resume", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/queue", desc: "Visualizar a lista de músicas na fila", usage: "/queue", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/nowplaying", desc: "Exibir detalhes da música que está tocando agora", usage: "/nowplaying", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/volume", desc: "Ajustar o volume de reprodução do bot", usage: "/volume <1-100>", app_id: "", cmd_id: "", version: "", param_name: "level", param_desc: "Volume de 1 a 100", is_required: true },
-        { name: "/loop", desc: "Ativar ou desativar repetição da música ou fila", usage: "/loop", app_id: "", cmd_id: "", version: "", param_name: "mode", param_desc: "Modo: track, queue ou off", is_required: false },
-        { name: "/shuffle", desc: "Embaralhar a fila de músicas", usage: "/shuffle", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/lyrics", desc: "Buscar e exibir a letra da música atual", usage: "/lyrics", app_id: "", cmd_id: "", version: "", param_name: "song", param_desc: "Nome da música (opcional)", is_required: false },
-        { name: "/247", desc: "Manter o bot 24/7 conectado no canal de voz", usage: "/247", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/help", desc: "Exibir o menu de ajuda e comandos do bot", usage: "/help", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/ping", desc: "Verificar a latência e tempo de resposta", usage: "/ping", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/clear", desc: "Limpar mensagens recentes do canal", usage: "/clear <quantidade>", app_id: "", cmd_id: "", version: "", param_name: "amount", param_desc: "Quantidade de mensagens a apagar", is_required: true },
-        { name: "/avatar", desc: "Exibir o avatar ampliado de um usuário", usage: "/avatar [@usuario]", app_id: "", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
-        { name: "/userinfo", desc: "Ver informações detalhadas da conta de um usuário", usage: "/userinfo [@usuario]", app_id: "", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
-        { name: "/serverinfo", desc: "Ver estatísticas e informações do servidor atual", usage: "/serverinfo", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false }
+        { name: "/play", desc: "Tocar música, áudio ou playlist (YouTube/Spotify/SoundCloud)", usage: "/play <nome ou link>", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "query", param_desc: "Nome da música ou link do YouTube/Spotify/SoundCloud", is_required: true },
+        { name: "/skip", desc: "Pular para a próxima faixa da fila", usage: "/skip", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/stop", desc: "Parar reprodução do bot e limpar a fila", usage: "/stop", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/pause", desc: "Pausar a música em reprodução", usage: "/pause", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/resume", desc: "Retomar a reprodução pausada", usage: "/resume", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/queue", desc: "Visualizar a lista de músicas na fila", usage: "/queue", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/nowplaying", desc: "Exibir detalhes da música que está tocando agora", usage: "/nowplaying", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/volume", desc: "Ajustar o volume de reprodução do bot", usage: "/volume <1-100>", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "level", param_desc: "Volume de 1 a 100", is_required: true },
+        { name: "/loop", desc: "Ativar ou desativar repetição da música ou fila", usage: "/loop", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "mode", param_desc: "Modo: track, queue ou off", is_required: false },
+        { name: "/shuffle", desc: "Embaralhar a fila de músicas", usage: "/shuffle", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/lyrics", desc: "Buscar e exibir a letra da música atual", usage: "/lyrics", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "song", param_desc: "Nome da música (opcional)", is_required: false },
+        { name: "/247", desc: "Manter o bot 24/7 conectado no canal de voz", usage: "/247", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/help", desc: "Exibir o menu de ajuda e comandos do bot", usage: "/help", app_id: "", app_name: "Bot", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/ping", desc: "Verificar a latência e tempo de resposta", usage: "/ping", app_id: "", app_name: "Bot", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/clear", desc: "Limpar mensagens recentes do canal", usage: "/clear <quantidade>", app_id: "", app_name: "Moderação", cmd_id: "", version: "", param_name: "amount", param_desc: "Quantidade de mensagens a apagar", is_required: true },
+        { name: "/avatar", desc: "Exibir o avatar ampliado de um usuário", usage: "/avatar [@usuario]", app_id: "", app_name: "Utilidade", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
+        { name: "/userinfo", desc: "Ver informações detalhadas da conta de um usuário", usage: "/userinfo [@usuario]", app_id: "", app_name: "Utilidade", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
+        { name: "/serverinfo", desc: "Ver estatísticas e informações do servidor atual", usage: "/serverinfo", app_id: "", app_name: "Utilidade", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false }
     ];
 
     // Auto-Update Properties
@@ -2729,6 +2730,30 @@ export component AppWindow inherits Window {
                                                 }
                                             }
 
+                                            // Bot Identifier Badge (e.g. [ Jockie Music ] or [ FredBoat ])
+                                            if cmd.app_name != "" : VerticalLayout {
+                                                alignment: center;
+                                                Rectangle {
+                                                    height: 18px;
+                                                    background: #5865f222;
+                                                    border-radius: 3px;
+                                                    border-width: 1px;
+                                                    border-color: #5865f255;
+                                                    HorizontalLayout {
+                                                        padding-left: 5px;
+                                                        padding-right: 5px;
+                                                        alignment: center;
+                                                        Text {
+                                                            text: cmd.app_name;
+                                                            color: #a5b4fc;
+                                                            font-size: 10px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
                                             VerticalLayout {
                                                 alignment: center;
                                                 Text {
@@ -2758,8 +2783,8 @@ export component AppWindow inherits Window {
                                             mouse-cursor: pointer;
                                             clicked => {
                                                 root.active_command_name = cmd.name;
-                                                root.active_param_name = cmd.param_name != "" ? cmd.param_name : "query";
-                                                root.active_param_desc = cmd.param_desc != "" ? cmd.param_desc : cmd.desc;
+                                                root.active_param_name = cmd.param_name;
+                                                root.active_param_desc = cmd.param_desc != "" ? cmd.param_desc : (cmd.param_name != "" ? cmd.desc : "Pressione Enter para executar " + cmd.name);
                                                 root.active_command_app_id = cmd.app_id;
                                                 root.active_command_cmd_id = cmd.cmd_id;
                                                 root.active_command_version = cmd.version;
@@ -2875,7 +2900,7 @@ export component AppWindow inherits Window {
                                 msg_arg_input := LineEdit {
                                     horizontal-stretch: 1;
                                     text <=> root.command_arg_text;
-                                    placeholder-text: root.active_param_desc != "" ? root.active_param_desc : "Digite o valor para " + root.active_param_name + "...";
+                                    placeholder-text: root.active_param_name != "" ? (root.active_param_desc != "" ? root.active_param_desc : "Digite o valor para " + root.active_param_name + "...") : "Pressione Enter ou Enviar para executar " + root.active_command_name + "...";
                                     accepted => {
                                         root.execute_active_command(
                                             root.active_command_name,

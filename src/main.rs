@@ -786,6 +786,7 @@ pub struct CommandSuggestionItem {
     pub desc: String,
     pub usage: String,
     pub app_id: String,
+    pub app_name: String,
     pub cmd_id: String,
     pub version: String,
     pub param_name: String,
@@ -803,6 +804,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 desc: "Tocar música ou adicionar à fila".to_string(),
                 usage: "/play <query>".to_string(),
                 app_id: "".to_string(),
+                app_name: "Música".to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "query".to_string(),
@@ -810,32 +812,11 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 is_required: true,
             },
             CommandSuggestionItem {
-                name: "/247".to_string(),
-                desc: "Manter o bot 24/7 conectado no canal de voz".to_string(),
-                usage: "/247".to_string(),
-                app_id: "".to_string(),
-                cmd_id: "".to_string(),
-                version: "".to_string(),
-                param_name: "".to_string(),
-                param_desc: "".to_string(),
-                is_required: false,
-            },
-            CommandSuggestionItem {
-                name: "/pause".to_string(),
-                desc: "Pausar a reprodução atual".to_string(),
-                usage: "/pause".to_string(),
-                app_id: "".to_string(),
-                cmd_id: "".to_string(),
-                version: "".to_string(),
-                param_name: "".to_string(),
-                param_desc: "".to_string(),
-                is_required: false,
-            },
-            CommandSuggestionItem {
                 name: "/skip".to_string(),
                 desc: "Pular para a próxima música".to_string(),
                 usage: "/skip".to_string(),
                 app_id: "".to_string(),
+                app_name: "Música".to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -847,6 +828,31 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 desc: "Parar reprodução e limpar a fila".to_string(),
                 usage: "/stop".to_string(),
                 app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/pause".to_string(),
+                desc: "Pausar a reprodução atual".to_string(),
+                usage: "/pause".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/resume".to_string(),
+                desc: "Retomar a reprodução pausada".to_string(),
+                usage: "/resume".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -858,6 +864,31 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 desc: "Ver a fila de músicas atual".to_string(),
                 usage: "/queue".to_string(),
                 app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/nowplaying".to_string(),
+                desc: "Exibir a música tocando agora".to_string(),
+                usage: "/nowplaying".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/247".to_string(),
+                desc: "Manter o bot 24/7 conectado no canal de voz".to_string(),
+                usage: "/247".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -878,6 +909,22 @@ async fn load_guild_command_index(
     }
     match http.get_guild_application_command_index(guild_id).await {
         Ok(data) => {
+            // Build map of application_id -> Application / Bot Name
+            let mut app_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            if let Some(apps) = data["applications"].as_array() {
+                for app in apps {
+                    let app_id = app["id"].as_str().unwrap_or("").to_string();
+                    let app_name = app["name"].as_str()
+                        .or_else(|| app["bot"]["global_name"].as_str())
+                        .or_else(|| app["bot"]["username"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !app_id.is_empty() && !app_name.is_empty() {
+                        app_names.insert(app_id, app_name);
+                    }
+                }
+            }
+
             if let Some(cmds) = data["application_commands"].as_array() {
                 let mut items: Vec<CommandSuggestionItem> = Vec::new();
                 for cmd in cmds {
@@ -887,16 +934,27 @@ async fn load_guild_command_index(
                     let app_id = cmd["application_id"].as_str().unwrap_or("");
                     let cmd_id = cmd["id"].as_str().unwrap_or("");
                     let version = cmd["version"].as_str().unwrap_or("");
+                    let app_name = app_names.get(app_id).cloned().unwrap_or_else(|| {
+                        if !app_id.is_empty() { "Bot".to_string() } else { String::new() }
+                    });
                     
                     let mut param_name = String::new();
                     let mut param_desc = String::new();
                     let mut is_required = false;
                     
                     if let Some(opts) = cmd["options"].as_array() {
-                        if let Some(first_opt) = opts.first() {
-                            param_name = first_opt["name"].as_str().unwrap_or("").to_string();
-                            param_desc = first_opt["description"].as_str().unwrap_or("").to_string();
-                            is_required = first_opt["required"].as_bool().unwrap_or(false);
+                        // Find first required option, or fallback to first option if present
+                        let required_opt = opts.iter().find(|o| o["required"].as_bool().unwrap_or(false));
+                        if let Some(opt) = required_opt {
+                            param_name = opt["name"].as_str().unwrap_or("").to_string();
+                            param_desc = opt["description"].as_str().unwrap_or("").to_string();
+                            is_required = true;
+                        } else if let Some(opt) = opts.first() {
+                            // Option is optional — do not force a required parameter pill
+                            let opt_name = opt["name"].as_str().unwrap_or("");
+                            let opt_desc = opt["description"].as_str().unwrap_or("");
+                            param_desc = format!("Opcional: {} ({})", opt_name, opt_desc);
+                            is_required = false;
                         }
                     }
                     
@@ -913,6 +971,7 @@ async fn load_guild_command_index(
                         desc: desc.to_string(),
                         usage,
                         app_id: app_id.to_string(),
+                        app_name,
                         cmd_id: cmd_id.to_string(),
                         version: version.to_string(),
                         param_name,
@@ -933,6 +992,7 @@ async fn load_guild_command_index(
                         desc: item.desc.into(),
                         usage: item.usage.into(),
                         app_id: item.app_id.into(),
+                        app_name: item.app_name.into(),
                         cmd_id: item.cmd_id.into(),
                         version: item.version.into(),
                         param_name: item.param_name.into(),
@@ -944,14 +1004,14 @@ async fn load_guild_command_index(
                         if let Some(ui) = app_weak.upgrade() {
                             let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
                             ui.set_command_suggestions(model.into());
-                            info!("✅ Carregados {} comandos inteligentes reais dos bots do servidor!", count);
+                            info!("✅ Carregados {} comandos inteligentes reais dos bots do servidor com identificadores!", count);
                         }
                     });
                 }
             }
         }
         Err(e) => {
-            warn!("Nao foi possivel carregar indice de comandos da guild {}: {}", guild_id, e);
+            warn!("Não foi possível carregar o índice de comandos do servidor {}: {}", guild_id, e);
         }
     }
 }
@@ -3514,15 +3574,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let master = get_master_command_suggestions().lock().unwrap().clone();
             if let Some(found) = master.iter().find(|s| s.name.to_lowercase() == clean_cmd.to_lowercase()) {
                 ui.set_active_command_name(found.name.clone().into());
-                ui.set_active_param_name(if found.param_name.is_empty() { "query".into() } else { found.param_name.clone().into() });
-                ui.set_active_param_desc(if found.param_desc.is_empty() { found.desc.clone().into() } else { found.param_desc.clone().into() });
+                ui.set_active_param_name(found.param_name.clone().into());
+                let pdesc = if found.param_desc.is_empty() {
+                    if found.param_name.is_empty() { format!("Pressione Enter para executar {}", found.name) } else { found.desc.clone() }
+                } else {
+                    found.param_desc.clone()
+                };
+                ui.set_active_param_desc(pdesc.into());
                 ui.set_active_command_app_id(found.app_id.clone().into());
                 ui.set_active_command_cmd_id(found.cmd_id.clone().into());
                 ui.set_active_command_version(found.version.clone().into());
             } else {
-                ui.set_active_command_name(clean_cmd.into());
-                ui.set_active_param_name("query".into());
-                ui.set_active_param_desc("Digite os argumentos do comando...".into());
+                ui.set_active_command_name(clean_cmd.clone().into());
+                ui.set_active_param_name("".into());
+                ui.set_active_param_desc(format!("Pressione Enter para executar {}", clean_cmd).into());
                 ui.set_active_command_app_id("".into());
                 ui.set_active_command_cmd_id("".into());
                 ui.set_active_command_version("".into());
@@ -3548,8 +3613,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let cmd_word = t.trim();
                     if let Some(found) = master.iter().find(|c| c.name.to_lowercase() == cmd_word.to_lowercase()) {
                         ui.set_active_command_name(found.name.clone().into());
-                        ui.set_active_param_name(if found.param_name.is_empty() { "query".into() } else { found.param_name.clone().into() });
-                        ui.set_active_param_desc(if found.param_desc.is_empty() { found.desc.clone().into() } else { found.param_desc.clone().into() });
+                        ui.set_active_param_name(found.param_name.clone().into());
+                        let pdesc = if found.param_desc.is_empty() {
+                            if found.param_name.is_empty() { format!("Pressione Enter para executar {}", found.name) } else { found.desc.clone() }
+                        } else {
+                            found.param_desc.clone()
+                        };
+                        ui.set_active_param_desc(pdesc.into());
                         ui.set_active_command_app_id(found.app_id.clone().into());
                         ui.set_active_command_cmd_id(found.cmd_id.clone().into());
                         ui.set_active_command_version(found.version.clone().into());
@@ -3563,6 +3633,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut scored: Vec<(i32, CommandSuggestionItem)> = master.into_iter().filter_map(|cmd| {
                     let name_lower = cmd.name.to_lowercase();
                     let desc_lower = cmd.desc.to_lowercase();
+                    let app_lower = cmd.app_name.to_lowercase();
                     
                     if name_lower == query {
                         Some((1000, cmd))
@@ -3570,6 +3641,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some((500 - (name_lower.len() as i32), cmd))
                     } else if name_lower.contains(&query) {
                         Some((200, cmd))
+                    } else if app_lower.contains(&query.trim_start_matches('/')) {
+                        Some((150, cmd))
                     } else if desc_lower.contains(&query.trim_start_matches('/')) {
                         Some((100, cmd))
                     } else if query == "/" {
@@ -3586,6 +3659,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     desc: item.desc.into(),
                     usage: item.usage.into(),
                     app_id: item.app_id.into(),
+                    app_name: item.app_name.into(),
                     cmd_id: item.cmd_id.into(),
                     version: item.version.into(),
                     param_name: item.param_name.into(),
