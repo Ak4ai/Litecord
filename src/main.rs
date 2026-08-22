@@ -1256,8 +1256,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uname = uname_str.to_string();
         info!("📺 Desanexando transmissão de vídeo para janela Popout! User ID: {}, Nome: {}", uid, uname);
         if let Some(ui) = app_weak_pop.upgrade() {
-            ui.set_popped_out_stream_uid(uid.into());
-            let cur_frame = ui.get_active_stream_frame();
+            ui.set_popped_out_stream_uid(uid.clone().into());
+            let is_pop_self = uid == "self" || uid == gateway::get_my_user_id().to_string();
+            let cur_frame = if is_pop_self { ui.get_active_stream_frame() } else { ui.get_remote_stream_frame() };
             if let Some(pop_win) = pop_w_cb.upgrade() {
                 pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
                 pop_win.set_stream_frame(cur_frame);
@@ -1416,10 +1417,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ui.set_active_stream_user_id(uid_str.clone().into());
                         ui.set_active_stream_user(uname.clone().into());
                         ui.set_tr_stream_quality(quality.into());
-                        ui.set_active_stream_frame(frame.clone());
+                        ui.set_remote_stream_frame(frame.clone());
                     }
                     if let Some(pop) = pop_w2.upgrade() {
-                        pop.set_stream_frame(frame);
+                        if pop.get_username() == uname.as_str() || pop.get_username() == "Transmissão" {
+                            pop.set_stream_frame(frame);
+                        }
                     }
                 });
             }
@@ -1484,8 +1487,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 });
                 ui.set_is_screen_sharing(true);
-                ui.set_has_active_stream(true);
-                ui.set_active_stream_user(slint::SharedString::from(my_uname));
             }
         }
     });
@@ -1670,6 +1671,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
 
+                let total_users_count = sorted_users.len();
                 for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
                     let uid_str = user_id.to_string();
                     let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
@@ -1762,6 +1764,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         (audio_level, is_speaking, is_muted_saved)
                     };
 
+                    let is_streaming_peer = if is_self {
+                        ui.get_is_screen_sharing()
+                    } else {
+                        ui.get_has_active_stream() && (
+                            (ui.get_active_stream_user_id() != "" && ui.get_active_stream_user_id() == uid_str)
+                            || (ui.get_active_stream_user() != "" && ui.get_active_stream_user() == username)
+                            || (total_users_count <= 2)
+                        )
+                    };
+
                     participants.push(VoiceParticipant {
                         user_id: uid_str.into(),
                         username: username.into(),
@@ -1772,6 +1784,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         volume: vol,
                         priority: prio,
                         is_self,
+                        is_streaming: is_streaming_peer,
                     });
                 }
 
@@ -1804,7 +1817,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 || old.is_muted != p.is_muted
                                 || old.volume != p.volume
                                 || old.priority != p.priority
-                                || old.username != p.username;
+                                || old.username != p.username
+                                || old.is_streaming != p.is_streaming;
                             if level_changed || state_changed {
                                 cur_model.set_row_data(i, p);
                             }
