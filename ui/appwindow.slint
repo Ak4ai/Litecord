@@ -1851,6 +1851,8 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                }
+
                 if (!root.is_voice_focused || !root.is_in_voice): VerticalBox {
                     padding: 0px;
                     spacing: 0px;
@@ -2525,7 +2527,6 @@ export component AppWindow inherits Window {
                 }
             }
         }
-    }
     }
 
     // Window Drag Resize Borders & Corner Handles (on PointerEventKind.down for 0-latency instant resize)
