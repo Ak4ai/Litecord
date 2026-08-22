@@ -132,6 +132,7 @@ impl ScreenCaptureManager {
     }
 
     pub fn stop(&self) {
+        stop_window_border_overlay();
         if self.is_running.swap(false, Ordering::SeqCst) {
             info!("🛑 Parando captura e transmissão de tela P2P...");
             let cid = self.channel_id.load(Ordering::Relaxed);
@@ -183,6 +184,10 @@ impl ScreenCaptureManager {
             _ => (1280u32, 720u32),
         };
         let target_fps = (fps.clamp(15, 60)) as u64;
+
+        if target_hwnd != 0 {
+            start_window_border_overlay(target_hwnd);
+        }
 
         info!("🖥️ Iniciando transmissão P2P ({}x{} @ {} FPS, hwnd={})...", target_w, target_h, target_fps, target_hwnd);
 
@@ -326,6 +331,7 @@ impl ScreenCaptureManager {
                         std::thread::sleep(frame_interval - elapsed);
                     }
                 }
+                stop_window_border_overlay();
                 info!("🖥️ Thread emissora de tela finalizada.");
             })
             .expect("Falha ao iniciar thread TX de tela");
@@ -1264,4 +1270,202 @@ pub fn get_user_stream_frame(uid: u64) -> Option<SharedPixelBuffer<Rgba8Pixel>> 
     } else {
         None
     }
+}
+
+// ==========================================
+// PURPLE WINDOW CAPTURE BORDER OVERLAY (DWM)
+// ==========================================
+static OVERLAY_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OVERLAY_HWND: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
+
+#[cfg(windows)]
+pub fn start_window_border_overlay(target_hwnd: isize) {
+    if target_hwnd == 0 {
+        return;
+    }
+    stop_window_border_overlay();
+    OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
+
+    std::thread::Builder::new()
+        .name("window-border-overlay".to_string())
+        .spawn(move || {
+            use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+            use windows_sys::Win32::Graphics::Gdi::{
+                BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, FrameRect,
+                InvalidateRect, PAINTSTRUCT,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetWindowRect,
+                IsIconic, IsWindow, PeekMessageW, PostQuitMessage, RegisterClassW,
+                SetLayeredWindowAttributes, SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW,
+                CS_VREDRAW, HWND_TOPMOST, LWA_COLORKEY, MSG, PM_REMOVE, SWP_NOACTIVATE,
+                SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT,
+                WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                WS_EX_TRANSPARENT, WS_POPUP,
+            };
+
+            unsafe extern "system" fn overlay_wndproc(
+                hwnd: HWND,
+                msg: u32,
+                wparam: WPARAM,
+                lparam: LPARAM,
+            ) -> LRESULT {
+                match msg {
+                    WM_PAINT => {
+                        let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                        let hdc = BeginPaint(hwnd, &mut ps);
+                        if !hdc.is_null() {
+                            let mut rc: RECT = std::mem::zeroed();
+                            GetWindowRect(hwnd, &mut rc);
+                            let width = rc.right - rc.left;
+                            let height = rc.bottom - rc.top;
+
+                            // Fill entire area with black color key (transparent & click-through)
+                            let black_brush = CreateSolidBrush(0x00000000);
+                            let client_rc = RECT { left: 0, top: 0, right: width, bottom: height };
+                            FillRect(hdc, &client_rc, black_brush);
+                            DeleteObject(black_brush);
+
+                            // Draw a vibrant 3px purple border (Discord-style Blurple / Purple #7C5CFC: 0x00FC5C7C)
+                            let purple_brush = CreateSolidBrush(0x00FC5C7C); // COLORREF: 0x00BBGGRR -> R:124(0x7C), G:92(0x5C), B:252(0xFC)
+                            for thickness in 0..3 {
+                                let border_rc = RECT {
+                                    left: thickness,
+                                    top: thickness,
+                                    right: width - thickness,
+                                    bottom: height - thickness,
+                                };
+                                FrameRect(hdc, &border_rc, purple_brush);
+                            }
+                            DeleteObject(purple_brush);
+
+                            EndPaint(hwnd, &mut ps);
+                        }
+                        0
+                    }
+                    WM_ERASEBKGND => 1,
+                    WM_DESTROY => {
+                        PostQuitMessage(0);
+                        0
+                    }
+                    _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+                }
+            }
+
+            unsafe {
+                let class_name: Vec<u16> = "LitecordCaptureBorder\0".encode_utf16().collect();
+                let mut wc: WNDCLASSW = std::mem::zeroed();
+                wc.style = CS_HREDRAW | CS_VREDRAW;
+                wc.lpfnWndProc = Some(overlay_wndproc);
+                wc.lpszClassName = class_name.as_ptr();
+                RegisterClassW(&wc);
+
+                let hwnd_target = target_hwnd as HWND;
+                if IsWindow(hwnd_target) == 0 {
+                    return;
+                }
+
+                let mut target_rc: RECT = std::mem::zeroed();
+                GetWindowRect(hwnd_target, &mut target_rc);
+                let border_pad = 3;
+                let x = target_rc.left - border_pad;
+                let y = target_rc.top - border_pad;
+                let w = (target_rc.right - target_rc.left) + (border_pad * 2);
+                let h = (target_rc.bottom - target_rc.top) + (border_pad * 2);
+
+                let overlay_hwnd = CreateWindowExW(
+                    WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                    class_name.as_ptr(),
+                    std::ptr::null(),
+                    WS_POPUP,
+                    x,
+                    y,
+                    w,
+                    h,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                );
+
+                if overlay_hwnd.is_null() {
+                    return;
+                }
+
+                // Set colorkey transparency (0x00000000 black is transparent)
+                SetLayeredWindowAttributes(overlay_hwnd, 0x00000000, 255, LWA_COLORKEY);
+
+                // Exclude overlay from all screen captures (WDA_EXCLUDEFROMCAPTURE = 0x00000011)
+                #[link(name = "user32")]
+                extern "system" {
+                    fn SetWindowDisplayAffinity(hwnd: HWND, dwAffinity: u32) -> windows_sys::Win32::Foundation::BOOL;
+                }
+                SetWindowDisplayAffinity(overlay_hwnd, 0x00000011);
+
+                if let Ok(mut g) = OVERLAY_HWND.lock() {
+                    *g = Some(overlay_hwnd as isize);
+                }
+
+                ShowWindow(overlay_hwnd, SW_SHOWNOACTIVATE);
+
+                let mut last_rc: RECT = std::mem::zeroed();
+
+                while OVERLAY_ACTIVE.load(Ordering::Relaxed) {
+                    if IsWindow(hwnd_target) == 0 || IsIconic(hwnd_target) != 0 {
+                        ShowWindow(overlay_hwnd, SW_HIDE);
+                    } else {
+                        let mut current_rc: RECT = std::mem::zeroed();
+                        GetWindowRect(hwnd_target, &mut current_rc);
+
+                        if current_rc.left != last_rc.left
+                            || current_rc.top != last_rc.top
+                            || current_rc.right != last_rc.right
+                            || current_rc.bottom != last_rc.bottom
+                        {
+                            last_rc = current_rc;
+                            let nx = current_rc.left - border_pad;
+                            let ny = current_rc.top - border_pad;
+                            let nw = (current_rc.right - current_rc.left) + (border_pad * 2);
+                            let nh = (current_rc.bottom - current_rc.top) + (border_pad * 2);
+
+                            SetWindowPos(
+                                overlay_hwnd,
+                                HWND_TOPMOST,
+                                nx,
+                                ny,
+                                nw,
+                                nh,
+                                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                            InvalidateRect(overlay_hwnd, std::ptr::null(), 0);
+                        } else {
+                            ShowWindow(overlay_hwnd, SW_SHOWNOACTIVATE);
+                        }
+                    }
+
+                    // Process pending overlay window messages
+                    let mut msg: MSG = std::mem::zeroed();
+                    while PeekMessageW(&mut msg, overlay_hwnd, 0, 0, PM_REMOVE) != 0 {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+
+                ShowWindow(overlay_hwnd, SW_HIDE);
+                DestroyWindow(overlay_hwnd);
+                if let Ok(mut g) = OVERLAY_HWND.lock() {
+                    *g = None;
+                }
+            }
+        })
+        .expect("Falha ao criar thread de overlay da borda de janela");
+}
+
+#[cfg(not(windows))]
+pub fn start_window_border_overlay(_target_hwnd: isize) {}
+
+pub fn stop_window_border_overlay() {
+    OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
 }
