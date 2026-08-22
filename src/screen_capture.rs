@@ -36,7 +36,7 @@ pub fn set_my_rx_port(port: u16) {
 }
 
 // Litecord P2P Video
-const CHUNK_SIZE: usize = 1200; // Safe MTU for local & VPN UDP transmission
+const CHUNK_SIZE: usize = 1350; // Optimized MTU for local & VPN UDP transmission without fragmentation
 
 // Protocol Opcodes
 const OP_ANNOUNCE: u8 = 1;
@@ -379,20 +379,18 @@ impl ScreenCaptureManager {
                     }
 
                     let capture_res = if let Some(ref cam) = camera_handle {
-                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(100)) {
+                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(15)) {
+                            let (w, h) = (frame.width, frame.height);
+                            let total = (w * h) as usize;
                             if let Ok(rgba_bytes) = cameras::to_rgba8(&frame) {
-                                let (w, h) = (frame.width, frame.height);
                                 let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
                                 pixel_buf.make_mut_bytes().copy_from_slice(&rgba_bytes);
-                                let rgb = cameras::to_rgb8(&frame).unwrap_or_else(|_| {
-                                    let mut v = Vec::with_capacity((w * h * 3) as usize);
-                                    for p in rgba_bytes.chunks_exact(4) {
-                                        v.push(p[0]);
-                                        v.push(p[1]);
-                                        v.push(p[2]);
-                                    }
-                                    v
-                                });
+                                let mut rgb = Vec::with_capacity(total * 3);
+                                for p in rgba_bytes.chunks_exact(4) {
+                                    rgb.push(p[0]);
+                                    rgb.push(p[1]);
+                                    rgb.push(p[2]);
+                                }
                                 Some((pixel_buf, rgb))
                             } else {
                                 None
@@ -410,11 +408,22 @@ impl ScreenCaptureManager {
                         buffer.publish(pixel_buf.clone());
                         on_local_frame(pixel_buf);
 
-                        // Compress frame to JPEG
-                        if let Some(jpeg_bytes) = encode_jpeg(&rgb_data, cur_w, cur_h, 68) {
+                        // Compress frame to JPEG using fast AVX2 SIMD encoder
+                        if let Some(jpeg_bytes) = encode_jpeg(&rgb_data, cur_w, cur_h, 65) {
                             frame_seq = frame_seq.wrapping_add(1);
                             let total_len = jpeg_bytes.len();
                             let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
+
+                            // Send directly to known peers; fallback to broadcast only if no peers discovered yet
+                            let mut target_addrs: Vec<SocketAddr> = Vec::new();
+                            if let Ok(peers) = peers_store.lock() {
+                                for (&_, &(addr, _)) in peers.iter() {
+                                    target_addrs.push(addr);
+                                }
+                            }
+                            if target_addrs.is_empty() {
+                                target_addrs.extend_from_slice(&bcast_targets);
+                            }
 
                             for chunk_idx in 0..total_chunks {
                                 let start = (chunk_idx as usize) * CHUNK_SIZE;
@@ -433,13 +442,8 @@ impl ScreenCaptureManager {
                                 pkt.extend_from_slice(&chunk_idx.to_be_bytes());
                                 pkt.extend_from_slice(chunk_slice);
 
-                                for target in &bcast_targets {
+                                for target in &target_addrs {
                                     let _ = socket.send_to(&pkt, target);
-                                }
-                                if let Ok(peers) = peers_store.lock() {
-                                    for (&_, &(addr, _)) in peers.iter() {
-                                        let _ = socket.send_to(&pkt, addr);
-                                    }
                                 }
                             }
                         }
@@ -769,8 +773,8 @@ impl ScreenCaptureManager {
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
     
-    // Broadcast to local port cluster (50005..=50010) on loopback & 255.255.255.255
-    for port in 50005..=50010 {
+    // Broadcast to local port cluster (50005..=50007) on loopback & 255.255.255.255
+    for port in 50005..=50007 {
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
     }
@@ -780,13 +784,9 @@ fn get_broadcast_addresses() -> Vec<SocketAddr> {
         if socket.connect("8.8.8.8:80").is_ok() {
             if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
                 let octets = local.ip().octets();
-                for port in 50005..=50008 {
+                for port in 50005..=50007 {
                     addrs.push(SocketAddr::new(
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
-                        port,
-                    ));
-                    addrs.push(SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3])),
                         port,
                     ));
                 }
@@ -794,27 +794,13 @@ fn get_broadcast_addresses() -> Vec<SocketAddr> {
         }
     }
 
-    // Common local network subnets (Vivo 192.168.15.x, Claro/Net 192.168.0/1.x, etc.)
-    for sub in [15, 1, 0, 100, 2] {
-        addrs.push(SocketAddr::new(
-            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, sub, 255)),
-            P2P_VIDEO_PORT,
-        ));
-    }
-
-    // Direct LAN peer targets
-    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 15, 5)), P2P_VIDEO_PORT));
-    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 15, 2)), P2P_VIDEO_PORT));
-
     addrs
 }
 
 fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
-    use image::codecs::jpeg::JpegEncoder;
-    use image::ColorType;
-    let mut dest = Vec::new();
-    let mut encoder = JpegEncoder::new_with_quality(&mut dest, quality);
-    if encoder.encode(rgb_data, width, height, ColorType::Rgb8.into()).is_ok() {
+    let mut dest = Vec::with_capacity((width * height / 4) as usize);
+    let encoder = jpeg_encoder::Encoder::new(&mut dest, quality);
+    if encoder.encode(rgb_data, width as u16, height as u16, jpeg_encoder::ColorType::Rgb).is_ok() {
         Some(dest)
     } else {
         None
@@ -822,24 +808,27 @@ fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32, quality: u8) -> Option<
 }
 
 fn decode_jpeg(jpeg_data: &[u8]) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u32, u32)> {
-    let img = image::load_from_memory_with_format(jpeg_data, image::ImageFormat::Jpeg).ok()?;
-    let rgba = img.into_rgba8();
-    let (width, height) = rgba.dimensions();
+    let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_data);
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    let (width, height) = (info.width as u32, info.height as u32);
+    let total_pixels = (width * height) as usize;
 
     let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
     let slice = pixel_buffer.make_mut_slice();
-    let raw = rgba.into_raw();
 
-    for (i, pixel) in slice.iter_mut().enumerate() {
-        let offset = i * 4;
-        let r = raw[offset];
-        let g = raw[offset + 1];
-        let b = raw[offset + 2];
-        let a = raw[offset + 3];
-        *pixel = Rgba8Pixel::new(r, g, b, a);
+    if pixels.len() >= total_pixels * 3 {
+        for (i, pixel) in slice.iter_mut().enumerate() {
+            let offset = i * 3;
+            let r = pixels[offset];
+            let g = pixels[offset + 1];
+            let b = pixels[offset + 2];
+            *pixel = Rgba8Pixel::new(r, g, b, 255);
+        }
+        Some((pixel_buffer, width, height))
+    } else {
+        None
     }
-
-    Some((pixel_buffer, width, height))
 }
 
 #[cfg(windows)]

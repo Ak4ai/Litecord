@@ -35,6 +35,8 @@ sha2 = "0.10"
 rand = "0.8"
 mimalloc = { version = "0.1", default-features = false }
 cameras = "0.1"
+jpeg-encoder = { version = "0.7", features = ["simd"] }
+zune-jpeg = "0.4"
 
 [[bin]]
 name = "litecord"
