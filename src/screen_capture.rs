@@ -587,23 +587,20 @@ impl ScreenCaptureManager {
                                 }
                                 OP_AUDIO_FRAME => {
                                     if len >= 32 {
-                                        let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
-                                        if current_cid != 0 && pkt_cid == current_cid {
-                                            if pkt_uid != my_uid || my_uid == 0 {
-                                                ensure_stream_audio_playback_started();
-                                                let vol = get_stream_volume(pkt_uid);
-                                                if vol > 0.001 {
-                                                    let sample_count = u16::from_be_bytes(recv_buf[30..32].try_into().unwrap()) as usize;
-                                                    let pcm_bytes = &recv_buf[32..len];
-                                                    let expected_bytes = sample_count * 2;
-                                                    if pcm_bytes.len() >= expected_bytes {
-                                                        let queue = get_stream_audio_queue();
-                                                        let mut q_guard = queue.lock().unwrap();
-                                                        for i in 0..sample_count {
-                                                            let s_i16 = i16::from_le_bytes([pcm_bytes[i*2], pcm_bytes[i*2 + 1]]);
-                                                            let s_f32 = (s_i16 as f32 / 32768.0) * vol;
-                                                            q_guard.push_back(s_f32);
-                                                        }
+                                        if pkt_uid != my_uid || my_uid == 0 {
+                                            ensure_stream_audio_playback_started();
+                                            let vol = get_stream_volume(pkt_uid);
+                                            if vol > 0.001 {
+                                                let sample_count = u16::from_be_bytes(recv_buf[30..32].try_into().unwrap()) as usize;
+                                                let pcm_bytes = &recv_buf[32..len];
+                                                let expected_bytes = sample_count * 2;
+                                                if pcm_bytes.len() >= expected_bytes {
+                                                    let queue = get_stream_audio_queue();
+                                                    let mut q_guard = queue.lock().unwrap();
+                                                    for i in 0..sample_count {
+                                                        let s_i16 = i16::from_le_bytes([pcm_bytes[i*2], pcm_bytes[i*2 + 1]]);
+                                                        let s_f32 = (s_i16 as f32 / 32768.0) * vol;
+                                                        q_guard.push_back(s_f32);
                                                     }
                                                 }
                                             }
