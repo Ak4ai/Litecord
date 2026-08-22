@@ -322,60 +322,61 @@ component ChatMessagesView inherits Rectangle {
                             if line.blocks.length > 1 || line.blocks[0].is_link || line.blocks[0].is_command: HorizontalLayout {
                                 alignment: start;
                                 spacing: 4px;
-                                width: 100%;
 
                                 for block in line.blocks: HorizontalLayout {
                                     alignment: start;
                                     spacing: 0px;
-                                    horizontal-stretch: block.is_link || block.is_command ? 0 : 1;
 
-                                    if block.is_command: Rectangle {
-                                        background: cmd_ta.has-hover ? #4752c4 : #5865f233;
-                                        border-radius: 4px;
-                                        border-width: 1px;
-                                        border-color: #5865f2;
-                                        HorizontalLayout {
-                                            padding-left: 6px;
-                                            padding-right: 6px;
-                                            padding-top: 1px;
-                                            padding-bottom: 1px;
-                                            spacing: 4px;
-                                            alignment: center;
-                                            Text {
-                                                text: block.text;
-                                                color: cmd_ta.has-hover ? #ffffff : #58a6ff;
-                                                font-size: 12.5px;
-                                                font-weight: 700;
-                                                vertical-alignment: center;
+                                    if block.is_command: VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            height: 22px;
+                                            background: cmd_ta.has-hover ? #4752c4 : #5865f233;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: #5865f2;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                spacing: 4px;
+                                                alignment: center;
+                                                Text {
+                                                    text: block.text;
+                                                    color: cmd_ta.has-hover ? #ffffff : #58a6ff;
+                                                    font-size: 12px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
                                             }
-                                        }
-                                        cmd_ta := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => {
-                                                root.click_command(block.command_name);
+                                            cmd_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.click_command(block.command_name);
+                                                }
                                             }
                                         }
                                     }
 
-                                    if block.is_link: Rectangle {
-                                        background: block_ta.has-hover ? #1e293b : transparent;
-                                        border-radius: 3px;
-                                        HorizontalLayout {
-                                            padding-left: 2px;
-                                            padding-right: 2px;
-                                            spacing: 4px;
-                                            alignment: start;
-                                            Text {
-                                                text: block.text;
-                                                color: block_ta.has-hover ? #58a6ff : #00a8fc;
-                                                font-size: 13.5px;
-                                                font-weight: 600;
-                                                vertical-alignment: center;
-                                                overflow: elide;
-                                                max-width: 400px;
-                                            }
-                                            VerticalLayout {
+                                    if block.is_link: VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            height: 22px;
+                                            background: block_ta.has-hover ? #1e293b : transparent;
+                                            border-radius: 3px;
+                                            HorizontalLayout {
+                                                padding-left: 4px;
+                                                padding-right: 4px;
+                                                spacing: 4px;
                                                 alignment: center;
+                                                Text {
+                                                    text: block.text;
+                                                    color: block_ta.has-hover ? #58a6ff : #00a8fc;
+                                                    font-size: 13px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                    max-width: 380px;
+                                                }
                                                 Image {
                                                     source: @image-url("../assets/external-link.svg");
                                                     width: 11px;
@@ -384,10 +385,10 @@ component ChatMessagesView inherits Rectangle {
                                                     image-fit: contain;
                                                 }
                                             }
-                                        }
-                                        block_ta := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => { root.open_link(block.url); }
+                                            block_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.open_link(block.url); }
+                                            }
                                         }
                                     }
 
@@ -396,8 +397,6 @@ component ChatMessagesView inherits Rectangle {
                                         color: #dbdee1;
                                         font-size: 13.5px;
                                         vertical-alignment: center;
-                                        wrap: word-wrap;
-                                        horizontal-stretch: 1;
                                     }
                                 }
                             }
@@ -466,60 +465,61 @@ component ChatMessagesView inherits Rectangle {
                                         if line.blocks.length > 1 || line.blocks[0].is_link || line.blocks[0].is_command: HorizontalLayout {
                                             alignment: start;
                                             spacing: 4px;
-                                            width: 100%;
 
                                             for block in line.blocks: HorizontalLayout {
                                                 alignment: start;
                                                 spacing: 0px;
-                                                horizontal-stretch: block.is_link || block.is_command ? 0 : 1;
 
-                                                if block.is_command: Rectangle {
-                                                    background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
-                                                    border-radius: 4px;
-                                                    border-width: 1px;
-                                                    border-color: #5865f2;
-                                                    HorizontalLayout {
-                                                        padding-left: 6px;
-                                                        padding-right: 6px;
-                                                        padding-top: 1px;
-                                                        padding-bottom: 1px;
-                                                        spacing: 4px;
-                                                        alignment: center;
-                                                        Text {
-                                                            text: block.text;
-                                                            color: ecmd_ta.has-hover ? #ffffff : #58a6ff;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                if block.is_command: VerticalLayout {
+                                                    alignment: center;
+                                                    Rectangle {
+                                                        height: 20px;
+                                                        background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
+                                                        border-radius: 4px;
+                                                        border-width: 1px;
+                                                        border-color: #5865f2;
+                                                        HorizontalLayout {
+                                                            padding-left: 6px;
+                                                            padding-right: 6px;
+                                                            spacing: 4px;
+                                                            alignment: center;
+                                                            Text {
+                                                                text: block.text;
+                                                                color: ecmd_ta.has-hover ? #ffffff : #58a6ff;
+                                                                font-size: 11.5px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
                                                         }
-                                                    }
-                                                    ecmd_ta := TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => {
-                                                            root.click_command(block.command_name);
+                                                        ecmd_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.click_command(block.command_name);
+                                                            }
                                                         }
                                                     }
                                                 }
 
-                                                if block.is_link: Rectangle {
-                                                    background: eblock_ta.has-hover ? #1e293b : transparent;
-                                                    border-radius: 3px;
-                                                    HorizontalLayout {
-                                                        padding-left: 2px;
-                                                        padding-right: 2px;
-                                                        spacing: 4px;
-                                                        alignment: start;
-                                                        Text {
-                                                            text: block.text;
-                                                            color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
-                                                            font-size: 12.5px;
-                                                            font-weight: 600;
-                                                            vertical-alignment: center;
-                                                            overflow: elide;
-                                                            max-width: 380px;
-                                                        }
-                                                        VerticalLayout {
+                                                if block.is_link: VerticalLayout {
+                                                    alignment: center;
+                                                    Rectangle {
+                                                        height: 20px;
+                                                        background: eblock_ta.has-hover ? #1e293b : transparent;
+                                                        border-radius: 3px;
+                                                        HorizontalLayout {
+                                                            padding-left: 4px;
+                                                            padding-right: 4px;
+                                                            spacing: 4px;
                                                             alignment: center;
+                                                            Text {
+                                                                text: block.text;
+                                                                color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
+                                                                font-size: 12px;
+                                                                font-weight: 600;
+                                                                vertical-alignment: center;
+                                                                overflow: elide;
+                                                                max-width: 350px;
+                                                            }
                                                             Image {
                                                                 source: @image-url("../assets/external-link.svg");
                                                                 width: 10px;
@@ -528,10 +528,10 @@ component ChatMessagesView inherits Rectangle {
                                                                 image-fit: contain;
                                                             }
                                                         }
-                                                    }
-                                                    eblock_ta := TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => { root.open_link(block.url); }
+                                                        eblock_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.open_link(block.url); }
+                                                        }
                                                     }
                                                 }
 
@@ -540,8 +540,6 @@ component ChatMessagesView inherits Rectangle {
                                                     color: #d2d5d9;
                                                     font-size: 12.5px;
                                                     vertical-alignment: center;
-                                                    wrap: word-wrap;
-                                                    horizontal-stretch: 1;
                                                 }
                                             }
                                         }
