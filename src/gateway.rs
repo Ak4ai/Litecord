@@ -832,6 +832,8 @@ pub struct MessageBlockData {
     pub text: String,
     pub is_link: bool,
     pub is_command: bool,
+    pub is_emoji: bool,
+    pub emoji_id: String,
     pub url: String,
     pub command_name: String,
 }
@@ -887,6 +889,8 @@ fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, l
                     text: parse_discord_markdown(p1.trim()),
                     is_link: false,
                     is_command: false,
+                    is_emoji: false,
+                    emoji_id: String::new(),
                     url: String::new(),
                     command_name: String::new(),
                 });
@@ -898,6 +902,8 @@ fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, l
                     text: parse_discord_markdown(p2_clean),
                     is_link: false,
                     is_command: false,
+                    is_emoji: false,
+                    emoji_id: String::new(),
                     url: String::new(),
                     command_name: String::new(),
                 });
@@ -910,6 +916,8 @@ fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, l
         text: parse_discord_markdown(before),
         is_link: false,
         is_command: false,
+        is_emoji: false,
+        emoji_id: String::new(),
         url: String::new(),
         command_name: String::new(),
     });
@@ -934,6 +942,12 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         while !rem.is_empty() {
             let next_bracket = rem.find('[');
             let next_cmd = rem.find("</");
+            let next_emoji = match (rem.find("<:"), rem.find("<a:")) {
+                (Some(s), Some(a)) => Some((s.min(a), if s < a { "<:" } else { "<a:" })),
+                (Some(s), None) => Some((s, "<:")),
+                (None, Some(a)) => Some((a, "<a:")),
+                (None, None) => None,
+            };
             let next_http = rem.find("http://");
             let next_https = rem.find("https://");
 
@@ -947,6 +961,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
             let mut candidates: Vec<(usize, &str)> = Vec::new();
             if let Some(idx) = next_bracket { candidates.push((idx, "bracket")); }
             if let Some(idx) = next_cmd { candidates.push((idx, "cmd")); }
+            if let Some((idx, _)) = next_emoji { candidates.push((idx, "emoji")); }
             if let Some(idx) = next_raw_url { candidates.push((idx, "raw_url")); }
 
             if candidates.is_empty() {
@@ -956,6 +971,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         text: parsed,
                         is_link: false,
                         is_command: false,
+                        is_emoji: false,
+                        emoji_id: String::new(),
                         url: String::new(),
                         command_name: String::new(),
                     });
@@ -982,6 +999,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             text: parse_discord_markdown(before),
                                             is_link: false,
                                             is_command: false,
+                                            is_emoji: false,
+                                            emoji_id: String::new(),
                                             url: String::new(),
                                             command_name: String::new(),
                                         });
@@ -991,6 +1010,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                         text: display_label.clone(),
                                         is_link: true,
                                         is_command: false,
+                                        is_emoji: false,
+                                        emoji_id: String::new(),
                                         url: url.to_string(),
                                         command_name: String::new(),
                                     });
@@ -1011,6 +1032,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         text: parse_discord_markdown(&rem[..slice_len]),
                         is_link: false,
                         is_command: false,
+                        is_emoji: false,
+                        emoji_id: String::new(),
                         url: String::new(),
                         command_name: String::new(),
                     });
@@ -1035,6 +1058,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 text: format!("/{}", clean_cmd),
                                 is_link: false,
                                 is_command: true,
+                                is_emoji: false,
+                                emoji_id: String::new(),
                                 url: String::new(),
                                 command_name: format!("/{}", clean_cmd),
                             });
@@ -1047,6 +1072,55 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         text: parse_discord_markdown(&rem[..slice_len]),
                         is_link: false,
                         is_command: false,
+                        is_emoji: false,
+                        emoji_id: String::new(),
+                        url: String::new(),
+                        command_name: String::new(),
+                    });
+                    rem = &rem[slice_len..];
+                }
+                "emoji" => {
+                    let before = &rem[..first_idx];
+                    let tag_len = if rem[first_idx..].starts_with("<a:") { 3 } else { 2 };
+                    let after_tag = &rem[first_idx + tag_len..];
+                    if let Some(gt_idx) = after_tag.find('>') {
+                        let inside = &after_tag[..gt_idx];
+                        if let Some(colon) = inside.find(':') {
+                            let emoji_name = &inside[..colon];
+                            let emoji_id = &inside[colon + 1..];
+                            if !emoji_id.is_empty() && emoji_id.chars().all(|c| c.is_ascii_digit()) {
+                                if !before.is_empty() {
+                                    line_blocks.push(MessageBlockData {
+                                        text: parse_discord_markdown(before),
+                                        is_link: false,
+                                        is_command: false,
+                                        is_emoji: false,
+                                        emoji_id: String::new(),
+                                        url: String::new(),
+                                        command_name: String::new(),
+                                    });
+                                }
+                                line_blocks.push(MessageBlockData {
+                                    text: format!(":{}:", emoji_name),
+                                    is_link: false,
+                                    is_command: false,
+                                    is_emoji: true,
+                                    emoji_id: emoji_id.to_string(),
+                                    url: String::new(),
+                                    command_name: String::new(),
+                                });
+                                rem = &after_tag[gt_idx + 1..];
+                                continue;
+                            }
+                        }
+                    }
+                    let slice_len = first_idx + tag_len;
+                    line_blocks.push(MessageBlockData {
+                        text: parse_discord_markdown(&rem[..slice_len]),
+                        is_link: false,
+                        is_command: false,
+                        is_emoji: false,
+                        emoji_id: String::new(),
                         url: String::new(),
                         command_name: String::new(),
                     });
@@ -1070,6 +1144,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 text: parse_discord_markdown(before),
                                 is_link: false,
                                 is_command: false,
+                                is_emoji: false,
+                                emoji_id: String::new(),
                                 url: String::new(),
                                 command_name: String::new(),
                             });
@@ -1078,6 +1154,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             text: raw_url.to_string(),
                             is_link: true,
                             is_command: false,
+                            is_emoji: false,
+                            emoji_id: String::new(),
                             url: raw_url.to_string(),
                             command_name: String::new(),
                         });
@@ -1094,6 +1172,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             text: parse_discord_markdown(&rem[..slice_len]),
                             is_link: false,
                             is_command: false,
+                            is_emoji: false,
+                            emoji_id: String::new(),
                             url: String::new(),
                             command_name: String::new(),
                         });
@@ -1343,7 +1423,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             }
             if !cleaned_text.trim().is_empty() {
                 let parsed_lines = parse_text_into_lines(&cleaned_text, &mut links);
-                if parsed_lines.iter().any(|l| l.blocks.iter().any(|b| b.is_link || b.is_command)) {
+                if parsed_lines.iter().any(|l| l.blocks.iter().any(|b| b.is_link || b.is_command || b.is_emoji)) {
                     content_lines = parsed_lines;
                 }
                 let cleaned = extract_and_clean_links(&cleaned_text, &mut links);
@@ -1363,9 +1443,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 if !a.is_empty() {
                     extract_commands_from_text(a, &mut commands);
                     let cleaned = extract_and_clean_links(a, &mut links);
-                    let parsed = parse_discord_markdown(&cleaned);
-                    embed_lines.extend(parse_text_into_lines(a, &mut links));
-                    ep.push(parsed);
+                    ep.push(format!("**{}**", parse_discord_markdown(&cleaned)));
                 }
             }
 
@@ -1383,6 +1461,8 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                                     text: parsed_title.clone(),
                                     is_link: true,
                                     is_command: false,
+                                    is_emoji: false,
+                                    emoji_id: String::new(),
                                     url: url.to_string(),
                                     command_name: String::new(),
                                 }],

@@ -46,6 +46,8 @@ struct MessageBlock {
     text: string,
     is_link: bool,
     is_command: bool,
+    is_emoji: bool,
+    emoji_img: image,
     url: string,
     command_name: string,
 }
@@ -424,6 +426,20 @@ component ChatMessagesView inherits Rectangle {
                                 }
                             }
 
+                            // Case 3.5: Standalone Emoji Line -> Jumbo Emoji (32x32)
+                            if line.blocks.length == 1 && line.blocks[0].is_emoji: HorizontalLayout {
+                                alignment: start;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: line.blocks[0].emoji_img;
+                                        width: 32px;
+                                        height: 32px;
+                                        image-fit: contain;
+                                    }
+                                }
+                            }
+
                             // Case 4: Mixed blocks line (e.g. "Listen here: [Click here](url)")
                             if line.blocks.length > 1: HorizontalLayout {
                                 alignment: start;
@@ -458,6 +474,16 @@ component ChatMessagesView inherits Rectangle {
                                                 mouse-cursor: pointer;
                                                 clicked => { root.click_command(block.command_name); }
                                             }
+                                        }
+                                    }
+
+                                    if block.is_emoji: VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: block.emoji_img;
+                                            width: 22px;
+                                            height: 22px;
+                                            image-fit: contain;
                                         }
                                     }
 
@@ -496,7 +522,7 @@ component ChatMessagesView inherits Rectangle {
                                         }
                                     }
 
-                                    if !block.is_link && !block.is_command: Text {
+                                    if !block.is_link && !block.is_command && !block.is_emoji: Text {
                                         text: block.text;
                                         color: #dbdee1;
                                         font-size: 13.5px;
@@ -706,7 +732,17 @@ component ChatMessagesView inherits Rectangle {
                                                     }
                                                 }
 
-                                                if !block.is_link && !block.is_command: Text {
+                                                if block.is_emoji: VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: block.emoji_img;
+                                                        width: 18px;
+                                                        height: 18px;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+
+                                                if !block.is_link && !block.is_command && !block.is_emoji: Text {
                                                     text: block.text;
                                                     color: #d2d5d9;
                                                     font-size: 12.5px;

@@ -7,6 +7,7 @@ mod i18n;
 mod remote_auth;
 mod updater;
 mod screen_capture;
+mod emoji_cache;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
@@ -1016,14 +1017,30 @@ async fn load_guild_command_index(
     }
 }
 
-fn map_message_lines(lines: &[gateway::MessageLineData]) -> slint::ModelRc<MessageLine> {
+fn map_message_lines(lines: &[gateway::MessageLineData], app_weak: &slint::Weak<AppWindow>) -> slint::ModelRc<MessageLine> {
+    let emoji_mgr = emoji_cache::get_emoji_cache();
     let slint_lines: Vec<MessageLine> = lines.iter().map(|line| {
-        let slint_blocks: Vec<MessageBlock> = line.blocks.iter().map(|b| MessageBlock {
-            text: b.text.clone().into(),
-            is_link: b.is_link,
-            is_command: b.is_command,
-            url: b.url.clone().into(),
-            command_name: b.command_name.clone().into(),
+        let slint_blocks: Vec<MessageBlock> = line.blocks.iter().map(|b| {
+            let emoji_img = if b.is_emoji {
+                if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+                    img
+                } else {
+                    emoji_mgr.fetch_async(&b.emoji_id, app_weak.clone());
+                    slint::Image::default()
+                }
+            } else {
+                slint::Image::default()
+            };
+
+            MessageBlock {
+                text: b.text.clone().into(),
+                is_link: b.is_link,
+                is_command: b.is_command,
+                is_emoji: b.is_emoji,
+                emoji_img,
+                url: b.url.clone().into(),
+                command_name: b.command_name.clone().into(),
+            }
         }).collect();
         MessageLine {
             blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_blocks))),
@@ -1038,6 +1055,7 @@ async fn load_messages_for_channel(
     channel_id: &str,
 ) -> bool {
     info!("Carregando mensagens do canal {}...", channel_id);
+    let app_weak_load = app_weak.clone();
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
             let has_more = msgs_val.len() >= 30;
@@ -1100,9 +1118,9 @@ async fn load_messages_for_channel(
                                 author: author.into(),
                                 content: content.into(),
                                 commands: slint::ModelRc::from(commands_model),
-                                content_lines: map_message_lines(&content_lines),
+                                content_lines: map_message_lines(&content_lines, &app_weak_load),
                                 embed_content: embed_content.into(),
-                                embed_lines: map_message_lines(&embed_lines),
+                                embed_lines: map_message_lines(&embed_lines, &app_weak_load),
                                 embed_color: parse_hex_color(&embed_color),
                                 embed_footer: embed_footer.into(),
                                 code_block: code_block.into(),
@@ -2954,9 +2972,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         author: author.into(),
                                         content: content.into(),
                                         commands: slint::ModelRc::from(commands_model),
-                                        content_lines: map_message_lines(&content_lines),
+                                        content_lines: map_message_lines(&content_lines, &app_w_inner),
                                         embed_content: embed_content.into(),
-                                        embed_lines: map_message_lines(&embed_lines),
+                                        embed_lines: map_message_lines(&embed_lines, &app_w_inner),
                                         embed_color: parse_hex_color(&embed_color),
                                         embed_footer: embed_footer.into(),
                                         code_block: code_block.into(),
@@ -3949,9 +3967,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     author: author.into(),
                                     content: content.into(),
                                     commands: slint::ModelRc::from(commands_model),
-                                    content_lines: map_message_lines(&content_lines),
+                                    content_lines: map_message_lines(&content_lines, &app_weak_inner),
                                     embed_content: embed_content.into(),
-                                    embed_lines: map_message_lines(&embed_lines),
+                                    embed_lines: map_message_lines(&embed_lines, &app_weak_inner),
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
@@ -4008,9 +4026,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if !id.is_empty() && msg.id == id.as_str() {
                                     msg.content = content.clone().into();
                                     msg.commands = slint::ModelRc::from(commands_model.clone());
-                                    msg.content_lines = map_message_lines(&content_lines);
+                                    msg.content_lines = map_message_lines(&content_lines, &app_weak_inner);
                                     msg.embed_content = embed_content.clone().into();
-                                    msg.embed_lines = map_message_lines(&embed_lines);
+                                    msg.embed_lines = map_message_lines(&embed_lines, &app_weak_inner);
                                     msg.embed_color = parse_hex_color(&embed_color);
                                     msg.embed_footer = embed_footer.clone().into();
                                     msg.code_block = code_block.clone().into();
@@ -4036,9 +4054,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     author: "Bot".into(),
                                     content: content.into(),
                                     commands: slint::ModelRc::from(commands_model),
-                                    content_lines: map_message_lines(&content_lines),
+                                    content_lines: map_message_lines(&content_lines, &app_weak_inner),
                                     embed_content: embed_content.into(),
-                                    embed_lines: map_message_lines(&embed_lines),
+                                    embed_lines: map_message_lines(&embed_lines, &app_weak_inner),
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
