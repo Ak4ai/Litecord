@@ -3384,7 +3384,7 @@ export component AppWindow inherits Window {
                                                     HorizontalLayout {
                                                         alignment: center;
                                                         Image {
-                                                            source: win.has_icon ? win.icon_image : (win.app_name == "Google Chrome" ? @image-url("../assets/globe.svg") : (win.app_name == "Litecord" ? @image-url("../assets/app_icon.png") : @image-url("../assets/window.svg")));
+                                                            source: win.has_icon ? win.icon_image : (win.app_name == "Litecord" ? @image-url("../assets/app_icon.png") : (win.app_name == "Google Chrome" ? @image-url("../assets/globe.svg") : @image-url("../assets/window.svg")));
                                                             width: 28px;
                                                             height: 28px;
                                                             colorize: win.has_icon || win.app_name == "Litecord" ? transparent : (root.stream_selected_source_index == idx ? #5865f2 : #80848e);
