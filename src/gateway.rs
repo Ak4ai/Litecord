@@ -906,9 +906,9 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         } else {
                             (inside, "")
                         };
-                        let clean_cmd = cmd_name.trim();
+                        let clean_cmd = cmd_name.trim().trim_start_matches('/');
                         if !clean_cmd.is_empty() {
-                            if !before.is_empty() {
+                            if !before.trim().is_empty() {
                                 line_blocks.push(MessageBlockData {
                                     text: parse_discord_markdown(before),
                                     is_link: false,
@@ -916,6 +916,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                     url: String::new(),
                                     command_name: String::new(),
                                 });
+                                lines.push(MessageLineData { blocks: line_blocks });
+                                line_blocks = Vec::new();
                             }
                             line_blocks.push(MessageBlockData {
                                 text: format!("</{}>", clean_cmd),
@@ -924,6 +926,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: String::new(),
                                 command_name: format!("/{}", clean_cmd),
                             });
+                            lines.push(MessageLineData { blocks: line_blocks });
+                            line_blocks = Vec::new();
                             rem = &after_tag[gt_idx + 1..];
                             continue;
                         }
@@ -1128,7 +1132,7 @@ pub fn extract_commands_from_text(text: &str, commands: &mut Vec<String>) {
     let t = text.trim();
     if t.is_empty() { return; }
 
-    // 1. Extract </name:id> or </name>
+    // ONLY extract real Discord command mentions e.g. </name:id> or </name>
     let mut rem = t;
     while let Some(pos) = rem.find("</") {
         let after = &rem[pos + 2..];
@@ -1149,20 +1153,6 @@ pub fn extract_commands_from_text(text: &str, commands: &mut Vec<String>) {
             rem = &after[end + 1..];
         } else {
             break;
-        }
-    }
-
-    // 2. Match standalone /command words (e.g. /play, /247, /stop, /skip)
-    for word in t.split_whitespace() {
-        let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/');
-        if cleaned.starts_with('/') && cleaned.len() >= 2 && cleaned.len() <= 32 {
-            let cmd_name = &cleaned[1..];
-            if !cmd_name.is_empty() && cmd_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                let cmd_str = format!("/{}", cmd_name);
-                if !commands.contains(&cmd_str) {
-                    commands.push(cmd_str);
-                }
-            }
         }
     }
 }
