@@ -59,6 +59,7 @@ pub struct CapturableWindowItem {
     pub id: String,
     pub title: String,
     pub app_name: String,
+    pub icon_rgba: Option<(u32, u32, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -985,10 +986,13 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
                     "Janela"
                 };
 
+                let icon_rgba = extract_window_icon_rgba(hwnd);
+
                 data.windows.push(CapturableWindowItem {
                     id: (hwnd as isize).to_string(),
                     title: title.clone(),
                     app_name: app_type.to_string(),
+                    icon_rgba,
                 });
             }
         }
@@ -1002,6 +1006,192 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
     data.windows
 }
 
+#[cfg(windows)]
+unsafe fn extract_window_icon_rgba(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<(u32, u32, Vec<u8>)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, GetClassLongPtrW, DestroyIcon, GetIconInfo,
+        WM_GETICON, ICON_BIG, ICON_SMALL2, ICON_SMALL, GCLP_HICON, GCLP_HICONSM,
+        SMTO_ABORTIFHUNG, HICON, ICONINFO,
+    };
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetDC, ReleaseDC, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+
+    let mut hicon: HICON = std::ptr::null_mut();
+    let mut need_destroy = false;
+
+    // 1. Try WM_GETICON (BIG, then SMALL2, then SMALL)
+    let mut res_icon: usize = 0;
+    for &icon_type in &[ICON_BIG, ICON_SMALL2, ICON_SMALL] {
+        if SendMessageTimeoutW(
+            hwnd,
+            WM_GETICON,
+            icon_type as usize,
+            0,
+            SMTO_ABORTIFHUNG,
+            50,
+            &mut res_icon,
+        ) != 0 && res_icon != 0 {
+            hicon = res_icon as HICON;
+            break;
+        }
+    }
+
+    // 2. If null, try class icons
+    if hicon.is_null() {
+        let cls_icon = GetClassLongPtrW(hwnd, GCLP_HICON);
+        if cls_icon != 0 {
+            hicon = cls_icon as HICON;
+        } else {
+            let cls_icon_sm = GetClassLongPtrW(hwnd, GCLP_HICONSM);
+            if cls_icon_sm != 0 {
+                hicon = cls_icon_sm as HICON;
+            }
+        }
+    }
+
+    // 3. If null, try ExtractIconW from process executable path
+    if hicon.is_null() {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows_sys::Win32::System::ProcessStatus::GetModuleFileNameExW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ExtractIconW(
+                hInst: isize,
+                pszExeFileName: *const u16,
+                nIconIndex: u32,
+            ) -> HICON;
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid != 0 {
+            let hproc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if !hproc.is_null() {
+                let mut path_buf = [0u16; 1024];
+                let len = GetModuleFileNameExW(hproc, std::ptr::null_mut(), path_buf.as_mut_ptr(), 1024);
+                windows_sys::Win32::Foundation::CloseHandle(hproc);
+                if len > 0 {
+                    let extracted = ExtractIconW(0, path_buf.as_ptr(), 0);
+                    if !extracted.is_null() && (extracted as usize) > 1 {
+                        hicon = extracted;
+                        need_destroy = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if hicon.is_null() || (hicon as usize) <= 1 {
+        return None;
+    }
+
+    let mut icon_info: ICONINFO = std::mem::zeroed();
+    if GetIconInfo(hicon, &mut icon_info) == 0 {
+        if need_destroy { DestroyIcon(hicon); }
+        return None;
+    }
+
+    let hbm = if !icon_info.hbmColor.is_null() {
+        icon_info.hbmColor
+    } else {
+        icon_info.hbmMask
+    };
+
+    if hbm.is_null() {
+        if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+        if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+        if need_destroy { DestroyIcon(hicon); }
+        return None;
+    }
+
+    let hdc_screen = GetDC(std::ptr::null_mut());
+    let hdc_mem = CreateCompatibleDC(hdc_screen);
+
+    let mut bmi: BITMAPINFO = std::mem::zeroed();
+    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+
+    if GetDIBits(hdc_mem, hbm, 0, 0, std::ptr::null_mut(), &mut bmi, DIB_RGB_COLORS) == 0 {
+        DeleteDC(hdc_mem);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
+        if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+        if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+        if need_destroy { DestroyIcon(hicon); }
+        return None;
+    }
+
+    let width = bmi.bmiHeader.biWidth.abs() as u32;
+    let mut height = bmi.bmiHeader.biHeight.abs() as u32;
+    if icon_info.hbmColor.is_null() {
+        height /= 2;
+    }
+
+    if width == 0 || height == 0 || width > 256 || height > 256 {
+        DeleteDC(hdc_mem);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
+        if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+        if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+        if need_destroy { DestroyIcon(hicon); }
+        return None;
+    }
+
+    bmi.bmiHeader.biWidth = width as i32;
+    bmi.bmiHeader.biHeight = -(height as i32); // Top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB as u32;
+
+    let total_pixels = (width * height) as usize;
+    let mut bgra_buf = vec![0u8; total_pixels * 4];
+
+    GetDIBits(
+        hdc_mem,
+        hbm,
+        0,
+        height,
+        bgra_buf.as_mut_ptr() as _,
+        &mut bmi,
+        DIB_RGB_COLORS,
+    );
+
+    DeleteDC(hdc_mem);
+    ReleaseDC(std::ptr::null_mut(), hdc_screen);
+
+    if !icon_info.hbmColor.is_null() { DeleteObject(icon_info.hbmColor); }
+    if !icon_info.hbmMask.is_null() { DeleteObject(icon_info.hbmMask); }
+    if need_destroy { DestroyIcon(hicon); }
+
+    let mut rgba_buf = vec![0u8; total_pixels * 4];
+    let mut has_non_zero_alpha = false;
+
+    for i in 0..total_pixels {
+        let b = bgra_buf[i * 4];
+        let g = bgra_buf[i * 4 + 1];
+        let r = bgra_buf[i * 4 + 2];
+        let a = bgra_buf[i * 4 + 3];
+
+        if a > 0 {
+            has_non_zero_alpha = true;
+        }
+
+        rgba_buf[i * 4] = r;
+        rgba_buf[i * 4 + 1] = g;
+        rgba_buf[i * 4 + 2] = b;
+        rgba_buf[i * 4 + 3] = a;
+    }
+
+    if !has_non_zero_alpha {
+        for i in 0..total_pixels {
+            rgba_buf[i * 4 + 3] = 255;
+        }
+    }
+
+    Some((width, height, rgba_buf))
+}
+
 #[cfg(not(windows))]
 pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
     vec![
@@ -1009,16 +1199,19 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
             id: "1".to_string(),
             title: "Navegador Web (Firefox / Chrome)".to_string(),
             app_name: "Google Chrome".to_string(),
+            icon_rgba: None,
         },
         CapturableWindowItem {
             id: "2".to_string(),
             title: "Terminal de Linha de Comando".to_string(),
             app_name: "Terminal".to_string(),
+            icon_rgba: None,
         },
         CapturableWindowItem {
             id: "3".to_string(),
             title: "Editor de Código".to_string(),
             app_name: "Visual Studio Code".to_string(),
+            icon_rgba: None,
         },
     ]
 }

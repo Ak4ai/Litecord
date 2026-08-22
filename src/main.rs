@@ -1703,10 +1703,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let windows = screen_capture::list_capturable_windows();
             let first_win_id = windows.first().map(|w| w.id.clone()).unwrap_or_default();
             let ui_windows: Vec<WindowSourceItem> = windows.into_iter().map(|w| {
+                let mut has_icon = false;
+                let mut icon_image = Image::default();
+                if let Some((iw, ih, rgba)) = w.icon_rgba {
+                    let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(iw, ih);
+                    pixel_buf.make_mut_bytes().copy_from_slice(&rgba);
+                    icon_image = Image::from_rgba8(pixel_buf);
+                    has_icon = true;
+                }
                 WindowSourceItem {
                     id: w.id.into(),
                     title: w.title.into(),
                     app_name: w.app_name.into(),
+                    has_icon,
+                    icon_image,
                 }
             }).collect();
             ui.set_available_windows(std::rc::Rc::new(slint::VecModel::from(ui_windows)).into());
