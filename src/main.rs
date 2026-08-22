@@ -1280,39 +1280,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    #[allow(unused_variables)]
     let pop_w_drag = popout_weak.clone();
-    let pop_hwnd_drag = Arc::clone(&popout_hwnd_store);
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_start_window_drag(move || {
-            #[cfg(target_os = "windows")]
-            {
-                let mut hwnd_opt = *pop_hwnd_drag.lock().unwrap();
-                if hwnd_opt.is_none() {
-                    if let Some(pop) = pop_w_drag.upgrade() {
-                        let _ = pop.window().with_winit_window(|winit_pop| {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            if let Ok(handle) = winit_pop.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    let hwnd = win32_handle.hwnd.get() as isize;
-                                    *pop_hwnd_drag.lock().unwrap() = Some(hwnd);
-                                    hwnd_opt = Some(hwnd);
-                                }
-                            }
-                        });
-                    }
-                }
-                if let Some(hwnd) = hwnd_opt {
-                    unsafe {
-                        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN, HTCAPTION};
-                        ReleaseCapture();
-                        SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
-                        return;
-                    }
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
             if let Some(pop) = pop_w_drag.upgrade() {
                 let _ = pop.window().with_winit_window(|winit_win| {
                     let _ = winit_win.drag_window();
@@ -1348,69 +1318,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    #[allow(unused_variables)]
     let pop_w_resize = popout_weak.clone();
-    let pop_hwnd_resize = Arc::clone(&popout_hwnd_store);
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_drag_resize(move |edge: slint::SharedString| {
-            #[cfg(target_os = "windows")]
-            {
-                let mut hwnd_opt = *pop_hwnd_resize.lock().unwrap();
-                if hwnd_opt.is_none() {
-                    if let Some(pop) = pop_w_resize.upgrade() {
-                        let _ = pop.window().with_winit_window(|winit_pop| {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            if let Ok(handle) = winit_pop.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    let hwnd = win32_handle.hwnd.get() as isize;
-                                    *pop_hwnd_resize.lock().unwrap() = Some(hwnd);
-                                    hwnd_opt = Some(hwnd);
-                                }
-                            }
-                        });
-                    }
-                }
-                if let Some(hwnd) = hwnd_opt {
-                    unsafe {
-                        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                            SendMessageW, WM_NCLBUTTONDOWN,
-                            HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
-                            HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT,
-                        };
-                        let hit_test = match edge.as_str() {
-                            "left" => HTLEFT,
-                            "right" => HTRIGHT,
-                            "top" => HTTOP,
-                            "bottom" => HTBOTTOM,
-                            "top-left" => HTTOPLEFT,
-                            "top-right" => HTTOPRIGHT,
-                            "bottom-left" => HTBOTTOMLEFT,
-                            "bottom-right" => HTBOTTOMRIGHT,
-                            _ => return,
-                        };
-                        ReleaseCapture();
-                        SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, hit_test as usize, 0);
-                        return;
-                    }
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
             if let Some(pop) = pop_w_resize.upgrade() {
                 let _ = pop.window().with_winit_window(move |winit_win| {
-                    use winit::window::ResizeDirection;
-                    let resize_dir = match edge.as_str() {
-                        "left" => ResizeDirection::West,
-                        "right" => ResizeDirection::East,
-                        "top" => ResizeDirection::North,
-                        "bottom" => ResizeDirection::South,
-                        "top-left" => ResizeDirection::NorthWest,
-                        "top-right" => ResizeDirection::NorthEast,
-                        "bottom-left" => ResizeDirection::SouthWest,
-                        "bottom-right" => ResizeDirection::SouthEast,
+                    let dir = match edge.as_str() {
+                        "top" => winit::window::ResizeDirection::North,
+                        "bottom" => winit::window::ResizeDirection::South,
+                        "left" => winit::window::ResizeDirection::West,
+                        "right" => winit::window::ResizeDirection::East,
+                        "top-left" => winit::window::ResizeDirection::NorthWest,
+                        "top-right" => winit::window::ResizeDirection::NorthEast,
+                        "bottom-left" => winit::window::ResizeDirection::SouthWest,
+                        "bottom-right" => winit::window::ResizeDirection::SouthEast,
                         _ => return,
                     };
-                    let _ = winit_win.drag_resize_window(resize_dir);
+                    let _ = winit_win.drag_resize_window(dir);
                 });
             }
         });
