@@ -843,9 +843,10 @@ fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, l
                 });
                 lines.push(MessageLineData { blocks: std::mem::take(line_blocks) });
             }
-            if !p2.is_empty() {
+            let p2_clean = p2.trim_start();
+            if !p2_clean.is_empty() {
                 line_blocks.push(MessageBlockData {
-                    text: parse_discord_markdown(&p2),
+                    text: parse_discord_markdown(p2_clean),
                     is_link: false,
                     is_command: false,
                     url: String::new(),
