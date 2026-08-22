@@ -1224,27 +1224,166 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Screen Share / Live Stream Video Callbacks
+    // Popout Stream Window Callbacks & Window Manager
+    let pop_w_cb = popout_weak.clone();
+    let pop_hwnd_cb = Arc::clone(&popout_hwnd_store);
+    let app_weak_pop = app_weak.clone();
+    app.on_popout_stream_window(move |uid_str: slint::SharedString, uname_str: slint::SharedString| {
+        let uid = uid_str.to_string();
+        let uname = uname_str.to_string();
+        info!("📺 Desanexando transmissão de vídeo para janela Popout! User ID: {}, Nome: {}", uid, uname);
+        if let Some(ui) = app_weak_pop.upgrade() {
+            ui.set_popped_out_stream_uid(uid.into());
+            let cur_frame = ui.get_active_stream_frame();
+            if let Some(pop_win) = pop_w_cb.upgrade() {
+                pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
+                pop_win.set_stream_frame(cur_frame);
+                pop_win.set_show_controls(true);
+                let _ = pop_win.show();
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_cb.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW, SetForegroundWindow};
+                        ShowWindow(hwnd as _, SW_SHOW);
+                        SetForegroundWindow(hwnd as _);
+                    }
+                }
+                let _ = pop_win.window().with_winit_window(|w| {
+                    w.set_visible(true);
+                    w.set_minimized(false);
+                    w.focus_window();
+                });
+            }
+        }
+    });
+
+    #[allow(unused_variables)]
+    let pop_w_drag = popout_weak.clone();
+    let pop_hwnd_drag = Arc::clone(&popout_hwnd_store);
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_start_window_drag(move || {
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = *pop_hwnd_drag.lock().unwrap() {
+                unsafe {
+                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN, HTCAPTION};
+                    ReleaseCapture();
+                    SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                    return;
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            if let Some(pop) = pop_w_drag.upgrade() {
+                let _ = pop.window().with_winit_window(|winit_win| {
+                    let _ = winit_win.drag_window();
+                });
+            }
+        });
+    }
+
+    let pop_w_fs = popout_weak.clone();
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_toggle_fullscreen(move || {
+            if let Some(pop) = pop_w_fs.upgrade() {
+                let is_fs = pop.window().is_maximized();
+                pop.window().set_maximized(!is_fs);
+            }
+        });
+    }
+
+    let pop_w_close = popout_weak.clone();
+    let pop_hwnd_close = Arc::clone(&popout_hwnd_store);
+    let app_weak_pop_close = app_weak.clone();
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_close_popout(move || {
+            info!("📺 Fechando janela Popout e reanexando transmissão à sala principal!");
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = *pop_hwnd_close.lock().unwrap() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                    ShowWindow(hwnd as _, SW_HIDE);
+                }
+            }
+            if let Some(pop) = pop_w_close.upgrade() {
+                let _ = pop.hide();
+            }
+            if let Some(ui) = app_weak_pop_close.upgrade() {
+                ui.set_popped_out_stream_uid("".into());
+            }
+        });
+    }
+
+    let pop_w_mouse = popout_weak.clone();
+    let last_mouse_act = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let last_mouse_act_cb = Arc::clone(&last_mouse_act);
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_mouse_activity(move || {
+            if let Some(pop) = pop_w_mouse.upgrade() {
+                if !pop.get_show_controls() {
+                    pop.set_show_controls(true);
+                }
+                *last_mouse_act_cb.lock().unwrap() = std::time::Instant::now();
+            }
+        });
+    }
+
+    // Autohide top bar timer for Popout Window
+    let pop_w_timer = popout_weak.clone();
+    let last_mouse_act_timer = Arc::clone(&last_mouse_act);
+    let _pop_autohide_timer = slint::Timer::default();
+    _pop_autohide_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(300), move || {
+        if let Some(pop) = pop_w_timer.upgrade() {
+            if pop.get_show_controls() {
+                let elapsed = last_mouse_act_timer.lock().unwrap().elapsed();
+                if elapsed.as_millis() > 2200 {
+                    pop.set_show_controls(false);
+                }
+            }
+        }
+    });
+
+    // Screen Share / Live Stream Video Callbacks (Double-Buffer + Hardware Acceleration)
     let screen_manager = Arc::new(ScreenCaptureManager::new());
     let sm_clone = Arc::clone(&screen_manager);
     let app_weak_ss = app_weak.clone();
+    let pop_w_ss = popout_weak.clone();
+    let pop_hwnd_ss = Arc::clone(&popout_hwnd_store);
 
     app.on_toggle_screen_share(move || {
         let sm = Arc::clone(&sm_clone);
         if let Some(ui) = app_weak_ss.upgrade() {
             let active = sm.is_active();
             if active {
+                info!("🛑 Encerrando transmissão de tela...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
                 ui.set_has_active_stream(false);
+                ui.set_active_stream_user("".into());
+                ui.set_popped_out_stream_uid("".into());
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_ss.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                        ShowWindow(hwnd as _, SW_HIDE);
+                    }
+                }
+                if let Some(pop) = pop_w_ss.upgrade() {
+                    let _ = pop.hide();
+                }
             } else {
+                info!("▶️ Iniciando transmissão de tela acelerada por hardware...");
                 let app_weak_frame = app_weak_ss.clone();
+                let pop_w_frame = pop_w_ss.clone();
                 sm.start(move |pixel_buffer| {
                     let app_w = app_weak_frame.clone();
+                    let pop_w = pop_w_frame.clone();
                     let _ = slint::invoke_from_event_loop(move || {
+                        let frame = Image::from_rgba8(pixel_buffer);
                         if let Some(ui) = app_w.upgrade() {
-                            let frame = Image::from_rgba8(pixel_buffer);
-                            ui.set_active_stream_frame(frame);
+                            ui.set_active_stream_frame(frame.clone());
+                        }
+                        if let Some(pop) = pop_w.upgrade() {
+                            pop.set_stream_frame(frame);
                         }
                     });
                 });

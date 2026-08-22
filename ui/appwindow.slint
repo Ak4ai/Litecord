@@ -1287,8 +1287,7 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
-                                    // Determine if this participant is actively streaming AND not popped out
-                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && (root.active_stream_user == p.username || root.active_stream_user == ("Você (Sua Tela)") || root.active_stream_user == ("Você (Janela)")) && root.popped_out_stream_uid != p.user_id));
+                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && root.active_stream_user != "" && root.active_stream_user == p.username && root.popped_out_stream_uid != p.user_id));
 
                                     height: is_streaming_attached ? (root.is_stream_fullscreen ? 420px : 260px) : 76px;
                                     animate height { duration: 200ms; }
@@ -1461,10 +1460,44 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
 
-                                                // Right side: Popout button and Fullscreen toggle
+                                                // Right side: Stop, Popout and Fullscreen buttons
                                                 HorizontalLayout {
                                                     spacing: 6px;
                                                     alignment: end;
+
+                                                    // Stop Screen Share Button (Direct on stream card!)
+                                                    Rectangle {
+                                                        width: 28px;
+                                                        height: 24px;
+                                                        border-radius: 4px;
+                                                        background: card_stop_ta.has-hover ? #f23f43 : #000000aa;
+
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: @image-url("../assets/chrome-close.svg");
+                                                                    width: 10px;
+                                                                    height: 10px;
+                                                                    colorize: #ffffff;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        card_stop_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                if p.is_self {
+                                                                    root.toggle_screen_share();
+                                                                } else {
+                                                                    root.has_active_stream = false;
+                                                                    root.active_stream_user = "";
+                                                                }
+                                                            }
+                                                        }
+                                                    }
 
                                                     // Popout Button
                                                     Rectangle {
@@ -2805,7 +2838,6 @@ export component PopoutStreamWindow inherits Window {
     callback start_window_drag();
     callback toggle_fullscreen();
     callback close_popout();
-    callback drag_resize(string);
     callback mouse_activity();
 
     TouchArea {
@@ -2830,6 +2862,18 @@ export component PopoutStreamWindow inherits Window {
         height: 40px;
         background: #000000cc;
 
+        // Background Drag Handle (placed first so buttons stay on top!)
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                root.mouse_activity();
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.start_window_drag();
+                }
+            }
+        }
+
         HorizontalLayout {
             padding-left: 12px;
             padding-right: 12px;
@@ -2844,7 +2888,7 @@ export component PopoutStreamWindow inherits Window {
                 Rectangle {
                     background: #f23f43;
                     border-radius: 4px;
-                    height: 22px;
+                    height: 24px;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
@@ -2881,10 +2925,37 @@ export component PopoutStreamWindow inherits Window {
                 }
             }
 
-            // Window Controls
+            // Window Controls (Fullscreen & Close/Re-attach)
             HorizontalLayout {
                 spacing: 6px;
                 alignment: end;
+
+                // Fullscreen Toggle
+                Rectangle {
+                    width: 28px;
+                    height: 24px;
+                    border-radius: 4px;
+                    background: pop_fs_ta.has-hover ? #383a40 : #2b2d31;
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-maximize.svg");
+                                width: 10px;
+                                height: 10px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+
+                    pop_fs_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle_fullscreen(); }
+                    }
+                }
 
                 // Close / Re-attach Popout Button
                 Rectangle {
@@ -2911,16 +2982,6 @@ export component PopoutStreamWindow inherits Window {
                         mouse-cursor: pointer;
                         clicked => { root.close_popout(); }
                     }
-                }
-            }
-        }
-
-        // Drag handle for Top Bar
-        TouchArea {
-            pointer-event(event) => {
-                root.mouse_activity();
-                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                    root.start_window_drag();
                 }
             }
         }
