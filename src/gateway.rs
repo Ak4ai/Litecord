@@ -43,9 +43,9 @@ pub enum GatewayEvent {
         channel_id: String,
         author: String,
         content: String,
-        content_blocks: Vec<MessageBlockData>,
+        content_lines: Vec<MessageLineData>,
         embed_content: String,
-        embed_blocks: Vec<MessageBlockData>,
+        embed_lines: Vec<MessageLineData>,
         embed_color: String,
         embed_footer: String,
         code_block: String,
@@ -781,6 +781,11 @@ pub struct MessageBlockData {
 }
 
 #[derive(Clone, Default, Debug)]
+pub struct MessageLineData {
+    pub blocks: Vec<MessageBlockData>,
+}
+
+#[derive(Clone, Default, Debug)]
 pub struct MessageButtonData {
     pub label: String,
     pub url: String,
@@ -789,15 +794,15 @@ pub struct MessageButtonData {
     pub is_disabled: bool,
 }
 
-pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageBlockData> {
-    let mut blocks = Vec::new();
+pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageLineData> {
+    let mut lines = Vec::new();
     if input.is_empty() {
-        return blocks;
+        return lines;
     }
 
     for line in input.split('\n') {
+        let mut line_blocks = Vec::new();
         let mut rem = line;
-        let mut line_has_special = false;
 
         while !rem.is_empty() {
             let next_bracket = rem.find('[');
@@ -816,9 +821,8 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                         };
                         let clean_cmd = cmd_name.trim();
                         if !clean_cmd.is_empty() {
-                            line_has_special = true;
                             if !before.is_empty() {
-                                blocks.push(MessageBlockData {
+                                line_blocks.push(MessageBlockData {
                                     text: parse_discord_markdown(before),
                                     is_link: false,
                                     is_command: false,
@@ -826,7 +830,7 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                                     command_name: String::new(),
                                 });
                             }
-                            blocks.push(MessageBlockData {
+                            line_blocks.push(MessageBlockData {
                                 text: format!("</{}>", clean_cmd),
                                 is_link: false,
                                 is_command: true,
@@ -838,7 +842,7 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                         }
                     }
                     if !before.is_empty() {
-                        blocks.push(MessageBlockData {
+                        line_blocks.push(MessageBlockData {
                             text: parse_discord_markdown(before),
                             is_link: false,
                             is_command: false,
@@ -858,9 +862,8 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                             if let Some(paren_end) = after_label.find(')') {
                                 let url = &after_label[1..paren_end];
                                 if url.starts_with("http") {
-                                    line_has_special = true;
                                     if !before.is_empty() {
-                                        blocks.push(MessageBlockData {
+                                        line_blocks.push(MessageBlockData {
                                             text: parse_discord_markdown(before),
                                             is_link: false,
                                             is_command: false,
@@ -869,7 +872,7 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                                         });
                                     }
                                     let display_label = if label.is_empty() { url } else { label };
-                                    blocks.push(MessageBlockData {
+                                    line_blocks.push(MessageBlockData {
                                         text: display_label.to_string(),
                                         is_link: true,
                                         is_command: false,
@@ -889,7 +892,7 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                         }
                     }
                     if !before.is_empty() {
-                        blocks.push(MessageBlockData {
+                        line_blocks.push(MessageBlockData {
                             text: parse_discord_markdown(before),
                             is_link: false,
                             is_command: false,
@@ -911,9 +914,8 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                         };
                         let clean_cmd = cmd_name.trim();
                         if !clean_cmd.is_empty() {
-                            line_has_special = true;
                             if !before.is_empty() {
-                                blocks.push(MessageBlockData {
+                                line_blocks.push(MessageBlockData {
                                     text: parse_discord_markdown(before),
                                     is_link: false,
                                     is_command: false,
@@ -921,7 +923,7 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                                     command_name: String::new(),
                                 });
                             }
-                            blocks.push(MessageBlockData {
+                            line_blocks.push(MessageBlockData {
                                 text: format!("</{}>", clean_cmd),
                                 is_link: false,
                                 is_command: true,
@@ -933,7 +935,7 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                         }
                     }
                     if !before.is_empty() {
-                        blocks.push(MessageBlockData {
+                        line_blocks.push(MessageBlockData {
                             text: parse_discord_markdown(before),
                             is_link: false,
                             is_command: false,
@@ -949,19 +951,10 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
             }
         }
 
-        if line_has_special {
-            if !rem.is_empty() {
-                blocks.push(MessageBlockData {
-                    text: parse_discord_markdown(rem),
-                    is_link: false,
-                    is_command: false,
-                    url: String::new(),
-                    command_name: String::new(),
-                });
-            }
-        } else {
+        if !rem.is_empty() {
+            // Also check for raw URLs in plain text remainder
             let mut raw_url_found = false;
-            for word in line.split_whitespace() {
+            for word in rem.split_whitespace() {
                 let clean_word = word.trim_matches(|c| c == '<' || c == '>' || c == '(' || c == ')' || c == '"' || c == '\'');
                 if (clean_word.starts_with("http://") || clean_word.starts_with("https://")) && clean_word.len() > 8 {
                     raw_url_found = true;
@@ -974,9 +967,9 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                 }
             }
             if raw_url_found {
-                let trimmed = line.trim();
+                let trimmed = rem.trim();
                 if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                    blocks.push(MessageBlockData {
+                    line_blocks.push(MessageBlockData {
                         text: trimmed.to_string(),
                         is_link: true,
                         is_command: false,
@@ -984,17 +977,17 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                         command_name: String::new(),
                     });
                 } else {
-                    blocks.push(MessageBlockData {
-                        text: parse_discord_markdown(line),
+                    line_blocks.push(MessageBlockData {
+                        text: parse_discord_markdown(rem),
                         is_link: false,
                         is_command: false,
                         url: String::new(),
                         command_name: String::new(),
                     });
                 }
-            } else if !line.is_empty() {
-                blocks.push(MessageBlockData {
-                    text: parse_discord_markdown(line),
+            } else {
+                line_blocks.push(MessageBlockData {
+                    text: parse_discord_markdown(rem),
                     is_link: false,
                     is_command: false,
                     url: String::new(),
@@ -1002,9 +995,13 @@ pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<Mes
                 });
             }
         }
+
+        if !line_blocks.is_empty() {
+            lines.push(MessageLineData { blocks: line_blocks });
+        }
     }
 
-    blocks
+    lines
 }
 
 pub fn format_decimal_color(color_val: &Value) -> String {
@@ -1133,11 +1130,11 @@ fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
 /// `embed_content` has all embed text (title, desc, fields etc.).
 /// `embed_footer` has footer text.
 /// `code_block` has extracted monospaced code blocks.
-pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>, String, Vec<MessageBlockData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
     let mut content_parts: Vec<String> = Vec::new();
-    let mut content_blocks: Vec<MessageBlockData> = Vec::new();
+    let mut content_lines: Vec<MessageLineData> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
-    let mut embed_blocks: Vec<MessageBlockData> = Vec::new();
+    let mut embed_lines: Vec<MessageLineData> = Vec::new();
     let mut links: Vec<LinkData> = Vec::new();
     let mut buttons: Vec<MessageButtonData> = Vec::new();
     let mut embed_footer = String::new();
@@ -1193,7 +1190,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
         }
     }
 
-    // 1. Raw Text Content — parsed into blocks and regular text
+    // 1. Raw Text Content — parsed into lines and regular text
     let mut code_block = String::new();
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
@@ -1203,9 +1200,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
                 code_block = extracted_code;
             }
             if !cleaned_text.trim().is_empty() {
-                let parsed_blocks = parse_text_into_blocks(&cleaned_text, &mut links);
-                if parsed_blocks.iter().any(|b| b.is_link) {
-                    content_blocks = parsed_blocks;
+                let parsed_lines = parse_text_into_lines(&cleaned_text, &mut links);
+                if parsed_lines.iter().any(|l| l.blocks.iter().any(|b| b.is_link || b.is_command)) {
+                    content_lines = parsed_lines;
                 }
                 let cleaned = extract_and_clean_links(&cleaned_text, &mut links);
                 content_parts.push(parse_discord_markdown(&cleaned));
@@ -1213,7 +1210,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
         }
     }
 
-    // 2. Embeds → go into embed_content & embed_blocks
+    // 2. Embeds → go into embed_content & embed_lines
     if let Some(embeds) = m["embeds"].as_array() {
         for embed in embeds {
             let mut ep: Vec<String> = Vec::new();
@@ -1223,7 +1220,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
                 let a = author_name.trim();
                 if !a.is_empty() {
                     let cleaned = extract_and_clean_links(a, &mut links);
-                    ep.push(parse_discord_markdown(&cleaned));
+                    let parsed = parse_discord_markdown(&cleaned);
+                    embed_lines.extend(parse_text_into_lines(a, &mut links));
+                    ep.push(parsed);
                 }
             }
 
@@ -1235,12 +1234,14 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
                     let parsed_title = parse_discord_markdown(&cleaned_title);
                     if let Some(url) = embed["url"].as_str() {
                         if !url.is_empty() {
-                            embed_blocks.push(MessageBlockData {
-                                text: parsed_title.clone(),
-                                is_link: true,
-                                is_command: false,
-                                url: url.to_string(),
-                                command_name: String::new(),
+                            embed_lines.push(MessageLineData {
+                                blocks: vec![MessageBlockData {
+                                    text: parsed_title.clone(),
+                                    is_link: true,
+                                    is_command: false,
+                                    url: url.to_string(),
+                                    command_name: String::new(),
+                                }],
                             });
                             if !links.iter().any(|l| l.url == url) {
                                 links.push(LinkData {
@@ -1248,7 +1249,11 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
                                     url: url.to_string(),
                                 });
                             }
+                        } else {
+                            embed_lines.extend(parse_text_into_lines(t, &mut links));
                         }
+                    } else {
+                        embed_lines.extend(parse_text_into_lines(t, &mut links));
                     }
                     ep.push(parsed_title);
                 }
@@ -1258,37 +1263,34 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
             if let Some(desc) = embed["description"].as_str() {
                 let d = desc.trim();
                 if !d.is_empty() {
-                    let desc_blocks = parse_text_into_blocks(d, &mut links);
-                    if desc_blocks.iter().any(|b| b.is_link) {
-                        embed_blocks.extend(desc_blocks);
-                    }
+                    embed_lines.extend(parse_text_into_lines(d, &mut links));
                     let cleaned = extract_and_clean_links(d, &mut links);
                     ep.push(parse_discord_markdown(&cleaned));
                 }
             }
 
-            // Embed fields
+            // Embed fields (e.g. Duration, Artist, Track Number)
             if let Some(fields) = embed["fields"].as_array() {
                 for field in fields {
                     let name = field["name"].as_str().unwrap_or("").trim();
                     let val  = field["value"].as_str().unwrap_or("").trim();
                     if !name.is_empty() && !val.is_empty() {
+                        let field_line = format!("{}: {}", name, val);
+                        embed_lines.extend(parse_text_into_lines(&field_line, &mut links));
+
                         let cleaned_name = extract_and_clean_links(name, &mut links);
-                        let field_blocks = parse_text_into_blocks(val, &mut links);
-                        if field_blocks.iter().any(|b| b.is_link) {
-                            embed_blocks.extend(field_blocks);
-                        }
                         let cleaned_val = extract_and_clean_links(val, &mut links);
                         ep.push(format!("{}: {}",
                             parse_discord_markdown(&cleaned_name),
                             parse_discord_markdown(&cleaned_val)));
                     } else if !val.is_empty() {
-                        let field_blocks = parse_text_into_blocks(val, &mut links);
-                        if field_blocks.iter().any(|b| b.is_link) {
-                            embed_blocks.extend(field_blocks);
-                        }
+                        embed_lines.extend(parse_text_into_lines(val, &mut links));
                         let cleaned_val = extract_and_clean_links(val, &mut links);
                         ep.push(parse_discord_markdown(&cleaned_val));
+                    } else if !name.is_empty() {
+                        embed_lines.extend(parse_text_into_lines(name, &mut links));
+                        let cleaned_name = extract_and_clean_links(name, &mut links);
+                        ep.push(parse_discord_markdown(&cleaned_name));
                     }
                 }
             }
@@ -1457,7 +1459,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
+    (content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
@@ -1985,16 +1987,16 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
+                    let (content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
                         channel_id,
                         author,
                         content,
-                        content_blocks,
+                        content_lines,
                         embed_content,
-                        embed_blocks,
+                        embed_lines,
                         embed_color,
                         embed_footer,
                         code_block,

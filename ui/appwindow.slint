@@ -33,6 +33,12 @@ struct CommandSuggestion {
     name: string,
     desc: string,
     usage: string,
+    app_id: string,
+    cmd_id: string,
+    version: string,
+    param_name: string,
+    param_desc: string,
+    is_required: bool,
 }
 
 struct MessageBlock {
@@ -41,6 +47,10 @@ struct MessageBlock {
     is_command: bool,
     url: string,
     command_name: string,
+}
+
+struct MessageLine {
+    blocks: [MessageBlock],
 }
 
 struct MessageButton {
@@ -56,9 +66,9 @@ struct ChatMessage {
     author: string,
     timestamp: string,
     content: string,
-    content_blocks: [MessageBlock],
+    content_lines: [MessageLine],
     embed_content: string,
-    embed_blocks: [MessageBlock],
+    embed_lines: [MessageLine],
     embed_color: color,
     embed_footer: string,
     code_block: string,
@@ -293,80 +303,85 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.content_blocks.length > 0: VerticalLayout {
+                    if msg.content_lines.length > 0: VerticalLayout {
                         spacing: 3px;
-                        for block in msg.content_blocks: HorizontalLayout {
+                        for line in msg.content_lines: HorizontalLayout {
                             alignment: start;
                             spacing: 4px;
 
-                            if block.is_command: Rectangle {
-                                background: cmd_ta.has-hover ? #4752c4 : #5865f233;
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: #5865f2;
-                                HorizontalLayout {
-                                    padding-left: 6px;
-                                    padding-right: 6px;
-                                    padding-top: 1px;
-                                    padding-bottom: 1px;
-                                    spacing: 4px;
-                                    Text {
-                                        text: block.text;
-                                        color: cmd_ta.has-hover ? #ffffff : #58a6ff;
-                                        font-size: 12.5px;
-                                        font-weight: 700;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                cmd_ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.click_command(block.command_name);
-                                    }
-                                }
-                            }
+                            for block in line.blocks: HorizontalLayout {
+                                alignment: start;
+                                spacing: 0px;
 
-                            if block.is_link: Rectangle {
-                                background: block_ta.has-hover ? #1e293b : transparent;
-                                border-radius: 3px;
-                                HorizontalLayout {
-                                    padding-left: 2px;
-                                    padding-right: 2px;
-                                    spacing: 4px;
-                                    Text {
-                                        text: block.text;
-                                        color: block_ta.has-hover ? #58a6ff : #00a8fc;
-                                        font-size: 13.5px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
+                                if block.is_command: Rectangle {
+                                    background: cmd_ta.has-hover ? #4752c4 : #5865f233;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #5865f2;
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        padding-top: 1px;
+                                        padding-bottom: 1px;
+                                        spacing: 4px;
+                                        Text {
+                                            text: block.text;
+                                            color: cmd_ta.has-hover ? #ffffff : #58a6ff;
+                                            font-size: 12.5px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
                                     }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Image {
-                                            source: @image-url("../assets/external-link.svg");
-                                            width: 11px;
-                                            height: 11px;
-                                            colorize: block_ta.has-hover ? #58a6ff : #00a8fc;
-                                            image-fit: contain;
+                                    cmd_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.click_command(block.command_name);
                                         }
                                     }
                                 }
-                                block_ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.open_link(block.url); }
-                                }
-                            }
 
-                            if !block.is_link && !block.is_command: Text {
-                                text: block.text;
-                                color: #dbdee1;
-                                font-size: 13.5px;
-                                wrap: word-wrap;
+                                if block.is_link: Rectangle {
+                                    background: block_ta.has-hover ? #1e293b : transparent;
+                                    border-radius: 3px;
+                                    HorizontalLayout {
+                                        padding-left: 2px;
+                                        padding-right: 2px;
+                                        spacing: 4px;
+                                        Text {
+                                            text: block.text;
+                                            color: block_ta.has-hover ? #58a6ff : #00a8fc;
+                                            font-size: 13.5px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/external-link.svg");
+                                                width: 11px;
+                                                height: 11px;
+                                                colorize: block_ta.has-hover ? #58a6ff : #00a8fc;
+                                                image-fit: contain;
+                                            }
+                                        }
+                                    }
+                                    block_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.open_link(block.url); }
+                                    }
+                                }
+
+                                if !block.is_link && !block.is_command: Text {
+                                    text: block.text;
+                                    color: #dbdee1;
+                                    font-size: 13.5px;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }
 
-                    if msg.content_blocks.length == 0 && msg.content != "": Text {
+                    if msg.content_lines.length == 0 && msg.content != "": Text {
                         text: msg.content;
                         color: #dbdee1;
                         font-size: 13.5px;
@@ -391,7 +406,7 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.embed-content != "" || msg.embed_blocks.length > 0 || msg.embed-footer != "": Rectangle {
+                    if msg.embed-content != "" || msg.embed_lines.length > 0 || msg.embed-footer != "": Rectangle {
                         background: #232428;
                         border-radius: 4px;
 
@@ -408,80 +423,85 @@ component ChatMessagesView inherits Rectangle {
                                 padding-left: 12px;
                                 spacing: 8px;
 
-                                if msg.embed_blocks.length > 0: VerticalLayout {
+                                if msg.embed_lines.length > 0: VerticalLayout {
                                     spacing: 3px;
-                                    for block in msg.embed_blocks: HorizontalLayout {
+                                    for line in msg.embed_lines: HorizontalLayout {
                                         alignment: start;
                                         spacing: 4px;
 
-                                        if block.is_command: Rectangle {
-                                            background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
-                                            border-radius: 4px;
-                                            border-width: 1px;
-                                            border-color: #5865f2;
-                                            HorizontalLayout {
-                                                padding-left: 6px;
-                                                padding-right: 6px;
-                                                padding-top: 1px;
-                                                padding-bottom: 1px;
-                                                spacing: 4px;
-                                                Text {
-                                                    text: block.text;
-                                                    color: ecmd_ta.has-hover ? #ffffff : #58a6ff;
-                                                    font-size: 12px;
-                                                    font-weight: 700;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                            ecmd_ta := TouchArea {
-                                                mouse-cursor: pointer;
-                                                clicked => {
-                                                    root.click_command(block.command_name);
-                                                }
-                                            }
-                                        }
+                                        for block in line.blocks: HorizontalLayout {
+                                            alignment: start;
+                                            spacing: 0px;
 
-                                        if block.is_link: Rectangle {
-                                            background: eblock_ta.has-hover ? #1e293b : transparent;
-                                            border-radius: 3px;
-                                            HorizontalLayout {
-                                                padding-left: 2px;
-                                                padding-right: 2px;
-                                                spacing: 4px;
-                                                Text {
-                                                    text: block.text;
-                                                    color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
-                                                    font-size: 12.5px;
-                                                    font-weight: 600;
-                                                    vertical-alignment: center;
+                                            if block.is_command: Rectangle {
+                                                background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: #5865f2;
+                                                HorizontalLayout {
+                                                    padding-left: 6px;
+                                                    padding-right: 6px;
+                                                    padding-top: 1px;
+                                                    padding-bottom: 1px;
+                                                    spacing: 4px;
+                                                    Text {
+                                                        text: block.text;
+                                                        color: ecmd_ta.has-hover ? #ffffff : #58a6ff;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
                                                 }
-                                                VerticalLayout {
-                                                    alignment: center;
-                                                    Image {
-                                                        source: @image-url("../assets/external-link.svg");
-                                                        width: 10px;
-                                                        height: 10px;
-                                                        colorize: eblock_ta.has-hover ? #58a6ff : #00a8fc;
-                                                        image-fit: contain;
+                                                ecmd_ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.click_command(block.command_name);
                                                     }
                                                 }
                                             }
-                                            eblock_ta := TouchArea {
-                                                mouse-cursor: pointer;
-                                                clicked => { root.open_link(block.url); }
-                                            }
-                                        }
 
-                                        if !block.is_link && !block.is_command: Text {
-                                            text: block.text;
-                                            color: #d2d5d9;
-                                            font-size: 12.5px;
-                                            wrap: word-wrap;
+                                            if block.is_link: Rectangle {
+                                                background: eblock_ta.has-hover ? #1e293b : transparent;
+                                                border-radius: 3px;
+                                                HorizontalLayout {
+                                                    padding-left: 2px;
+                                                    padding-right: 2px;
+                                                    spacing: 4px;
+                                                    Text {
+                                                        text: block.text;
+                                                        color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
+                                                        font-size: 12.5px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/external-link.svg");
+                                                            width: 10px;
+                                                            height: 10px;
+                                                            colorize: eblock_ta.has-hover ? #58a6ff : #00a8fc;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                }
+                                                eblock_ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.open_link(block.url); }
+                                                }
+                                            }
+
+                                            if !block.is_link && !block.is_command: Text {
+                                                text: block.text;
+                                                color: #d2d5d9;
+                                                font-size: 12.5px;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
                                 }
 
-                                if msg.embed_blocks.length == 0 && msg.embed-content != "": Text {
+                                if msg.embed_lines.length == 0 && msg.embed-content != "": Text {
                                     text: msg.embed-content;
                                     color: #d2d5d9;
                                     font-size: 12.5px;
@@ -677,28 +697,37 @@ export component AppWindow inherits Window {
     callback unhide_stream(string /* user_id */);
     callback click_command(string /* command_name */);
     callback handle_input_change(string /* text */);
+    callback execute_active_command(string /* cmd_name */, string /* arg_value */, string /* app_id */, string /* cmd_id */, string /* version */, string /* param_name */);
 
-    // Smart Command Autocomplete Properties
+    // Smart Command Autocomplete & Parameter Properties
     in-out property <string> chat_input_text: "";
     in-out property <bool> show_command_suggestions: false;
+    in-out property <string> active_command_name: "";
+    in-out property <string> active_param_name: "query";
+    in-out property <string> active_param_desc: "";
+    in-out property <string> active_command_app_id: "";
+    in-out property <string> active_command_cmd_id: "";
+    in-out property <string> active_command_version: "";
+    in-out property <string> command_arg_text: "";
     in-out property <[CommandSuggestion]> command_suggestions: [
-        { name: "/play", desc: "Tocar música, áudio ou playlist (YouTube/Spotify/SoundCloud)", usage: "/play <nome ou link>" },
-        { name: "/skip", desc: "Pular para a próxima faixa da fila", usage: "/skip" },
-        { name: "/stop", desc: "Parar reprodução do bot e limpar a fila", usage: "/stop" },
-        { name: "/pause", desc: "Pausar a música em reprodução", usage: "/pause" },
-        { name: "/resume", desc: "Retomar a reprodução pausada", usage: "/resume" },
-        { name: "/queue", desc: "Visualizar a lista de músicas na fila", usage: "/queue" },
-        { name: "/nowplaying", desc: "Exibir detalhes da música que está tocando agora", usage: "/nowplaying" },
-        { name: "/volume", desc: "Ajustar o volume de reprodução do bot", usage: "/volume <1-100>" },
-        { name: "/loop", desc: "Ativar ou desativar repetição da música ou fila", usage: "/loop" },
-        { name: "/shuffle", desc: "Embaralhar a fila de músicas", usage: "/shuffle" },
-        { name: "/lyrics", desc: "Buscar e exibir a letra da música atual", usage: "/lyrics" },
-        { name: "/help", desc: "Exibir o menu de ajuda e comandos do bot", usage: "/help" },
-        { name: "/ping", desc: "Verificar a latência e tempo de resposta", usage: "/ping" },
-        { name: "/clear", desc: "Limpar mensagens recentes do canal", usage: "/clear <quantidade>" },
-        { name: "/avatar", desc: "Exibir o avatar ampliado de um usuário", usage: "/avatar [@usuario]" },
-        { name: "/userinfo", desc: "Ver informações detalhadas da conta de um usuário", usage: "/userinfo [@usuario]" },
-        { name: "/serverinfo", desc: "Ver estatísticas e informações do servidor atual", usage: "/serverinfo" }
+        { name: "/play", desc: "Tocar música, áudio ou playlist (YouTube/Spotify/SoundCloud)", usage: "/play <nome ou link>", app_id: "", cmd_id: "", version: "", param_name: "query", param_desc: "Nome da música ou link do YouTube/Spotify/SoundCloud", is_required: true },
+        { name: "/skip", desc: "Pular para a próxima faixa da fila", usage: "/skip", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/stop", desc: "Parar reprodução do bot e limpar a fila", usage: "/stop", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/pause", desc: "Pausar a música em reprodução", usage: "/pause", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/resume", desc: "Retomar a reprodução pausada", usage: "/resume", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/queue", desc: "Visualizar a lista de músicas na fila", usage: "/queue", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/nowplaying", desc: "Exibir detalhes da música que está tocando agora", usage: "/nowplaying", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/volume", desc: "Ajustar o volume de reprodução do bot", usage: "/volume <1-100>", app_id: "", cmd_id: "", version: "", param_name: "level", param_desc: "Volume de 1 a 100", is_required: true },
+        { name: "/loop", desc: "Ativar ou desativar repetição da música ou fila", usage: "/loop", app_id: "", cmd_id: "", version: "", param_name: "mode", param_desc: "Modo: track, queue ou off", is_required: false },
+        { name: "/shuffle", desc: "Embaralhar a fila de músicas", usage: "/shuffle", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/lyrics", desc: "Buscar e exibir a letra da música atual", usage: "/lyrics", app_id: "", cmd_id: "", version: "", param_name: "song", param_desc: "Nome da música (opcional)", is_required: false },
+        { name: "/247", desc: "Manter o bot 24/7 conectado no canal de voz", usage: "/247", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/help", desc: "Exibir o menu de ajuda e comandos do bot", usage: "/help", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/ping", desc: "Verificar a latência e tempo de resposta", usage: "/ping", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/clear", desc: "Limpar mensagens recentes do canal", usage: "/clear <quantidade>", app_id: "", cmd_id: "", version: "", param_name: "amount", param_desc: "Quantidade de mensagens a apagar", is_required: true },
+        { name: "/avatar", desc: "Exibir o avatar ampliado de um usuário", usage: "/avatar [@usuario]", app_id: "", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
+        { name: "/userinfo", desc: "Ver informações detalhadas da conta de um usuário", usage: "/userinfo [@usuario]", app_id: "", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
+        { name: "/serverinfo", desc: "Ver estatísticas e informações do servidor atual", usage: "/serverinfo", app_id: "", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false }
     ];
 
     // Auto-Update Properties
@@ -2498,7 +2527,14 @@ export component AppWindow inherits Window {
                                         cmd_sug_ta := TouchArea {
                                             mouse-cursor: pointer;
                                             clicked => {
-                                                root.chat_input_text = cmd.name + " ";
+                                                root.active_command_name = cmd.name;
+                                                root.active_param_name = cmd.param_name != "" ? cmd.param_name : "query";
+                                                root.active_param_desc = cmd.param_desc != "" ? cmd.param_desc : cmd.desc;
+                                                root.active_command_app_id = cmd.app_id;
+                                                root.active_command_cmd_id = cmd.cmd_id;
+                                                root.active_command_version = cmd.version;
+                                                root.command_arg_text = "";
+                                                root.chat_input_text = "";
                                                 root.show_command_suggestions = false;
                                             }
                                         }
@@ -2508,7 +2544,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Message Input Box
+                    // Message / Smart Command Input Box
                     Rectangle {
                         height: 56px;
                         background: #313338;
@@ -2517,7 +2553,84 @@ export component AppWindow inherits Window {
                             padding: 8px;
                             spacing: 8px;
 
-                            msg_input := LineEdit {
+                            if root.active_command_name != "" : HorizontalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 6px;
+
+                                // Command Pill (e.g. /play or /247)
+                                Rectangle {
+                                    background: #5865f233;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #5865f2;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 6px;
+                                        Text {
+                                            text: root.active_command_name;
+                                            color: #58a6ff;
+                                            font-size: 13px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "✕";
+                                            color: #949ba4;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.active_command_name = "";
+                                            root.command_arg_text = "";
+                                        }
+                                    }
+                                }
+
+                                // Parameter Pill (e.g. [query] or [song] or [volume])
+                                if root.active_param_name != "" : Rectangle {
+                                    background: #232428;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #3f4147;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: root.active_param_name + ":";
+                                            color: #949ba4;
+                                            font-size: 12.5px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Value Input
+                                msg_arg_input := LineEdit {
+                                    horizontal-stretch: 1;
+                                    text <=> root.command_arg_text;
+                                    placeholder-text: root.active_param_desc != "" ? root.active_param_desc : "Digite o valor para " + root.active_param_name + "...";
+                                    accepted => {
+                                        root.execute_active_command(
+                                            root.active_command_name,
+                                            root.command_arg_text,
+                                            root.active_command_app_id,
+                                            root.active_command_cmd_id,
+                                            root.active_command_version,
+                                            root.active_param_name
+                                        );
+                                        root.active_command_name = "";
+                                        root.command_arg_text = "";
+                                    }
+                                }
+                            }
+
+                            if root.active_command_name == "" : msg_input := LineEdit {
+                                horizontal-stretch: 1;
                                 text <=> root.chat_input_text;
                                 placeholder-text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
                                 edited(val) => {
@@ -2536,7 +2649,18 @@ export component AppWindow inherits Window {
                                 text: root.tr_send;
                                 primary: true;
                                 clicked => {
-                                    if (root.chat_input_text != "") {
+                                    if (root.active_command_name != "") {
+                                        root.execute_active_command(
+                                            root.active_command_name,
+                                            root.command_arg_text,
+                                            root.active_command_app_id,
+                                            root.active_command_cmd_id,
+                                            root.active_command_version,
+                                            root.active_param_name
+                                        );
+                                        root.active_command_name = "";
+                                        root.command_arg_text = "";
+                                    } else if (root.chat_input_text != "") {
                                         root.send_message(root.chat_input_text);
                                         root.chat_input_text = "";
                                         root.show_command_suggestions = false;

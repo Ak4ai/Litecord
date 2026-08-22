@@ -221,4 +221,69 @@ impl DiscordHttpClient {
             Err(e) => Err(format!("Erro HTTP ao buscar membros do servidor: {:?}", e)),
         }
     }
+
+    pub async fn get_guild_application_command_index(&self, guild_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v9/guilds/{}/application-command-index", guild_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        return Ok(data);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP ao buscar índice de comandos do servidor: {:?}", e)),
+        }
+    }
+
+    pub async fn send_slash_command_interaction(
+        &self,
+        guild_id: &str,
+        channel_id: &str,
+        app_id: &str,
+        cmd_id: &str,
+        cmd_name: &str,
+        version: &str,
+        options: Vec<serde_json::Value>,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let url = "https://discord.com/api/v9/interactions";
+        let nonce = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+        
+        let payload = json!({
+            "type": 2,
+            "application_id": app_id,
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "session_id": if session_id.is_empty() { "a0000000000000000000000000000000" } else { session_id },
+            "data": {
+                "version": if version.is_empty() { cmd_id } else { version },
+                "id": cmd_id,
+                "name": cmd_name,
+                "type": 1,
+                "options": options
+            },
+            "nonce": nonce
+        });
+
+        match self.client.post(url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() || resp.status().as_u16() == 204 {
+                    info!("Slash command interaction '/{}' enviada com sucesso!", cmd_name);
+                    Ok(())
+                } else {
+                    let err = format!("Status de erro HTTP na interação: {}", resp.status());
+                    error!("{}", err);
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                let err = format!("Falha de rede ao enviar slash command interaction: {:?}", e);
+                error!("{}", err);
+                Err(err)
+            }
+        }
+    }
 }
