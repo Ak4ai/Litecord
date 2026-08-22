@@ -753,6 +753,7 @@ async fn fetch_and_populate_channels(
                             id: "".into(),
                             author: "Litecord System".into(),
                             content: "🔒 Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                            commands: slint::ModelRc::default(),
                             content_lines: slint::ModelRc::default(),
                             embed_content: "".into(),
                             embed_lines: slint::ModelRc::default(),
@@ -995,6 +996,7 @@ async fn load_messages_for_channel(
                             id: "".into(),
                             author: "Litecord System".into(),
                             content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                            commands: slint::ModelRc::default(),
                             content_lines: slint::ModelRc::default(),
                             embed_content: "".into(),
                             embed_lines: slint::ModelRc::default(),
@@ -1011,8 +1013,11 @@ async fn load_messages_for_channel(
                         msgs_val.iter().rev().map(|m| {
                             let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
-                            let (content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
+                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
                             
+                            let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                            let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
                             let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                 label: l.label.clone().into(),
                                 url: l.url.clone().into(),
@@ -1032,6 +1037,7 @@ async fn load_messages_for_channel(
                                 id: msg_id.into(),
                                 author: author.into(),
                                 content: content.into(),
+                                commands: slint::ModelRc::from(commands_model),
                                 content_lines: map_message_lines(&content_lines),
                                 embed_content: embed_content.into(),
                                 embed_lines: map_message_lines(&embed_lines),
@@ -1074,6 +1080,7 @@ async fn load_messages_for_channel(
                         id: "".into(),
                         author: "Litecord System".into(),
                         content: friendly_msg.into(),
+                        commands: slint::ModelRc::default(),
                         content_lines: slint::ModelRc::default(),
                         embed_content: "".into(),
                         embed_lines: slint::ModelRc::default(),
@@ -2700,6 +2707,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "".into(),
                 author: "Litecord Voice".into(),
                 content: "🔴 Desconectado da sala de voz.".into(),
+                commands: slint::ModelRc::default(),
                 content_lines: slint::ModelRc::default(),
                 embed_content: "".into(),
                 embed_lines: slint::ModelRc::default(),
@@ -2856,8 +2864,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
                                     let msg_id = m["id"].as_str().unwrap_or("");
                                     let author = format_discord_author(m);
-                                    let (content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
+                                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
                                     
+                                    let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                                    let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
                                     let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                         label: l.label.clone().into(),
                                         url: l.url.clone().into(),
@@ -2877,6 +2888,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         id: msg_id.into(),
                                         author: author.into(),
                                         content: content.into(),
+                                        commands: slint::ModelRc::from(commands_model),
                                         content_lines: map_message_lines(&content_lines),
                                         embed_content: embed_content.into(),
                                         embed_lines: map_message_lines(&embed_lines),
@@ -3386,6 +3398,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: "".into(),
                     author: "Litecord Voice".into(),
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
+                    commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
                     embed_lines: slint::ModelRc::default(),
@@ -3815,7 +3828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { channel_id, author, content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons, timestamp } => {
+                GatewayEvent::MessageCreated { channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3831,6 +3844,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak_inner.upgrade() {
                                 let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+
+                                let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                                let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
 
                                 let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                     label: l.label.clone().into(),
@@ -3851,6 +3867,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     id: "".into(),
                                     author: author.into(),
                                     content: content.into(),
+                                    commands: slint::ModelRc::from(commands_model),
                                     content_lines: map_message_lines(&content_lines),
                                     embed_content: embed_content.into(),
                                     embed_lines: map_message_lines(&embed_lines),

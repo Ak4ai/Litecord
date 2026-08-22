@@ -43,6 +43,7 @@ pub enum GatewayEvent {
         channel_id: String,
         author: String,
         content: String,
+        commands: Vec<String>,
         content_lines: Vec<MessageLineData>,
         embed_content: String,
         embed_lines: Vec<MessageLineData>,
@@ -645,6 +646,12 @@ fn apply_inline_markdown(input: &str) -> String {
         format!(":{}:", name)
     });
 
+    // </name:ID> — command mentions
+    s = regex_replace_simple(&s, "</", ">", |inner| {
+        let name = inner.split(':').next().unwrap_or("comando");
+        format!("/{}", name)
+    });
+
     // ── Text formatting (order matters: most-specific first) ───────────────
     // Bold + Italic ***
     s = replace_between(&s, "***", "***", |inner| inner.to_string());
@@ -1117,8 +1124,9 @@ fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
 /// `embed_content` has all embed text (title, desc, fields etc.).
 /// `embed_footer` has footer text.
 /// `code_block` has extracted monospaced code blocks.
-pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
     let mut content_parts: Vec<String> = Vec::new();
+    let mut commands: Vec<String> = Vec::new();
     let mut content_lines: Vec<MessageLineData> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
     let mut embed_lines: Vec<MessageLineData> = Vec::new();
@@ -1182,6 +1190,30 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageLineData>,
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
+            // Extract any slash command mentions e.g. </play:123> or </247>
+            let mut rem_cmd = trimmed;
+            while let Some(pos) = rem_cmd.find("</") {
+                let after = &rem_cmd[pos + 2..];
+                if let Some(end) = after.find('>') {
+                    let inside = &after[..end];
+                    let name = if let Some(colon) = inside.find(':') {
+                        &inside[..colon]
+                    } else {
+                        inside
+                    };
+                    let clean = name.trim();
+                    if !clean.is_empty() {
+                        let cmd_str = format!("/{}", clean);
+                        if !commands.contains(&cmd_str) {
+                            commands.push(cmd_str);
+                        }
+                    }
+                    rem_cmd = &after[end + 1..];
+                } else {
+                    break;
+                }
+            }
+
             let (cleaned_text, extracted_code) = extract_triple_backtick_code_blocks(trimmed);
             if !extracted_code.is_empty() {
                 code_block = extracted_code;
@@ -1446,13 +1478,13 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageLineData>,
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
+    (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 #[allow(dead_code)]
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, _, embed, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
+    let (content, _, _, embed, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -1974,13 +2006,14 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
+                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
                         channel_id,
                         author,
                         content,
+                        commands,
                         content_lines,
                         embed_content,
                         embed_lines,

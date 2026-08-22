@@ -66,6 +66,7 @@ struct ChatMessage {
     author: string,
     timestamp: string,
     content: string,
+    commands: [string],
     content_lines: [MessageLine],
     embed_content: string,
     embed_lines: [MessageLine],
@@ -307,103 +308,8 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.content_lines.length > 0: VerticalLayout {
-                        spacing: 3px;
-                        for line in msg.content_lines: VerticalLayout {
-                            spacing: 0px;
-
-                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
-                                text: line.blocks[0].text;
-                                color: #dbdee1;
-                                font-size: 13.5px;
-                                wrap: word-wrap;
-                            }
-
-                            if line.blocks.length > 1 || line.blocks[0].is_link || line.blocks[0].is_command: HorizontalLayout {
-                                alignment: start;
-                                spacing: 4px;
-
-                                for block in line.blocks: HorizontalLayout {
-                                    alignment: start;
-                                    spacing: 0px;
-
-                                    if block.is_command: VerticalLayout {
-                                        alignment: center;
-                                        Rectangle {
-                                            height: 22px;
-                                            background: cmd_ta.has-hover ? #4752c4 : #5865f233;
-                                            border-radius: 4px;
-                                            border-width: 1px;
-                                            border-color: #5865f2;
-                                            HorizontalLayout {
-                                                padding-left: 6px;
-                                                padding-right: 6px;
-                                                spacing: 4px;
-                                                alignment: center;
-                                                Text {
-                                                    text: block.text;
-                                                    color: cmd_ta.has-hover ? #ffffff : #58a6ff;
-                                                    font-size: 12px;
-                                                    font-weight: 700;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                            cmd_ta := TouchArea {
-                                                mouse-cursor: pointer;
-                                                clicked => {
-                                                    root.click_command(block.command_name);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if block.is_link: VerticalLayout {
-                                        alignment: center;
-                                        Rectangle {
-                                            height: 22px;
-                                            background: block_ta.has-hover ? #1e293b : transparent;
-                                            border-radius: 3px;
-                                            HorizontalLayout {
-                                                padding-left: 4px;
-                                                padding-right: 4px;
-                                                spacing: 4px;
-                                                alignment: center;
-                                                Text {
-                                                    text: block.text;
-                                                    color: block_ta.has-hover ? #58a6ff : #00a8fc;
-                                                    font-size: 13px;
-                                                    font-weight: 600;
-                                                    vertical-alignment: center;
-                                                    overflow: elide;
-                                                    max-width: 380px;
-                                                }
-                                                Image {
-                                                    source: @image-url("../assets/external-link.svg");
-                                                    width: 11px;
-                                                    height: 11px;
-                                                    colorize: block_ta.has-hover ? #58a6ff : #00a8fc;
-                                                    image-fit: contain;
-                                                }
-                                            }
-                                            block_ta := TouchArea {
-                                                mouse-cursor: pointer;
-                                                clicked => { root.open_link(block.url); }
-                                            }
-                                        }
-                                    }
-
-                                    if !block.is_link && !block.is_command: Text {
-                                        text: block.text;
-                                        color: #dbdee1;
-                                        font-size: 13.5px;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if msg.content_lines.length == 0 && msg.content != "": Text {
+                    // 1. Text Message Content (Full responsive word-wrap)
+                    if msg.content != "": Text {
                         width: 100%;
                         text: msg.content;
                         color: #dbdee1;
@@ -411,6 +317,53 @@ component ChatMessagesView inherits Rectangle {
                         wrap: word-wrap;
                     }
 
+                    // 2. Interactive Slash Command Action Chips (e.g. [/247], [/play])
+                    if msg.commands.length > 0: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        for cmd_name in msg.commands: Rectangle {
+                            height: 24px;
+                            background: cmd_chip_ta.has-hover ? #4752c4 : #5865f233;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: #5865f2;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 5px;
+                                alignment: center;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/terminal.svg");
+                                        width: 12px;
+                                        height: 12px;
+                                        colorize: cmd_chip_ta.has-hover ? #ffffff : #58a6ff;
+                                        image-fit: contain;
+                                    }
+                                }
+
+                                Text {
+                                    text: cmd_name;
+                                    color: cmd_chip_ta.has-hover ? #ffffff : #58a6ff;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            cmd_chip_ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.click_command(cmd_name);
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Code Block
                     if msg.code-block != "": Rectangle {
                         width: 100%;
                         background: #1e1f22;
@@ -432,7 +385,8 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.embed-content != "" || msg.embed_lines.length > 0 || msg.embed-footer != "": Rectangle {
+                    // 4. Embeds
+                    if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
                         width: 100%;
                         background: #232428;
                         border-radius: 4px;
@@ -450,103 +404,7 @@ component ChatMessagesView inherits Rectangle {
                                 padding-left: 12px;
                                 spacing: 8px;
 
-                                if msg.embed_lines.length > 0: VerticalLayout {
-                                    spacing: 3px;
-                                    for line in msg.embed_lines: VerticalLayout {
-                                        spacing: 0px;
-
-                                        if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
-                                            text: line.blocks[0].text;
-                                            color: #d2d5d9;
-                                            font-size: 12.5px;
-                                            wrap: word-wrap;
-                                        }
-
-                                        if line.blocks.length > 1 || line.blocks[0].is_link || line.blocks[0].is_command: HorizontalLayout {
-                                            alignment: start;
-                                            spacing: 4px;
-
-                                            for block in line.blocks: HorizontalLayout {
-                                                alignment: start;
-                                                spacing: 0px;
-
-                                                if block.is_command: VerticalLayout {
-                                                    alignment: center;
-                                                    Rectangle {
-                                                        height: 20px;
-                                                        background: ecmd_ta.has-hover ? #4752c4 : #5865f233;
-                                                        border-radius: 4px;
-                                                        border-width: 1px;
-                                                        border-color: #5865f2;
-                                                        HorizontalLayout {
-                                                            padding-left: 6px;
-                                                            padding-right: 6px;
-                                                            spacing: 4px;
-                                                            alignment: center;
-                                                            Text {
-                                                                text: block.text;
-                                                                color: ecmd_ta.has-hover ? #ffffff : #58a6ff;
-                                                                font-size: 11.5px;
-                                                                font-weight: 700;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                        ecmd_ta := TouchArea {
-                                                            mouse-cursor: pointer;
-                                                            clicked => {
-                                                                root.click_command(block.command_name);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                if block.is_link: VerticalLayout {
-                                                    alignment: center;
-                                                    Rectangle {
-                                                        height: 20px;
-                                                        background: eblock_ta.has-hover ? #1e293b : transparent;
-                                                        border-radius: 3px;
-                                                        HorizontalLayout {
-                                                            padding-left: 4px;
-                                                            padding-right: 4px;
-                                                            spacing: 4px;
-                                                            alignment: center;
-                                                            Text {
-                                                                text: block.text;
-                                                                color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
-                                                                font-size: 12px;
-                                                                font-weight: 600;
-                                                                vertical-alignment: center;
-                                                                overflow: elide;
-                                                                max-width: 350px;
-                                                            }
-                                                            Image {
-                                                                source: @image-url("../assets/external-link.svg");
-                                                                width: 10px;
-                                                                height: 10px;
-                                                                colorize: eblock_ta.has-hover ? #58a6ff : #00a8fc;
-                                                                image-fit: contain;
-                                                            }
-                                                        }
-                                                        eblock_ta := TouchArea {
-                                                            mouse-cursor: pointer;
-                                                            clicked => { root.open_link(block.url); }
-                                                        }
-                                                    }
-                                                }
-
-                                                if !block.is_link && !block.is_command: Text {
-                                                    text: block.text;
-                                                    color: #d2d5d9;
-                                                    font-size: 12.5px;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if msg.embed_lines.length == 0 && msg.embed-content != "": Text {
+                                if msg.embed-content != "": Text {
                                     width: 100%;
                                     text: msg.embed-content;
                                     color: #d2d5d9;
