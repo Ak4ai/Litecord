@@ -129,6 +129,35 @@ impl ScreenCaptureManager {
         self.is_running.load(Ordering::Relaxed)
     }
 
+    pub fn announce_presence(&self) {
+        let current_cid = self.channel_id.load(Ordering::Relaxed);
+        if current_cid == 0 { return; }
+        let my_uid = self.my_user_id.load(Ordering::Relaxed);
+        let my_instance_id = get_process_instance_id();
+        let my_rx = get_my_rx_port();
+        let uname = self.my_username.lock().unwrap().clone();
+        let uname_bytes = uname.as_bytes();
+
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let _ = socket.set_broadcast(true);
+            let mut ack_pkt = Vec::with_capacity(30 + uname_bytes.len());
+            ack_pkt.extend_from_slice(MAGIC);
+            ack_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+            ack_pkt.push(OP_HEARTBEAT);
+            ack_pkt.extend_from_slice(&current_cid.to_be_bytes());
+            ack_pkt.extend_from_slice(&my_uid.to_be_bytes());
+            ack_pkt.push(0);
+            ack_pkt.push(2);
+            ack_pkt.push(uname_bytes.len() as u8);
+            ack_pkt.extend_from_slice(uname_bytes);
+            ack_pkt.extend_from_slice(&my_rx.to_be_bytes());
+
+            for target in get_broadcast_addresses() {
+                let _ = socket.send_to(&ack_pkt, target);
+            }
+        }
+    }
+
     pub fn shared_buffer(&self) -> Arc<SharedFrameBuffer> {
         Arc::clone(&self.shared_buffer)
     }
@@ -1534,6 +1563,12 @@ static STREAM_VOLUMES: std::sync::OnceLock<Arc<Mutex<HashMap<u64, f32>>>> = std:
 
 pub fn get_stream_audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
     STREAM_AUDIO_QUEUE.get_or_init(|| Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 2)))).clone()
+}
+
+pub fn clear_stream_audio_queue() {
+    if let Ok(mut q) = get_stream_audio_queue().lock() {
+        q.clear();
+    }
 }
 
 pub fn get_stream_volumes() -> Arc<Mutex<HashMap<u64, f32>>> {

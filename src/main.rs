@@ -2320,6 +2320,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_leave_voice(move || {
         info!("Usuário solicitou desconexão da sala de voz...");
         sm_leave.stop();
+        sm_leave.set_context(0, 0, "");
+        screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
@@ -2327,6 +2329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_current_voice_channel("".into());
             ui.set_is_screen_sharing(false);
             ui.set_has_active_stream(false);
+            ui.set_popped_out_stream_uid("".into());
             gateway::clear_voice_participants();
 
             let gid = active_guild_leave.lock().unwrap().clone();
@@ -2962,6 +2965,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let selected_input_voice = Arc::clone(&selected_input);
     let active_mic_stream_voice = Arc::clone(&active_mic_stream);
     let level_tx_voice = level_tx.clone();
+    let sm_chan_select = Arc::clone(&screen_manager);
 
     app.on_select_channel(move |channel_id: SharedString| {
         let ch_id = channel_id.to_string();
@@ -2985,6 +2989,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gateway::sync_voice_channel_participants(&ch_id);
                 let muted = ui.get_is_muted();
                 let deafened = ui.get_is_deafened();
+
+                let cid_num = ch_id.parse::<u64>().unwrap_or(0);
+                let my_uid = gateway::get_my_user_id();
+                let my_uname = gateway::get_my_username();
+                sm_chan_select.set_context(cid_num, my_uid, &my_uname);
+                sm_chan_select.announce_presence();
 
                 // 1. Send Opcode 4 VoiceStateUpdate to Discord Gateway WebSocket!
                 if let Some(cmd_tx_guard) = cmd_tx_chan_select.lock().unwrap().as_ref() {
@@ -3228,6 +3238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_gw_events = Arc::clone(&active_guild_id);
     let active_channel_gw_events = Arc::clone(&active_channel_id);
     let guilds_map_gw_events = Arc::clone(&guilds_map);
+    let sm_gw = Arc::clone(&screen_manager);
 
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
@@ -3236,11 +3247,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let active_guild_inner = Arc::clone(&active_guild_gw_events);
             let active_channel_inner = Arc::clone(&active_channel_gw_events);
             let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
+            let sm_gw_inner = Arc::clone(&sm_gw);
 
             match event {
                 GatewayEvent::VoiceDisconnected => {
                     let app_w = app_weak.clone();
+                    let sm_disc = Arc::clone(&sm_gw_inner);
                     let _ = slint::invoke_from_event_loop(move || {
+                        sm_disc.stop();
+                        sm_disc.set_context(0, 0, "");
+                        screen_capture::clear_stream_audio_queue();
                         if let Some(ui) = app_w.upgrade() {
                             info!("🚪 Desconectando UI do canal de voz (sessão encerrada/deslocada por outro cliente)");
                             ui.set_is_in_voice(false);
