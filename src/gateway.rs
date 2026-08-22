@@ -909,13 +909,20 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         let clean_cmd = cmd_name.trim().trim_start_matches('/');
                         if !clean_cmd.is_empty() {
                             if !before.is_empty() {
-                                line_blocks.push(MessageBlockData {
-                                    text: parse_discord_markdown(before),
-                                    is_link: false,
-                                    is_command: false,
-                                    url: String::new(),
-                                    command_name: String::new(),
-                                });
+                                let parsed_before = parse_discord_markdown(before);
+                                if !parsed_before.trim().is_empty() {
+                                    line_blocks.push(MessageBlockData {
+                                        text: parsed_before,
+                                        is_link: false,
+                                        is_command: false,
+                                        url: String::new(),
+                                        command_name: String::new(),
+                                    });
+                                    if before.trim().chars().count() > 35 {
+                                        lines.push(MessageLineData { blocks: line_blocks });
+                                        line_blocks = Vec::new();
+                                    }
+                                }
                             }
                             line_blocks.push(MessageBlockData {
                                 text: format!("/{}", clean_cmd),
