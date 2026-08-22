@@ -11,7 +11,19 @@ use log::{info, warn};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 const P2P_VIDEO_PORT: u16 = 50005;
-const MAGIC: &[u8; 4] = b"LTPV"; // Litecord P2P Video
+const MAGIC: &[u8; 4] = b"LTPV";
+
+static PROCESS_INSTANCE_ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+pub fn get_process_instance_id() -> u32 {
+    *PROCESS_INSTANCE_ID.get_or_init(|| {
+        use std::time::SystemTime;
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+        let pid = std::process::id();
+        ((nanos as u32) ^ (pid << 16) ^ (nanos >> 32) as u32) | 1
+    })
+}
+ // Litecord P2P Video
 const CHUNK_SIZE: usize = 1200; // Safe MTU for local & VPN UDP transmission
 
 // Protocol Opcodes
@@ -108,8 +120,10 @@ impl ScreenCaptureManager {
 
             if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = socket.set_broadcast(true);
-                let mut stop_pkt = Vec::with_capacity(21);
+                let inst = get_process_instance_id();
+                let mut stop_pkt = Vec::with_capacity(25);
                 stop_pkt.extend_from_slice(MAGIC);
+                stop_pkt.extend_from_slice(&inst.to_be_bytes());
                 stop_pkt.push(OP_STOP);
                 stop_pkt.extend_from_slice(&cid.to_be_bytes());
                 stop_pkt.extend_from_slice(&uid.to_be_bytes());
@@ -177,8 +191,10 @@ impl ScreenCaptureManager {
                     let uid = my_user_id_atomic.load(Ordering::Relaxed);
                     let uname = my_username_arc.lock().unwrap().clone();
                     let uname_bytes = uname.as_bytes();
-                    let mut ann_pkt = Vec::with_capacity(24 + uname_bytes.len());
+                    let inst = get_process_instance_id();
+                    let mut ann_pkt = Vec::with_capacity(28 + uname_bytes.len());
                     ann_pkt.extend_from_slice(MAGIC);
+                    ann_pkt.extend_from_slice(&inst.to_be_bytes());
                     ann_pkt.push(OP_ANNOUNCE);
                     ann_pkt.extend_from_slice(&cid.to_be_bytes());
                     ann_pkt.extend_from_slice(&uid.to_be_bytes());
@@ -248,8 +264,10 @@ impl ScreenCaptureManager {
                                 let end = (start + CHUNK_SIZE).min(total_len);
                                 let chunk_slice = &jpeg_bytes[start..end];
 
-                                let mut pkt = Vec::with_capacity(29 + chunk_slice.len());
+                                let inst = get_process_instance_id();
+                                let mut pkt = Vec::with_capacity(33 + chunk_slice.len());
                                 pkt.extend_from_slice(MAGIC);
+                                pkt.extend_from_slice(&inst.to_be_bytes());
                                 pkt.push(OP_VIDEO_CHUNK);
                                 pkt.extend_from_slice(&cid.to_be_bytes());
                                 pkt.extend_from_slice(&uid.to_be_bytes());
@@ -335,7 +353,7 @@ impl ScreenCaptureManager {
 
                 info!("📡 Receptor UDP P2P de vídeo escutando na porta {}...", P2P_VIDEO_PORT);
 
-                let local_socket_addr = socket.local_addr().ok();
+                let my_instance_id = get_process_instance_id();
 
                 while is_running.load(Ordering::Relaxed) {
                     let current_cid = channel_id_atomic.load(Ordering::Relaxed);
@@ -343,25 +361,25 @@ impl ScreenCaptureManager {
 
                     match socket.recv_from(&mut recv_buf) {
                         Ok((len, src_addr)) => {
-                            if len < 5 || &recv_buf[0..4] != MAGIC {
+                            if len < 25 || &recv_buf[0..4] != MAGIC {
                                 continue;
                             }
-                            if let Some(l_addr) = local_socket_addr {
-                                if src_addr == l_addr {
-                                    continue;
-                                }
+                            let pkt_inst = u32::from_be_bytes(recv_buf[4..8].try_into().unwrap());
+                            if pkt_inst == my_instance_id {
+                                // Ignore self-broadcast packets from our own process
+                                continue;
                             }
-                            let op = recv_buf[4];
+                            let op = recv_buf[8];
+                            let _pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
+                            let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
 
                             match op {
                                 OP_ANNOUNCE => {
-                                    if len >= 24 {
-                                        let pkt_uid = u64::from_be_bytes(recv_buf[13..21].try_into().unwrap());
-
-                                        let is_streaming = recv_buf[21] == 1;
-                                        let name_len = recv_buf[23] as usize;
-                                        if len >= 24 + name_len {
-                                            if let Ok(uname) = std::str::from_utf8(&recv_buf[24..24 + name_len]) {
+                                    if len >= 28 {
+                                        let is_streaming = recv_buf[25] == 1;
+                                        let name_len = recv_buf[27] as usize;
+                                        if len >= 28 + name_len {
+                                            if let Ok(uname) = std::str::from_utf8(&recv_buf[28..28 + name_len]) {
                                                 peer_names.insert(pkt_uid, uname.to_string());
                                             }
                                         }
@@ -375,8 +393,9 @@ impl ScreenCaptureManager {
                                         if is_streaming {
                                             let uname = my_username_arc.lock().unwrap().clone();
                                             let uname_bytes = uname.as_bytes();
-                                            let mut ack_pkt = Vec::with_capacity(24 + uname_bytes.len());
+                                            let mut ack_pkt = Vec::with_capacity(28 + uname_bytes.len());
                                             ack_pkt.extend_from_slice(MAGIC);
+                                            ack_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
                                             ack_pkt.push(OP_HEARTBEAT);
                                             ack_pkt.extend_from_slice(&current_cid.to_be_bytes());
                                             ack_pkt.extend_from_slice(&my_uid.to_be_bytes());
@@ -398,13 +417,11 @@ impl ScreenCaptureManager {
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
-                                    if len > 29 {
-                                        let pkt_uid = u64::from_be_bytes(recv_buf[13..21].try_into().unwrap());
-
-                                        let seq = u32::from_be_bytes(recv_buf[21..25].try_into().unwrap());
-                                        let total = u16::from_be_bytes(recv_buf[25..27].try_into().unwrap());
-                                        let idx = u16::from_be_bytes(recv_buf[27..29].try_into().unwrap());
-                                        let chunk_data = recv_buf[29..len].to_vec();
+                                    if len > 33 {
+                                        let seq = u32::from_be_bytes(recv_buf[25..29].try_into().unwrap());
+                                        let total = u16::from_be_bytes(recv_buf[29..31].try_into().unwrap());
+                                        let idx = u16::from_be_bytes(recv_buf[31..33].try_into().unwrap());
+                                        let chunk_data = recv_buf[33..len].to_vec();
 
                                         let peer_p2p_addr = SocketAddr::new(src_addr.ip(), P2P_VIDEO_PORT);
                                         if let Ok(mut peers) = peers_store.lock() {
