@@ -258,16 +258,12 @@ impl ScreenCaptureManager {
                                 pkt.extend_from_slice(&chunk_idx.to_be_bytes());
                                 pkt.extend_from_slice(chunk_slice);
 
-                                let mut sent_direct = false;
+                                for target in &bcast_targets {
+                                    let _ = socket.send_to(&pkt, target);
+                                }
                                 if let Ok(peers) = peers_store.lock() {
                                     for (&_, &(addr, _)) in peers.iter() {
                                         let _ = socket.send_to(&pkt, addr);
-                                        sent_direct = true;
-                                    }
-                                }
-                                if !sent_direct {
-                                    for target in &bcast_targets {
-                                        let _ = socket.send_to(&pkt, target);
                                     }
                                 }
                             }
@@ -370,8 +366,9 @@ impl ScreenCaptureManager {
                                             }
                                         }
 
+                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), P2P_VIDEO_PORT);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
                                         }
 
                                         // Instant reciprocal heartbeat so transmitter gets our direct IP
@@ -387,7 +384,10 @@ impl ScreenCaptureManager {
                                             ack_pkt.push(2);
                                             ack_pkt.push(uname_bytes.len() as u8);
                                             ack_pkt.extend_from_slice(uname_bytes);
-                                            let _ = socket.send_to(&ack_pkt, src_addr);
+                                            let _ = socket.send_to(&ack_pkt, peer_p2p_addr);
+                                            for target in get_broadcast_addresses() {
+                                                let _ = socket.send_to(&ack_pkt, target);
+                                            }
                                         }
 
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
@@ -406,8 +406,9 @@ impl ScreenCaptureManager {
                                         let idx = u16::from_be_bytes(recv_buf[27..29].try_into().unwrap());
                                         let chunk_data = recv_buf[29..len].to_vec();
 
+                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), P2P_VIDEO_PORT);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
                                         }
 
                                         last_stream_activity.insert(pkt_uid, Instant::now());

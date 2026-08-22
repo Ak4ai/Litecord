@@ -1288,7 +1288,7 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
-                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && ((root.active_stream_user_id != "" && root.active_stream_user_id == p.user_id) || (root.active_stream_user != "" && root.active_stream_user == p.username)) && root.popped_out_stream_uid != p.user_id));
+                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && root.popped_out_stream_uid != p.user_id && ((root.active_stream_user_id != "" && root.active_stream_user_id == p.user_id) || (root.active_stream_user != "" && root.active_stream_user == p.username) || (root.voice_participants.length <= 2))));
 
                                     height: is_streaming_attached ? (root.is_stream_fullscreen ? 420px : 260px) : 76px;
                                     animate height { duration: 200ms; }
