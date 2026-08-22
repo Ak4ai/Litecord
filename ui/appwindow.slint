@@ -2839,8 +2839,11 @@ export component PopoutStreamWindow inherits Window {
     callback start_window_drag();
     callback toggle_fullscreen();
     callback close_popout();
+    callback minimize_popout();
+    callback drag_resize(string);
     callback mouse_activity();
 
+    // Global mouse activity tracker
     TouchArea {
         pointer-event(event) => {
             root.mouse_activity();
@@ -2855,15 +2858,20 @@ export component PopoutStreamWindow inherits Window {
         image-fit: contain;
     }
 
-    // Top Autohiding Controls Bar
+    // Top Autohiding Controls Bar (Discord Floating Overlay Style)
     if root.show_controls: Rectangle {
-        y: 0px;
-        x: 0px;
-        width: 100%;
-        height: 40px;
-        background: #000000cc;
+        y: 8px;
+        x: 8px;
+        width: parent.width - 16px;
+        height: 36px;
+        background: #111214e6;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #2b2d31cc;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000088;
 
-        // Background Drag Handle (placed first so buttons stay on top!)
+        // Background Drag Handle (placed first so buttons on top receive clicks!)
         TouchArea {
             width: 100%;
             height: 100%;
@@ -2876,11 +2884,12 @@ export component PopoutStreamWindow inherits Window {
         }
 
         HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
+            padding-left: 10px;
+            padding-right: 10px;
             spacing: 8px;
             alignment: space-between;
 
+            // Left Side: Live Badge & Username Pill
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
@@ -2889,11 +2898,11 @@ export component PopoutStreamWindow inherits Window {
                 Rectangle {
                     background: #f23f43;
                     border-radius: 4px;
-                    height: 24px;
+                    height: 22px;
                     HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 5px;
+                        padding-left: 7px;
+                        padding-right: 7px;
+                        spacing: 4px;
                         VerticalLayout {
                             alignment: center;
                             Rectangle {
@@ -2913,30 +2922,57 @@ export component PopoutStreamWindow inherits Window {
                     }
                 }
 
-                // Stream Username
+                // Stream Username & Tag
                 VerticalLayout {
                     alignment: center;
                     Text {
                         text: root.username;
-                        color: #ffffff;
-                        font-size: 13px;
+                        color: #f2f3f5;
+                        font-size: 12px;
                         font-weight: 700;
                         vertical-alignment: center;
                     }
                 }
             }
 
-            // Window Controls (Fullscreen & Close/Re-attach)
+            // Right Side: Window Control Action Buttons
             HorizontalLayout {
-                spacing: 6px;
+                spacing: 4px;
                 alignment: end;
 
-                // Fullscreen Toggle
+                // Minimize Button
                 Rectangle {
-                    width: 28px;
+                    width: 26px;
                     height: 24px;
                     border-radius: 4px;
-                    background: pop_fs_ta.has-hover ? #383a40 : #2b2d31;
+                    background: pop_min_ta.has-hover ? #35373c : transparent;
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-minimize.svg");
+                                width: 10px;
+                                height: 10px;
+                                colorize: #dbdee1;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+
+                    pop_min_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.minimize_popout(); }
+                    }
+                }
+
+                // Fullscreen / Maximize Button
+                Rectangle {
+                    width: 26px;
+                    height: 24px;
+                    border-radius: 4px;
+                    background: pop_fs_ta.has-hover ? #35373c : transparent;
 
                     VerticalLayout {
                         alignment: center;
@@ -2946,7 +2982,7 @@ export component PopoutStreamWindow inherits Window {
                                 source: @image-url("../assets/chrome-maximize.svg");
                                 width: 10px;
                                 height: 10px;
-                                colorize: #ffffff;
+                                colorize: #dbdee1;
                                 image-fit: contain;
                             }
                         }
@@ -2958,12 +2994,12 @@ export component PopoutStreamWindow inherits Window {
                     }
                 }
 
-                // Close / Re-attach Popout Button
+                // Close / Re-attach Button
                 Rectangle {
-                    width: 28px;
+                    width: 26px;
                     height: 24px;
                     border-radius: 4px;
-                    background: pop_close_ta.has-hover ? #f23f43 : #313338;
+                    background: pop_close_ta.has-hover ? #f23f43 : transparent;
 
                     VerticalLayout {
                         alignment: center;
@@ -2973,7 +3009,7 @@ export component PopoutStreamWindow inherits Window {
                                 source: @image-url("../assets/chrome-close.svg");
                                 width: 10px;
                                 height: 10px;
-                                colorize: #ffffff;
+                                colorize: pop_close_ta.has-hover ? #ffffff : #dbdee1;
                                 image-fit: contain;
                             }
                         }
@@ -2984,6 +3020,112 @@ export component PopoutStreamWindow inherits Window {
                         clicked => { root.close_popout(); }
                     }
                 }
+            }
+        }
+    }
+
+    // Window Drag Resize Borders & Corner Handles (0-latency hardware resize)
+    // Left edge
+    TouchArea {
+        x: 0px;
+        y: 10px;
+        width: 6px;
+        height: parent.height - 20px;
+        mouse-cursor: ew-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("left");
+            }
+        }
+    }
+    // Right edge
+    TouchArea {
+        x: parent.width - 6px;
+        y: 10px;
+        width: 6px;
+        height: parent.height - 20px;
+        mouse-cursor: ew-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("right");
+            }
+        }
+    }
+    // Top edge
+    TouchArea {
+        x: 10px;
+        y: 0px;
+        width: parent.width - 20px;
+        height: 6px;
+        mouse-cursor: ns-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top");
+            }
+        }
+    }
+    // Bottom edge
+    TouchArea {
+        x: 10px;
+        y: parent.height - 6px;
+        width: parent.width - 20px;
+        height: 6px;
+        mouse-cursor: ns-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("bottom");
+            }
+        }
+    }
+    // Top-Left Corner
+    TouchArea {
+        x: 0px;
+        y: 0px;
+        width: 10px;
+        height: 10px;
+        mouse-cursor: nwse-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top-left");
+            }
+        }
+    }
+    // Top-Right Corner
+    TouchArea {
+        x: parent.width - 10px;
+        y: 0px;
+        width: 10px;
+        height: 10px;
+        mouse-cursor: nesw-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top-right");
+            }
+        }
+    }
+    // Bottom-Left Corner
+    TouchArea {
+        x: 0px;
+        y: parent.height - 10px;
+        width: 10px;
+        height: 10px;
+        mouse-cursor: nesw-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("bottom-left");
+            }
+        }
+    }
+    // Bottom-Right Corner
+    TouchArea {
+        x: parent.width - 10px;
+        y: parent.height - 10px;
+        width: 10px;
+        height: 10px;
+        mouse-cursor: nwse-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("bottom-right");
             }
         }
     }

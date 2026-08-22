@@ -88,6 +88,8 @@ pub static SPEAKER_PCM_QUEUES: std::sync::OnceLock<Arc<std::sync::Mutex<std::col
 pub static SELECTED_OUTPUT_DEVICE: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static CURRENT_VOICE_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
+pub static MY_USERNAME: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
+pub static MY_VOICE_CHANNEL_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static VAD_THRESHOLD: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
 pub static IS_TESTING_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -219,6 +221,28 @@ pub fn set_my_user_id(id: u64) {
 
 pub fn get_my_user_id() -> u64 {
     MY_USER_ID.load(Ordering::Relaxed)
+}
+
+pub fn set_my_username(name: String) {
+    if let Ok(mut uname) = MY_USERNAME.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).lock() {
+        *uname = name;
+    }
+}
+
+pub fn get_my_username() -> String {
+    if let Ok(uname) = MY_USERNAME.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).lock() {
+        if uname.is_empty() { "Você".to_string() } else { uname.clone() }
+    } else {
+        "Você".to_string()
+    }
+}
+
+pub fn set_my_voice_channel_id(cid: u64) {
+    MY_VOICE_CHANNEL_ID.store(cid, Ordering::Relaxed);
+}
+
+pub fn get_my_voice_channel_id() -> u64 {
+    MY_VOICE_CHANNEL_ID.load(Ordering::Relaxed)
 }
 
 pub fn set_self_mic_level(val: f32) {
@@ -1384,6 +1408,7 @@ impl GatewayClient {
                     let global_name = v["d"]["user"]["global_name"].as_str().unwrap_or(username);
                     if uid_num > 0 {
                         set_my_user_id(uid_num);
+                        set_my_username(global_name.to_string());
                         register_user_name(uid_num, global_name.to_string());
                     }
 
@@ -1776,6 +1801,8 @@ pub async fn connect_voice_gateway(
 
     let my_session_id = CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst) + 1;
     info!("Iniciando nova sessÃ£o de voz ID={}", my_session_id);
+    let cid_num: u64 = channel_id.parse().unwrap_or(0);
+    set_my_voice_channel_id(cid_num);
 
     match connect_async(&voice_url).await {
         Ok((ws_stream, _)) => {
