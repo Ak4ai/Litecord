@@ -271,14 +271,17 @@ impl ScreenCaptureManager {
                 let camera_handle = if let Some(cam_idx) = camera_index {
                     if let Ok(devs) = cameras::devices() {
                         if let Some(dev) = devs.into_iter().nth(cam_idx as usize) {
+                            let cam_w = target_w.min(1280);
+                            let cam_h = target_h.min(720);
+                            let cam_fps = (target_fps as u32).min(60);
                             let config = cameras::StreamConfig {
-                                resolution: cameras::Resolution { width: target_w, height: target_h },
-                                framerate: target_fps as u32,
+                                resolution: cameras::Resolution { width: cam_w, height: cam_h },
+                                framerate: cam_fps,
                                 pixel_format: cameras::PixelFormat::Bgra8,
                             };
                             match cameras::open(&dev, config) {
                                 Ok(cam) => {
-                                    info!("📷 Câmera '{}' aberta com sucesso para transmissão!", dev.name);
+                                    info!("📷 Câmera '{}' aberta com sucesso ({}x{} @ {} FPS)!", dev.name, cam_w, cam_h, cam_fps);
                                     Some(cam)
                                 }
                                 Err(e) => {
@@ -297,7 +300,7 @@ impl ScreenCaptureManager {
                 };
 
                 let bcast_targets = get_broadcast_addresses();
-                let frame_interval = Duration::from_millis(1000 / target_fps);
+                let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));
                 let mut frame_seq: u32 = 0;
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
 
@@ -1022,7 +1025,7 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
     use windows_sys::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
         FillRect, GetDC, GetDIBits, ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt,
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, SRCCOPY,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, SRCCOPY,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetDesktopWindow, GetSystemMetrics, GetWindowRect, IsIconic, IsWindow,
@@ -1120,7 +1123,7 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
             let dest_x = ((target_w as i32 - dest_w) / 2).max(0);
             let dest_y = ((target_h as i32 - dest_h) / 2).max(0);
 
-            SetStretchBltMode(hdc_mem, HALFTONE);
+            SetStretchBltMode(hdc_mem, COLORONCOLOR);
             SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
             StretchBlt(
                 hdc_mem,
@@ -1144,7 +1147,7 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
             let screen_h = GetSystemMetrics(SM_CYSCREEN);
 
-            SetStretchBltMode(hdc_mem, HALFTONE);
+            SetStretchBltMode(hdc_mem, COLORONCOLOR);
             SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
             StretchBlt(
                 hdc_mem,

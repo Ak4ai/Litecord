@@ -14,7 +14,7 @@ use tray::SystemTrayManager;
 use remote_auth::RemoteAuthEvent;
 use screen_capture::ScreenCaptureManager;
 
-use slint::{SharedString, Model, Image};
+use slint::{SharedString, Model, Image, SharedPixelBuffer, Rgba8Pixel};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
@@ -979,6 +979,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
 
+    #[cfg(target_os = "windows")]
+    unsafe {
+        #[link(name = "winmm")]
+        extern "system" {
+            fn timeBeginPeriod(uPeriod: u32) -> u32;
+        }
+        timeBeginPeriod(1);
+    }
+
     info!("Iniciando Litecord v{} (Log persistente salvo em litecord_app.log)...", env!("CARGO_PKG_VERSION"));
 
     info!("🖥️ Inicializando Slint AppWindow...");
@@ -1490,41 +1499,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pop_hwnd_ss = Arc::clone(&popout_hwnd_store);
     let hidden_streams: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
+    // Thread-safe Latest Frame Stores for Zero-Backlog Slint Event Loop Rendering
+    let latest_rx_frame: Arc<Mutex<Option<(u64, String, String, SharedPixelBuffer<Rgba8Pixel>)>>> = Arc::new(Mutex::new(None));
+    let is_rx_ui_pending = Arc::new(AtomicBool::new(false));
+
+    let latest_tx_frame: Arc<Mutex<Option<SharedPixelBuffer<Rgba8Pixel>>>> = Arc::new(Mutex::new(None));
+    let is_tx_ui_pending = Arc::new(AtomicBool::new(false));
+
     // Initialize P2P Video Receiver to receive streams from other users in real time!
     let app_weak_rx = app_weak.clone();
     let pop_w_rx = popout_weak.clone();
     let hidden_streams_rx = Arc::clone(&hidden_streams);
+    let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
+    let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
+
     screen_manager.start_receiver(
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
             move |uid, uname, quality, pixel_buf| {
-                let uid_str = uid.to_string();
-                let app_w2 = app_w.clone();
-                let pop_w2 = pop_w.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let frame = Image::from_rgba8(pixel_buf);
-                    let mut should_update_pop = false;
-                    if let Some(ui) = app_w2.upgrade() {
-                        let popped_uid = ui.get_popped_out_stream_uid().to_string();
-                        if popped_uid == uid_str {
-                            should_update_pop = true;
-                        }
-                        ui.set_has_active_stream(true);
-                        ui.set_active_stream_user_id(uid_str.clone().into());
-                        ui.set_active_stream_user(uname.clone().into());
-                        ui.set_tr_stream_quality(quality.into());
-                        ui.set_remote_stream_frame(frame.clone());
-                    }
-                    if should_update_pop {
-                        if let Some(pop) = pop_w2.upgrade() {
-                            let pop_uid = pop.get_user_id().to_string();
-                            if pop_uid == uid_str || pop_uid.is_empty() {
-                                pop.set_stream_frame(frame);
+                *latest_rx_frame_cb.lock().unwrap() = Some((uid, uname, quality, pixel_buf));
+                if !is_rx_ui_pending_cb.swap(true, Ordering::AcqRel) {
+                    let app_w2 = app_w.clone();
+                    let pop_w2 = pop_w.clone();
+                    let latest_slot = Arc::clone(&latest_rx_frame_cb);
+                    let pending_flag = Arc::clone(&is_rx_ui_pending_cb);
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        pending_flag.store(false, Ordering::Release);
+                        if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
+                            let uid_str = uid.to_string();
+                            let frame = Image::from_rgba8(pixel_buf);
+                            let mut should_update_pop = false;
+                            if let Some(ui) = app_w2.upgrade() {
+                                let popped_uid = ui.get_popped_out_stream_uid().to_string();
+                                if popped_uid == uid_str {
+                                    should_update_pop = true;
+                                }
+                                ui.set_has_active_stream(true);
+                                ui.set_active_stream_user_id(uid_str.clone().into());
+                                ui.set_active_stream_user(uname.into());
+                                ui.set_tr_stream_quality(quality.into());
+                                ui.set_remote_stream_frame(frame.clone());
+                            }
+                            if should_update_pop {
+                                if let Some(pop) = pop_w2.upgrade() {
+                                    let pop_uid = pop.get_user_id().to_string();
+                                    if pop_uid == uid_str || pop_uid.is_empty() {
+                                        pop.set_stream_frame(frame);
+                                    }
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
             }
         },
         {
@@ -1620,26 +1648,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let app_weak_frame = app_weak_ss.clone();
                 let pop_w_frame = pop_w_ss.clone();
+                let latest_tx_frame_cb = Arc::clone(&latest_tx_frame);
+                let is_tx_ui_pending_cb = Arc::clone(&is_tx_ui_pending);
+
                 sm.start(target_hwnd, camera_index, res_val, target_fps, include_audio, move |pixel_buffer| {
-                    let app_w = app_weak_frame.clone();
-                    let pop_w = pop_w_frame.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let frame = Image::from_rgba8(pixel_buffer);
-                        let mut is_pop_self = false;
-                        if let Some(ui) = app_w.upgrade() {
-                            ui.set_active_stream_frame(frame.clone());
-                            let popped = ui.get_popped_out_stream_uid().to_string();
-                            let my_uid = gateway::get_my_user_id().to_string();
-                            if popped == "self" || popped == my_uid {
-                                is_pop_self = true;
+                    *latest_tx_frame_cb.lock().unwrap() = Some(pixel_buffer);
+                    if !is_tx_ui_pending_cb.swap(true, Ordering::AcqRel) {
+                        let app_w = app_weak_frame.clone();
+                        let pop_w = pop_w_frame.clone();
+                        let latest_slot = Arc::clone(&latest_tx_frame_cb);
+                        let pending_flag = Arc::clone(&is_tx_ui_pending_cb);
+
+                        let _ = slint::invoke_from_event_loop(move || {
+                            pending_flag.store(false, Ordering::Release);
+                            if let Some(pixel_buf) = latest_slot.lock().unwrap().take() {
+                                let frame = Image::from_rgba8(pixel_buf);
+                                let mut is_pop_self = false;
+                                if let Some(ui) = app_w.upgrade() {
+                                    ui.set_active_stream_frame(frame.clone());
+                                    let popped = ui.get_popped_out_stream_uid().to_string();
+                                    let my_uid = gateway::get_my_user_id().to_string();
+                                    if popped == "self" || popped == my_uid {
+                                        is_pop_self = true;
+                                    }
+                                }
+                                if is_pop_self {
+                                    if let Some(pop) = pop_w.upgrade() {
+                                        pop.set_stream_frame(frame);
+                                    }
+                                }
                             }
-                        }
-                        if is_pop_self {
-                            if let Some(pop) = pop_w.upgrade() {
-                                pop.set_stream_frame(frame);
-                            }
-                        }
-                    });
+                        });
+                    }
                 });
                 ui.set_is_screen_sharing(true);
             }
