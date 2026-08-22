@@ -359,6 +359,7 @@ impl ScreenCaptureManager {
         }
 
         let is_running = Arc::clone(&self.is_receiver_running);
+        let is_tx_running = Arc::clone(&self.is_running);
         let channel_id_atomic = Arc::clone(&self.channel_id);
         let my_user_id_atomic = Arc::clone(&self.my_user_id);
         let my_username_arc = Arc::clone(&self.my_username);
@@ -587,6 +588,10 @@ impl ScreenCaptureManager {
                                 }
                                 OP_AUDIO_FRAME => {
                                     if len >= 36 {
+                                        // If this instance is actively transmitting screen/audio, do not play back stream audio to avoid acoustic feedback
+                                        if is_tx_running.load(Ordering::Relaxed) {
+                                            continue;
+                                        }
                                         if pkt_uid != my_uid || my_uid == 0 {
                                             ensure_stream_audio_playback_started();
                                             let vol = get_stream_volume(pkt_uid);
@@ -597,6 +602,11 @@ impl ScreenCaptureManager {
                                                 if pcm_bytes.len() >= expected_bytes && sample_count > 0 {
                                                     let queue = get_stream_audio_queue();
                                                     let mut q_guard = queue.lock().unwrap();
+                                                    // Limit queue size to 100ms (4800 samples) to eliminate lag & stutter
+                                                    if q_guard.len() > 4800 {
+                                                        let excess = q_guard.len() - 2400;
+                                                        q_guard.drain(0..excess);
+                                                    }
                                                     for i in 0..sample_count {
                                                         let s_i16 = i16::from_le_bytes([pcm_bytes[i*2], pcm_bytes[i*2 + 1]]);
                                                         let s_f32 = (s_i16 as f32 / 32768.0) * vol;
@@ -1560,15 +1570,16 @@ pub fn ensure_stream_audio_playback_started() {
                             &config.into(),
                             move |data: &mut [f32], _| {
                                 let mut queue_guard = q.lock().unwrap();
+                                let q_len = queue_guard.len();
+                                if q_len > 4800 {
+                                    let excess = q_len - 2400;
+                                    queue_guard.drain(0..excess);
+                                }
                                 for chunk in data.chunks_mut(channels) {
                                     let sample = queue_guard.pop_front().unwrap_or(0.0);
                                     for channel_sample in chunk.iter_mut() {
                                         *channel_sample = sample;
                                     }
-                                }
-                                if queue_guard.len() > 48000 {
-                                    let excess = queue_guard.len() - 4800;
-                                    queue_guard.drain(0..excess);
                                 }
                             },
                             err_fn,
@@ -1581,16 +1592,17 @@ pub fn ensure_stream_audio_playback_started() {
                             &config.into(),
                             move |data: &mut [i16], _| {
                                 let mut queue_guard = q.lock().unwrap();
+                                let q_len = queue_guard.len();
+                                if q_len > 4800 {
+                                    let excess = q_len - 2400;
+                                    queue_guard.drain(0..excess);
+                                }
                                 for chunk in data.chunks_mut(channels) {
                                     let sample_f = queue_guard.pop_front().unwrap_or(0.0);
                                     let sample_i = (sample_f.clamp(-1.0, 1.0) * 32767.0) as i16;
                                     for channel_sample in chunk.iter_mut() {
                                         *channel_sample = sample_i;
                                     }
-                                }
-                                if queue_guard.len() > 48000 {
-                                    let excess = queue_guard.len() - 4800;
-                                    queue_guard.drain(0..excess);
                                 }
                             },
                             err_fn,
@@ -1731,6 +1743,11 @@ pub fn start_audio_loopback_tx(
                 let chunks_to_send: Vec<Vec<i16>> = {
                     let mut buf = pcm_buffer.lock().unwrap();
                     let mut res = Vec::new();
+                    // Prevent TX buffer accumulation
+                    if buf.len() > target_chunk_samples * 6 {
+                        let excess = buf.len() - target_chunk_samples * 2;
+                        buf.drain(0..excess);
+                    }
                     while buf.len() >= target_chunk_samples && target_chunk_samples > 0 {
                         let chunk: Vec<i16> = buf.drain(0..target_chunk_samples).collect();
                         res.push(chunk);
