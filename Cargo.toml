@@ -1,6 +1,6 @@
 [package]
 name = "litecord"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2021"
 description = "Ultra-lightweight, high-performance native Discord client in Rust with custom speech ducking"
 authors = ["Litecord Project"]
@@ -34,6 +34,9 @@ rsa = { version = "0.9", features = ["sha2"] }
 sha2 = "0.10"
 rand = "0.8"
 mimalloc = { version = "0.1", default-features = false }
+cameras = "0.1"
+jpeg-encoder = { version = "0.7", features = ["simd"] }
+zune-jpeg = "0.4"
 
 [[bin]]
 name = "litecord"
@@ -50,6 +53,19 @@ slint-build = "1.9"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
+
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package.jpeg-encoder]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

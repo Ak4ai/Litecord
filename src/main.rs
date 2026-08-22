@@ -14,7 +14,7 @@ use tray::SystemTrayManager;
 use remote_auth::RemoteAuthEvent;
 use screen_capture::ScreenCaptureManager;
 
-use slint::{SharedString, Model, Image};
+use slint::{SharedString, Model, Image, SharedPixelBuffer, Rgba8Pixel};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
@@ -979,6 +979,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
 
+    #[cfg(target_os = "windows")]
+    unsafe {
+        #[link(name = "winmm")]
+        extern "system" {
+            fn timeBeginPeriod(uPeriod: u32) -> u32;
+        }
+        timeBeginPeriod(1);
+    }
+
     info!("Iniciando Litecord v{} (Log persistente salvo em litecord_app.log)...", env!("CARGO_PKG_VERSION"));
 
     info!("🖥️ Inicializando Slint AppWindow...");
@@ -1020,6 +1029,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(pop_win) = popout_weak_init.upgrade() {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
+                        winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(320.0, 180.0)));
                         winit_pop.set_visible(false);
                         #[cfg(target_os = "windows")]
                         {
@@ -1257,9 +1267,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("📺 Desanexando transmissão de vídeo para janela Popout! User ID: {}, Nome: {}", uid, uname);
         if let Some(ui) = app_weak_pop.upgrade() {
             ui.set_popped_out_stream_uid(uid.clone().into());
-            let is_pop_self = uid == "self" || uid == gateway::get_my_user_id().to_string();
+            let my_uid = gateway::get_my_user_id().to_string();
+            let is_pop_self = uid == "self" || uid == my_uid;
             let cur_frame = if is_pop_self { ui.get_active_stream_frame() } else { ui.get_remote_stream_frame() };
             if let Some(pop_win) = pop_w_cb.upgrade() {
+                pop_win.set_user_id(uid.clone().into());
                 pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
                 pop_win.set_stream_frame(cur_frame);
                 pop_win.set_show_controls(true);
@@ -1280,6 +1292,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    let pop_w_pin = popout_weak.clone();
+    let pop_hwnd_pin = Arc::clone(&popout_hwnd_store);
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_toggle_pin(move || {
+            if let Some(pop) = pop_w_pin.upgrade() {
+                let new_pinned = !pop.get_is_pinned();
+                pop.set_is_pinned(new_pinned);
+                info!("📌 Janela Popout Always-on-Top alterado para: {}", new_pinned);
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_pin.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            SetWindowPos, HWND_TOPMOST, HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+                        };
+                        let insert_after = if new_pinned { HWND_TOPMOST } else { HWND_NOTOPMOST };
+                        SetWindowPos(hwnd as _, insert_after as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    }
+                }
+                let _ = pop.window().with_winit_window(move |w| {
+                    w.set_window_level(if new_pinned {
+                        winit::window::WindowLevel::AlwaysOnTop
+                    } else {
+                        winit::window::WindowLevel::Normal
+                    });
+                });
+            }
+        });
+    }
 
     let pop_w_drag = popout_weak.clone();
     if let Some(pop_win) = popout_weak.upgrade() {
@@ -1341,6 +1382,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Intangible / Click-Through Ghost Mode Callbacks
+    let pop_w_ghost = popout_weak.clone();
+    let pop_hwnd_ghost = Arc::clone(&popout_hwnd_store);
+    let app_weak_ghost = app_weak.clone();
+
+    let toggle_ghost_fn = Arc::new(move || {
+        let mut new_state = false;
+        if let Some(pop) = pop_w_ghost.upgrade() {
+            new_state = !pop.get_is_intangible();
+            pop.set_is_intangible(new_state);
+        }
+        if let Some(ui) = app_weak_ghost.upgrade() {
+            ui.set_is_popout_intangible(new_state);
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = *pop_hwnd_ghost.lock().unwrap() {
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+                };
+                let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                if new_state {
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT as i32 | WS_EX_LAYERED as i32);
+                    info!("👻 Modo Intangível ATIVADO no popup (cliques atravessam para os jogos/apps)!");
+                } else {
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
+                    info!("🖱️ Modo Intangível DESATIVADO no popup (janela volta a receber cliques).");
+                }
+            }
+        }
+    });
+
+    if let Some(pop_win) = popout_weak.upgrade() {
+        let tg1 = Arc::clone(&toggle_ghost_fn);
+        pop_win.on_toggle_intangible(move || {
+            tg1();
+        });
+    }
+
+    let tg2 = Arc::clone(&toggle_ghost_fn);
+    app.on_toggle_popout_intangible(move || {
+        tg2();
+    });
+
     let pop_w_close = popout_weak.clone();
     let pop_hwnd_close = Arc::clone(&popout_hwnd_store);
     let app_weak_pop_close = app_weak.clone();
@@ -1350,14 +1435,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "windows")]
             if let Some(hwnd) = *pop_hwnd_close.lock().unwrap() {
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        ShowWindow, SW_HIDE, GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+                    };
+                    let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
                     ShowWindow(hwnd as _, SW_HIDE);
                 }
             }
             if let Some(pop) = pop_w_close.upgrade() {
+                pop.set_is_intangible(false);
+                pop.set_user_id("".into());
                 let _ = pop.hide();
             }
             if let Some(ui) = app_weak_pop_close.upgrade() {
+                ui.set_is_popout_intangible(false);
                 ui.set_popped_out_stream_uid("".into());
             }
         });
@@ -1373,6 +1465,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     pop.set_show_controls(true);
                 }
                 *last_mouse_act_cb.lock().unwrap() = std::time::Instant::now();
+            }
+        });
+
+        pop_win.on_stream_volume_changed(move |uid_str: slint::SharedString, vol: f32| {
+            let uid = uid_str.to_string().parse::<u64>().unwrap_or(0);
+            if uid != 0 {
+                screen_capture::set_stream_volume(uid, vol);
             }
         });
     }
@@ -1398,45 +1497,92 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_ss = app_weak.clone();
     let pop_w_ss = popout_weak.clone();
     let pop_hwnd_ss = Arc::clone(&popout_hwnd_store);
+    let hidden_streams: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
+    // Thread-safe Latest Frame Stores for Zero-Backlog Slint Event Loop Rendering
+    let latest_rx_frame: Arc<Mutex<Option<(u64, String, String, SharedPixelBuffer<Rgba8Pixel>)>>> = Arc::new(Mutex::new(None));
+    let is_rx_ui_pending = Arc::new(AtomicBool::new(false));
+
+    let latest_tx_frame: Arc<Mutex<Option<SharedPixelBuffer<Rgba8Pixel>>>> = Arc::new(Mutex::new(None));
+    let is_tx_ui_pending = Arc::new(AtomicBool::new(false));
 
     // Initialize P2P Video Receiver to receive streams from other users in real time!
     let app_weak_rx = app_weak.clone();
     let pop_w_rx = popout_weak.clone();
+    let hidden_streams_rx = Arc::clone(&hidden_streams);
+    let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
+    let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
+
     screen_manager.start_receiver(
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
             move |uid, uname, quality, pixel_buf| {
-                let uid_str = uid.to_string();
-                let app_w2 = app_w.clone();
-                let pop_w2 = pop_w.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let frame = Image::from_rgba8(pixel_buf);
-                    if let Some(ui) = app_w2.upgrade() {
-                        ui.set_has_active_stream(true);
-                        ui.set_active_stream_user_id(uid_str.clone().into());
-                        ui.set_active_stream_user(uname.clone().into());
-                        ui.set_tr_stream_quality(quality.into());
-                        ui.set_remote_stream_frame(frame.clone());
-                    }
-                    if let Some(pop) = pop_w2.upgrade() {
-                        if pop.get_username() == uname.as_str() || pop.get_username() == "Transmissão" {
-                            pop.set_stream_frame(frame);
+                *latest_rx_frame_cb.lock().unwrap() = Some((uid, uname, quality, pixel_buf));
+                if !is_rx_ui_pending_cb.swap(true, Ordering::AcqRel) {
+                    let app_w2 = app_w.clone();
+                    let pop_w2 = pop_w.clone();
+                    let latest_slot = Arc::clone(&latest_rx_frame_cb);
+                    let pending_flag = Arc::clone(&is_rx_ui_pending_cb);
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        pending_flag.store(false, Ordering::Release);
+                        if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
+                            let uid_str = uid.to_string();
+                            let frame = Image::from_rgba8(pixel_buf);
+                            let mut should_update_pop = false;
+                            if let Some(ui) = app_w2.upgrade() {
+                                let popped_uid = ui.get_popped_out_stream_uid().to_string();
+                                if popped_uid == uid_str {
+                                    should_update_pop = true;
+                                }
+                                ui.set_has_active_stream(true);
+                                ui.set_active_stream_user_id(uid_str.clone().into());
+                                ui.set_active_stream_user(uname.into());
+                                ui.set_tr_stream_quality(quality.into());
+                                ui.set_remote_stream_frame(frame.clone());
+                            }
+                            if should_update_pop {
+                                if let Some(pop) = pop_w2.upgrade() {
+                                    let pop_uid = pop.get_user_id().to_string();
+                                    if pop_uid == uid_str || pop_uid.is_empty() {
+                                        pop.set_stream_frame(frame);
+                                    }
+                                }
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
         },
         {
             let app_w = app_weak_rx.clone();
-            move |_uid, is_streaming| {
+            let pop_w = pop_w_rx.clone();
+            let hidden_streams_rx_cb = Arc::clone(&hidden_streams_rx);
+            move |uid, is_streaming| {
+                let uid_str = uid.to_string();
                 let app_w2 = app_w.clone();
+                let pop_w2 = pop_w.clone();
+                let hidden_streams_inner = Arc::clone(&hidden_streams_rx_cb);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w2.upgrade() {
                         if !is_streaming {
-                            ui.set_has_active_stream(false);
-                            ui.set_active_stream_user("".into());
-                            ui.set_active_stream_user_id("".into());
+                            hidden_streams_inner.lock().unwrap().remove(uid_str.as_str());
+                            if ui.get_active_stream_user_id() == uid_str.as_str() {
+                                ui.set_has_active_stream(false);
+                                ui.set_active_stream_user("".into());
+                                ui.set_active_stream_user_id("".into());
+                            }
+                            if ui.get_popped_out_stream_uid() == uid_str.as_str() {
+                                ui.set_popped_out_stream_uid("".into());
+                                if let Some(pop) = pop_w2.upgrade() {
+                                    pop.set_user_id("".into());
+                                    let _ = pop.hide();
+                                }
+                            }
+                            if ui.get_focused_stream_uid() == uid_str.as_str() {
+                                ui.set_focused_stream_uid("".into());
+                            }
                         }
                     }
                 });
@@ -1452,8 +1598,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
-                if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == gateway::get_my_user_id().to_string().as_str() {
+                let my_uid = gateway::get_my_user_id().to_string();
+                if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == my_uid.as_str() {
                     ui.set_popped_out_stream_uid("".into());
+                    if let Some(pop) = pop_w_ss.upgrade() {
+                        pop.set_user_id("".into());
+                        let _ = pop.hide();
+                    }
+                }
+                if ui.get_focused_stream_uid() == "self" || ui.get_focused_stream_uid() == my_uid.as_str() {
+                    ui.set_focused_stream_uid("".into());
                 }
                 #[cfg(target_os = "windows")]
                 if let Some(hwnd) = *pop_hwnd_ss.lock().unwrap() {
@@ -1462,33 +1616,121 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ShowWindow(hwnd as _, SW_HIDE);
                     }
                 }
-                if let Some(pop) = pop_w_ss.upgrade() {
-                    let _ = pop.hide();
-                }
             } else {
-                info!("▶️ Iniciando transmissão de tela P2P acelerada por hardware...");
                 let my_uid = gateway::get_my_user_id();
                 let my_uname = gateway::get_my_username();
                 let cid = gateway::get_my_voice_channel_id();
                 sm.set_context(cid, my_uid, &my_uname);
 
+                let res_str = ui.get_stream_selected_res().to_string();
+                let res_val: i32 = match res_str.as_str() {
+                    "1080p" => 1080,
+                    "480p" => 480,
+                    _ => 720,
+                };
+                let fps_val = ui.get_stream_selected_fps();
+                let target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
+
+                let source_tab = ui.get_stream_source_tab().to_string();
+                let (target_hwnd, camera_index, include_audio) = if source_tab == "cameras" {
+                    let cam_id_str = ui.get_stream_selected_camera_id().to_string();
+                    let cam_idx: Option<u32> = cam_id_str.parse().ok();
+                    (0, cam_idx, false)
+                } else if source_tab == "windows" {
+                    let hwnd: isize = ui.get_stream_selected_window_id().to_string().parse().unwrap_or(0);
+                    (hwnd, None, ui.get_stream_include_audio())
+                } else {
+                    (0, None, ui.get_stream_include_audio())
+                };
+
+                info!("▶️ Iniciando transmissão P2P (tab={}, {} @ {} FPS, hwnd={}, cam={:?}, audio={})...", source_tab, res_str, target_fps, target_hwnd, camera_index, include_audio);
+                ui.set_tr_stream_quality(format!("{} {}fps", res_str, target_fps).into());
+
                 let app_weak_frame = app_weak_ss.clone();
                 let pop_w_frame = pop_w_ss.clone();
-                sm.start(0, 720, 30, move |pixel_buffer| {
-                    let app_w = app_weak_frame.clone();
-                    let pop_w = pop_w_frame.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let frame = Image::from_rgba8(pixel_buffer);
-                        if let Some(ui) = app_w.upgrade() {
-                            ui.set_active_stream_frame(frame.clone());
-                        }
-                        if let Some(pop) = pop_w.upgrade() {
-                            pop.set_stream_frame(frame);
-                        }
-                    });
+                let latest_tx_frame_cb = Arc::clone(&latest_tx_frame);
+                let is_tx_ui_pending_cb = Arc::clone(&is_tx_ui_pending);
+
+                sm.start(target_hwnd, camera_index, res_val, target_fps, include_audio, move |pixel_buffer| {
+                    *latest_tx_frame_cb.lock().unwrap() = Some(pixel_buffer);
+                    if !is_tx_ui_pending_cb.swap(true, Ordering::AcqRel) {
+                        let app_w = app_weak_frame.clone();
+                        let pop_w = pop_w_frame.clone();
+                        let latest_slot = Arc::clone(&latest_tx_frame_cb);
+                        let pending_flag = Arc::clone(&is_tx_ui_pending_cb);
+
+                        let _ = slint::invoke_from_event_loop(move || {
+                            pending_flag.store(false, Ordering::Release);
+                            if let Some(pixel_buf) = latest_slot.lock().unwrap().take() {
+                                let frame = Image::from_rgba8(pixel_buf);
+                                let mut is_pop_self = false;
+                                if let Some(ui) = app_w.upgrade() {
+                                    ui.set_active_stream_frame(frame.clone());
+                                    let popped = ui.get_popped_out_stream_uid().to_string();
+                                    let my_uid = gateway::get_my_user_id().to_string();
+                                    if popped == "self" || popped == my_uid {
+                                        is_pop_self = true;
+                                    }
+                                }
+                                if is_pop_self {
+                                    if let Some(pop) = pop_w.upgrade() {
+                                        pop.set_stream_frame(frame);
+                                    }
+                                }
+                            }
+                        });
+                    }
                 });
                 ui.set_is_screen_sharing(true);
             }
+        }
+    });
+
+    let app_weak_modal = app_weak.clone();
+    app.on_open_stream_modal(move || {
+        if let Some(ui) = app_weak_modal.upgrade() {
+            let screens = screen_capture::list_screens();
+            let ui_screens: Vec<ScreenSourceItem> = screens.into_iter().map(|s| {
+                ScreenSourceItem {
+                    id: s.id,
+                    name: s.name.into(),
+                    resolution: s.resolution.into(),
+                    is_primary: s.is_primary,
+                }
+            }).collect();
+            ui.set_available_screens(std::rc::Rc::new(slint::VecModel::from(ui_screens)).into());
+
+            let windows = screen_capture::list_capturable_windows();
+            let first_win_id = windows.first().map(|w| w.id.clone()).unwrap_or_default();
+            let ui_windows: Vec<WindowSourceItem> = windows.into_iter().map(|w| {
+                WindowSourceItem {
+                    id: w.id.into(),
+                    title: w.title.into(),
+                    app_name: w.app_name.into(),
+                }
+            }).collect();
+            ui.set_available_windows(std::rc::Rc::new(slint::VecModel::from(ui_windows)).into());
+
+            let cameras = screen_capture::list_cameras();
+            let first_cam_id = cameras.first().map(|c| c.id.clone()).unwrap_or_default();
+            let ui_cameras: Vec<CameraSourceItem> = cameras.into_iter().map(|c| {
+                CameraSourceItem {
+                    id: c.id.into(),
+                    name: c.name.into(),
+                }
+            }).collect();
+            ui.set_available_cameras(std::rc::Rc::new(slint::VecModel::from(ui_cameras)).into());
+
+            ui.set_stream_selected_source_index(0);
+            if ui.get_stream_source_tab() == "windows" {
+                ui.set_stream_selected_window_id(first_win_id.into());
+            } else if ui.get_stream_source_tab() == "cameras" {
+                ui.set_stream_selected_camera_id(first_cam_id.into());
+                ui.set_stream_include_audio(false);
+            } else {
+                ui.set_stream_selected_window_id("".into());
+            }
+            ui.set_show_stream_modal(true);
         }
     });
 
@@ -1501,9 +1743,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app_weak_focus_stream = app_weak.clone();
-    app.on_focus_stream(move |_uid| {
+    app.on_focus_stream(move |uid_str: SharedString| {
         if let Some(ui) = app_weak_focus_stream.upgrade() {
-            ui.set_has_active_stream(true);
+            let cur = ui.get_focused_stream_uid();
+            if cur == uid_str {
+                ui.set_focused_stream_uid("".into());
+            } else {
+                ui.set_focused_stream_uid(uid_str);
+            }
+        }
+    });
+
+    let app_weak_hide = app_weak.clone();
+    let hidden_streams_hide = Arc::clone(&hidden_streams);
+    app.on_hide_stream(move |uid_str: SharedString| {
+        let uid = uid_str.to_string();
+        info!("👁️ Ocultando stream de vídeo do usuário {}", uid);
+        hidden_streams_hide.lock().unwrap().insert(uid.clone());
+        if let Some(ui) = app_weak_hide.upgrade() {
+            if ui.get_focused_stream_uid() == uid.as_str() {
+                ui.set_focused_stream_uid("".into());
+            }
+            let cur_model = ui.get_voice_participants();
+            for i in 0..cur_model.row_count() {
+                if let Some(mut p) = cur_model.row_data(i) {
+                    if p.user_id == uid_str {
+                        p.is_stream_hidden = true;
+                        cur_model.set_row_data(i, p);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let app_weak_unhide = app_weak.clone();
+    let hidden_streams_unhide = Arc::clone(&hidden_streams);
+    let pop_w_unhide = popout_weak.clone();
+    let pop_hwnd_unhide = Arc::clone(&popout_hwnd_store);
+    app.on_unhide_stream(move |uid_str: SharedString| {
+        let uid = uid_str.to_string();
+        info!("👁️ Reexibindo stream de vídeo do usuário {}", uid);
+        hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
+        if let Some(ui) = app_weak_unhide.upgrade() {
+            if ui.get_popped_out_stream_uid() == uid.as_str() {
+                ui.set_popped_out_stream_uid("".into());
+                ui.set_is_popout_intangible(false);
+                if let Some(pop) = pop_w_unhide.upgrade() {
+                    pop.set_is_intangible(false);
+                    pop.set_user_id("".into());
+                    let _ = pop.hide();
+                }
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_unhide.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            ShowWindow, SW_HIDE, GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+                        };
+                        let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                        SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
+                        ShowWindow(hwnd as _, SW_HIDE);
+                    }
+                }
+            }
+            let cur_model = ui.get_voice_participants();
+            for i in 0..cur_model.row_count() {
+                if let Some(mut p) = cur_model.row_data(i) {
+                    if p.user_id == uid_str {
+                        p.is_stream_hidden = false;
+                        cur_model.set_row_data(i, p);
+                        break;
+                    }
+                }
+            }
         }
     });
 
@@ -1546,6 +1858,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_stream_vol = app_weak.clone();
+    app.on_set_stream_volume(move |uid_str: SharedString, vol: f32| {
+        let uid = uid_str.to_string().parse::<u64>().unwrap_or(0);
+        if uid != 0 {
+            screen_capture::set_stream_volume(uid, vol);
+        }
+        if let Some(ui) = app_weak_stream_vol.upgrade() {
+            ui.set_stream_remote_volume(vol);
+        }
+    });
+
     let app_weak_prio = app_weak.clone();
     app.on_set_user_priority(move |uid_str: SharedString, prio: i32| {
         let uid = uid_str.to_string();
@@ -1570,6 +1893,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_client_voice_loop = Arc::clone(&http_client);
     let active_channel_voice_loop = Arc::clone(&active_channel_id);
     let active_guild_voice_loop = Arc::clone(&active_guild_id);
+    let hidden_streams_voice_loop = Arc::clone(&hidden_streams);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
@@ -1601,6 +1925,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w_inner = app_weak_voice_loop.clone();
             let http_client_voice_loop_inner = Arc::clone(&http_client_voice_loop);
             let active_guild_voice_loop_inner = Arc::clone(&active_guild_voice_loop);
+            let hidden_streams_voice_loop_inner = Arc::clone(&hidden_streams_voice_loop);
 
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = app_w_inner.upgrade() else { return; };
@@ -1776,6 +2101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )
                     };
 
+                    let is_hidden = hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false);
+
                     participants.push(VoiceParticipant {
                         user_id: uid_str.into(),
                         username: username.into(),
@@ -1787,6 +2114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         priority: prio,
                         is_self,
                         is_streaming: is_streaming_peer,
+                        is_stream_hidden: is_hidden,
                     });
                 }
 
@@ -1820,7 +2148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 || old.volume != p.volume
                                 || old.priority != p.priority
                                 || old.username != p.username
-                                || old.is_streaming != p.is_streaming;
+                                || old.is_streaming != p.is_streaming
+                                || old.is_stream_hidden != p.is_stream_hidden;
                             if level_changed || state_changed {
                                 cur_model.set_row_data(i, p);
                             }
@@ -2112,16 +2441,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_leave = Arc::clone(&active_guild_id);
     let app_weak_leave = app_weak.clone();
     let sm_leave = Arc::clone(&screen_manager);
+    let hidden_streams_leave = Arc::clone(&hidden_streams);
 
     app.on_leave_voice(move || {
         info!("Usuário solicitou desconexão da sala de voz...");
         sm_leave.stop();
+        sm_leave.set_context(0, 0, "");
+        screen_capture::clear_stream_audio_queue();
+        hidden_streams_leave.lock().unwrap().clear();
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);
             ui.set_current_voice_channel("".into());
             ui.set_is_screen_sharing(false);
             ui.set_has_active_stream(false);
+            ui.set_popped_out_stream_uid("".into());
             gateway::clear_voice_participants();
 
             let gid = active_guild_leave.lock().unwrap().clone();
@@ -2757,6 +3091,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let selected_input_voice = Arc::clone(&selected_input);
     let active_mic_stream_voice = Arc::clone(&active_mic_stream);
     let level_tx_voice = level_tx.clone();
+    let sm_chan_select = Arc::clone(&screen_manager);
 
     app.on_select_channel(move |channel_id: SharedString| {
         let ch_id = channel_id.to_string();
@@ -2780,6 +3115,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gateway::sync_voice_channel_participants(&ch_id);
                 let muted = ui.get_is_muted();
                 let deafened = ui.get_is_deafened();
+
+                let cid_num = ch_id.parse::<u64>().unwrap_or(0);
+                let my_uid = gateway::get_my_user_id();
+                let my_uname = gateway::get_my_username();
+                sm_chan_select.set_context(cid_num, my_uid, &my_uname);
+                sm_chan_select.announce_presence();
 
                 // 1. Send Opcode 4 VoiceStateUpdate to Discord Gateway WebSocket!
                 if let Some(cmd_tx_guard) = cmd_tx_chan_select.lock().unwrap().as_ref() {
@@ -3023,6 +3364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_gw_events = Arc::clone(&active_guild_id);
     let active_channel_gw_events = Arc::clone(&active_channel_id);
     let guilds_map_gw_events = Arc::clone(&guilds_map);
+    let sm_gw = Arc::clone(&screen_manager);
 
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
@@ -3031,11 +3373,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let active_guild_inner = Arc::clone(&active_guild_gw_events);
             let active_channel_inner = Arc::clone(&active_channel_gw_events);
             let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
+            let sm_gw_inner = Arc::clone(&sm_gw);
 
             match event {
                 GatewayEvent::VoiceDisconnected => {
                     let app_w = app_weak.clone();
+                    let sm_disc = Arc::clone(&sm_gw_inner);
                     let _ = slint::invoke_from_event_loop(move || {
+                        sm_disc.stop();
+                        sm_disc.set_context(0, 0, "");
+                        screen_capture::clear_stream_audio_queue();
                         if let Some(ui) = app_w.upgrade() {
                             info!("🚪 Desconectando UI do canal de voz (sessão encerrada/deslocada por outro cliente)");
                             ui.set_is_in_voice(false);
