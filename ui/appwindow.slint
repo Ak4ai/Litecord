@@ -392,6 +392,12 @@ export component AppWindow inherits Window {
     callback toggle_screen_share();
     callback toggle_stream_fullscreen();
     callback focus_stream(string /* user_id */);
+    callback start_stream(int /* monitor_id */, string /* resolution */, int /* fps */);
+    callback stop_stream();
+    callback open_stream_modal();
+    callback close_stream_modal();
+    callback popout_stream_window(string /* user_id */, string /* username */);
+    callback close_popout_window();
 
     // Auto-Update Properties
     in-out property <bool> show_update_dialog: false;
@@ -484,15 +490,21 @@ export component AppWindow inherits Window {
 
     // Screen Share / Live Video Grid Properties
     in-out property <bool> is_screen_sharing: false;
+    in-out property <bool> show_stream_modal: false;
+    in-out property <int> stream_modal_tab: 0; // 0 = Monitores, 1 = Janelas
+    in-out property <string> stream_selected_res: "720p";
+    in-out property <int> stream_selected_fps: 30;
+    in-out property <int> stream_selected_monitor: 0;
+    in-out property <string> popped_out_stream_uid: "";
     in-out property <bool> has_active_stream: false;
     in-out property <string> active_stream_user: "";
     in-out property <image> active_stream_frame;
     in-out property <bool> is_stream_fullscreen: false;
     in-out property <string> tr_start_screen_share: "Transmitir Tela";
     in-out property <string> tr_stop_screen_share: "Parar Transmissão";
-    in-out property <string> tr_live_badge: "AO VIVO";
     in-out property <string> tr_watching_stream: "Assistindo Transmissão";
-    in-out property <string> tr_stream_quality: "30 FPS • HD";
+    in-out property <string> tr_live_badge: "AO VIVO";
+    in-out property <string> tr_stream_quality: "720p 30fps";
 
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
@@ -2601,6 +2613,144 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// Popout Detached Video Window Component
+export component PopoutStreamWindow inherits Window {
+    title: "Litecord - Transmissão Desanexada";
+    no-frame: true;
+    background: #111214;
+    min-width: 320px;
+    min-height: 240px;
+    default-font-family: "gg sans";
+
+    in-out property <image> stream_frame;
+    in-out property <string> username: "Transmissão";
+    in-out property <bool> show_controls: true;
+
+    callback start_window_drag();
+    callback toggle_fullscreen();
+    callback close_popout();
+    callback drag_resize(string);
+    callback mouse_activity();
+
+    TouchArea {
+        pointer-event(event) => {
+            root.mouse_activity();
+        }
+    }
+
+    // Video Canvas Viewport
+    Image {
+        width: 100%;
+        height: 100%;
+        source: root.stream_frame;
+        image-fit: contain;
+    }
+
+    // Top Autohiding Controls Bar
+    if root.show_controls: Rectangle {
+        y: 0px;
+        x: 0px;
+        width: 100%;
+        height: 40px;
+        background: #000000cc;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 8px;
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                // Live Badge
+                Rectangle {
+                    background: #f23f43;
+                    border-radius: 4px;
+                    height: 22px;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 5px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: #ffffff;
+                            }
+                        }
+                        Text {
+                            text: "AO VIVO";
+                            color: #ffffff;
+                            font-size: 10px;
+                            font-weight: 800;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Stream Username
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.username;
+                        color: #ffffff;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Window Controls
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: end;
+
+                // Close / Re-attach Popout Button
+                Rectangle {
+                    width: 28px;
+                    height: 24px;
+                    border-radius: 4px;
+                    background: pop_close_ta.has-hover ? #f23f43 : #313338;
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-close.svg");
+                                width: 10px;
+                                height: 10px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+
+                    pop_close_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.close_popout(); }
+                    }
+                }
+            }
+        }
+
+        // Drag handle for Top Bar
+        TouchArea {
+            pointer-event(event) => {
+                root.mouse_activity();
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.start_window_drag();
                 }
             }
         }

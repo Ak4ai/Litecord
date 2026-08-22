@@ -38,6 +38,7 @@ pub enum GatewayEvent {
     Connected { user_tag: String },
     Disconnected { reason: String },
     VoiceStatesUpdated,
+    VoiceDisconnected,
     MessageCreated {
         channel_id: String,
         author: String,
@@ -1184,8 +1185,9 @@ impl GatewayClient {
                 *self.voice_session_id.lock().unwrap() = None;
 
                 let self_mute_state = Arc::clone(&self.voice_self_mute);
+                let event_tx_conn = self.event_tx.clone();
                 tokio::spawn(async move {
-                    connect_voice_gateway(&ep, &effective_gid, &uid, &sid, &tok, &voice_cid, self_mute_state).await;
+                    connect_voice_gateway(&ep, &effective_gid, &uid, &sid, &tok, &voice_cid, self_mute_state, event_tx_conn).await;
                 });
             }
         }
@@ -1598,11 +1600,14 @@ impl GatewayClient {
                                     }
                                     self.try_trigger_voice_connect();
                                 } else {
-                                    // We left the voice channel
+                                    // We left the voice channel or were displaced by another client
+                                    info!("🚪 [VOICE_STATE_UPDATE] Desconectado da sala de voz (deslocado ou saiu)");
                                     *self.voice_session_id.lock().unwrap() = None;
                                     *self.voice_token.lock().unwrap() = None;
                                     *self.voice_endpoint.lock().unwrap() = None;
+                                    *self.voice_channel_id.lock().unwrap() = None;
                                     clear_voice_participants();
+                                    let _ = self.event_tx.send(GatewayEvent::VoiceDisconnected).await;
                                 }
                             }
                         }
@@ -1759,6 +1764,7 @@ pub async fn connect_voice_gateway(
     token: &str,
     channel_id: &str,
     self_mute_state: Arc<std::sync::Mutex<bool>>,
+    event_tx: mpsc::Sender<GatewayEvent>,
 ) {
     let clean_endpoint = raw_endpoint.trim();
     let voice_url = if clean_endpoint.starts_with("wss://") || clean_endpoint.starts_with("ws://") {
@@ -1782,6 +1788,7 @@ pub async fn connect_voice_gateway(
             let session_id = session_id.to_string();
             let token = token.to_string();
             let channel_id_str = channel_id.to_string();
+            let event_tx_vclose = event_tx.clone();
             sync_voice_channel_participants(&channel_id_str);
             let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
             let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -1795,6 +1802,7 @@ pub async fn connect_voice_gateway(
                     .map_err(|e| { warn!("Falha ao criar DaveSession: {:?}", e); })
                     .ok()
             ));
+            let saved_external_sender: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
 
             // Read loop: wait for Opcode 8 HELLO from Voice Gateway before sending Opcode 0 Identify!
             while let Some(msg_result) = read.next().await {
@@ -3022,13 +3030,20 @@ pub async fn connect_voice_gateway(
                                     info!("DAVE: Ready For Transition (op=23) enviado para transition_id={}", transition_id);
                                 }
                                 19 => {
-                                    // DAVE Opcode 19: DAVE_EXECUTE_TRANSITION
+                                    // DAVE Opcode 19: DAVE_EXECUTE_TRANSITION (Server -> Client)
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
                                     info!("DAVE Execute Transition (op=19): transition_id={}, payload={}", transition_id, val["d"]);
+                                    let ssrc = *active_ssrc.lock().unwrap();
+                                    let speaking_pkt = serde_json::json!({
+                                        "op": 5,
+                                        "d": { "speaking": 1, "delay": 0, "ssrc": ssrc }
+                                    });
+                                    let mut w = write_arc.lock().await;
+                                    let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
+                                    info!("DAVE OP 19: Enviado OP 5 Speaking para sincronizar SSRC {} na transição de época!", ssrc);
                                 }
                                 20 => {
                                     // DAVE Opcode 20: DAVE_TRANSITION_READY
-                                    // DAVE Transition Ready (op=20): payload={}", val["d"]);
                                 }
                                 21 => {
                                     // DAVE Opcode 21: DAVE_PREPARE_TRANSITION (Server -> Client)
@@ -3042,6 +3057,51 @@ pub async fn connect_voice_gateway(
                                     let mut w = write_arc.lock().await;
                                     let _ = w.send(Message::Text(ready.to_string().into())).await;
                                     info!("DAVE: Ready For Transition (op=23) enviado para op=21 transition_id={}", transition_id);
+                                }
+                                22 => {
+                                    // DAVE Opcode 22: DAVE_EXECUTE_TRANSITION (Server -> Client)
+                                    let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
+                                    info!("DAVE Execute Transition (op=22): transition_id={}, payload={}", transition_id, val["d"]);
+                                    let ssrc = *active_ssrc.lock().unwrap();
+                                    let speaking_pkt = serde_json::json!({
+                                        "op": 5,
+                                        "d": { "speaking": 1, "delay": 0, "ssrc": ssrc }
+                                    });
+                                    let mut w = write_arc.lock().await;
+                                    let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
+                                    info!("DAVE OP 22: Enviado OP 5 Speaking para sincronizar SSRC {} na transição de época!", ssrc);
+                                }
+                                24 => {
+                                    // DAVE Opcode 24: DAVE_PREPARE_EPOCH (Server -> Client)
+                                    let epoch = val["d"]["epoch"].as_u64().unwrap_or(0);
+                                    let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(1);
+                                    info!("DAVE Prepare Epoch (op=24): epoch={}, protocol_version={}", epoch, protocol_version);
+                                    if epoch == 1 {
+                                        let key_pkg_bytes = {
+                                            let mut sess = dave_session.lock().unwrap();
+                                            if let Some(ref mut s) = *sess {
+                                                let _ = s.reset();
+                                                if let Ok(mut new_s) = DaveSession::new(
+                                                    NonZeroU16::new(protocol_version as u16).unwrap_or(NonZeroU16::new(1).unwrap()),
+                                                    uid_num, cid_num, None
+                                                ) {
+                                                    if let Some(ref ext_bytes) = saved_external_sender.lock().unwrap().as_ref() {
+                                                        let _ = new_s.set_external_sender(ext_bytes);
+                                                    }
+                                                    let kp = new_s.create_key_package().ok();
+                                                    *s = new_s;
+                                                    kp
+                                                } else { None }
+                                            } else { None }
+                                        };
+                                        if let Some(kp) = key_pkg_bytes {
+                                            let mut pkt = vec![26u8];
+                                            pkt.extend_from_slice(&kp);
+                                            let mut w = write_arc.lock().await;
+                                            let _ = w.send(Message::Binary(pkt.into())).await;
+                                            info!("DAVE: Novo KeyPackage (op=26) gerado e enviado para Epoch Reset (op=24)!");
+                                        }
+                                    }
                                 }
                                 _ => {
                                     info!("Voice Gateway opcode JSON ignorado: op={}, data={}", op, val["d"]);
@@ -3061,6 +3121,7 @@ pub async fn connect_voice_gateway(
                             25 => {
                                 // dave_mls_external_sender_package (25): gateway's MLS credential
                                 // Process it, then send our KeyPackage (opcode 26)
+                                *saved_external_sender.lock().unwrap() = Some(payload.to_vec());
                                 let key_pkg_bytes = {
                                     let mut sess = dave_session.lock().unwrap();
                                     if let Some(ref mut s) = *sess {
@@ -3098,9 +3159,15 @@ pub async fn connect_voice_gateway(
                                     if let Some(ref mut s) = *sess {
                                         match s.process_proposals(op_type, proposals_data, None) {
                                             Ok(Some(cw)) => {
-                                                info!("DAVE: CommitWelcome gerado ({} commit bytes)", cw.commit.len());
+                                                info!("DAVE: CommitWelcome gerado ({} commit bytes, welcome={})",
+                                                    cw.commit.len(), cw.welcome.as_ref().map(|w| w.len()).unwrap_or(0));
                                                 let mut out = cw.commit.clone();
-                                                if let Some(w) = cw.welcome { out.extend_from_slice(&w); }
+                                                if let Some(w) = cw.welcome {
+                                                    out.push(1u8); // RFC 9420 optional<Welcome> presence flag = 1
+                                                    out.extend_from_slice(&w);
+                                                } else {
+                                                    out.push(0u8); // RFC 9420 optional<Welcome> presence flag = 0
+                                                }
                                                 Some(out)
                                             }
                                             Ok(None) => { info!("DAVE: process_proposals OK sem commit"); None }
@@ -3187,11 +3254,15 @@ pub async fn connect_voice_gateway(
                         }
                      }
                     Ok(Message::Close(frame)) => {
-                        info!("Voice Gateway encerrada normalmente: {:?}", frame);
+                        info!("Voice Gateway encerrada normalmente ou deslocada: {:?}", frame);
+                        clear_voice_participants();
+                        let _ = event_tx_vclose.send(GatewayEvent::VoiceDisconnected).await;
                         break;
                     }
                     Err(e) => {
                         warn!("Encerrando leitura da Voice Gateway: {:?}", e);
+                        clear_voice_participants();
+                        let _ = event_tx_vclose.send(GatewayEvent::VoiceDisconnected).await;
                         break;
                     }
                     _ => {}

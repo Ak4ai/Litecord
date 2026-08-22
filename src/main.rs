@@ -2668,6 +2668,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
+                    winit_win.set_minimized(true);
                     if target_hwnd.is_none() {
                         if let Ok(handle) = winit_win.window_handle() {
                             if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
@@ -2684,6 +2685,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
                     use windows_sys::Win32::System::Threading::GetCurrentProcess;
                     K32EmptyWorkingSet(GetCurrentProcess());
+                    info!("[DeepSleep] Memória RAM liberada via K32EmptyWorkingSet!");
                 }
             }
         });
@@ -2718,6 +2720,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
 
             match event {
+                GatewayEvent::VoiceDisconnected => {
+                    let app_w = app_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            info!("🚪 Desconectando UI do canal de voz (sessão encerrada/deslocada por outro cliente)");
+                            ui.set_is_in_voice(false);
+                            ui.set_is_voice_connecting(false);
+                            ui.set_is_screen_sharing(false);
+                            ui.set_has_active_stream(false);
+                            ui.set_popped_out_stream_uid("".into());
+                            ui.set_voice_participants(slint::ModelRc::new(slint::VecModel::from(vec![])));
+                        }
+                    });
+                }
                 GatewayEvent::Connected { user_tag } => {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
