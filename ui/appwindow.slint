@@ -98,6 +98,11 @@ export struct WindowSourceItem {
     app_name: string,
 }
 
+export struct CameraSourceItem {
+    id: string,
+    name: string,
+}
+
 component ChatMessagesView inherits Rectangle {
     in-out property <[ChatMessage]> messages;
     in-out property <bool> has_more_older_messages: false;
@@ -516,6 +521,8 @@ export component AppWindow inherits Window {
     in-out property <bool> stream_include_audio: true;
     in-out property <[ScreenSourceItem]> available_screens: [];
     in-out property <[WindowSourceItem]> available_windows: [];
+    in-out property <[CameraSourceItem]> available_cameras: [];
+    in-out property <string> stream_selected_camera_id: "";
     in-out property <string> popped_out_stream_uid: "";
     in-out property <bool> has_active_stream: false;
     in-out property <string> active_stream_user: "";
@@ -524,13 +531,15 @@ export component AppWindow inherits Window {
     in-out property <image> remote_stream_frame;
     in-out property <bool> is_stream_fullscreen: false;
     in-out property <string> focused_stream_uid: "";
-    in-out property <string> tr_start_screen_share: "Transmitir Tela";
+    in-out property <string> tr_start_screen_share: "Transmitir";
     in-out property <string> tr_stop_screen_share: "Parar Transmissão";
     in-out property <string> tr_watching_stream: "Assistindo Transmissão";
     in-out property <string> tr_live_badge: "AO VIVO";
     in-out property <string> tr_stream_quality: "720p 30fps";
     in-out property <float> stream_remote_volume: 1.0;
+    in-out property <bool> is_popout_intangible: false;
     callback set_stream_volume(string, float);
+    callback toggle_popout_intangible();
 
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
@@ -1808,6 +1817,45 @@ export component AppWindow inherits Window {
                                                      }
 
                                                      Rectangle { horizontal-stretch: 1; }
+
+                                                      // Intangible Deactivation Button (Active when popout is clicked-through)
+                                                      if (root.is_popout_intangible && (root.popped_out_stream_uid == p.user_id || (p.is_self && root.popped_out_stream_uid == "self"))): Rectangle {
+                                                          height: 22px;
+                                                          border-radius: 4px;
+                                                          background: ghost_deact_ta.has-hover ? #208b4c : #23a55a;
+
+                                                          HorizontalLayout {
+                                                              padding-left: 8px;
+                                                              padding-right: 8px;
+                                                              spacing: 5px;
+
+                                                              VerticalLayout {
+                                                                  alignment: center;
+                                                                  Image {
+                                                                      source: @image-url("../assets/ghost.svg");
+                                                                      width: 12px;
+                                                                      height: 12px;
+                                                                      colorize: #ffffff;
+                                                                      image-fit: contain;
+                                                                  }
+                                                              }
+
+                                                              Text {
+                                                                  text: "Desativar Intangível";
+                                                                  color: #ffffff;
+                                                                  font-size: 10px;
+                                                                  font-weight: 700;
+                                                                  vertical-alignment: center;
+                                                              }
+                                                          }
+
+                                                          ghost_deact_ta := TouchArea {
+                                                              mouse-cursor: pointer;
+                                                              clicked => {
+                                                                  root.toggle_popout_intangible();
+                                                              }
+                                                          }
+                                                      }
 
                                                      // Square button in top-right corner to re-enable/unhide stream (ONLY visible if user is currently streaming!)
                                                      if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
@@ -3165,6 +3213,51 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
+                                // Tab: Câmera (Webcam)
+                                Rectangle {
+                                    background: transparent;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            Image {
+                                                source: @image-url("../assets/camera.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: root.stream_source_tab == "cameras" ? #ffffff : #949ba4;
+                                            }
+                                            Text {
+                                                text: "Câmera";
+                                                color: root.stream_source_tab == "cameras" ? #ffffff : #949ba4;
+                                                font-size: 13px;
+                                                font-weight: root.stream_source_tab == "cameras" ? 700 : 500;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Active Tab Underline
+                                    if root.stream_source_tab == "cameras": Rectangle {
+                                        y: parent.height - 2px;
+                                        height: 2px;
+                                        width: 100%;
+                                        background: #5865f2;
+                                        border-radius: 1px;
+                                    }
+
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.stream_source_tab = "cameras";
+                                            root.stream_selected_source_index = 0;
+                                            root.stream_include_audio = false;
+                                            if root.available_cameras.length > 0 {
+                                                root.stream_selected_camera_id = root.available_cameras[0].id;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 Rectangle { horizontal-stretch: 1; }
                             }
                         }
@@ -3321,6 +3414,98 @@ export component AppWindow inherits Window {
                                             clicked => {
                                                 root.stream_selected_source_index = idx;
                                                 root.stream_selected_window_id = win.id;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.stream_source_tab == "cameras": Flickable {
+                                viewport-height: 110px;
+                                height: 110px;
+                                interactive: true;
+
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 12px;
+                                    height: 110px;
+
+                                    for cam[idx] in root.available_cameras: Rectangle {
+                                        width: 140px;
+                                        height: 110px;
+                                        background: root.stream_selected_source_index == idx ? #5865f222 : #2b2d31;
+                                        border-radius: 8px;
+                                        border-width: 2px;
+                                        border-color: root.stream_selected_source_index == idx ? #5865f2 : #383a40;
+                                        clip: true;
+
+                                        VerticalBox {
+                                            padding: 8px;
+                                            alignment: center;
+                                            spacing: 6px;
+
+                                            Rectangle {
+                                                height: 52px;
+                                                background: #1e1f22;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: root.stream_selected_source_index == idx ? #5865f288 : #383a40;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    HorizontalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/camera.svg");
+                                                            width: 24px;
+                                                            height: 24px;
+                                                            colorize: root.stream_selected_source_index == idx ? #5865f2 : #80848e;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: cam.name;
+                                                color: root.stream_selected_source_index == idx ? #ffffff : #dbdee1;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: "Webcam";
+                                                color: #80848e;
+                                                font-size: 10px;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.stream_selected_source_index = idx;
+                                                root.stream_selected_camera_id = cam.id;
+                                            }
+                                        }
+                                    }
+
+                                    if root.available_cameras.length == 0: Rectangle {
+                                        width: 440px;
+                                        height: 110px;
+                                        background: #2b2d31;
+                                        border-radius: 8px;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 6px;
+                                            Text {
+                                                text: "Nenhuma câmera / webcam detectada no sistema.";
+                                                color: #949ba4;
+                                                font-size: 12px;
+                                                horizontal-alignment: center;
                                             }
                                         }
                                     }
@@ -3527,8 +3712,8 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            // 5. Stream Audio Toggle Section
-                            Rectangle {
+                            // 5. Stream Audio Toggle Section (Disabled/informational for Cameras)
+                            if root.stream_source_tab != "cameras": Rectangle {
                                 background: #2b2d31;
                                 border-radius: 8px;
                                 border-width: 1px;
@@ -3604,6 +3789,50 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+
+                            if root.stream_source_tab == "cameras": Rectangle {
+                                background: #2b2d31;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: #383a40;
+                                height: 52px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 12px;
+                                    alignment: start;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/camera.svg");
+                                            width: 18px;
+                                            height: 18px;
+                                            colorize: #5865f2;
+                                            image-fit: contain;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: "Transmissão Direta de Câmera";
+                                            color: #f2f3f5;
+                                            font-size: 12px;
+                                            font-weight: 700;
+                                        }
+
+                                        Text {
+                                            text: "Apenas vídeo da webcam (sem captura de áudio do sistema)";
+                                            color: #949ba4;
+                                            font-size: 10px;
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // 6. Pinned Modal Footer Action Bar
@@ -3643,7 +3872,7 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
-                                // Transmitir ao Vivo (Go Live) Button
+                                // Transmitir Button
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
@@ -3660,7 +3889,7 @@ export component AppWindow inherits Window {
                                             VerticalLayout {
                                                 alignment: center;
                                                 Image {
-                                                    source: @image-url("../assets/monitor.svg");
+                                                    source: root.stream_source_tab == "cameras" ? @image-url("../assets/camera.svg") : (root.stream_source_tab == "windows" ? @image-url("../assets/window.svg") : @image-url("../assets/monitor.svg"));
                                                     width: 14px;
                                                     height: 14px;
                                                     colorize: #ffffff;
@@ -3669,7 +3898,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             Text {
-                                                text: "Transmitir ao Vivo";
+                                                text: "Transmitir";
                                                 color: #ffffff;
                                                 font-size: 13px;
                                                 font-weight: 700;
@@ -3717,9 +3946,11 @@ export component PopoutStreamWindow inherits Window {
     in-out property <string> user_id: "";
     in-out property <float> stream_volume: 1.0;
     in-out property <bool> is_pinned: false;
+    in-out property <bool> is_intangible: false;
     in-out property <bool> show_controls: true;
 
     callback toggle_pin();
+    callback toggle_intangible();
     callback start_window_drag();
     callback toggle_fullscreen();
     callback close_popout();
@@ -3891,6 +4122,30 @@ export component PopoutStreamWindow inherits Window {
             HorizontalLayout {
                 spacing: 4px;
                 alignment: end;
+
+                // Intangible / Click-Through Ghost Mode Toggle (Left of Pin)
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 4px;
+                        background: root.is_intangible ? #23a55a : (pop_ghost_ta.has-hover ? #35373c : transparent);
+
+                        Image {
+                            source: @image-url("../assets/ghost.svg");
+                            width: 13px;
+                            height: 13px;
+                            colorize: root.is_intangible ? #ffffff : (pop_ghost_ta.has-hover ? #ffffff : #dbdee1);
+                            image-fit: contain;
+                        }
+
+                        pop_ghost_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle_intangible(); }
+                        }
+                    }
+                }
 
                 // Pin / Always-On-Top Toggle Button (Left of Minimize)
                 VerticalLayout {

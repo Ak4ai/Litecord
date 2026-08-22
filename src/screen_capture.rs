@@ -61,6 +61,28 @@ pub struct CapturableWindowItem {
     pub app_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CameraItemInfo {
+    pub id: String,
+    pub name: String,
+    pub index: u32,
+}
+
+pub fn list_cameras() -> Vec<CameraItemInfo> {
+    let mut result = Vec::new();
+    if let Ok(devs) = cameras::devices() {
+        for (i, dev) in devs.into_iter().enumerate() {
+            let name = dev.name.clone();
+            result.push(CameraItemInfo {
+                id: format!("{}", i),
+                name,
+                index: i as u32,
+            });
+        }
+    }
+    result
+}
+
 /// Thread-safe shared frame buffer for double-buffered local stream rendering.
 pub struct SharedFrameBuffer {
     frame: Mutex<Option<SharedPixelBuffer<Rgba8Pixel>>>,
@@ -193,7 +215,7 @@ impl ScreenCaptureManager {
     }
 
     /// Starts the capture and UDP transmitter thread
-    pub fn start<F>(&self, target_hwnd: isize, res: i32, fps: i32, include_audio: bool, on_local_frame: F)
+    pub fn start<F>(&self, target_hwnd: isize, camera_index: Option<u32>, res: i32, fps: i32, include_audio: bool, on_local_frame: F)
     where
         F: Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + 'static,
     {
@@ -216,11 +238,12 @@ impl ScreenCaptureManager {
         };
         let target_fps = (fps.clamp(15, 60)) as u64;
 
-        if target_hwnd != 0 {
+        if camera_index.is_none() && target_hwnd != 0 {
             start_window_border_overlay(target_hwnd);
         }
 
-        if include_audio {
+        // Camera transmission is strictly without system loopback audio
+        if camera_index.is_none() && include_audio {
             start_audio_loopback_tx(
                 Arc::clone(&self.is_running),
                 Arc::clone(&self.channel_id),
@@ -229,7 +252,7 @@ impl ScreenCaptureManager {
             );
         }
 
-        info!("🖥️ Iniciando transmissão P2P ({}x{} @ {} FPS, hwnd={}, audio={})...", target_w, target_h, target_fps, target_hwnd, include_audio);
+        info!("🖥️ Iniciando transmissão P2P ({}x{} @ {} FPS, hwnd={}, cam={:?}, audio={})...", target_w, target_h, target_fps, target_hwnd, camera_index, camera_index.is_none() && include_audio);
 
         std::thread::Builder::new()
             .name("screen-capture-tx".to_string())
@@ -243,6 +266,34 @@ impl ScreenCaptureManager {
                         warn!("Falha ao criar socket UDP TX: {:?}", e);
                         return;
                     }
+                };
+
+                let camera_handle = if let Some(cam_idx) = camera_index {
+                    if let Ok(devs) = cameras::devices() {
+                        if let Some(dev) = devs.into_iter().nth(cam_idx as usize) {
+                            let config = cameras::StreamConfig {
+                                resolution: cameras::Resolution { width: target_w, height: target_h },
+                                framerate: target_fps as u32,
+                                pixel_format: cameras::PixelFormat::Bgra8,
+                            };
+                            match cameras::open(&dev, config) {
+                                Ok(cam) => {
+                                    info!("📷 Câmera '{}' aberta com sucesso para transmissão!", dev.name);
+                                    Some(cam)
+                                }
+                                Err(e) => {
+                                    warn!("Falha ao abrir câmera: {:?}", e);
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 };
 
                 let bcast_targets = get_broadcast_addresses();
@@ -327,12 +378,40 @@ impl ScreenCaptureManager {
                         last_announce = Instant::now();
                     }
 
-                    if let Some((pixel_buf, rgb_data)) = capture_screen_rgb(target_hwnd, target_w, target_h) {
+                    let capture_res = if let Some(ref cam) = camera_handle {
+                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(100)) {
+                            if let Ok(rgba_bytes) = cameras::to_rgba8(&frame) {
+                                let (w, h) = (frame.width, frame.height);
+                                let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+                                pixel_buf.make_mut_bytes().copy_from_slice(&rgba_bytes);
+                                let rgb = cameras::to_rgb8(&frame).unwrap_or_else(|_| {
+                                    let mut v = Vec::with_capacity((w * h * 3) as usize);
+                                    for p in rgba_bytes.chunks_exact(4) {
+                                        v.push(p[0]);
+                                        v.push(p[1]);
+                                        v.push(p[2]);
+                                    }
+                                    v
+                                });
+                                Some((pixel_buf, rgb))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        capture_screen_rgb(target_hwnd, target_w, target_h)
+                    };
+
+                    if let Some((pixel_buf, rgb_data)) = capture_res {
+                        let cur_w = pixel_buf.width();
+                        let cur_h = pixel_buf.height();
                         buffer.publish(pixel_buf.clone());
                         on_local_frame(pixel_buf);
 
                         // Compress frame to JPEG
-                        if let Some(jpeg_bytes) = encode_jpeg(&rgb_data, target_w, target_h, 68) {
+                        if let Some(jpeg_bytes) = encode_jpeg(&rgb_data, cur_w, cur_h, 68) {
                             frame_seq = frame_seq.wrapping_add(1);
                             let total_len = jpeg_bytes.len();
                             let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
@@ -371,10 +450,11 @@ impl ScreenCaptureManager {
                         std::thread::sleep(frame_interval - elapsed);
                     }
                 }
+
                 stop_window_border_overlay();
-                info!("🖥️ Thread emissora de tela finalizada.");
+                info!("🖥️ Thread emissora de tela/vídeo finalizada.");
             })
-            .expect("Falha ao iniciar thread TX de tela");
+            .expect("Falha ao iniciar thread TX");
     }
 
     /// Starts the background UDP receiver thread for incoming streams from peers

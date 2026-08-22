@@ -1373,6 +1373,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Intangible / Click-Through Ghost Mode Callbacks
+    let pop_w_ghost = popout_weak.clone();
+    let pop_hwnd_ghost = Arc::clone(&popout_hwnd_store);
+    let app_weak_ghost = app_weak.clone();
+
+    let toggle_ghost_fn = Arc::new(move || {
+        let mut new_state = false;
+        if let Some(pop) = pop_w_ghost.upgrade() {
+            new_state = !pop.get_is_intangible();
+            pop.set_is_intangible(new_state);
+        }
+        if let Some(ui) = app_weak_ghost.upgrade() {
+            ui.set_is_popout_intangible(new_state);
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = *pop_hwnd_ghost.lock().unwrap() {
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+                };
+                let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                if new_state {
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT as i32 | WS_EX_LAYERED as i32);
+                    info!("👻 Modo Intangível ATIVADO no popup (cliques atravessam para os jogos/apps)!");
+                } else {
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
+                    info!("🖱️ Modo Intangível DESATIVADO no popup (janela volta a receber cliques).");
+                }
+            }
+        }
+    });
+
+    if let Some(pop_win) = popout_weak.upgrade() {
+        let tg1 = Arc::clone(&toggle_ghost_fn);
+        pop_win.on_toggle_intangible(move || {
+            tg1();
+        });
+    }
+
+    let tg2 = Arc::clone(&toggle_ghost_fn);
+    app.on_toggle_popout_intangible(move || {
+        tg2();
+    });
+
     let pop_w_close = popout_weak.clone();
     let pop_hwnd_close = Arc::clone(&popout_hwnd_store);
     let app_weak_pop_close = app_weak.clone();
@@ -1382,15 +1426,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "windows")]
             if let Some(hwnd) = *pop_hwnd_close.lock().unwrap() {
                 unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        ShowWindow, SW_HIDE, GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+                    };
+                    let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
                     ShowWindow(hwnd as _, SW_HIDE);
                 }
             }
             if let Some(pop) = pop_w_close.upgrade() {
+                pop.set_is_intangible(false);
                 pop.set_user_id("".into());
                 let _ = pop.hide();
             }
             if let Some(ui) = app_weak_pop_close.upgrade() {
+                ui.set_is_popout_intangible(false);
                 ui.set_popped_out_stream_uid("".into());
             }
         });
@@ -1553,20 +1603,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let fps_val = ui.get_stream_selected_fps();
                 let target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
 
-                let target_hwnd: isize = if ui.get_stream_source_tab() == "windows" {
-                    ui.get_stream_selected_window_id().to_string().parse().unwrap_or(0)
+                let source_tab = ui.get_stream_source_tab().to_string();
+                let (target_hwnd, camera_index, include_audio) = if source_tab == "cameras" {
+                    let cam_id_str = ui.get_stream_selected_camera_id().to_string();
+                    let cam_idx: Option<u32> = cam_id_str.parse().ok();
+                    (0, cam_idx, false)
+                } else if source_tab == "windows" {
+                    let hwnd: isize = ui.get_stream_selected_window_id().to_string().parse().unwrap_or(0);
+                    (hwnd, None, ui.get_stream_include_audio())
                 } else {
-                    0
+                    (0, None, ui.get_stream_include_audio())
                 };
 
-                let include_audio = ui.get_stream_include_audio();
-
-                info!("▶️ Iniciando transmissão de tela P2P ({} @ {} FPS, hwnd={}, audio={})...", res_str, target_fps, target_hwnd, include_audio);
+                info!("▶️ Iniciando transmissão P2P (tab={}, {} @ {} FPS, hwnd={}, cam={:?}, audio={})...", source_tab, res_str, target_fps, target_hwnd, camera_index, include_audio);
                 ui.set_tr_stream_quality(format!("{} {}fps", res_str, target_fps).into());
 
                 let app_weak_frame = app_weak_ss.clone();
                 let pop_w_frame = pop_w_ss.clone();
-                sm.start(target_hwnd, res_val, target_fps, include_audio, move |pixel_buffer| {
+                sm.start(target_hwnd, camera_index, res_val, target_fps, include_audio, move |pixel_buffer| {
                     let app_w = app_weak_frame.clone();
                     let pop_w = pop_w_frame.clone();
                     let _ = slint::invoke_from_event_loop(move || {
@@ -1617,9 +1671,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }).collect();
             ui.set_available_windows(std::rc::Rc::new(slint::VecModel::from(ui_windows)).into());
 
+            let cameras = screen_capture::list_cameras();
+            let first_cam_id = cameras.first().map(|c| c.id.clone()).unwrap_or_default();
+            let ui_cameras: Vec<CameraSourceItem> = cameras.into_iter().map(|c| {
+                CameraSourceItem {
+                    id: c.id.into(),
+                    name: c.name.into(),
+                }
+            }).collect();
+            ui.set_available_cameras(std::rc::Rc::new(slint::VecModel::from(ui_cameras)).into());
+
             ui.set_stream_selected_source_index(0);
             if ui.get_stream_source_tab() == "windows" {
                 ui.set_stream_selected_window_id(first_win_id.into());
+            } else if ui.get_stream_source_tab() == "cameras" {
+                ui.set_stream_selected_camera_id(first_cam_id.into());
+                ui.set_stream_include_audio(false);
             } else {
                 ui.set_stream_selected_window_id("".into());
             }
@@ -1672,6 +1739,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_weak_unhide = app_weak.clone();
     let hidden_streams_unhide = Arc::clone(&hidden_streams);
+    let pop_w_unhide = popout_weak.clone();
+    let pop_hwnd_unhide = Arc::clone(&popout_hwnd_store);
     app.on_unhide_stream(move |uid_str: SharedString| {
         let uid = uid_str.to_string();
         info!("👁️ Reexibindo stream de vídeo do usuário {}", uid);
@@ -1679,6 +1748,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_unhide.upgrade() {
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
+                ui.set_is_popout_intangible(false);
+                if let Some(pop) = pop_w_unhide.upgrade() {
+                    pop.set_is_intangible(false);
+                    pop.set_user_id("".into());
+                    let _ = pop.hide();
+                }
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_unhide.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            ShowWindow, SW_HIDE, GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+                        };
+                        let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                        SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
+                        ShowWindow(hwnd as _, SW_HIDE);
+                    }
+                }
             }
             let cur_model = ui.get_voice_participants();
             for i in 0..cur_model.row_count() {

@@ -34,6 +34,7 @@ rsa = { version = "0.9", features = ["sha2"] }
 sha2 = "0.10"
 rand = "0.8"
 mimalloc = { version = "0.1", default-features = false }
+cameras = "0.1"
 
 [[bin]]
 name = "litecord"
