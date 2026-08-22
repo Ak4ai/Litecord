@@ -29,6 +29,14 @@ struct LinkItem {
     url: string,
 }
 
+struct MessageButton {
+    label: string,
+    url: string,
+    emoji: string,
+    style_type: int,
+    is_disabled: bool,
+}
+
 struct ChatMessage {
     id: string,
     author: string,
@@ -41,6 +49,7 @@ struct ChatMessage {
     reply_author: string,
     reply_content: string,
     links: [LinkItem],
+    buttons: [MessageButton],
 }
 
 struct ChannelItem {
@@ -326,6 +335,73 @@ component ChatMessagesView inherits Rectangle {
                                     color: #949ba4;
                                     font-size: 11px;
                                     wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    if msg.buttons.length > 0: HorizontalLayout {
+                        spacing: 8px;
+                        padding-top: 4px;
+                        padding-bottom: 2px;
+                        alignment: start;
+
+                        for btn in msg.buttons: Rectangle {
+                            height: 32px;
+                            background: btn.is_disabled ? #2b2d31 : (btn_ta.has-hover ? (
+                                btn.style_type == 1 ? #4752c4 : (
+                                btn.style_type == 3 ? #1f8b4c : (
+                                btn.style_type == 4 ? #c0353b : (
+                                #3b3e45
+                                )))
+                            ) : (
+                                btn.style_type == 1 ? #5865f2 : (
+                                btn.style_type == 3 ? #23a55a : (
+                                btn.style_type == 4 ? #da373c : (
+                                btn.style_type == 5 ? #35373c : (
+                                #4e5058
+                                ))))
+                            ));
+                            border-radius: 4px;
+                            border-width: btn.style_type == 5 ? 1px : 0px;
+                            border-color: #3f4147;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                if btn.emoji != "": Text {
+                                    text: btn.emoji;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: btn.label;
+                                    color: btn.is_disabled ? #80848e : #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+
+                                if btn.url != "": Image {
+                                    source: @image-url("../assets/external-link.svg");
+                                    width: 12px;
+                                    height: 12px;
+                                    colorize: btn.is_disabled ? #80848e : #b5bac1;
+                                    image-fit: contain;
+                                }
+                            }
+
+                            btn_ta := TouchArea {
+                                enabled: !btn.is_disabled && btn.url != "";
+                                mouse-cursor: btn.url != "" ? pointer : default;
+                                clicked => {
+                                    if btn.url != "" {
+                                        root.open_link(btn.url);
+                                    }
                                 }
                             }
                         }

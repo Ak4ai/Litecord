@@ -757,6 +757,7 @@ async fn fetch_and_populate_channels(
                             reply_author: "".into(),
                             reply_content: "".into(),
                             links: slint::ModelRc::default(),
+                            buttons: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }];
                         let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
@@ -804,19 +805,29 @@ async fn load_messages_for_channel(
                             reply_author: "".into(),
                             reply_content: "".into(),
                             links: slint::ModelRc::default(),
+                            buttons: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
                             let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
-                            let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
+                            let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
                             
                             let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                 label: l.label.clone().into(),
                                 url: l.url.clone().into(),
                             }).collect();
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                            let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
+                                label: b.label.clone().into(),
+                                url: b.url.clone().into(),
+                                emoji: b.emoji.clone().into(),
+                                style_type: b.style_type,
+                                is_disabled: b.is_disabled,
+                            }).collect();
+                            let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
 
                             ChatMessage {
                                 id: msg_id.into(),
@@ -829,6 +840,7 @@ async fn load_messages_for_channel(
                                 reply_author: reply_author.into(),
                                 reply_content: reply_content.into(),
                                 links: slint::ModelRc::from(links_model),
+                                buttons: slint::ModelRc::from(buttons_model),
                                 timestamp: "Agora".into(),
                             }
                         }).collect()
@@ -868,6 +880,7 @@ async fn load_messages_for_channel(
                         reply_author: "".into(),
                         reply_content: "".into(),
                         links: slint::ModelRc::default(),
+                        buttons: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
                     }];
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
@@ -2491,6 +2504,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reply_author: "".into(),
                 reply_content: "".into(),
                 links: slint::ModelRc::default(),
+                buttons: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
             });
             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -2637,13 +2651,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
                                     let msg_id = m["id"].as_str().unwrap_or("");
                                     let author = format_discord_author(m);
-                                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
+                                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
                                     
                                     let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                         label: l.label.clone().into(),
                                         url: l.url.clone().into(),
                                     }).collect();
                                     let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                                    let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
+                                        label: b.label.clone().into(),
+                                        url: b.url.clone().into(),
+                                        emoji: b.emoji.clone().into(),
+                                        style_type: b.style_type,
+                                        is_disabled: b.is_disabled,
+                                    }).collect();
+                                    let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
 
                                     ChatMessage {
                                         id: msg_id.into(),
@@ -2656,6 +2679,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         reply_author: reply_author.into(),
                                         reply_content: reply_content.into(),
                                         links: slint::ModelRc::from(links_model),
+                                        buttons: slint::ModelRc::from(buttons_model),
                                         timestamp: "Anterior".into(),
                                     }
                                 }).collect();
@@ -3162,6 +3186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     reply_author: "".into(),
                     reply_content: "".into(),
                     links: slint::ModelRc::default(),
+                    buttons: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -3423,7 +3448,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { channel_id, author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, timestamp } => {
+                GatewayEvent::MessageCreated { channel_id, author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3446,6 +3471,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }).collect();
                                 let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
+                                let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
+                                    label: b.label.clone().into(),
+                                    url: b.url.clone().into(),
+                                    emoji: b.emoji.clone().into(),
+                                    style_type: b.style_type,
+                                    is_disabled: b.is_disabled,
+                                }).collect();
+                                let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
+
                                 current_msgs.push(ChatMessage {
                                     id: "".into(),
                                     author: author.into(),
@@ -3457,6 +3491,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     reply_author: reply_author.into(),
                                     reply_content: reply_content.into(),
                                     links: slint::ModelRc::from(links_model),
+                                    buttons: slint::ModelRc::from(buttons_model),
                                     timestamp: timestamp.into(),
                                 });
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));

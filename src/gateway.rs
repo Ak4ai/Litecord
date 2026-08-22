@@ -50,6 +50,7 @@ pub enum GatewayEvent {
         reply_author: String,
         reply_content: String,
         links: Vec<LinkData>,
+        buttons: Vec<MessageButtonData>,
         timestamp: String,
     },
     GuildLoaded {
@@ -768,6 +769,15 @@ pub struct LinkData {
     pub url: String,
 }
 
+#[derive(Clone, Default, Debug)]
+pub struct MessageButtonData {
+    pub label: String,
+    pub url: String,
+    pub emoji: String,
+    pub style_type: i32,
+    pub is_disabled: bool,
+}
+
 pub fn format_decimal_color(color_val: &Value) -> String {
     if let Some(dec) = color_val.as_u64() {
         let r = (dec >> 16) & 0xFF;
@@ -853,10 +863,11 @@ fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
 /// `embed_content` has all embed text (title, desc, fields etc.).
 /// `embed_footer` has footer text.
 /// `code_block` has extracted monospaced code blocks.
-pub fn format_discord_message_parts(m: &Value) -> (String, String, String, String, String, String, String, Vec<LinkData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, String, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
     let mut links: Vec<LinkData> = Vec::new();
+    let mut buttons: Vec<MessageButtonData> = Vec::new();
     let mut embed_footer = String::new();
     let mut reply_author = String::new();
     let mut reply_content = String::new();
@@ -1067,44 +1078,58 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
         }
     }
 
-    // 5. Components V2 → content & clickable links
+    // 5. Components V2 → Rich interactive buttons (ActionRows)
     if let Some(components) = m["components"].as_array() {
         for row in components {
             if let Some(row_components) = row["components"].as_array() {
-                let mut button_labels: Vec<String> = Vec::new();
                 for comp in row_components {
                     let comp_type = comp["type"].as_u64().unwrap_or(0);
                     match comp_type {
                         2 => {
-                            if let Some(label) = comp["label"].as_str() {
-                                if let Some(url) = comp["url"].as_str() {
-                                    button_labels.push(format!("[{}]", label));
-                                    links.push(LinkData {
-                                        label: format!("Botao: {}", label),
-                                        url: url.to_string(),
-                                    });
-                                } else {
-                                    button_labels.push(format!("[{}]", label));
+                            let label = comp["label"].as_str().unwrap_or("").trim();
+                            let url = comp["url"].as_str().unwrap_or("").trim();
+                            let style = comp["style"].as_i64().unwrap_or(if !url.is_empty() { 5 } else { 2 }) as i32;
+                            let is_disabled = comp["disabled"].as_bool().unwrap_or(false);
+                            
+                            let mut emoji_str = String::new();
+                            if let Some(emoji_obj) = comp.get("emoji") {
+                                if let Some(emoji_name) = emoji_obj["name"].as_str() {
+                                    emoji_str = emoji_name.to_string();
                                 }
                             }
+
+                            if !label.is_empty() || !emoji_str.is_empty() {
+                                buttons.push(MessageButtonData {
+                                    label: label.to_string(),
+                                    url: url.to_string(),
+                                    emoji: emoji_str,
+                                    style_type: style,
+                                    is_disabled,
+                                });
+                            }
                         }
-                        3 => {
+                        3 | 5 | 6 | 7 | 8 => {
                             if let Some(placeholder) = comp["placeholder"].as_str() {
-                                button_labels.push(format!("[Menu: {}]", placeholder));
+                                if !placeholder.is_empty() {
+                                    buttons.push(MessageButtonData {
+                                        label: placeholder.to_string(),
+                                        url: String::new(),
+                                        emoji: "📋".to_string(),
+                                        style_type: 2,
+                                        is_disabled: true,
+                                    });
+                                }
                             }
                         }
                         _ => {}
                     }
-                }
-                if !button_labels.is_empty() {
-                    content_parts.push(button_labels.join("  "));
                 }
             }
         }
     }
 
     // Build content string
-    let content = if content_parts.is_empty() && embed_parts_all.is_empty() {
+    let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() {
         match msg_type {
             1 => "[Membro adicionado ao grupo]".to_string(),
             2 => "[Membro removido do grupo]".to_string(),
@@ -1135,13 +1160,13 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links)
+    (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 #[allow(dead_code)]
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, embed, _, _, _, _, _, _) = format_discord_message_parts(m);
+    let (content, embed, _, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -1663,7 +1688,7 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(&v["d"]);
+                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
@@ -1677,6 +1702,7 @@ impl GatewayClient {
                         reply_author,
                         reply_content,
                         links,
+                        buttons,
                         timestamp,
                     }).await;
                 }
