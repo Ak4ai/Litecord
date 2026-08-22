@@ -961,29 +961,60 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
                 && !lower.starts_with("default ime")
                 && !lower.starts_with("litecord - transmissão") 
             {
-                // Clean app label based on title
-                let app_type = if lower.contains("chrome") {
-                    "Google Chrome"
-                } else if lower.contains("firefox") {
-                    "Mozilla Firefox"
-                } else if lower.contains("edge") {
-                    "Microsoft Edge"
-                } else if lower.contains("visual studio code") || lower.contains("code") {
-                    "Visual Studio Code"
-                } else if lower.contains("discord") {
-                    "Discord"
-                } else if lower.contains("spotify") {
-                    "Spotify"
-                } else if lower.contains("telegram") {
-                    "Telegram"
-                } else if lower.contains("litecord") {
-                    "Litecord"
-                } else if lower.contains("terminal") || lower.contains("powershell") || lower.contains("cmd") {
-                    "Terminal"
-                } else if lower.contains("notepad") || lower.contains("bloco de notas") {
-                    "Bloco de Notas"
+                use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+                use windows_sys::Win32::System::ProcessStatus::GetModuleFileNameExW;
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+                let mut pid: u32 = 0;
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                let is_own_process = pid == std::process::id();
+
+                let mut exe_name = String::new();
+                if pid != 0 {
+                    let hproc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                    if !hproc.is_null() {
+                        let mut path_buf = [0u16; 1024];
+                        let len = GetModuleFileNameExW(hproc, std::ptr::null_mut(), path_buf.as_mut_ptr(), 1024);
+                        windows_sys::Win32::Foundation::CloseHandle(hproc);
+                        if len > 0 {
+                            let full_path = String::from_utf16_lossy(&path_buf[..len as usize]);
+                            if let Some(filename) = full_path.split('\\').last() {
+                                exe_name = filename.to_lowercase();
+                            }
+                        }
+                    }
+                }
+
+                // Strictly detect Litecord first (own PID or litecord exe/title)
+                let app_type = if is_own_process || exe_name.contains("litecord") || lower.contains("litecord") {
+                    "Litecord".to_string()
+                } else if exe_name.contains("chrome") || lower.contains("chrome") {
+                    "Google Chrome".to_string()
+                } else if exe_name.contains("firefox") || lower.contains("firefox") {
+                    "Mozilla Firefox".to_string()
+                } else if exe_name.contains("msedge") || lower.contains("edge") {
+                    "Microsoft Edge".to_string()
+                } else if exe_name.contains("code") || lower.contains("visual studio code") {
+                    "Visual Studio Code".to_string()
+                } else if exe_name.contains("discord") {
+                    "Discord".to_string()
+                } else if exe_name.contains("spotify") || lower.contains("spotify") {
+                    "Spotify".to_string()
+                } else if exe_name.contains("telegram") || lower.contains("telegram") {
+                    "Telegram".to_string()
+                } else if exe_name.contains("terminal") || exe_name.contains("powershell") || exe_name.contains("cmd") || lower.contains("terminal") {
+                    "Terminal".to_string()
+                } else if exe_name.contains("notepad") || lower.contains("bloco de notas") {
+                    "Bloco de Notas".to_string()
+                } else if !exe_name.is_empty() {
+                    let clean = exe_name.trim_end_matches(".exe");
+                    let mut chars = clean.chars();
+                    match chars.next() {
+                        None => "Janela".to_string(),
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    }
                 } else {
-                    "Janela"
+                    "Janela".to_string()
                 };
 
                 let icon_rgba = extract_window_icon_rgba(hwnd);
@@ -991,7 +1022,7 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
                 data.windows.push(CapturableWindowItem {
                     id: (hwnd as isize).to_string(),
                     title: title.clone(),
-                    app_name: app_type.to_string(),
+                    app_name: app_type,
                     icon_rgba,
                 });
             }
