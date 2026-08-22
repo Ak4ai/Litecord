@@ -43,7 +43,9 @@ pub enum GatewayEvent {
         channel_id: String,
         author: String,
         content: String,
+        content_blocks: Vec<MessageBlockData>,
         embed_content: String,
+        embed_blocks: Vec<MessageBlockData>,
         embed_color: String,
         embed_footer: String,
         code_block: String,
@@ -770,12 +772,118 @@ pub struct LinkData {
 }
 
 #[derive(Clone, Default, Debug)]
+pub struct MessageBlockData {
+    pub text: String,
+    pub is_link: bool,
+    pub url: String,
+}
+
+#[derive(Clone, Default, Debug)]
 pub struct MessageButtonData {
     pub label: String,
     pub url: String,
     pub emoji: String,
     pub style_type: i32,
     pub is_disabled: bool,
+}
+
+pub fn parse_text_into_blocks(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageBlockData> {
+    let mut blocks = Vec::new();
+    if input.is_empty() {
+        return blocks;
+    }
+
+    for line in input.split('\n') {
+        let mut rem = line;
+        let mut line_has_links = false;
+
+        while let Some(bracket_start) = rem.find('[') {
+            let before = &rem[..bracket_start];
+            let after_bracket = &rem[bracket_start + 1..];
+            if let Some(bracket_end) = after_bracket.find(']') {
+                let label = &after_bracket[..bracket_end];
+                let after_label = &after_bracket[bracket_end + 1..];
+                if after_label.starts_with('(') {
+                    if let Some(paren_end) = after_label.find(')') {
+                        let url = &after_label[1..paren_end];
+                        if url.starts_with("http") {
+                            line_has_links = true;
+                            if !before.is_empty() {
+                                blocks.push(MessageBlockData {
+                                    text: parse_discord_markdown(before),
+                                    is_link: false,
+                                    url: String::new(),
+                                });
+                            }
+                            let display_label = if label.is_empty() { url } else { label };
+                            blocks.push(MessageBlockData {
+                                text: display_label.to_string(),
+                                is_link: true,
+                                url: url.to_string(),
+                            });
+                            if !links.iter().any(|l| l.url == url) {
+                                links.push(LinkData {
+                                    label: display_label.to_string(),
+                                    url: url.to_string(),
+                                });
+                            }
+                            rem = &after_label[paren_end + 1..];
+                            continue;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        if line_has_links {
+            if !rem.is_empty() {
+                blocks.push(MessageBlockData {
+                    text: parse_discord_markdown(rem),
+                    is_link: false,
+                    url: String::new(),
+                });
+            }
+        } else {
+            let mut raw_url_found = false;
+            for word in line.split_whitespace() {
+                let clean_word = word.trim_matches(|c| c == '<' || c == '>' || c == '(' || c == ')' || c == '"' || c == '\'');
+                if (clean_word.starts_with("http://") || clean_word.starts_with("https://")) && clean_word.len() > 8 {
+                    raw_url_found = true;
+                    if !links.iter().any(|l| l.url == clean_word) {
+                        links.push(LinkData {
+                            label: clean_word.to_string(),
+                            url: clean_word.to_string(),
+                        });
+                    }
+                }
+            }
+            if raw_url_found {
+                let trimmed = line.trim();
+                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                    blocks.push(MessageBlockData {
+                        text: trimmed.to_string(),
+                        is_link: true,
+                        url: trimmed.to_string(),
+                    });
+                } else {
+                    blocks.push(MessageBlockData {
+                        text: parse_discord_markdown(line),
+                        is_link: false,
+                        url: String::new(),
+                    });
+                }
+            } else if !line.is_empty() {
+                blocks.push(MessageBlockData {
+                    text: parse_discord_markdown(line),
+                    is_link: false,
+                    url: String::new(),
+                });
+            }
+        }
+    }
+
+    blocks
 }
 
 pub fn format_decimal_color(color_val: &Value) -> String {
@@ -880,9 +988,11 @@ fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
 /// `embed_content` has all embed text (title, desc, fields etc.).
 /// `embed_footer` has footer text.
 /// `code_block` has extracted monospaced code blocks.
-pub fn format_discord_message_parts(m: &Value) -> (String, String, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, Vec<MessageBlockData>, String, Vec<MessageBlockData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
     let mut content_parts: Vec<String> = Vec::new();
+    let mut content_blocks: Vec<MessageBlockData> = Vec::new();
     let mut embed_parts_all: Vec<String> = Vec::new();
+    let mut embed_blocks: Vec<MessageBlockData> = Vec::new();
     let mut links: Vec<LinkData> = Vec::new();
     let mut buttons: Vec<MessageButtonData> = Vec::new();
     let mut embed_footer = String::new();
@@ -938,23 +1048,27 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
         }
     }
 
-    // 1. Raw Text Content — parsed through full Discord Markdown pipeline and clean links
+    // 1. Raw Text Content — parsed into blocks and regular text
     let mut code_block = String::new();
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
-            let cleaned = extract_and_clean_links(trimmed, &mut links);
-            let (cleaned_text, extracted_code) = extract_triple_backtick_code_blocks(&cleaned);
+            let (cleaned_text, extracted_code) = extract_triple_backtick_code_blocks(trimmed);
             if !extracted_code.is_empty() {
                 code_block = extracted_code;
             }
             if !cleaned_text.trim().is_empty() {
-                content_parts.push(parse_discord_markdown(&cleaned_text));
+                let parsed_blocks = parse_text_into_blocks(&cleaned_text, &mut links);
+                if parsed_blocks.iter().any(|b| b.is_link) {
+                    content_blocks = parsed_blocks;
+                }
+                let cleaned = extract_and_clean_links(&cleaned_text, &mut links);
+                content_parts.push(parse_discord_markdown(&cleaned));
             }
         }
     }
 
-    // 2. Embeds → go into embed_content (separate from main content)
+    // 2. Embeds → go into embed_content & embed_blocks
     if let Some(embeds) = m["embeds"].as_array() {
         for embed in embeds {
             let mut ep: Vec<String> = Vec::new();
@@ -976,20 +1090,31 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
                     let parsed_title = parse_discord_markdown(&cleaned_title);
                     if let Some(url) = embed["url"].as_str() {
                         if !url.is_empty() {
-                            links.push(LinkData {
-                                label: format!("Titulo: {}", parsed_title),
+                            embed_blocks.push(MessageBlockData {
+                                text: parsed_title.clone(),
+                                is_link: true,
                                 url: url.to_string(),
                             });
+                            if !links.iter().any(|l| l.url == url) {
+                                links.push(LinkData {
+                                    label: format!("Titulo: {}", parsed_title),
+                                    url: url.to_string(),
+                                });
+                            }
                         }
                     }
                     ep.push(parsed_title);
                 }
             }
 
-            // Embed description — full markdown parsing
+            // Embed description
             if let Some(desc) = embed["description"].as_str() {
                 let d = desc.trim();
                 if !d.is_empty() {
+                    let desc_blocks = parse_text_into_blocks(d, &mut links);
+                    if desc_blocks.iter().any(|b| b.is_link) {
+                        embed_blocks.extend(desc_blocks);
+                    }
                     let cleaned = extract_and_clean_links(d, &mut links);
                     ep.push(parse_discord_markdown(&cleaned));
                 }
@@ -1002,11 +1127,19 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
                     let val  = field["value"].as_str().unwrap_or("").trim();
                     if !name.is_empty() && !val.is_empty() {
                         let cleaned_name = extract_and_clean_links(name, &mut links);
+                        let field_blocks = parse_text_into_blocks(val, &mut links);
+                        if field_blocks.iter().any(|b| b.is_link) {
+                            embed_blocks.extend(field_blocks);
+                        }
                         let cleaned_val = extract_and_clean_links(val, &mut links);
                         ep.push(format!("{}: {}",
                             parse_discord_markdown(&cleaned_name),
                             parse_discord_markdown(&cleaned_val)));
                     } else if !val.is_empty() {
+                        let field_blocks = parse_text_into_blocks(val, &mut links);
+                        if field_blocks.iter().any(|b| b.is_link) {
+                            embed_blocks.extend(field_blocks);
+                        }
                         let cleaned_val = extract_and_clean_links(val, &mut links);
                         ep.push(parse_discord_markdown(&cleaned_val));
                     }
@@ -1177,13 +1310,13 @@ pub fn format_discord_message_parts(m: &Value) -> (String, String, String, Strin
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
+    (content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 #[allow(dead_code)]
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, embed, _, _, _, _, _, _, _) = format_discord_message_parts(m);
+    let (content, _, embed, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -1705,14 +1838,16 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
+                    let (content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
                         channel_id,
                         author,
                         content,
+                        content_blocks,
                         embed_content,
+                        embed_blocks,
                         embed_color,
                         embed_footer,
                         code_block,

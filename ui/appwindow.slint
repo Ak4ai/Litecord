@@ -29,6 +29,12 @@ struct LinkItem {
     url: string,
 }
 
+struct MessageBlock {
+    text: string,
+    is_link: bool,
+    url: string,
+}
+
 struct MessageButton {
     label: string,
     url: string,
@@ -42,7 +48,9 @@ struct ChatMessage {
     author: string,
     timestamp: string,
     content: string,
+    content_blocks: [MessageBlock],
     embed_content: string,
+    embed_blocks: [MessageBlock],
     embed_color: color,
     embed_footer: string,
     code_block: string,
@@ -191,6 +199,7 @@ component ChatMessagesView inherits Rectangle {
             for msg in root.messages: Rectangle {
                 background: #2b2d31;
                 border-radius: 6px;
+                property <bool> is-collapsed: true;
 
                 VerticalBox {
                     padding: 8px;
@@ -254,9 +263,74 @@ component ChatMessagesView inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
+
+                        if msg.links.length > 0 : Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            background: transparent;
+                            Text {
+                                text: is-collapsed ? "▼" : "▲";
+                                color: #949ba4;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    is-collapsed = !is-collapsed;
+                                }
+                            }
+                        }
                     }
 
-                    if msg.content != "": Text {
+                    if msg.content_blocks.length > 0: VerticalLayout {
+                        spacing: 3px;
+                        for block in msg.content_blocks: HorizontalLayout {
+                            alignment: start;
+                            spacing: 4px;
+
+                            if block.is_link: Rectangle {
+                                background: block_ta.has-hover ? #1e293b : transparent;
+                                border-radius: 3px;
+                                HorizontalLayout {
+                                    padding-left: 2px;
+                                    padding-right: 2px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: block.text;
+                                        color: block_ta.has-hover ? #58a6ff : #00a8fc;
+                                        font-size: 13.5px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/external-link.svg");
+                                            width: 11px;
+                                            height: 11px;
+                                            colorize: block_ta.has-hover ? #58a6ff : #00a8fc;
+                                            image-fit: contain;
+                                        }
+                                    }
+                                }
+                                block_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open_link(block.url); }
+                                }
+                            }
+
+                            if !block.is_link: Text {
+                                text: block.text;
+                                color: #dbdee1;
+                                font-size: 13.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    if msg.content_blocks.length == 0 && msg.content != "": Text {
                         text: msg.content;
                         color: #dbdee1;
                         font-size: 13.5px;
@@ -281,7 +355,7 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
+                    if msg.embed-content != "" || msg.embed_blocks.length > 0 || msg.embed-footer != "": Rectangle {
                         background: #232428;
                         border-radius: 4px;
 
@@ -298,7 +372,53 @@ component ChatMessagesView inherits Rectangle {
                                 padding-left: 12px;
                                 spacing: 8px;
 
-                                if msg.embed-content != "": Text {
+                                if msg.embed_blocks.length > 0: VerticalLayout {
+                                    spacing: 3px;
+                                    for block in msg.embed_blocks: HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 4px;
+
+                                        if block.is_link: Rectangle {
+                                            background: eblock_ta.has-hover ? #1e293b : transparent;
+                                            border-radius: 3px;
+                                            HorizontalLayout {
+                                                padding-left: 2px;
+                                                padding-right: 2px;
+                                                spacing: 4px;
+                                                Text {
+                                                    text: block.text;
+                                                    color: eblock_ta.has-hover ? #58a6ff : #00a8fc;
+                                                    font-size: 12.5px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/external-link.svg");
+                                                        width: 10px;
+                                                        height: 10px;
+                                                        colorize: eblock_ta.has-hover ? #58a6ff : #00a8fc;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                            }
+                                            eblock_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.open_link(block.url); }
+                                            }
+                                        }
+
+                                        if !block.is_link: Text {
+                                            text: block.text;
+                                            color: #d2d5d9;
+                                            font-size: 12.5px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+
+                                if msg.embed_blocks.length == 0 && msg.embed-content != "": Text {
                                     text: msg.embed-content;
                                     color: #d2d5d9;
                                     font-size: 12.5px;
@@ -393,7 +513,7 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.links.length > 0 : VerticalLayout {
+                    if msg.links.length > 0 && !is-collapsed : VerticalLayout {
                         spacing: 4px;
                         padding-top: 4px;
                         for link in msg.links : Rectangle {

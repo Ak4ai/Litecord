@@ -750,7 +750,9 @@ async fn fetch_and_populate_channels(
                             id: "".into(),
                             author: "Litecord System".into(),
                             content: "🔒 Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                            content_blocks: slint::ModelRc::default(),
                             embed_content: "".into(),
+                            embed_blocks: slint::ModelRc::default(),
                             embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                             embed_footer: "".into(),
                             code_block: "".into(),
@@ -798,7 +800,9 @@ async fn load_messages_for_channel(
                             id: "".into(),
                             author: "Litecord System".into(),
                             content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                            content_blocks: slint::ModelRc::default(),
                             embed_content: "".into(),
+                            embed_blocks: slint::ModelRc::default(),
                             embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                             embed_footer: "".into(),
                             code_block: "".into(),
@@ -812,7 +816,7 @@ async fn load_messages_for_channel(
                         msgs_val.iter().rev().map(|m| {
                             let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
-                            let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
+                            let (content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
                             
                             let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                 label: l.label.clone().into(),
@@ -829,11 +833,27 @@ async fn load_messages_for_channel(
                             }).collect();
                             let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
 
+                            let slint_cblocks: Vec<MessageBlock> = content_blocks.iter().map(|b| MessageBlock {
+                                text: b.text.clone().into(),
+                                is_link: b.is_link,
+                                url: b.url.clone().into(),
+                            }).collect();
+                            let cblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_cblocks));
+
+                            let slint_eblocks: Vec<MessageBlock> = embed_blocks.iter().map(|b| MessageBlock {
+                                text: b.text.clone().into(),
+                                is_link: b.is_link,
+                                url: b.url.clone().into(),
+                            }).collect();
+                            let eblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_eblocks));
+
                             ChatMessage {
                                 id: msg_id.into(),
                                 author: author.into(),
                                 content: content.into(),
+                                content_blocks: slint::ModelRc::from(cblocks_model),
                                 embed_content: embed_content.into(),
+                                embed_blocks: slint::ModelRc::from(eblocks_model),
                                 embed_color: parse_hex_color(&embed_color),
                                 embed_footer: embed_footer.into(),
                                 code_block: code_block.into(),
@@ -873,7 +893,9 @@ async fn load_messages_for_channel(
                         id: "".into(),
                         author: "Litecord System".into(),
                         content: friendly_msg.into(),
+                        content_blocks: slint::ModelRc::default(),
                         embed_content: "".into(),
+                        embed_blocks: slint::ModelRc::default(),
                         embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                         embed_footer: "".into(),
                         code_block: "".into(),
@@ -2497,7 +2519,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "".into(),
                 author: "Litecord Voice".into(),
                 content: "🔴 Desconectado da sala de voz.".into(),
+                content_blocks: slint::ModelRc::default(),
                 embed_content: "".into(),
+                embed_blocks: slint::ModelRc::default(),
                 embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                 embed_footer: "".into(),
                 code_block: "".into(),
@@ -2651,7 +2675,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
                                     let msg_id = m["id"].as_str().unwrap_or("");
                                     let author = format_discord_author(m);
-                                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
+                                    let (content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
                                     
                                     let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                         label: l.label.clone().into(),
@@ -2668,11 +2692,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }).collect();
                                     let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
 
+                                    let slint_cblocks: Vec<MessageBlock> = content_blocks.iter().map(|b| MessageBlock {
+                                        text: b.text.clone().into(),
+                                        is_link: b.is_link,
+                                        url: b.url.clone().into(),
+                                    }).collect();
+                                    let cblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_cblocks));
+
+                                    let slint_eblocks: Vec<MessageBlock> = embed_blocks.iter().map(|b| MessageBlock {
+                                        text: b.text.clone().into(),
+                                        is_link: b.is_link,
+                                        url: b.url.clone().into(),
+                                    }).collect();
+                                    let eblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_eblocks));
+
                                     ChatMessage {
                                         id: msg_id.into(),
                                         author: author.into(),
                                         content: content.into(),
+                                        content_blocks: slint::ModelRc::from(cblocks_model),
                                         embed_content: embed_content.into(),
+                                        embed_blocks: slint::ModelRc::from(eblocks_model),
                                         embed_color: parse_hex_color(&embed_color),
                                         embed_footer: embed_footer.into(),
                                         code_block: code_block.into(),
@@ -3179,7 +3219,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: "".into(),
                     author: "Litecord Voice".into(),
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
+                    content_blocks: slint::ModelRc::default(),
                     embed_content: "".into(),
+                    embed_blocks: slint::ModelRc::default(),
                     embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                     embed_footer: "".into(),
                     code_block: "".into(),
@@ -3448,7 +3490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { channel_id, author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons, timestamp } => {
+                GatewayEvent::MessageCreated { channel_id, author, content, content_blocks, embed_content, embed_blocks, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3480,11 +3522,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }).collect();
                                 let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
 
+                                let slint_cblocks: Vec<MessageBlock> = content_blocks.iter().map(|b| MessageBlock {
+                                    text: b.text.clone().into(),
+                                    is_link: b.is_link,
+                                    url: b.url.clone().into(),
+                                }).collect();
+                                let cblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_cblocks));
+
+                                let slint_eblocks: Vec<MessageBlock> = embed_blocks.iter().map(|b| MessageBlock {
+                                    text: b.text.clone().into(),
+                                    is_link: b.is_link,
+                                    url: b.url.clone().into(),
+                                }).collect();
+                                let eblocks_model = std::rc::Rc::new(slint::VecModel::from(slint_eblocks));
+
                                 current_msgs.push(ChatMessage {
                                     id: "".into(),
                                     author: author.into(),
                                     content: content.into(),
+                                    content_blocks: slint::ModelRc::from(cblocks_model),
                                     embed_content: embed_content.into(),
+                                    embed_blocks: slint::ModelRc::from(eblocks_model),
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
