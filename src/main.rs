@@ -986,11 +986,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     let app_weak = app.as_weak();
 
+    let popout_window = PopoutStreamWindow::new()?;
+    let popout_weak = popout_window.as_weak();
+    let popout_hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
+
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     use i_slint_backend_winit::WinitWindowAccessor;
     let app_weak_init = app_weak.clone();
     let hwnd_store_init = Arc::clone(&hwnd_store);
+    let popout_weak_init = popout_weak.clone();
+    let pop_hwnd_c = Arc::clone(&popout_hwnd_store);
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_weak_init.upgrade() {
             ui.window().with_winit_window(|winit_win| {
@@ -1001,6 +1007,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 winit_win.set_minimized(false);
                 winit_win.focus_window();
                 winit_win.request_redraw();
+                if let Some(pop_win) = popout_weak_init.upgrade() {
+                    pop_win.window().with_winit_window(|winit_pop| {
+                        winit_pop.set_decorations(false);
+                        winit_pop.set_visible(false);
+                        #[cfg(target_os = "windows")]
+                        {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if let Ok(handle) = winit_pop.window_handle() {
+                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                    let hwnd = win32_handle.hwnd.get() as isize;
+                                    *pop_hwnd_c.lock().unwrap() = Some(hwnd);
+                                    set_dark_titlebar_color(hwnd);
+                                }
+                            }
+                        }
+                    });
+                }
+
                 // Set native window and taskbar/dock icon (Linux X11/Wayland & Windows)
                 let icon_bytes = include_bytes!("../assets/app_icon.png");
                 if let Ok(img) = image::load_from_memory(icon_bytes) {

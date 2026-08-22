@@ -1269,7 +1269,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Voice Room Participants List View
+                    // Voice Room Participants Dynamic Stage Grid
                     if !root.is_voice_connecting: Rectangle {
                         vertical-stretch: 1;
                         background: #313338;
@@ -1277,97 +1277,6 @@ export component AppWindow inherits Window {
                         VerticalBox {
                             padding: 12px;
                             spacing: 8px;
-
-                            // Live Screen Stream Video Viewport (Discord Style Stage)
-                            if root.has_active_stream: Rectangle {
-                                height: root.is_stream_fullscreen ? 460px : 260px;
-                                background: #111214;
-                                border-radius: 8px;
-                                border-width: 1px;
-                                border-color: #5865f2;
-                                clip: true;
-
-                                Image {
-                                    source: root.active_stream_frame;
-                                    width: 100%;
-                                    height: 100%;
-                                    image-fit: contain;
-                                }
-
-                                // Stream Overlay Header (Live Badge + User Tag + Fullscreen Button)
-                                HorizontalLayout {
-                                    x: 8px;
-                                    y: 8px;
-                                    width: parent.width - 16px;
-                                    spacing: 8px;
-
-                                    Rectangle {
-                                        background: #f23f43;
-                                        border-radius: 4px;
-                                        height: 22px;
-                                        HorizontalLayout {
-                                            padding-left: 8px;
-                                            padding-right: 8px;
-                                            spacing: 5px;
-                                            VerticalLayout {
-                                                alignment: center;
-                                                Rectangle {
-                                                    width: 6px;
-                                                    height: 6px;
-                                                    border-radius: 3px;
-                                                    background: #ffffff;
-                                                }
-                                            }
-                                            Text {
-                                                text: root.tr_live_badge;
-                                                color: #ffffff;
-                                                font-size: 10px;
-                                                font-weight: 800;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        background: #000000aa;
-                                        border-radius: 4px;
-                                        height: 22px;
-                                        HorizontalLayout {
-                                            padding-left: 8px;
-                                            padding-right: 8px;
-                                            Text {
-                                                text: root.active_stream_user + " • " + root.tr_stream_quality;
-                                                color: #dbdee1;
-                                                font-size: 11px;
-                                                font-weight: 600;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-
-                                    Rectangle { horizontal-stretch: 1; }
-
-                                    // Fullscreen / Theater Mode Toggle
-                                    Rectangle {
-                                        width: 28px;
-                                        height: 22px;
-                                        border-radius: 4px;
-                                        background: #000000aa;
-
-                                        Text {
-                                            text: root.is_stream_fullscreen ? "🗗" : "⛶";
-                                            color: #ffffff;
-                                            font-size: 12px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-
-                                        TouchArea {
-                                            clicked => { root.toggle_stream_fullscreen(); }
-                                        }
-                                    }
-                                }
-                            }
 
                             Text {
                                 text: root.tr_voice_participants_title + " (" + root.voice_participants.length + ")";
@@ -1378,16 +1287,254 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
-                                    height: 76px;
+                                    // Determine if this participant is actively streaming AND not popped out
+                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && (root.active_stream_user == p.username || root.active_stream_user == ("Você (Sua Tela)") || root.active_stream_user == ("Você (Janela)")) && root.popped_out_stream_uid != p.user_id));
+
+                                    height: is_streaming_attached ? (root.is_stream_fullscreen ? 420px : 260px) : 76px;
+                                    animate height { duration: 200ms; }
                                     background: #00000000;
 
-                                    Rectangle {
+                                    // 1. EXPANDED STREAM VIEWPORT (When Streaming in the room & NOT popped out)
+                                    if is_streaming_attached: Rectangle {
+                                        y: 4px;
+                                        height: parent.height - 8px;
+                                        background: #111214;
+                                        border-radius: 8px;
+                                        border-width: p.is_speaking ? 3px : (p.is_self ? 2px : 1px);
+                                        border-color: p.is_speaking ? #23a55a : (p.is_self ? #5865f2 : #383a40);
+                                        clip: true;
+
+                                        // Video Canvas
+                                        Image {
+                                            source: root.active_stream_frame;
+                                            width: 100%;
+                                            height: 100%;
+                                            image-fit: contain;
+                                        }
+
+                                        // Top Overlay Bar (Left: Live badge, username, mute, prio | Right: Popout, Fullscreen)
+                                        Rectangle {
+                                            x: 8px;
+                                            y: 8px;
+                                            width: parent.width - 16px;
+                                            height: 32px;
+                                            background: transparent;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: space-between;
+
+                                                // Left side: Badge, User Info, Mute and Priority
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    alignment: start;
+
+                                                    // Live Badge
+                                                    Rectangle {
+                                                        background: #f23f43;
+                                                        border-radius: 4px;
+                                                        height: 24px;
+                                                        HorizontalLayout {
+                                                            padding-left: 8px;
+                                                            padding-right: 8px;
+                                                            spacing: 5px;
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Rectangle {
+                                                                    width: 6px;
+                                                                    height: 6px;
+                                                                    border-radius: 3px;
+                                                                    background: #ffffff;
+                                                                }
+                                                            }
+                                                            Text {
+                                                                text: root.tr_live_badge;
+                                                                color: #ffffff;
+                                                                font-size: 10px;
+                                                                font-weight: 800;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Username & Quality Pill
+                                                    Rectangle {
+                                                        background: #000000aa;
+                                                        border-radius: 4px;
+                                                        height: 24px;
+                                                        HorizontalLayout {
+                                                            padding-left: 8px;
+                                                            padding-right: 8px;
+                                                            spacing: 6px;
+                                                            Text {
+                                                                text: p.username + " • " + root.tr_stream_quality;
+                                                                color: #dbdee1;
+                                                                font-size: 11px;
+                                                                font-weight: 600;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // If another user is streaming: Mute button and Priority controls directly on the stream card!
+                                                    if !p.is_self: HorizontalLayout {
+                                                        spacing: 4px;
+                                                        alignment: start;
+
+                                                        // Stream Mute Button
+                                                        Rectangle {
+                                                            width: 26px;
+                                                            height: 24px;
+                                                            border-radius: 4px;
+                                                            background: str_mute_ta.has-hover ? #000000dd : #000000aa;
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                HorizontalLayout {
+                                                                    alignment: center;
+                                                                    Image {
+                                                                        source: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
+                                                                        width: 12px;
+                                                                        height: 12px;
+                                                                        colorize: p.is_muted ? #f23f43 : #dbdee1;
+                                                                        image-fit: contain;
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            str_mute_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.toggle_user_mute(p.user_id); }
+                                                            }
+                                                        }
+
+                                                        // Stream Speech Priority Control Box
+                                                        Rectangle {
+                                                            width: 76px;
+                                                            height: 24px;
+                                                            background: #000000aa;
+                                                            border-radius: 4px;
+                                                            border-width: 1px;
+                                                            border-color: p.priority > 0 ? #5865f2 : #383a40;
+
+                                                            HorizontalLayout {
+                                                                padding: 1px;
+                                                                spacing: 2px;
+
+                                                                Rectangle {
+                                                                    width: 18px;
+                                                                    height: 20px;
+                                                                    border-radius: 3px;
+                                                                    background: str_pdec_ta.has-hover ? #383a40 : transparent;
+                                                                    Text { text: "-"; color: #dbdee1; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                                                    str_pdec_ta := TouchArea {
+                                                                        mouse-cursor: pointer;
+                                                                        clicked => { if p.priority > 0 { root.set_user_priority(p.user_id, p.priority - 1); } }
+                                                                    }
+                                                                }
+
+                                                                VerticalLayout {
+                                                                    horizontal-stretch: 1;
+                                                                    alignment: center;
+                                                                    Text {
+                                                                        text: p.priority == 0 ? "Normal" : ("P" + p.priority);
+                                                                        color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                        font-size: 9px;
+                                                                        font-weight: 700;
+                                                                        horizontal-alignment: center;
+                                                                    }
+                                                                }
+
+                                                                Rectangle {
+                                                                    width: 18px;
+                                                                    height: 20px;
+                                                                    border-radius: 3px;
+                                                                    background: str_pinc_ta.has-hover ? #383a40 : transparent;
+                                                                    Text { text: "+"; color: #dbdee1; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                                                    str_pinc_ta := TouchArea {
+                                                                        mouse-cursor: pointer;
+                                                                        clicked => { if p.priority < 3 { root.set_user_priority(p.user_id, p.priority + 1); } }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Right side: Popout button and Fullscreen toggle
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    alignment: end;
+
+                                                    // Popout Button
+                                                    Rectangle {
+                                                        width: 28px;
+                                                        height: 24px;
+                                                        border-radius: 4px;
+                                                        background: card_pop_ta.has-hover ? #000000dd : #000000aa;
+
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: @image-url("../assets/popout.svg");
+                                                                    width: 12px;
+                                                                    height: 12px;
+                                                                    colorize: #ffffff;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        card_pop_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.popped_out_stream_uid = p.user_id;
+                                                                root.popout_stream_window(p.user_id, p.username);
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Fullscreen Toggle
+                                                    Rectangle {
+                                                        width: 28px;
+                                                        height: 24px;
+                                                        border-radius: 4px;
+                                                        background: card_fs_ta.has-hover ? #000000dd : #000000aa;
+
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: root.is_stream_fullscreen ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
+                                                                    width: 10px;
+                                                                    height: 10px;
+                                                                    colorize: #ffffff;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        card_fs_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.toggle_stream_fullscreen(); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 2. STANDARD VOICE AUDIO RECTANGLE (When NOT streaming OR when Popped Out)
+                                    if !is_streaming_attached: Rectangle {
                                         y: 4px;
                                         height: 68px;
                                         background: p.is_self ? #232738 : #2b2d31;
                                         border-radius: 8px;
-                                        border-width: p.is_self ? 1px : 0px;
-                                        border-color: p.is_self ? #5865f2 : #00000000;
+                                        border-width: p.is_speaking ? 2px : (p.is_self ? 1px : 0px);
+                                        border-color: p.is_speaking ? #23a55a : (p.is_self ? #5865f2 : #00000000);
 
                                         HorizontalBox {
                                              padding-left: 12px;
@@ -1451,6 +1598,25 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
+                                                     if (root.popped_out_stream_uid == p.user_id || (p.is_self && root.popped_out_stream_uid == "self")): Rectangle {
+                                                         background: #5865f233;
+                                                         border-radius: 4px;
+                                                         border-width: 1px;
+                                                         border-color: #5865f2;
+                                                         height: 16px;
+                                                         HorizontalLayout {
+                                                             padding-left: 6px;
+                                                             padding-right: 6px;
+                                                             Text {
+                                                                 text: "DESANEXADO";
+                                                                 color: #5865f2;
+                                                                 font-size: 9px;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
+
                                                      if p.is_muted: HorizontalLayout {
                                                          spacing: 4px;
                                                          alignment: start;
@@ -1461,7 +1627,7 @@ export component AppWindow inherits Window {
                                                              colorize: #f23f43;
                                                          }
                                                          Text {
-                                                             text: p.is_self ? "MUTED" : "MUTED";
+                                                             text: "MUTED";
                                                              color: #f23f43;
                                                              font-size: 11px;
                                                              font-weight: 700;
@@ -1508,7 +1674,7 @@ export component AppWindow inherits Window {
                                                  }
 
                                                  if !p.is_self: HorizontalLayout {
-                                                     spacing: 16px;
+                                                     spacing: 12px;
 
                                                      // Animated Volume Level Meter Bar
                                                      VerticalLayout {
@@ -1555,7 +1721,7 @@ export component AppWindow inherits Window {
                                                       VerticalLayout {
                                                           alignment: center;
                                                           Slider {
-                                                              width: 120px;
+                                                              width: 110px;
                                                               minimum: 0.0;
                                                               maximum: 2.0;
                                                               value: p.volume;
@@ -1583,35 +1749,38 @@ export component AppWindow inherits Window {
                                                                       width: 20px;
                                                                       height: 20px;
                                                                       border-radius: 4px;
-                                                                      background: btn_minus.has-hover ? #35373c : #1e1f22;
+                                                                      background: prio_dec_ta.has-hover ? #383a40 : transparent;
 
                                                                       Text {
                                                                           text: "-";
-                                                                          color: p.priority > 0 ? #f23f43 : #4e5058;
-                                                                          font-size: 14px;
+                                                                          color: #dbdee1;
+                                                                          font-size: 12px;
                                                                           font-weight: 700;
                                                                           horizontal-alignment: center;
                                                                           vertical-alignment: center;
                                                                       }
 
-                                                                      btn_minus := TouchArea {
+                                                                      prio_dec_ta := TouchArea {
                                                                           clicked => {
-                                                                              if (p.priority > 0) {
+                                                                              if p.priority > 0 {
                                                                                   root.set_user_priority(p.user_id, p.priority - 1);
                                                                               }
                                                                           }
                                                                       }
                                                                   }
 
-                                                                  // Priority Indicator Text (P:0, P:1, P:2...)
-                                                                  Text {
-                                                                      text: "P:" + p.priority;
-                                                                      color: p.priority > 0 ? #5865f2 : #949ba4;
-                                                                      font-size: 11px;
-                                                                      font-weight: 700;
-                                                                      horizontal-alignment: center;
-                                                                      vertical-alignment: center;
+                                                                  // Priority Display
+                                                                  VerticalLayout {
                                                                       horizontal-stretch: 1;
+                                                                      alignment: center;
+                                                                      Text {
+                                                                          text: p.priority == 0 ? "Normal" : ("Prio " + p.priority);
+                                                                          color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                          font-size: 10px;
+                                                                          font-weight: 700;
+                                                                          horizontal-alignment: center;
+                                                                          vertical-alignment: center;
+                                                                      }
                                                                   }
 
                                                                   // "+" Increment Button
@@ -1619,20 +1788,22 @@ export component AppWindow inherits Window {
                                                                       width: 20px;
                                                                       height: 20px;
                                                                       border-radius: 4px;
-                                                                      background: btn_plus.has-hover ? #35373c : #1e1f22;
+                                                                      background: prio_inc_ta.has-hover ? #383a40 : transparent;
 
                                                                       Text {
                                                                           text: "+";
-                                                                          color: #23a55a;
-                                                                          font-size: 14px;
+                                                                          color: #dbdee1;
+                                                                          font-size: 12px;
                                                                           font-weight: 700;
                                                                           horizontal-alignment: center;
                                                                           vertical-alignment: center;
                                                                       }
 
-                                                                      btn_plus := TouchArea {
+                                                                      prio_inc_ta := TouchArea {
                                                                           clicked => {
-                                                                              root.set_user_priority(p.user_id, p.priority + 1);
+                                                                              if p.priority < 3 {
+                                                                                  root.set_user_priority(p.user_id, p.priority + 1);
+                                                                              }
                                                                           }
                                                                       }
                                                                   }
@@ -1647,8 +1818,6 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                }
-
                 if (!root.is_voice_focused || !root.is_in_voice): VerticalBox {
                     padding: 0px;
                     spacing: 0px;
@@ -2323,6 +2492,7 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
     }
 
     // Window Drag Resize Borders & Corner Handles (on PointerEventKind.down for 0-latency instant resize)
