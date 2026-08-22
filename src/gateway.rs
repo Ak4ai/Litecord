@@ -918,7 +918,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 });
                             }
                             line_blocks.push(MessageBlockData {
-                                text: format!("</{}>", clean_cmd),
+                                text: format!("/{}", clean_cmd),
                                 is_link: false,
                                 is_command: true,
                                 url: String::new(),
