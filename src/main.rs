@@ -1279,13 +1279,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_start_window_drag(move || {
             #[cfg(target_os = "windows")]
-            if let Some(hwnd) = *pop_hwnd_drag.lock().unwrap() {
-                unsafe {
-                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN, HTCAPTION};
-                    ReleaseCapture();
-                    SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
-                    return;
+            {
+                let mut hwnd_opt = *pop_hwnd_drag.lock().unwrap();
+                if hwnd_opt.is_none() {
+                    if let Some(pop) = pop_w_drag.upgrade() {
+                        let _ = pop.window().with_winit_window(|winit_pop| {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if let Ok(handle) = winit_pop.window_handle() {
+                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                    let hwnd = win32_handle.hwnd.get() as isize;
+                                    *pop_hwnd_drag.lock().unwrap() = Some(hwnd);
+                                    hwnd_opt = Some(hwnd);
+                                }
+                            }
+                        });
+                    }
+                }
+                if let Some(hwnd) = hwnd_opt {
+                    unsafe {
+                        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN, HTCAPTION};
+                        ReleaseCapture();
+                        SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                        return;
+                    }
                 }
             }
             #[cfg(not(target_os = "windows"))]
@@ -1330,28 +1347,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_drag_resize(move |edge: slint::SharedString| {
             #[cfg(target_os = "windows")]
-            if let Some(hwnd) = *pop_hwnd_resize.lock().unwrap() {
-                unsafe {
-                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        SendMessageW, WM_NCLBUTTONDOWN,
-                        HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
-                        HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT,
-                    };
-                    let hit_test = match edge.as_str() {
-                        "left" => HTLEFT,
-                        "right" => HTRIGHT,
-                        "top" => HTTOP,
-                        "bottom" => HTBOTTOM,
-                        "top-left" => HTTOPLEFT,
-                        "top-right" => HTTOPRIGHT,
-                        "bottom-left" => HTBOTTOMLEFT,
-                        "bottom-right" => HTBOTTOMRIGHT,
-                        _ => return,
-                    };
-                    ReleaseCapture();
-                    SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, hit_test as usize, 0);
-                    return;
+            {
+                let mut hwnd_opt = *pop_hwnd_resize.lock().unwrap();
+                if hwnd_opt.is_none() {
+                    if let Some(pop) = pop_w_resize.upgrade() {
+                        let _ = pop.window().with_winit_window(|winit_pop| {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if let Ok(handle) = winit_pop.window_handle() {
+                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                    let hwnd = win32_handle.hwnd.get() as isize;
+                                    *pop_hwnd_resize.lock().unwrap() = Some(hwnd);
+                                    hwnd_opt = Some(hwnd);
+                                }
+                            }
+                        });
+                    }
+                }
+                if let Some(hwnd) = hwnd_opt {
+                    unsafe {
+                        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            SendMessageW, WM_NCLBUTTONDOWN,
+                            HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
+                            HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT,
+                        };
+                        let hit_test = match edge.as_str() {
+                            "left" => HTLEFT,
+                            "right" => HTRIGHT,
+                            "top" => HTTOP,
+                            "bottom" => HTBOTTOM,
+                            "top-left" => HTTOPLEFT,
+                            "top-right" => HTTOPRIGHT,
+                            "bottom-left" => HTBOTTOMLEFT,
+                            "bottom-right" => HTBOTTOMRIGHT,
+                            _ => return,
+                        };
+                        ReleaseCapture();
+                        SendMessageW(hwnd as _, WM_NCLBUTTONDOWN, hit_test as usize, 0);
+                        return;
+                    }
                 }
             }
             #[cfg(not(target_os = "windows"))]
@@ -1440,13 +1474,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
-            move |_uid, uname, quality, pixel_buf| {
+            move |uid, uname, quality, pixel_buf| {
+                let uid_str = uid.to_string();
                 let app_w2 = app_w.clone();
                 let pop_w2 = pop_w.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     let frame = Image::from_rgba8(pixel_buf);
                     if let Some(ui) = app_w2.upgrade() {
                         ui.set_has_active_stream(true);
+                        ui.set_active_stream_user_id(uid_str.clone().into());
                         ui.set_active_stream_user(uname.clone().into());
                         ui.set_tr_stream_quality(quality.into());
                         ui.set_active_stream_frame(frame.clone());

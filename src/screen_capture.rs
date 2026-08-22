@@ -494,10 +494,36 @@ impl ScreenCaptureManager {
 }
 
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
-    vec![
-        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), P2P_VIDEO_PORT),
-        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), P2P_VIDEO_PORT),
-    ]
+    let mut addrs = Vec::new();
+    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), P2P_VIDEO_PORT));
+    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), P2P_VIDEO_PORT));
+
+    // Query active adapter IPv4 address via routing table probe
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
+                let octets = local.ip().octets();
+                addrs.push(SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
+                    P2P_VIDEO_PORT,
+                ));
+            }
+        }
+    }
+
+    // Common local network subnets (Vivo 192.168.15.x, Claro/Net 192.168.0/1.x, etc.)
+    for sub in [15, 1, 0, 100, 2] {
+        addrs.push(SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, sub, 255)),
+            P2P_VIDEO_PORT,
+        ));
+    }
+
+    // Direct LAN peer targets
+    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 15, 5)), P2P_VIDEO_PORT));
+    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 15, 2)), P2P_VIDEO_PORT));
+
+    addrs
 }
 
 fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
