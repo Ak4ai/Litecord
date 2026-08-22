@@ -317,53 +317,7 @@ component ChatMessagesView inherits Rectangle {
                         wrap: word-wrap;
                     }
 
-                    // 2. Interactive Slash Command Action Chips (e.g. [/247], [/play])
-                    if msg.commands.length > 0: HorizontalLayout {
-                        spacing: 6px;
-                        alignment: start;
-                        for cmd_name in msg.commands: Rectangle {
-                            height: 24px;
-                            background: cmd_chip_ta.has-hover ? #4752c4 : #5865f233;
-                            border-radius: 4px;
-                            border-width: 1px;
-                            border-color: #5865f2;
-
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                spacing: 5px;
-                                alignment: center;
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    Image {
-                                        source: @image-url("../assets/terminal.svg");
-                                        width: 12px;
-                                        height: 12px;
-                                        colorize: cmd_chip_ta.has-hover ? #ffffff : #58a6ff;
-                                        image-fit: contain;
-                                    }
-                                }
-
-                                Text {
-                                    text: cmd_name;
-                                    color: cmd_chip_ta.has-hover ? #ffffff : #58a6ff;
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            cmd_chip_ta := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.click_command(cmd_name);
-                                }
-                            }
-                        }
-                    }
-
-                    // 3. Code Block
+                    // 2. Code Block
                     if msg.code-block != "": Rectangle {
                         width: 100%;
                         background: #1e1f22;
@@ -385,7 +339,7 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    // 4. Embeds
+                    // 3. Embeds
                     if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
                         width: 100%;
                         background: #232428;
@@ -423,6 +377,54 @@ component ChatMessagesView inherits Rectangle {
                                     color: #949ba4;
                                     font-size: 11px;
                                     wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // 4. Interactive Slash Command Action Chips (e.g. [/247], [/play])
+                    if msg.commands.length > 0: HorizontalLayout {
+                        spacing: 6px;
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        alignment: start;
+                        for cmd_name in msg.commands: Rectangle {
+                            height: 26px;
+                            background: cmd_chip_ta.has-hover ? #4752c4 : #5865f233;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: #5865f2;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/terminal.svg");
+                                        width: 12px;
+                                        height: 12px;
+                                        colorize: cmd_chip_ta.has-hover ? #ffffff : #58a6ff;
+                                        image-fit: contain;
+                                    }
+                                }
+
+                                Text {
+                                    text: cmd_name;
+                                    color: cmd_chip_ta.has-hover ? #ffffff : #58a6ff;
+                                    font-size: 12.5px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            cmd_chip_ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.click_command(cmd_name);
                                 }
                             }
                         }

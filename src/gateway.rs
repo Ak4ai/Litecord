@@ -1124,6 +1124,49 @@ fn extract_triple_backtick_code_blocks(input: &str) -> (String, String) {
 /// `embed_content` has all embed text (title, desc, fields etc.).
 /// `embed_footer` has footer text.
 /// `code_block` has extracted monospaced code blocks.
+pub fn extract_commands_from_text(text: &str, commands: &mut Vec<String>) {
+    let t = text.trim();
+    if t.is_empty() { return; }
+
+    // 1. Extract </name:id> or </name>
+    let mut rem = t;
+    while let Some(pos) = rem.find("</") {
+        let after = &rem[pos + 2..];
+        if let Some(end) = after.find('>') {
+            let inside = &after[..end];
+            let name = if let Some(colon) = inside.find(':') {
+                &inside[..colon]
+            } else {
+                inside
+            };
+            let clean = name.trim().trim_start_matches('/');
+            if !clean.is_empty() && clean.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                let cmd_str = format!("/{}", clean);
+                if !commands.contains(&cmd_str) {
+                    commands.push(cmd_str);
+                }
+            }
+            rem = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+
+    // 2. Match standalone /command words (e.g. /play, /247, /stop, /skip)
+    for word in t.split_whitespace() {
+        let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/');
+        if cleaned.starts_with('/') && cleaned.len() >= 2 && cleaned.len() <= 32 {
+            let cmd_name = &cleaned[1..];
+            if !cmd_name.is_empty() && cmd_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                let cmd_str = format!("/{}", cmd_name);
+                if !commands.contains(&cmd_str) {
+                    commands.push(cmd_str);
+                }
+            }
+        }
+    }
+}
+
 pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut commands: Vec<String> = Vec::new();
@@ -1177,6 +1220,10 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 .and_then(|u| u["global_name"].as_str()
                     .or_else(|| u["username"].as_str()))
                 .unwrap_or("");
+            let cmd_str = format!("/{}", cmd_name);
+            if !commands.contains(&cmd_str) {
+                commands.push(cmd_str.clone());
+            }
             if !user_name.is_empty() {
                 content_parts.push(format!("[/{} por {}]", cmd_name, user_name));
             } else {
@@ -1190,29 +1237,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
-            // Extract any slash command mentions e.g. </play:123> or </247>
-            let mut rem_cmd = trimmed;
-            while let Some(pos) = rem_cmd.find("</") {
-                let after = &rem_cmd[pos + 2..];
-                if let Some(end) = after.find('>') {
-                    let inside = &after[..end];
-                    let name = if let Some(colon) = inside.find(':') {
-                        &inside[..colon]
-                    } else {
-                        inside
-                    };
-                    let clean = name.trim();
-                    if !clean.is_empty() {
-                        let cmd_str = format!("/{}", clean);
-                        if !commands.contains(&cmd_str) {
-                            commands.push(cmd_str);
-                        }
-                    }
-                    rem_cmd = &after[end + 1..];
-                } else {
-                    break;
-                }
-            }
+            extract_commands_from_text(trimmed, &mut commands);
 
             let (cleaned_text, extracted_code) = extract_triple_backtick_code_blocks(trimmed);
             if !extracted_code.is_empty() {
@@ -1238,6 +1263,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             if let Some(author_name) = embed["author"]["name"].as_str() {
                 let a = author_name.trim();
                 if !a.is_empty() {
+                    extract_commands_from_text(a, &mut commands);
                     let cleaned = extract_and_clean_links(a, &mut links);
                     let parsed = parse_discord_markdown(&cleaned);
                     embed_lines.extend(parse_text_into_lines(a, &mut links));
@@ -1249,6 +1275,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             if let Some(title) = embed["title"].as_str() {
                 let t = title.trim();
                 if !t.is_empty() {
+                    extract_commands_from_text(t, &mut commands);
                     let cleaned_title = extract_and_clean_links(t, &mut links);
                     let parsed_title = parse_discord_markdown(&cleaned_title);
                     if let Some(url) = embed["url"].as_str() {
@@ -1282,6 +1309,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             if let Some(desc) = embed["description"].as_str() {
                 let d = desc.trim();
                 if !d.is_empty() {
+                    extract_commands_from_text(d, &mut commands);
                     embed_lines.extend(parse_text_into_lines(d, &mut links));
                     let cleaned = extract_and_clean_links(d, &mut links);
                     ep.push(parse_discord_markdown(&cleaned));
@@ -1294,6 +1322,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                     let name = field["name"].as_str().unwrap_or("").trim();
                     let val  = field["value"].as_str().unwrap_or("").trim();
                     if !name.is_empty() && !val.is_empty() {
+                        extract_commands_from_text(name, &mut commands);
+                        extract_commands_from_text(val, &mut commands);
+
                         let field_line = format!("{}: {}", name, val);
                         embed_lines.extend(parse_text_into_lines(&field_line, &mut links));
 
@@ -1303,10 +1334,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                             parse_discord_markdown(&cleaned_name),
                             parse_discord_markdown(&cleaned_val)));
                     } else if !val.is_empty() {
+                        extract_commands_from_text(val, &mut commands);
                         embed_lines.extend(parse_text_into_lines(val, &mut links));
                         let cleaned_val = extract_and_clean_links(val, &mut links);
                         ep.push(parse_discord_markdown(&cleaned_val));
                     } else if !name.is_empty() {
+                        extract_commands_from_text(name, &mut commands);
                         embed_lines.extend(parse_text_into_lines(name, &mut links));
                         let cleaned_name = extract_and_clean_links(name, &mut links);
                         ep.push(parse_discord_markdown(&cleaned_name));
@@ -1346,6 +1379,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             if let Some(footer) = embed["footer"]["text"].as_str() {
                 let f = footer.trim();
                 if !f.is_empty() {
+                    extract_commands_from_text(f, &mut commands);
                     let cleaned = extract_and_clean_links(f, &mut links);
                     let footer_parsed = parse_discord_markdown(&cleaned);
                     if embed_footer.is_empty() {
