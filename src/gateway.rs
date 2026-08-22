@@ -444,17 +444,38 @@ pub fn get_user_name(user_id: u64) -> String {
     }
 }
 
+pub fn clean_discord_whitespace(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            // Em space, En space, Non-breaking space, tabs, ideographic space -> single regular space
+            '\u{00A0}' | '\u{2000}' | '\u{2001}' | '\u{2002}' | '\u{2003}' |
+            '\u{2004}' | '\u{2005}' | '\u{2006}' | '\u{2007}' | '\u{2008}' |
+            '\u{2009}' | '\u{200A}' | '\u{3000}' | '\t' => {
+                out.push(' ');
+            }
+            // Zero-width spaces, soft hyphens -> strip
+            '\u{200B}' | '\u{FEFF}' | '\u{200C}' | '\u{200D}' | '\u{200E}' | '\u{200F}' | '\u{00AD}' => {
+                // skip
+            }
+            _ => {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// Converts raw Discord Markdown syntax into clean readable plain text.
 /// Applied in the correct order so that code blocks are parsed first (immune
 /// to inner formatting) and inline formatting runs last.
 pub fn parse_discord_markdown(input: &str) -> String {
-    // We build the output line by line for block-level constructs,
-    // then apply inline transforms per line.
+    let cleaned_input = clean_discord_whitespace(input);
     let mut output_lines: Vec<String> = Vec::new();
 
     // ── Step 1: Protect code blocks (```) from inner parsing ──────────────
     // Split by triple-backtick blocks, mark odd-indexed segments as code.
-    let triple_parts: Vec<&str> = input.split("```").collect();
+    let triple_parts: Vec<&str> = cleaned_input.split("```").collect();
     let mut lines_to_process: Vec<(String, bool)> = Vec::new(); // (text, is_code_block)
 
     for (idx, part) in triple_parts.iter().enumerate() {
@@ -492,41 +513,46 @@ pub fn parse_discord_markdown(input: &str) -> String {
             continue;
         }
 
-        let line = text.as_str();
+        let raw_line = text.as_str();
+        let line = raw_line.trim_start();
+        if line.is_empty() {
+            output_lines.push(String::new());
+            continue;
+        }
 
         // Block-level: Headers (must be at start of line)
         if let Some(rest) = line.strip_prefix("### ") {
-            output_lines.push(format!("▪ {}", apply_inline_markdown(rest)));
+            output_lines.push(format!("▪ {}", apply_inline_markdown(rest.trim_start())));
             continue;
         }
         if let Some(rest) = line.strip_prefix("## ") {
-            output_lines.push(format!("▌ {}", apply_inline_markdown(rest)));
+            output_lines.push(format!("▌ {}", apply_inline_markdown(rest.trim_start())));
             continue;
         }
         if let Some(rest) = line.strip_prefix("# ") {
-            output_lines.push(format!("▌ {}", apply_inline_markdown(rest)));
+            output_lines.push(format!("▌ {}", apply_inline_markdown(rest.trim_start())));
             continue;
         }
         // Subtext
         if let Some(rest) = line.strip_prefix("-# ") {
-            output_lines.push(format!("  {}", apply_inline_markdown(rest)));
+            output_lines.push(apply_inline_markdown(rest.trim_start()));
             continue;
         }
         // Blockquote multi-line >>>
         if let Some(rest) = line.strip_prefix(">>> ") {
             for bq_line in rest.lines() {
-                output_lines.push(format!("│ {}", apply_inline_markdown(bq_line)));
+                output_lines.push(format!("│ {}", apply_inline_markdown(bq_line.trim_start())));
             }
             continue;
         }
         // Blockquote single line >
         if let Some(rest) = line.strip_prefix("> ") {
-            output_lines.push(format!("│ {}", apply_inline_markdown(rest)));
+            output_lines.push(format!("│ {}", apply_inline_markdown(rest.trim_start())));
             continue;
         }
         // Unordered list (- or * at start)
         if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-            output_lines.push(format!("• {}", apply_inline_markdown(rest)));
+            output_lines.push(format!("• {}", apply_inline_markdown(rest.trim_start())));
             continue;
         }
         // Ordered list (number followed by ". ")
@@ -538,7 +564,7 @@ pub fn parse_discord_markdown(input: &str) -> String {
             }
             if !digits.is_empty() && line[digits.len()..].starts_with(". ") {
                 let rest = &line[digits.len() + 2..];
-                output_lines.push(format!("{}. {}", digits, apply_inline_markdown(rest)));
+                output_lines.push(format!("{}. {}", digits, apply_inline_markdown(rest.trim_start())));
                 continue;
             }
         }
@@ -872,9 +898,15 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         return lines;
     }
 
-    for raw_line in input.split('\n') {
+    let cleaned = clean_discord_whitespace(input);
+
+    for raw_line in cleaned.split('\n') {
+        let trimmed_line = raw_line.trim_start();
+        if trimmed_line.is_empty() {
+            continue;
+        }
         let mut line_blocks = Vec::new();
-        let mut rem = raw_line;
+        let mut rem = trimmed_line;
 
         while !rem.is_empty() {
             let next_bracket = rem.find('[');
