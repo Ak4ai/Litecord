@@ -1436,6 +1436,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if !is_streaming {
                             ui.set_has_active_stream(false);
                             ui.set_active_stream_user("".into());
+                            ui.set_active_stream_user_id("".into());
                         }
                     }
                 });
@@ -1451,9 +1452,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
-                ui.set_has_active_stream(false);
-                ui.set_active_stream_user("".into());
-                ui.set_popped_out_stream_uid("".into());
+                if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == gateway::get_my_user_id().to_string().as_str() {
+                    ui.set_popped_out_stream_uid("".into());
+                }
                 #[cfg(target_os = "windows")]
                 if let Some(hwnd) = *pop_hwnd_ss.lock().unwrap() {
                     unsafe {
@@ -1671,7 +1672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
 
-                let total_users_count = sorted_users.len();
+                let _total_users_count = sorted_users.len();
                 for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
                     let uid_str = user_id.to_string();
                     let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
@@ -1767,10 +1768,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let is_streaming_peer = if is_self {
                         ui.get_is_screen_sharing()
                     } else {
+                        let act_uid = ui.get_active_stream_user_id();
+                        let act_uname = ui.get_active_stream_user();
                         ui.get_has_active_stream() && (
-                            (ui.get_active_stream_user_id() != "" && ui.get_active_stream_user_id() == uid_str)
-                            || (ui.get_active_stream_user() != "" && ui.get_active_stream_user() == username)
-                            || (total_users_count <= 2)
+                            (!act_uid.is_empty() && act_uid.as_str() == uid_str.as_str())
+                            || (!act_uname.is_empty() && act_uname.as_str() == username.as_str())
                         )
                     };
 
