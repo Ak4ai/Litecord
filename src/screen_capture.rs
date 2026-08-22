@@ -861,34 +861,28 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
 fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{
-        CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-        ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        HALFTONE, SRCCOPY,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
+        FillRect, GetDC, GetDIBits, ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, SRCCOPY,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetDesktopWindow, GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN,
+        GetDesktopWindow, GetSystemMetrics, GetWindowRect, IsIconic, IsWindow,
+        SM_CXSCREEN, SM_CYSCREEN,
     };
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn PrintWindow(
+            hwnd: windows_sys::Win32::Foundation::HWND,
+            hdcBlt: windows_sys::Win32::Graphics::Gdi::HDC,
+            nFlags: u32,
+        ) -> windows_sys::Win32::Foundation::BOOL;
+    }
 
     unsafe {
         let hwnd_desktop = GetDesktopWindow();
         let hdc_desktop = GetDC(hwnd_desktop);
         if hdc_desktop.is_null() {
-            return None;
-        }
-
-        let (src_x, src_y, src_w, src_h) = if target_hwnd != 0 {
-            let hwnd = target_hwnd as windows_sys::Win32::Foundation::HWND;
-            let mut rc: RECT = std::mem::zeroed();
-            GetWindowRect(hwnd, &mut rc);
-            let w = (rc.right - rc.left).max(1);
-            let h = (rc.bottom - rc.top).max(1);
-            (rc.left.max(0), rc.top.max(0), w, h)
-        } else {
-            (0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
-        };
-
-        if src_w <= 0 || src_h <= 0 {
-            ReleaseDC(hwnd_desktop, hdc_desktop);
             return None;
         }
 
@@ -907,22 +901,106 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
 
         let old_obj = SelectObject(hdc_mem, hbm_screen);
 
-        SetStretchBltMode(hdc_mem, HALFTONE);
-        SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
+        if target_hwnd != 0 {
+            let hwnd = target_hwnd as windows_sys::Win32::Foundation::HWND;
+            if IsWindow(hwnd) == 0 {
+                SelectObject(hdc_mem, old_obj);
+                DeleteObject(hbm_screen);
+                DeleteDC(hdc_mem);
+                ReleaseDC(hwnd_desktop, hdc_desktop);
+                return None;
+            }
 
-        StretchBlt(
-            hdc_mem,
-            0,
-            0,
-            target_w as i32,
-            target_h as i32,
-            hdc_desktop,
-            src_x,
-            src_y,
-            src_w,
-            src_h,
-            SRCCOPY,
-        );
+            let mut rc: RECT = std::mem::zeroed();
+            GetWindowRect(hwnd, &mut rc);
+            let win_w = (rc.right - rc.left).max(1);
+            let win_h = (rc.bottom - rc.top).max(1);
+
+            let hdc_win_mem = CreateCompatibleDC(hdc_desktop);
+            let hbm_win = CreateCompatibleBitmap(hdc_desktop, win_w, win_h);
+            let old_win_obj = SelectObject(hdc_win_mem, hbm_win);
+
+            let mut captured_ok = false;
+            if IsIconic(hwnd) == 0 {
+                // 1. Try PrintWindow with PW_RENDERFULLCONTENT (0x2) for direct compositor capture without occlusion
+                if PrintWindow(hwnd, hdc_win_mem, 2) != 0 {
+                    captured_ok = true;
+                }
+            }
+
+            // 2. Fallback to direct window DC if PrintWindow failed
+            if !captured_ok && IsIconic(hwnd) == 0 {
+                let hdc_win = GetDC(hwnd);
+                if !hdc_win.is_null() {
+                    BitBlt(hdc_win_mem, 0, 0, win_w, win_h, hdc_win, 0, 0, SRCCOPY);
+                    ReleaseDC(hwnd, hdc_win);
+                    captured_ok = true;
+                }
+            }
+
+            // 3. Fallback to desktop crop if window is minimized or special GDI overlay
+            if !captured_ok {
+                let src_x = rc.left.max(0);
+                let src_y = rc.top.max(0);
+                BitBlt(hdc_win_mem, 0, 0, win_w, win_h, hdc_desktop, src_x, src_y, SRCCOPY);
+            }
+
+            // Fill background with dark letterbox/pillarbox color (#111214)
+            let dark_brush = CreateSolidBrush(0x00141211); // COLORREF: 0x00BBGGRR
+            let target_rc = RECT { left: 0, top: 0, right: target_w as i32, bottom: target_h as i32 };
+            FillRect(hdc_mem, &target_rc, dark_brush);
+            DeleteObject(dark_brush);
+
+            // Compute aspect-ratio preserving dimensions
+            let scale_w = target_w as f32 / win_w as f32;
+            let scale_h = target_h as f32 / win_h as f32;
+            let scale = scale_w.min(scale_h);
+
+            let dest_w = ((win_w as f32 * scale).round() as i32).max(1);
+            let dest_h = ((win_h as f32 * scale).round() as i32).max(1);
+            let dest_x = ((target_w as i32 - dest_w) / 2).max(0);
+            let dest_y = ((target_h as i32 - dest_h) / 2).max(0);
+
+            SetStretchBltMode(hdc_mem, HALFTONE);
+            SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
+            StretchBlt(
+                hdc_mem,
+                dest_x,
+                dest_y,
+                dest_w,
+                dest_h,
+                hdc_win_mem,
+                0,
+                0,
+                win_w,
+                win_h,
+                SRCCOPY,
+            );
+
+            SelectObject(hdc_win_mem, old_win_obj);
+            DeleteObject(hbm_win);
+            DeleteDC(hdc_win_mem);
+        } else {
+            // Full screen capture
+            let screen_w = GetSystemMetrics(SM_CXSCREEN);
+            let screen_h = GetSystemMetrics(SM_CYSCREEN);
+
+            SetStretchBltMode(hdc_mem, HALFTONE);
+            SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
+            StretchBlt(
+                hdc_mem,
+                0,
+                0,
+                target_w as i32,
+                target_h as i32,
+                hdc_desktop,
+                0,
+                0,
+                screen_w,
+                screen_h,
+                SRCCOPY,
+            );
+        }
 
         let total_pixels = (target_w * target_h) as usize;
         let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(target_w, target_h);
