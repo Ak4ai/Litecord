@@ -922,8 +922,9 @@ export component AppWindow inherits Window {
     // Smart Command Autocomplete & Parameter Properties
     in-out property <string> chat_input_text: "";
     in-out property <bool> show_command_suggestions: false;
+    in-out property <int> active_suggestion_index: 0;
     in-out property <string> active_command_name: "";
-    in-out property <string> active_param_name: "query";
+    in-out property <string> active_param_name: "";
     in-out property <string> active_param_desc: "";
     in-out property <string> active_command_app_id: "";
     in-out property <string> active_command_cmd_id: "";
@@ -968,6 +969,20 @@ export component AppWindow inherits Window {
 
     public function scroll_chat_to_bottom() {
         root.scroll_to_bottom_trigger += 1;
+    }
+
+    public function select_suggestion(idx: int) {
+        if (idx >= 0 && idx < root.command_suggestions.length) {
+            root.active_command_name = root.command_suggestions[idx].name;
+            root.active_param_name = root.command_suggestions[idx].param_name;
+            root.active_param_desc = root.command_suggestions[idx].param_desc != "" ? root.command_suggestions[idx].param_desc : (root.command_suggestions[idx].param_name != "" ? root.command_suggestions[idx].desc : "Pressione Enter para executar " + root.command_suggestions[idx].name);
+            root.active_command_app_id = root.command_suggestions[idx].app_id;
+            root.active_command_cmd_id = root.command_suggestions[idx].cmd_id;
+            root.active_command_version = root.command_suggestions[idx].version;
+            root.command_arg_text = "";
+            root.chat_input_text = "";
+            root.show_command_suggestions = false;
+        }
     }
 
     // Translations (i18n)
@@ -2696,12 +2711,12 @@ export component AppWindow inherits Window {
                                 vertical-stretch: 1;
                                 VerticalLayout {
                                     spacing: 3px;
-                                    for cmd in root.command_suggestions: Rectangle {
+                                    for cmd[idx] in root.command_suggestions: Rectangle {
                                         height: 38px;
-                                        background: cmd_sug_ta.has-hover ? #35373c : #1e1f22;
+                                        background: (idx == root.active_suggestion_index || cmd_sug_ta.has-hover) ? #35373c : #1e1f22;
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: cmd_sug_ta.has-hover ? #5865f2 : transparent;
+                                        border-color: (idx == root.active_suggestion_index) ? #5865f2 : (cmd_sug_ta.has-hover ? #5865f288 : transparent);
 
                                          HorizontalLayout {
                                             padding-left: 10px;
@@ -2714,7 +2729,7 @@ export component AppWindow inherits Window {
                                                     source: @image-url("../assets/terminal.svg");
                                                     width: 14px;
                                                     height: 14px;
-                                                    colorize: #58a6ff;
+                                                    colorize: (idx == root.active_suggestion_index) ? #58a6ff : #80848e;
                                                     image-fit: contain;
                                                 }
                                             }
@@ -2723,7 +2738,7 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Text {
                                                     text: cmd.name;
-                                                    color: #58a6ff;
+                                                    color: (idx == root.active_suggestion_index) ? #ffffff : #58a6ff;
                                                     font-size: 13px;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
@@ -2735,17 +2750,17 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Rectangle {
                                                     height: 18px;
-                                                    background: #5865f222;
+                                                    background: (idx == root.active_suggestion_index) ? #5865f255 : #5865f222;
                                                     border-radius: 3px;
                                                     border-width: 1px;
-                                                    border-color: #5865f255;
+                                                    border-color: (idx == root.active_suggestion_index) ? #5865f2aa : #5865f255;
                                                     HorizontalLayout {
                                                         padding-left: 5px;
                                                         padding-right: 5px;
                                                         alignment: center;
                                                         Text {
                                                             text: cmd.app_name;
-                                                            color: #a5b4fc;
+                                                            color: (idx == root.active_suggestion_index) ? #ffffff : #a5b4fc;
                                                             font-size: 10px;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
@@ -2758,7 +2773,7 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Text {
                                                     text: cmd.desc;
-                                                    color: #949ba4;
+                                                    color: (idx == root.active_suggestion_index) ? #dbdee1 : #949ba4;
                                                     font-size: 11.5px;
                                                     vertical-alignment: center;
                                                     overflow: elide;
@@ -2771,7 +2786,7 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Text {
                                                     text: cmd.usage;
-                                                    color: #636b75;
+                                                    color: (idx == root.active_suggestion_index) ? #949ba4 : #636b75;
                                                     font-size: 10.5px;
                                                     font-family: "Courier New";
                                                     vertical-alignment: center;
@@ -2782,15 +2797,7 @@ export component AppWindow inherits Window {
                                         cmd_sug_ta := TouchArea {
                                             mouse-cursor: pointer;
                                             clicked => {
-                                                root.active_command_name = cmd.name;
-                                                root.active_param_name = cmd.param_name;
-                                                root.active_param_desc = cmd.param_desc != "" ? cmd.param_desc : (cmd.param_name != "" ? cmd.desc : "Pressione Enter para executar " + cmd.name);
-                                                root.active_command_app_id = cmd.app_id;
-                                                root.active_command_cmd_id = cmd.cmd_id;
-                                                root.active_command_version = cmd.version;
-                                                root.command_arg_text = "";
-                                                root.chat_input_text = "";
-                                                root.show_command_suggestions = false;
+                                                root.select_suggestion(idx);
                                             }
                                         }
                                     }
@@ -2916,18 +2923,54 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            if root.active_command_name == "" : msg_input := LineEdit {
+                            if root.active_command_name == "" : FocusScope {
                                 horizontal-stretch: 1;
-                                text <=> root.chat_input_text;
-                                placeholder-text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
-                                edited(val) => {
-                                    root.handle_input_change(val);
+                                key-pressed(event) => {
+                                    if (root.show_command_suggestions && root.command_suggestions.length > 0) {
+                                        if (event.text == Key.UpArrow) {
+                                            if (root.active_suggestion_index > 0) {
+                                                root.active_suggestion_index -= 1;
+                                            } else {
+                                                root.active_suggestion_index = root.command_suggestions.length - 1;
+                                            }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.DownArrow) {
+                                            if (root.active_suggestion_index < root.command_suggestions.length - 1) {
+                                                root.active_suggestion_index += 1;
+                                            } else {
+                                                root.active_suggestion_index = 0;
+                                            }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.Tab) {
+                                            root.select_suggestion(root.active_suggestion_index);
+                                            return accept;
+                                        }
+                                        if (event.text == Key.Escape) {
+                                            root.show_command_suggestions = false;
+                                            return accept;
+                                        }
+                                    }
+                                    reject
                                 }
-                                accepted => {
-                                    if (root.chat_input_text != "") {
-                                        root.send_message(root.chat_input_text);
-                                        root.chat_input_text = "";
-                                        root.show_command_suggestions = false;
+
+                                msg_input := LineEdit {
+                                    width: 100%;
+                                    text <=> root.chat_input_text;
+                                    placeholder-text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
+                                    edited(val) => {
+                                        root.active_suggestion_index = 0;
+                                        root.handle_input_change(val);
+                                    }
+                                    accepted => {
+                                        if (root.show_command_suggestions && root.command_suggestions.length > 0) {
+                                            root.select_suggestion(root.active_suggestion_index);
+                                        } else if (root.chat_input_text != "") {
+                                            root.send_message(root.chat_input_text);
+                                            root.chat_input_text = "";
+                                            root.show_command_suggestions = false;
+                                        }
                                     }
                                 }
                             }
@@ -2947,6 +2990,8 @@ export component AppWindow inherits Window {
                                         );
                                         root.active_command_name = "";
                                         root.command_arg_text = "";
+                                    } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
+                                        root.select_suggestion(root.active_suggestion_index);
                                     } else if (root.chat_input_text != "") {
                                         root.send_message(root.chat_input_text);
                                         root.chat_input_text = "";
