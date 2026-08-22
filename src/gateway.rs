@@ -56,6 +56,7 @@ pub enum GatewayEvent {
         reply_command: String,
         links: Vec<LinkData>,
         buttons: Vec<MessageButtonData>,
+        attachments: Vec<MessageAttachmentData>,
         timestamp: String,
     },
     MessageUpdated {
@@ -74,6 +75,7 @@ pub enum GatewayEvent {
         reply_command: String,
         links: Vec<LinkData>,
         buttons: Vec<MessageButtonData>,
+        attachments: Vec<MessageAttachmentData>,
     },
     MessageDeleted {
         id: String,
@@ -852,6 +854,21 @@ pub struct MessageButtonData {
     pub is_disabled: bool,
 }
 
+#[derive(Clone, Default, Debug)]
+#[allow(dead_code)]
+pub struct MessageAttachmentData {
+    pub id: String,
+    pub filename: String,
+    pub url: String,
+    pub proxy_url: String,
+    pub size_bytes: u64,
+    pub size_str: String,
+    pub width: i32,
+    pub height: i32,
+    pub content_type: String,
+    pub is_image: bool,
+}
+
 fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, lines: &mut Vec<MessageLineData>) {
     let trimmed = before.trim();
     if trimmed.is_empty() {
@@ -1347,7 +1364,7 @@ pub fn extract_commands_from_text(text: &str, commands: &mut Vec<String>) {
     }
 }
 
-pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>, Vec<MessageAttachmentData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut commands: Vec<String> = Vec::new();
     let mut content_lines: Vec<MessageLineData> = Vec::new();
@@ -1355,6 +1372,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     let mut embed_lines: Vec<MessageLineData> = Vec::new();
     let mut links: Vec<LinkData> = Vec::new();
     let mut buttons: Vec<MessageButtonData> = Vec::new();
+    let mut attachments_list: Vec<MessageAttachmentData> = Vec::new();
     let mut embed_footer = String::new();
     let mut reply_author = String::new();
     let mut reply_content = String::new();
@@ -1577,26 +1595,59 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     // 3. Attachments → content & clickable links
     if let Some(attachments) = m["attachments"].as_array() {
         for att in attachments {
-            let filename = att["filename"].as_str().unwrap_or("arquivo");
-            let url = att["url"].as_str().unwrap_or("");
-            let content_type = att["content_type"].as_str().unwrap_or("");
-            let label = if content_type.starts_with("image/") {
-                "Imagem"
-            } else if content_type.starts_with("video/") {
-                "Video"
-            } else if content_type.starts_with("audio/") {
-                "Audio"
+            let id = att["id"].as_str().unwrap_or("").to_string();
+            let filename = att["filename"].as_str().unwrap_or("arquivo").to_string();
+            let url = att["url"].as_str().unwrap_or("").to_string();
+            let proxy_url = att["proxy_url"].as_str().unwrap_or(&url).to_string();
+            let content_type = att["content_type"].as_str().unwrap_or("").to_string();
+            let size_bytes = att["size"].as_u64().unwrap_or(0);
+            let width = att["width"].as_i64().unwrap_or(0) as i32;
+            let height = att["height"].as_i64().unwrap_or(0) as i32;
+
+            let size_str = if size_bytes < 1024 {
+                format!("{} B", size_bytes)
+            } else if size_bytes < 1024 * 1024 {
+                format!("{:.1} KB", size_bytes as f64 / 1024.0)
             } else {
-                "Anexo"
+                format!("{:.1} MB", size_bytes as f64 / (1024.0 * 1024.0))
             };
-            
-            content_parts.push(format!("[{}: {}]", label, filename));
-            if !url.is_empty() {
-                links.push(LinkData {
-                    label: format!("Abrir {}: {}", label, filename),
-                    url: url.to_string(),
-                });
+
+            let is_image = content_type.starts_with("image/") 
+                || filename.ends_with(".png") 
+                || filename.ends_with(".jpg") 
+                || filename.ends_with(".jpeg") 
+                || filename.ends_with(".webp") 
+                || filename.ends_with(".gif");
+
+            if !is_image {
+                let label = if content_type.starts_with("video/") {
+                    "Video"
+                } else if content_type.starts_with("audio/") {
+                    "Audio"
+                } else {
+                    "Anexo"
+                };
+                content_parts.push(format!("[{}: {}]", label, filename));
+                if !url.is_empty() {
+                    links.push(LinkData {
+                        label: format!("Abrir {}: {}", label, filename),
+                        url: url.clone(),
+                    });
+                }
             }
+
+            attachments_list.push(MessageAttachmentData {
+                id,
+                filename,
+                url,
+                proxy_url,
+                size_bytes,
+                size_str,
+                width,
+                height,
+                content_type,
+                is_image,
+            });
         }
     }
 
@@ -1659,7 +1710,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     }
 
     // Build content string
-    let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() {
+    let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() && attachments_list.is_empty() {
         match msg_type {
             1 => "[Membro adicionado ao grupo]".to_string(),
             2 => "[Membro removido do grupo]".to_string(),
@@ -1690,13 +1741,13 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons)
+    (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments_list)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 #[allow(dead_code)]
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, _, _, embed, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
+    let (content, _, _, embed, _, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -2219,7 +2270,7 @@ impl GatewayClient {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(&v["d"]);
+                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
@@ -2239,13 +2290,14 @@ impl GatewayClient {
                         reply_command,
                         links,
                         buttons,
+                        attachments,
                         timestamp,
                     }).await;
                 }
                 "MESSAGE_UPDATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
-                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(&v["d"]);
+                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
 
                     let _ = self.event_tx.send(GatewayEvent::MessageUpdated {
                         id,
@@ -2263,6 +2315,7 @@ impl GatewayClient {
                         reply_command,
                         links,
                         buttons,
+                        attachments,
                     }).await;
                 }
                 "MESSAGE_DELETE" => {

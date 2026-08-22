@@ -8,6 +8,7 @@ mod remote_auth;
 mod updater;
 mod screen_capture;
 mod emoji_cache;
+mod attachment_cache;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
@@ -766,6 +767,7 @@ async fn fetch_and_populate_channels(
                             reply_command: "".into(),
                             links: slint::ModelRc::default(),
                             buttons: slint::ModelRc::default(),
+                            attachments: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }];
                         let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
@@ -1049,6 +1051,47 @@ fn map_message_lines(lines: &[gateway::MessageLineData], app_weak: &slint::Weak<
     slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_lines)))
 }
 
+fn map_message_attachments(
+    attachments: &[gateway::MessageAttachmentData],
+    app_weak: &slint::Weak<AppWindow>,
+) -> slint::ModelRc<MessageAttachment> {
+    let att_cache = attachment_cache::get_attachment_cache();
+    let slint_atts: Vec<MessageAttachment> = attachments.iter().map(|a| {
+        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full(&a.id, &a.filename) {
+            (true, img)
+        } else {
+            (false, slint::Image::default())
+        };
+
+        let preview_img = if a.is_image && !is_downloaded {
+            if let Some(p) = att_cache.get_preview(&a.id) {
+                p
+            } else {
+                att_cache.fetch_preview_async(&a.id, &a.proxy_url, app_weak.clone());
+                slint::Image::default()
+            }
+        } else {
+            slint::Image::default()
+        };
+
+        MessageAttachment {
+            id: a.id.clone().into(),
+            filename: a.filename.clone().into(),
+            url: a.url.clone().into(),
+            proxy_url: a.proxy_url.clone().into(),
+            size_str: a.size_str.clone().into(),
+            width: a.width,
+            height: a.height,
+            is_image: a.is_image,
+            is_downloaded,
+            is_loading: false,
+            full_img,
+            preview_img,
+        }
+    }).collect();
+    slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_atts)))
+}
+
 async fn load_messages_for_channel(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
@@ -1087,13 +1130,14 @@ async fn load_messages_for_channel(
                             reply_command: "".into(),
                             links: slint::ModelRc::default(),
                             buttons: slint::ModelRc::default(),
+                            attachments: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
                             let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
-                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(m);
+                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
                             
                             let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                             let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
@@ -1129,6 +1173,7 @@ async fn load_messages_for_channel(
                                 reply_command: reply_command.into(),
                                 links: slint::ModelRc::from(links_model),
                                 buttons: slint::ModelRc::from(buttons_model),
+                                attachments: map_message_attachments(&attachments, &app_weak_load),
                                 timestamp: "Agora".into(),
                             }
                         }).collect()
@@ -1173,6 +1218,7 @@ async fn load_messages_for_channel(
                         reply_command: "".into(),
                         links: slint::ModelRc::default(),
                         buttons: slint::ModelRc::default(),
+                        attachments: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
                     }];
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
@@ -1278,6 +1324,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = writeln!(f, "{}", msg);
         }
     }));
+
+    attachment_cache::cleanup_temp_attachments();
 
     let log_file = std::fs::OpenOptions::new().create(true).append(true).open("litecord_app.log").ok();
     let logger = AppLogger { file: Mutex::new(log_file) };
@@ -1560,6 +1608,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
         }
+    });
+
+    let app_weak_dl = app_weak.clone();
+    app.on_download_attachment(move |att_id: SharedString, filename: SharedString, url: SharedString| {
+        let cache = attachment_cache::get_attachment_cache();
+        cache.download_full_async(att_id.as_str(), filename.as_str(), url.as_str(), app_weak_dl.clone());
     });
 
     // Popout Stream Window Callbacks & Window Manager
@@ -2801,6 +2855,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reply_command: "".into(),
                 links: slint::ModelRc::default(),
                 buttons: slint::ModelRc::default(),
+                attachments: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
             });
             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -2947,7 +3002,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
                                     let msg_id = m["id"].as_str().unwrap_or("");
                                     let author = format_discord_author(m);
-                                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(m);
+                                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
                                     
                                     let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                                     let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
@@ -2983,6 +3038,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         reply_command: reply_command.into(),
                                         links: slint::ModelRc::from(links_model),
                                         buttons: slint::ModelRc::from(buttons_model),
+                                        attachments: map_message_attachments(&attachments, &app_w_inner),
                                         timestamp: "Anterior".into(),
                                     }
                                 }).collect();
@@ -3494,6 +3550,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     reply_command: "".into(),
                     links: slint::ModelRc::default(),
                     buttons: slint::ModelRc::default(),
+                    attachments: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -3927,7 +3984,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, timestamp } => {
+                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3978,6 +4035,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     reply_command: reply_command.into(),
                                     links: slint::ModelRc::from(links_model),
                                     buttons: slint::ModelRc::from(buttons_model),
+                                    attachments: map_message_attachments(&attachments, &app_weak_inner),
                                     timestamp: timestamp.into(),
                                 });
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -3993,7 +4051,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons } => {
+                GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         continue;
@@ -4043,12 +4101,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     msg.links = slint::ModelRc::from(links_model.clone());
                                     msg.buttons = slint::ModelRc::from(buttons_model.clone());
+                                    msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
                                     found = true;
                                     break;
                                 }
                             }
 
-                            if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty()) {
+                            if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty()) {
                                 current_msgs.push(ChatMessage {
                                     id: id.into(),
                                     author: "Bot".into(),
@@ -4065,6 +4124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     reply_command: reply_command.into(),
                                     links: slint::ModelRc::from(links_model),
                                     buttons: slint::ModelRc::from(buttons_model),
+                                    attachments: map_message_attachments(&attachments, &app_weak_inner),
                                     timestamp: "Agora".into(),
                                 });
                             }

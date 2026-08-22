@@ -56,6 +56,21 @@ struct MessageLine {
     blocks: [MessageBlock],
 }
 
+struct MessageAttachment {
+    id: string,
+    filename: string,
+    url: string,
+    proxy_url: string,
+    size_str: string,
+    width: int,
+    height: int,
+    is_image: bool,
+    is_downloaded: bool,
+    is_loading: bool,
+    full_img: image,
+    preview_img: image,
+}
+
 struct MessageButton {
     label: string,
     url: string,
@@ -81,6 +96,7 @@ struct ChatMessage {
     reply_command: string,
     links: [LinkItem],
     buttons: [MessageButton],
+    attachments: [MessageAttachment],
 }
 
 struct ChannelItem {
@@ -154,6 +170,7 @@ component ChatMessagesView inherits Rectangle {
     in-out property <int> scroll_trigger: 0;
     callback load_older_messages();
     callback open_link(string);
+    callback download_attachment(string, string, string);
     callback click_command(string);
 
     changed scroll_trigger => {
@@ -852,6 +869,154 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
+                    if msg.attachments.length > 0 && !is-collapsed : VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        alignment: start;
+
+                        for att in msg.attachments : Rectangle {
+                            width: att.is_image ? 320px : 280px;
+                            height: att.is_image ? (att.is_downloaded ? 220px : 150px) : 48px;
+                            background: #1e1f22;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #2b2d31;
+                            clip: true;
+
+                            // 1. Downloaded Full Crisp Image
+                            if att.is_image && att.is_downloaded : Image {
+                                width: 100%;
+                                height: 100%;
+                                source: att.full_img;
+                                image-fit: contain;
+                            }
+
+                            // 2. Low-res pixelated / blurred preview thumbnail
+                            if att.is_image && !att.is_downloaded : Image {
+                                width: 100%;
+                                height: 100%;
+                                source: att.preview_img;
+                                image-fit: cover;
+                            }
+
+                            // 3. Darkened overlay for preview state
+                            if att.is_image && !att.is_downloaded : Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                background: #00000066;
+                            }
+
+                            // 4. Rounded Rectangle Download Button in the center (when not downloaded)
+                            if att.is_image && !att.is_downloaded : VerticalLayout {
+                                alignment: center;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 38px;
+                                        background: dl_ta.has-hover ? #4752c4 : #232428ee;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: #5865f2;
+
+                                        HorizontalLayout {
+                                            padding-left: 14px;
+                                            padding-right: 14px;
+                                            spacing: 8px;
+                                            alignment: center;
+
+                                            Image {
+                                                source: @image-url("../assets/arrow-down.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: #ffffff;
+                                                image-fit: contain;
+                                            }
+
+                                            Text {
+                                                text: att.is_loading ? "Baixando..." : (att.size_str != "" ? ("Baixar Imagem (" + att.size_str + ")") : "Baixar Imagem");
+                                                color: #ffffff;
+                                                font-size: 12.5px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        dl_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                if (!att.is_loading) {
+                                                    root.download_attachment(att.id, att.filename, att.url);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5. Non-image attachment card (e.g. zip, pdf)
+                            if !att.is_image : HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                alignment: center;
+
+                                Image {
+                                    source: @image-url("../assets/external-link.svg");
+                                    width: 16px;
+                                    height: 16px;
+                                    colorize: #949ba4;
+                                }
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: att.filename;
+                                    color: #58a6ff;
+                                    font-size: 13px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: att.size_str;
+                                    color: #949ba4;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+
+                                non_img_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open_link(att.url); }
+                                }
+                            }
+
+                            // 6. External link / open in browser icon in top-right corner (for downloaded images)
+                            if att.is_image && att.is_downloaded : Rectangle {
+                                x: parent.width - 32px;
+                                y: 8px;
+                                width: 24px;
+                                height: 24px;
+                                background: ext_img_ta.has-hover ? #5865f2 : #00000088;
+                                border-radius: 4px;
+
+                                Image {
+                                    width: 12px;
+                                    height: 12px;
+                                    source: @image-url("../assets/external-link.svg");
+                                    colorize: #ffffff;
+                                    image-fit: contain;
+                                    x: 6px;
+                                    y: 6px;
+                                }
+
+                                ext_img_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open_link(att.url); }
+                                }
+                            }
+                        }
+                    }
+
                     if msg.links.length > 0 && !is-collapsed : VerticalLayout {
                         spacing: 4px;
                         padding-top: 4px;
@@ -929,6 +1094,7 @@ export component AppWindow inherits Window {
     callback set_user_priority(string /* user_id */, int /* priority */);
     callback toggle_voice_focus();
     callback open_link(string /* url */);
+    callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
     callback set_vad_threshold(float /* threshold */);
     callback toggle_test_mic();
     callback logout();
@@ -2712,6 +2878,7 @@ export component AppWindow inherits Window {
                         scroll_trigger: root.scroll_to_bottom_trigger;
                         load_older_messages => { root.load_older_messages(); }
                         open_link(url) => { root.open_link(url); }
+                        download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
                         click_command(cmd) => {
                             root.click_command(cmd);
                         }
