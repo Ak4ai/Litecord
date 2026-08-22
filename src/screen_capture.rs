@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(not(windows))]
@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use log::{info, warn};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 const P2P_VIDEO_PORT: u16 = 50005;
 const MAGIC: &[u8; 4] = b"LTPV";
@@ -42,6 +43,7 @@ const OP_ANNOUNCE: u8 = 1;
 const OP_VIDEO_CHUNK: u8 = 2;
 const OP_STOP: u8 = 3;
 const OP_HEARTBEAT: u8 = 4;
+pub const OP_AUDIO_FRAME: u8 = 5;
 
 #[derive(Debug, Clone)]
 pub struct MonitorItemInfo {
@@ -162,7 +164,7 @@ impl ScreenCaptureManager {
     }
 
     /// Starts the capture and UDP transmitter thread
-    pub fn start<F>(&self, target_hwnd: isize, res: i32, fps: i32, on_local_frame: F)
+    pub fn start<F>(&self, target_hwnd: isize, res: i32, fps: i32, include_audio: bool, on_local_frame: F)
     where
         F: Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + 'static,
     {
@@ -189,7 +191,16 @@ impl ScreenCaptureManager {
             start_window_border_overlay(target_hwnd);
         }
 
-        info!("🖥️ Iniciando transmissão P2P ({}x{} @ {} FPS, hwnd={})...", target_w, target_h, target_fps, target_hwnd);
+        if include_audio {
+            start_audio_loopback_tx(
+                Arc::clone(&self.is_running),
+                Arc::clone(&self.channel_id),
+                Arc::clone(&self.my_user_id),
+                Arc::clone(&self.known_peers),
+            );
+        }
+
+        info!("🖥️ Iniciando transmissão P2P ({}x{} @ {} FPS, hwnd={}, audio={})...", target_w, target_h, target_fps, target_hwnd, include_audio);
 
         std::thread::Builder::new()
             .name("screen-capture-tx".to_string())
@@ -571,6 +582,31 @@ impl ScreenCaptureManager {
                                                 frames.remove(&pkt_uid);
                                             }
                                             on_state(pkt_uid, false);
+                                        }
+                                    }
+                                }
+                                OP_AUDIO_FRAME => {
+                                    if len >= 32 {
+                                        let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
+                                        if current_cid != 0 && pkt_cid == current_cid {
+                                            if pkt_uid != my_uid || my_uid == 0 {
+                                                ensure_stream_audio_playback_started();
+                                                let vol = get_stream_volume(pkt_uid);
+                                                if vol > 0.001 {
+                                                    let sample_count = u16::from_be_bytes(recv_buf[30..32].try_into().unwrap()) as usize;
+                                                    let pcm_bytes = &recv_buf[32..len];
+                                                    let expected_bytes = sample_count * 2;
+                                                    if pcm_bytes.len() >= expected_bytes {
+                                                        let queue = get_stream_audio_queue();
+                                                        let mut q_guard = queue.lock().unwrap();
+                                                        for i in 0..sample_count {
+                                                            let s_i16 = i16::from_le_bytes([pcm_bytes[i*2], pcm_bytes[i*2 + 1]]);
+                                                            let s_f32 = (s_i16 as f32 / 32768.0) * vol;
+                                                            q_guard.push_back(s_f32);
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1468,4 +1504,277 @@ pub fn start_window_border_overlay(_target_hwnd: isize) {}
 
 pub fn stop_window_border_overlay() {
     OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
+}
+
+// ==========================================
+// STREAM AUDIO SUBSYSTEM (LOOPBACK & PLAYBACK)
+// ==========================================
+static STREAM_AUDIO_PLAYBACK_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+static STREAM_AUDIO_QUEUE: std::sync::OnceLock<Arc<Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
+static STREAM_VOLUMES: std::sync::OnceLock<Arc<Mutex<HashMap<u64, f32>>>> = std::sync::OnceLock::new();
+
+pub fn get_stream_audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
+    STREAM_AUDIO_QUEUE.get_or_init(|| Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 2)))).clone()
+}
+
+pub fn get_stream_volumes() -> Arc<Mutex<HashMap<u64, f32>>> {
+    STREAM_VOLUMES.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+pub fn set_stream_volume(uid: u64, vol: f32) {
+    if let Ok(mut map) = get_stream_volumes().lock() {
+        map.insert(uid, vol.clamp(0.0, 2.0));
+    }
+}
+
+pub fn get_stream_volume(uid: u64) -> f32 {
+    if let Ok(map) = get_stream_volumes().lock() {
+        map.get(&uid).copied().unwrap_or(1.0)
+    } else {
+        1.0
+    }
+}
+
+pub fn ensure_stream_audio_playback_started() {
+    STREAM_AUDIO_PLAYBACK_INIT.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("stream-audio-playback".to_string())
+            .spawn(|| {
+                let host = cpal::default_host();
+                let device = match host.default_output_device() {
+                    Some(d) => d,
+                    None => return,
+                };
+                let config = match device.default_output_config() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let channels = config.channels() as usize;
+                let queue = get_stream_audio_queue();
+
+                let err_fn = |err| {
+                    warn!("Erro no playback de áudio do stream: {}", err);
+                };
+
+                let stream_res = match config.sample_format() {
+                    cpal::SampleFormat::F32 => {
+                        let q = Arc::clone(&queue);
+                        device.build_output_stream(
+                            &config.into(),
+                            move |data: &mut [f32], _| {
+                                let mut queue_guard = q.lock().unwrap();
+                                for chunk in data.chunks_mut(channels) {
+                                    let sample = queue_guard.pop_front().unwrap_or(0.0);
+                                    for channel_sample in chunk.iter_mut() {
+                                        *channel_sample = sample;
+                                    }
+                                }
+                                if queue_guard.len() > 48000 {
+                                    let excess = queue_guard.len() - 4800;
+                                    queue_guard.drain(0..excess);
+                                }
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    cpal::SampleFormat::I16 => {
+                        let q = Arc::clone(&queue);
+                        device.build_output_stream(
+                            &config.into(),
+                            move |data: &mut [i16], _| {
+                                let mut queue_guard = q.lock().unwrap();
+                                for chunk in data.chunks_mut(channels) {
+                                    let sample_f = queue_guard.pop_front().unwrap_or(0.0);
+                                    let sample_i = (sample_f.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                    for channel_sample in chunk.iter_mut() {
+                                        *channel_sample = sample_i;
+                                    }
+                                }
+                                if queue_guard.len() > 48000 {
+                                    let excess = queue_guard.len() - 4800;
+                                    queue_guard.drain(0..excess);
+                                }
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    _ => return,
+                };
+
+                if let Ok(stream) = stream_res {
+                    let _ = stream.play();
+                    info!("🔊 Saída de áudio da transmissão inicializada.");
+                    loop {
+                        std::thread::sleep(Duration::from_secs(3600));
+                    }
+                }
+            })
+            .expect("Falha ao iniciar thread de playback de áudio do stream");
+    });
+}
+
+pub fn start_audio_loopback_tx(
+    is_running: Arc<AtomicBool>,
+    channel_id: Arc<AtomicU64>,
+    my_user_id: Arc<AtomicU64>,
+    peers_store: Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
+) {
+    std::thread::Builder::new()
+        .name("audio-loopback-tx".to_string())
+        .spawn(move || {
+            let host = cpal::default_host();
+            let device = match host.default_output_device() {
+                Some(d) => d,
+                None => {
+                    warn!("⚠️ Dispositivo de áudio de saída padrão não encontrado para loopback");
+                    return;
+                }
+            };
+
+            let config_res = device.default_output_config();
+            if let Err(e) = config_res {
+                warn!("⚠️ Falha ao obter configuração de áudio loopback: {:?}", e);
+                return;
+            }
+            let config = config_res.unwrap();
+            let sample_rate = config.sample_rate().0;
+            let channels = config.channels() as usize;
+
+            let socket = match UdpSocket::bind("0.0.0.0:0") {
+                Ok(s) => {
+                    let _ = s.set_broadcast(true);
+                    s
+                }
+                Err(e) => {
+                    warn!("⚠️ Falha ao criar socket UDP para áudio do stream: {:?}", e);
+                    return;
+                }
+            };
+
+            let bcast_targets = get_broadcast_addresses();
+            let mut seq: u32 = 0;
+            let pcm_buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(4800)));
+            let pcm_buffer_cb = Arc::clone(&pcm_buffer);
+
+            let target_chunk_samples = ((sample_rate as usize) * 20) / 1000; // 20ms of audio
+
+            let err_fn = |err| {
+                warn!("Erro na captura de áudio loopback: {}", err);
+            };
+
+            let stream_res = match config.sample_format() {
+                cpal::SampleFormat::F32 => {
+                    let pcm_buf = Arc::clone(&pcm_buffer_cb);
+                    device.build_input_stream(
+                        &config.into(),
+                        move |data: &[f32], _| {
+                            let mut buf = pcm_buf.lock().unwrap();
+                            if channels == 1 {
+                                for &s in data {
+                                    let sample_i16 = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                    buf.push(sample_i16);
+                                }
+                            } else if channels >= 2 {
+                                for chunk in data.chunks_exact(channels) {
+                                    let mono_f = (chunk[0] + chunk[1]) * 0.5;
+                                    let sample_i16 = (mono_f.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                    buf.push(sample_i16);
+                                }
+                            }
+                        },
+                        err_fn,
+                        None,
+                    )
+                }
+                cpal::SampleFormat::I16 => {
+                    let pcm_buf = Arc::clone(&pcm_buffer_cb);
+                    device.build_input_stream(
+                        &config.into(),
+                        move |data: &[i16], _| {
+                            let mut buf = pcm_buf.lock().unwrap();
+                            if channels == 1 {
+                                buf.extend_from_slice(data);
+                            } else if channels >= 2 {
+                                for chunk in data.chunks_exact(channels) {
+                                    let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
+                                    buf.push(mono);
+                                }
+                            }
+                        },
+                        err_fn,
+                        None,
+                    )
+                }
+                _ => {
+                    warn!("Formato de áudio não suportado para loopback");
+                    return;
+                }
+            };
+
+            let stream = match stream_res {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("⚠️ Falha ao inicializar stream de captura de áudio loopback: {:?}", e);
+                    return;
+                }
+            };
+
+            if let Err(e) = stream.play() {
+                warn!("⚠️ Falha ao iniciar gravação do áudio loopback: {:?}", e);
+                return;
+            }
+
+            info!("🔊 Captura de áudio da transmissão iniciada ({}Hz mono)...", sample_rate);
+
+            while is_running.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(15));
+
+                let chunks_to_send: Vec<Vec<i16>> = {
+                    let mut buf = pcm_buffer.lock().unwrap();
+                    let mut res = Vec::new();
+                    while buf.len() >= target_chunk_samples && target_chunk_samples > 0 {
+                        let chunk: Vec<i16> = buf.drain(0..target_chunk_samples).collect();
+                        res.push(chunk);
+                    }
+                    res
+                };
+
+                let cid = channel_id.load(Ordering::Relaxed);
+                let uid = my_user_id.load(Ordering::Relaxed);
+                let inst = get_process_instance_id();
+
+                for chunk in chunks_to_send {
+                    seq = seq.wrapping_add(1);
+                    let sample_count = chunk.len() as u16;
+                    let mut pkt = Vec::with_capacity(32 + chunk.len() * 2);
+                    pkt.extend_from_slice(MAGIC);
+                    pkt.extend_from_slice(&inst.to_be_bytes());
+                    pkt.push(OP_AUDIO_FRAME);
+                    pkt.extend_from_slice(&cid.to_be_bytes());
+                    pkt.extend_from_slice(&uid.to_be_bytes());
+                    pkt.extend_from_slice(&seq.to_be_bytes());
+                    pkt.push(1); // 1 channel
+                    pkt.extend_from_slice(&sample_rate.to_be_bytes());
+                    pkt.extend_from_slice(&sample_count.to_be_bytes());
+                    for s in chunk {
+                        pkt.extend_from_slice(&s.to_le_bytes());
+                    }
+
+                    for target in &bcast_targets {
+                        let _ = socket.send_to(&pkt, target);
+                    }
+                    if let Ok(peers) = peers_store.lock() {
+                        for (&_, &(addr, _)) in peers.iter() {
+                            let _ = socket.send_to(&pkt, addr);
+                        }
+                    }
+                }
+            }
+
+            drop(stream);
+            info!("🔊 Captura de áudio da transmissão finalizada.");
+        })
+        .expect("Falha ao iniciar thread de captura de áudio da transmissão");
 }

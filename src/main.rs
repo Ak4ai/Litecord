@@ -1408,6 +1408,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *last_mouse_act_cb.lock().unwrap() = std::time::Instant::now();
             }
         });
+
+        pop_win.on_stream_volume_changed(move |uid_str: slint::SharedString, vol: f32| {
+            let uid = uid_str.to_string().parse::<u64>().unwrap_or(0);
+            if uid != 0 {
+                screen_capture::set_stream_volume(uid, vol);
+            }
+        });
     }
 
     // Autohide top bar timer for Popout Window
@@ -1552,12 +1559,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     0
                 };
 
-                info!("▶️ Iniciando transmissão de tela P2P ({} @ {} FPS, hwnd={})...", res_str, target_fps, target_hwnd);
+                let include_audio = ui.get_stream_include_audio();
+
+                info!("▶️ Iniciando transmissão de tela P2P ({} @ {} FPS, hwnd={}, audio={})...", res_str, target_fps, target_hwnd, include_audio);
                 ui.set_tr_stream_quality(format!("{} {}fps", res_str, target_fps).into());
 
                 let app_weak_frame = app_weak_ss.clone();
                 let pop_w_frame = pop_w_ss.clone();
-                sm.start(target_hwnd, res_val, target_fps, move |pixel_buffer| {
+                sm.start(target_hwnd, res_val, target_fps, include_audio, move |pixel_buffer| {
                     let app_w = app_weak_frame.clone();
                     let pop_w = pop_w_frame.clone();
                     let _ = slint::invoke_from_event_loop(move || {
@@ -1720,6 +1729,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+    });
+
+    let app_weak_stream_vol = app_weak.clone();
+    app.on_set_stream_volume(move |uid_str: SharedString, vol: f32| {
+        let uid = uid_str.to_string().parse::<u64>().unwrap_or(0);
+        if uid != 0 {
+            screen_capture::set_stream_volume(uid, vol);
+        }
+        if let Some(ui) = app_weak_stream_vol.upgrade() {
+            ui.set_stream_remote_volume(vol);
         }
     });
 

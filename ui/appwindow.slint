@@ -513,6 +513,7 @@ export component AppWindow inherits Window {
     in-out property <int> stream_selected_fps: 30;
     in-out property <int> stream_selected_source_index: 0;
     in-out property <string> stream_selected_window_id: "";
+    in-out property <bool> stream_include_audio: true;
     in-out property <[ScreenSourceItem]> available_screens: [];
     in-out property <[WindowSourceItem]> available_windows: [];
     in-out property <string> popped_out_stream_uid: "";
@@ -528,6 +529,8 @@ export component AppWindow inherits Window {
     in-out property <string> tr_watching_stream: "Assistindo Transmissão";
     in-out property <string> tr_live_badge: "AO VIVO";
     in-out property <string> tr_stream_quality: "720p 30fps";
+    in-out property <float> stream_remote_volume: 1.0;
+    callback set_stream_volume(string, float);
 
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
@@ -1401,6 +1404,77 @@ export component AppWindow inherits Window {
                                                                 font-size: 11px;
                                                                 font-weight: 600;
                                                                 vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Stream Audio Volume Slider (only shown for remote stream cards)
+                                                    if !p.is_self: Rectangle {
+                                                        background: #000000aa;
+                                                        border-radius: 4px;
+                                                        height: 24px;
+                                                        HorizontalLayout {
+                                                            padding-left: 8px;
+                                                            padding-right: 8px;
+                                                            spacing: 6px;
+                                                            alignment: center;
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: root.stream_remote_volume <= 0.01 ? @image-url("../assets/volume-x.svg") : @image-url("../assets/speaker.svg");
+                                                                    width: 12px;
+                                                                    height: 12px;
+                                                                    colorize: root.stream_remote_volume <= 0.01 ? #f23f43 : #949ba4;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Rectangle {
+                                                                    width: 55px;
+                                                                    height: 5px;
+                                                                    background: #35373c;
+                                                                    border-radius: 2.5px;
+
+                                                                    // Progress fill
+                                                                    Rectangle {
+                                                                        x: 0;
+                                                                        y: 0;
+                                                                        width: parent.width * (root.stream_remote_volume.clamp(0.0, 1.0));
+                                                                        height: 100%;
+                                                                        background: root.stream_remote_volume <= 0.01 ? #f23f43 : #5865f2;
+                                                                        border-radius: 2.5px;
+                                                                    }
+
+                                                                    TouchArea {
+                                                                        mouse-cursor: pointer;
+                                                                        clicked => {
+                                                                            let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
+                                                                            root.stream_remote_volume = new_vol;
+                                                                            root.set_stream_volume(p.user_id, new_vol);
+                                                                        }
+                                                                        moved => {
+                                                                            if self.pressed {
+                                                                                let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
+                                                                                root.stream_remote_volume = new_vol;
+                                                                                root.set_stream_volume(p.user_id, new_vol);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Text {
+                                                                    text: "\{Math.round(root.stream_remote_volume * 100)}%";
+                                                                    color: #949ba4;
+                                                                    font-size: 9px;
+                                                                    font-weight: 700;
+                                                                    vertical-alignment: center;
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -3452,9 +3526,87 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+
+                            // 5. Stream Audio Toggle Section
+                            Rectangle {
+                                background: #2b2d31;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: #383a40;
+                                height: 52px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: start;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: root.stream_include_audio ? @image-url("../assets/speaker.svg") : @image-url("../assets/volume-x.svg");
+                                                width: 18px;
+                                                height: 18px;
+                                                colorize: root.stream_include_audio ? #5865f2 : #80848e;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+
+                                            Text {
+                                                text: "Transmitir Áudio do Computador / Janela";
+                                                color: #f2f3f5;
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                            }
+
+                                            Text {
+                                                text: "Inclui o som do aplicativo ou jogo durante a transmissão";
+                                                color: #949ba4;
+                                                font-size: 10px;
+                                            }
+                                        }
+                                    }
+
+                                    // Switch Toggle Button
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 40px;
+                                            height: 22px;
+                                            border-radius: 11px;
+                                            background: root.stream_include_audio ? #23a55a : #4e5058;
+
+                                            // Knob
+                                            Rectangle {
+                                                x: root.stream_include_audio ? 20px : 2px;
+                                                y: 2px;
+                                                width: 18px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: #ffffff;
+                                                animate x { duration: 150ms; easing: ease-out; }
+                                            }
+
+                                            TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.stream_include_audio = !root.stream_include_audio;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
-                        // 5. Pinned Modal Footer Action Bar
+                        // 6. Pinned Modal Footer Action Bar
                         Rectangle {
                             height: 60px;
                             background: #2b2d31;
@@ -3563,6 +3715,7 @@ export component PopoutStreamWindow inherits Window {
     in-out property <image> stream_frame;
     in-out property <string> username: "Transmissão";
     in-out property <string> user_id: "";
+    in-out property <float> stream_volume: 1.0;
     in-out property <bool> is_pinned: false;
     in-out property <bool> show_controls: true;
 
@@ -3573,6 +3726,7 @@ export component PopoutStreamWindow inherits Window {
     callback minimize_popout();
     callback drag_resize(string);
     callback mouse_activity();
+    callback stream_volume_changed(string, float);
 
     // Global mouse activity tracker
     TouchArea {
@@ -3620,7 +3774,7 @@ export component PopoutStreamWindow inherits Window {
             spacing: 8px;
             alignment: space-between;
 
-            // Left Side: Live Badge & Username Pill (Vertically Centered)
+            // Left Side: Live Badge & Username Pill & Dynamic Volume Slider (Vertically Centered)
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
@@ -3665,6 +3819,70 @@ export component PopoutStreamWindow inherits Window {
                         font-size: 12px;
                         font-weight: 700;
                         vertical-alignment: center;
+                    }
+                }
+
+                // Dynamic Volume Slider (only shown if popout width has enough space > 380px)
+                if root.width > 380px : HorizontalLayout {
+                    spacing: 6px;
+                    alignment: center;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: root.stream_volume <= 0.01 ? @image-url("../assets/volume-x.svg") : @image-url("../assets/speaker.svg");
+                            width: 13px;
+                            height: 13px;
+                            colorize: root.stream_volume <= 0.01 ? #f23f43 : #949ba4;
+                            image-fit: contain;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 65px;
+                            height: 6px;
+                            background: #35373c;
+                            border-radius: 3px;
+
+                            // Volume fill bar
+                            Rectangle {
+                                x: 0;
+                                y: 0;
+                                width: parent.width * (root.stream_volume.clamp(0.0, 1.0));
+                                height: 100%;
+                                background: root.stream_volume <= 0.01 ? #f23f43 : #5865f2;
+                                border-radius: 3px;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
+                                    root.stream_volume = new_vol;
+                                    root.stream_volume_changed(root.user_id, new_vol);
+                                }
+                                moved => {
+                                    if self.pressed {
+                                        let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
+                                        root.stream_volume = new_vol;
+                                        root.stream_volume_changed(root.user_id, new_vol);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: "\{Math.round(root.stream_volume * 100)}%";
+                            color: #949ba4;
+                            font-size: 10px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
