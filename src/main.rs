@@ -146,6 +146,12 @@ fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
 }
 
+static CACHED_AUDIO_DEVICES: std::sync::OnceLock<Arc<std::sync::Mutex<Option<(Vec<String>, Vec<String>)>>>> = std::sync::OnceLock::new();
+
+fn get_audio_devices_cache() -> Arc<std::sync::Mutex<Option<(Vec<String>, Vec<String>)>>> {
+    CACHED_AUDIO_DEVICES.get_or_init(|| Arc::new(std::sync::Mutex::new(None))).clone()
+}
+
 fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     let host = cpal::default_host();
     let mut inputs = Vec::new();
@@ -179,7 +185,11 @@ fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
         outputs.push("Alto-falantes Padrão do Sistema".to_string());
     }
 
-    (inputs, outputs)
+    let result = (inputs, outputs);
+    if let Ok(mut cache) = get_audio_devices_cache().lock() {
+        *cache = Some(result.clone());
+    }
+    result
 }
 
 fn push_to_mic_queues(q: &mut VecDeque<f32>, s: f32, level: f32) {
@@ -986,11 +996,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     let app_weak = app.as_weak();
 
+    let popout_window = PopoutStreamWindow::new()?;
+    let popout_weak = popout_window.as_weak();
+    let popout_hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
+
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     use i_slint_backend_winit::WinitWindowAccessor;
     let app_weak_init = app_weak.clone();
     let hwnd_store_init = Arc::clone(&hwnd_store);
+    let popout_weak_init = popout_weak.clone();
+    let pop_hwnd_c = Arc::clone(&popout_hwnd_store);
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_weak_init.upgrade() {
             ui.window().with_winit_window(|winit_win| {
@@ -1001,6 +1017,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 winit_win.set_minimized(false);
                 winit_win.focus_window();
                 winit_win.request_redraw();
+                if let Some(pop_win) = popout_weak_init.upgrade() {
+                    pop_win.window().with_winit_window(|winit_pop| {
+                        winit_pop.set_decorations(false);
+                        winit_pop.set_visible(false);
+                        #[cfg(target_os = "windows")]
+                        {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if let Ok(handle) = winit_pop.window_handle() {
+                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                    let hwnd = win32_handle.hwnd.get() as isize;
+                                    *pop_hwnd_c.lock().unwrap() = Some(hwnd);
+                                    set_dark_titlebar_color(hwnd);
+                                    unsafe {
+                                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+                                        };
+                                        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+                                        SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
                 // Set native window and taskbar/dock icon (Linux X11/Wayland & Windows)
                 let icon_bytes = include_bytes!("../assets/app_icon.png");
                 if let Ok(img) = image::load_from_memory(icon_bytes) {
@@ -1134,7 +1175,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (event_tx, mut event_rx) = mpsc::channel::<GatewayEvent>(100);
 
     // Initial background update check on app launch
+        // Initial background update check on app launch
     trigger_update_check(app_weak.clone());
+
+    // Background warmup of audio devices cache
+    tokio::task::spawn_blocking(|| {
+        let _ = enumerate_audio_devices();
+    });
 
     // Tokio MPSC Channel for Microphone Volume Level (0.0 to 1.0)
     let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
@@ -1200,33 +1247,247 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Screen Share / Live Stream Video Callbacks
+    // Popout Stream Window Callbacks & Window Manager
+    let pop_w_cb = popout_weak.clone();
+    let pop_hwnd_cb = Arc::clone(&popout_hwnd_store);
+    let app_weak_pop = app_weak.clone();
+    app.on_popout_stream_window(move |uid_str: slint::SharedString, uname_str: slint::SharedString| {
+        let uid = uid_str.to_string();
+        let uname = uname_str.to_string();
+        info!("📺 Desanexando transmissão de vídeo para janela Popout! User ID: {}, Nome: {}", uid, uname);
+        if let Some(ui) = app_weak_pop.upgrade() {
+            ui.set_popped_out_stream_uid(uid.clone().into());
+            let is_pop_self = uid == "self" || uid == gateway::get_my_user_id().to_string();
+            let cur_frame = if is_pop_self { ui.get_active_stream_frame() } else { ui.get_remote_stream_frame() };
+            if let Some(pop_win) = pop_w_cb.upgrade() {
+                pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
+                pop_win.set_stream_frame(cur_frame);
+                pop_win.set_show_controls(true);
+                let _ = pop_win.show();
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_cb.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW, SetForegroundWindow};
+                        ShowWindow(hwnd as _, SW_SHOW);
+                        SetForegroundWindow(hwnd as _);
+                    }
+                }
+                let _ = pop_win.window().with_winit_window(|w| {
+                    w.set_visible(true);
+                    w.set_minimized(false);
+                    w.focus_window();
+                });
+            }
+        }
+    });
+
+    let pop_w_drag = popout_weak.clone();
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_start_window_drag(move || {
+            if let Some(pop) = pop_w_drag.upgrade() {
+                let _ = pop.window().with_winit_window(|winit_win| {
+                    let _ = winit_win.drag_window();
+                });
+            }
+        });
+    }
+
+    let pop_w_fs = popout_weak.clone();
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_toggle_fullscreen(move || {
+            if let Some(pop) = pop_w_fs.upgrade() {
+                let is_fs = pop.window().is_maximized();
+                pop.window().set_maximized(!is_fs);
+            }
+        });
+    }
+
+    let pop_w_min = popout_weak.clone();
+    let pop_hwnd_min = Arc::clone(&popout_hwnd_store);
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_minimize_popout(move || {
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = *pop_hwnd_min.lock().unwrap() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MINIMIZE};
+                    ShowWindow(hwnd as _, SW_MINIMIZE);
+                }
+            }
+            if let Some(pop) = pop_w_min.upgrade() {
+                pop.window().set_minimized(true);
+            }
+        });
+    }
+
+    let pop_w_resize = popout_weak.clone();
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_drag_resize(move |edge: slint::SharedString| {
+            if let Some(pop) = pop_w_resize.upgrade() {
+                let _ = pop.window().with_winit_window(move |winit_win| {
+                    let dir = match edge.as_str() {
+                        "top" => winit::window::ResizeDirection::North,
+                        "bottom" => winit::window::ResizeDirection::South,
+                        "left" => winit::window::ResizeDirection::West,
+                        "right" => winit::window::ResizeDirection::East,
+                        "top-left" => winit::window::ResizeDirection::NorthWest,
+                        "top-right" => winit::window::ResizeDirection::NorthEast,
+                        "bottom-left" => winit::window::ResizeDirection::SouthWest,
+                        "bottom-right" => winit::window::ResizeDirection::SouthEast,
+                        _ => return,
+                    };
+                    let _ = winit_win.drag_resize_window(dir);
+                });
+            }
+        });
+    }
+
+    let pop_w_close = popout_weak.clone();
+    let pop_hwnd_close = Arc::clone(&popout_hwnd_store);
+    let app_weak_pop_close = app_weak.clone();
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_close_popout(move || {
+            info!("📺 Fechando janela Popout e reanexando transmissão à sala principal!");
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = *pop_hwnd_close.lock().unwrap() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                    ShowWindow(hwnd as _, SW_HIDE);
+                }
+            }
+            if let Some(pop) = pop_w_close.upgrade() {
+                let _ = pop.hide();
+            }
+            if let Some(ui) = app_weak_pop_close.upgrade() {
+                ui.set_popped_out_stream_uid("".into());
+            }
+        });
+    }
+
+    let pop_w_mouse = popout_weak.clone();
+    let last_mouse_act = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let last_mouse_act_cb = Arc::clone(&last_mouse_act);
+    if let Some(pop_win) = popout_weak.upgrade() {
+        pop_win.on_mouse_activity(move || {
+            if let Some(pop) = pop_w_mouse.upgrade() {
+                if !pop.get_show_controls() {
+                    pop.set_show_controls(true);
+                }
+                *last_mouse_act_cb.lock().unwrap() = std::time::Instant::now();
+            }
+        });
+    }
+
+    // Autohide top bar timer for Popout Window
+    let pop_w_timer = popout_weak.clone();
+    let last_mouse_act_timer = Arc::clone(&last_mouse_act);
+    let _pop_autohide_timer = slint::Timer::default();
+    _pop_autohide_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(300), move || {
+        if let Some(pop) = pop_w_timer.upgrade() {
+            if pop.get_show_controls() {
+                let elapsed = last_mouse_act_timer.lock().unwrap().elapsed();
+                if elapsed.as_millis() > 2200 {
+                    pop.set_show_controls(false);
+                }
+            }
+        }
+    });
+
+    // Screen Share / Live Stream Video Callbacks (P2P UDP Transmitter & Receiver)
     let screen_manager = Arc::new(ScreenCaptureManager::new());
     let sm_clone = Arc::clone(&screen_manager);
     let app_weak_ss = app_weak.clone();
+    let pop_w_ss = popout_weak.clone();
+    let pop_hwnd_ss = Arc::clone(&popout_hwnd_store);
+
+    // Initialize P2P Video Receiver to receive streams from other users in real time!
+    let app_weak_rx = app_weak.clone();
+    let pop_w_rx = popout_weak.clone();
+    screen_manager.start_receiver(
+        {
+            let app_w = app_weak_rx.clone();
+            let pop_w = pop_w_rx.clone();
+            move |uid, uname, quality, pixel_buf| {
+                let uid_str = uid.to_string();
+                let app_w2 = app_w.clone();
+                let pop_w2 = pop_w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let frame = Image::from_rgba8(pixel_buf);
+                    if let Some(ui) = app_w2.upgrade() {
+                        ui.set_has_active_stream(true);
+                        ui.set_active_stream_user_id(uid_str.clone().into());
+                        ui.set_active_stream_user(uname.clone().into());
+                        ui.set_tr_stream_quality(quality.into());
+                        ui.set_remote_stream_frame(frame.clone());
+                    }
+                    if let Some(pop) = pop_w2.upgrade() {
+                        if pop.get_username() == uname.as_str() || pop.get_username() == "Transmissão" {
+                            pop.set_stream_frame(frame);
+                        }
+                    }
+                });
+            }
+        },
+        {
+            let app_w = app_weak_rx.clone();
+            move |_uid, is_streaming| {
+                let app_w2 = app_w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w2.upgrade() {
+                        if !is_streaming {
+                            ui.set_has_active_stream(false);
+                            ui.set_active_stream_user("".into());
+                            ui.set_active_stream_user_id("".into());
+                        }
+                    }
+                });
+            }
+        }
+    );
 
     app.on_toggle_screen_share(move || {
         let sm = Arc::clone(&sm_clone);
         if let Some(ui) = app_weak_ss.upgrade() {
             let active = sm.is_active();
             if active {
+                info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
-                ui.set_has_active_stream(false);
+                if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == gateway::get_my_user_id().to_string().as_str() {
+                    ui.set_popped_out_stream_uid("".into());
+                }
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_ss.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                        ShowWindow(hwnd as _, SW_HIDE);
+                    }
+                }
+                if let Some(pop) = pop_w_ss.upgrade() {
+                    let _ = pop.hide();
+                }
             } else {
+                info!("▶️ Iniciando transmissão de tela P2P acelerada por hardware...");
+                let my_uid = gateway::get_my_user_id();
+                let my_uname = gateway::get_my_username();
+                let cid = gateway::get_my_voice_channel_id();
+                sm.set_context(cid, my_uid, &my_uname);
+
                 let app_weak_frame = app_weak_ss.clone();
-                sm.start(move |pixel_buffer| {
+                let pop_w_frame = pop_w_ss.clone();
+                sm.start(0, 720, 30, move |pixel_buffer| {
                     let app_w = app_weak_frame.clone();
+                    let pop_w = pop_w_frame.clone();
                     let _ = slint::invoke_from_event_loop(move || {
+                        let frame = Image::from_rgba8(pixel_buffer);
                         if let Some(ui) = app_w.upgrade() {
-                            let frame = Image::from_rgba8(pixel_buffer);
-                            ui.set_active_stream_frame(frame);
+                            ui.set_active_stream_frame(frame.clone());
+                        }
+                        if let Some(pop) = pop_w.upgrade() {
+                            pop.set_stream_frame(frame);
                         }
                     });
                 });
                 ui.set_is_screen_sharing(true);
-                ui.set_has_active_stream(true);
-                ui.set_active_stream_user(slint::SharedString::from("Você (Sua Tela)"));
             }
         }
     });
@@ -1411,6 +1672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
 
+                let _total_users_count = sorted_users.len();
                 for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
                     let uid_str = user_id.to_string();
                     let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
@@ -1503,6 +1765,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         (audio_level, is_speaking, is_muted_saved)
                     };
 
+                    let is_streaming_peer = if is_self {
+                        ui.get_is_screen_sharing()
+                    } else {
+                        let act_uid = ui.get_active_stream_user_id();
+                        let act_uname = ui.get_active_stream_user();
+                        ui.get_has_active_stream() && (
+                            (!act_uid.is_empty() && act_uid.as_str() == uid_str.as_str())
+                            || (!act_uname.is_empty() && act_uname.as_str() == username.as_str())
+                        )
+                    };
+
                     participants.push(VoiceParticipant {
                         user_id: uid_str.into(),
                         username: username.into(),
@@ -1513,6 +1786,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         volume: vol,
                         priority: prio,
                         is_self,
+                        is_streaming: is_streaming_peer,
                     });
                 }
 
@@ -1545,7 +1819,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 || old.is_muted != p.is_muted
                                 || old.volume != p.volume
                                 || old.priority != p.priority
-                                || old.username != p.username;
+                                || old.username != p.username
+                                || old.is_streaming != p.is_streaming;
                             if level_changed || state_changed {
                                 cur_model.set_row_data(i, p);
                             }
@@ -1637,29 +1912,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     app.on_open_settings(move || {
         if let Some(ui) = app_weak_open_settings.upgrade() {
-            info!("Buscando dispositivos de áudio via cpal WASAPI...");
-            let (inputs, outputs) = enumerate_audio_devices();
-
-            let cur_input = selected_input_open.lock().unwrap().clone();
-            let cur_output = selected_output_open.lock().unwrap().clone();
-
-            let ui_inputs: Vec<AudioDeviceItem> = inputs.iter().enumerate().map(|(idx, name)| {
-                let is_sel = if cur_input.is_empty() { idx == 0 } else { name == &cur_input };
-                AudioDeviceItem {
-                    id: name.clone().into(),
-                    name: name.clone().into(),
-                    is_selected: is_sel,
-                }
-            }).collect();
-
-            let ui_outputs: Vec<AudioDeviceItem> = outputs.iter().enumerate().map(|(idx, name)| {
-                let is_sel = if cur_output.is_empty() { idx == 0 } else { name == &cur_output };
-                AudioDeviceItem {
-                    id: name.clone().into(),
-                    name: name.clone().into(),
-                    is_selected: is_sel,
-                }
-            }).collect();
+            // 1. Instantly display modal without blocking GUI thread!
+            ui.set_show_settings_modal(true);
+            ui.set_vad_threshold(gateway::get_vad_threshold());
+            ui.set_is_testing_mic(gateway::is_testing_mic());
 
             let current_lang = i18n::load_persisted_language_config();
             let lang_items: Vec<LanguageItem> = i18n::Language::all_available().iter().map(|&l| {
@@ -1673,17 +1929,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }).collect();
             ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
 
-            ui.set_input_devices(std::rc::Rc::new(slint::VecModel::from(ui_inputs)).into());
-            ui.set_output_devices(std::rc::Rc::new(slint::VecModel::from(ui_outputs)).into());
-            ui.set_vad_threshold(gateway::get_vad_threshold());
-            ui.set_is_testing_mic(gateway::is_testing_mic());
-            ui.set_show_settings_modal(true);
+            // 2. Populate devices immediately from cache if available
+            let cur_input = selected_input_open.lock().unwrap().clone();
+            let cur_output = selected_output_open.lock().unwrap().clone();
 
-            // Start hardware microphone stream capture for live volume meter
-            let mic_name = if cur_input.is_empty() && !inputs.is_empty() { inputs[0].clone() } else { cur_input };
+            let cached = get_audio_devices_cache().lock().unwrap().clone();
+            if let Some((cached_inputs, cached_outputs)) = cached {
+                let ui_inputs: Vec<AudioDeviceItem> = cached_inputs.iter().enumerate().map(|(idx, name)| {
+                    let is_sel = if cur_input.is_empty() { idx == 0 } else { name == &cur_input };
+                    AudioDeviceItem {
+                        id: name.clone().into(),
+                        name: name.clone().into(),
+                        is_selected: is_sel,
+                    }
+                }).collect();
+
+                let ui_outputs: Vec<AudioDeviceItem> = cached_outputs.iter().enumerate().map(|(idx, name)| {
+                    let is_sel = if cur_output.is_empty() { idx == 0 } else { name == &cur_output };
+                    AudioDeviceItem {
+                        id: name.clone().into(),
+                        name: name.clone().into(),
+                        is_selected: is_sel,
+                    }
+                }).collect();
+
+                ui.set_input_devices(std::rc::Rc::new(slint::VecModel::from(ui_inputs)).into());
+                ui.set_output_devices(std::rc::Rc::new(slint::VecModel::from(ui_outputs)).into());
+            }
+
+            // 3. Start mic capture for volume meter
+            let mic_name = cur_input.clone();
             if let Some(stream) = start_mic_capture(mic_name, level_tx_open.clone()) {
                 *active_stream_open.lock().unwrap() = Some(stream);
             }
+
+            // 4. Asynchronously refresh hardware devices in background without lag
+            let app_w_async = app_weak_open_settings.clone();
+            let sel_in = selected_input_open.clone();
+            let sel_out = selected_output_open.clone();
+            tokio::task::spawn_blocking(move || {
+                let (inputs, outputs) = enumerate_audio_devices();
+                let cur_in = sel_in.lock().unwrap().clone();
+                let cur_out = sel_out.lock().unwrap().clone();
+
+                let ui_inputs: Vec<AudioDeviceItem> = inputs.iter().enumerate().map(|(idx, name)| {
+                    let is_sel = if cur_in.is_empty() { idx == 0 } else { name == &cur_in };
+                    AudioDeviceItem {
+                        id: name.clone().into(),
+                        name: name.clone().into(),
+                        is_selected: is_sel,
+                    }
+                }).collect();
+
+                let ui_outputs: Vec<AudioDeviceItem> = outputs.iter().enumerate().map(|(idx, name)| {
+                    let is_sel = if cur_out.is_empty() { idx == 0 } else { name == &cur_out };
+                    AudioDeviceItem {
+                        id: name.clone().into(),
+                        name: name.clone().into(),
+                        is_selected: is_sel,
+                    }
+                }).collect();
+
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui_inner) = app_w_async.upgrade() {
+                        ui_inner.set_input_devices(std::rc::Rc::new(slint::VecModel::from(ui_inputs)).into());
+                        ui_inner.set_output_devices(std::rc::Rc::new(slint::VecModel::from(ui_outputs)).into());
+                    }
+                });
+            });
         }
     });
 
@@ -2668,6 +2981,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
+                    winit_win.set_minimized(true);
                     if target_hwnd.is_none() {
                         if let Ok(handle) = winit_win.window_handle() {
                             if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
@@ -2684,6 +2998,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
                     use windows_sys::Win32::System::Threading::GetCurrentProcess;
                     K32EmptyWorkingSet(GetCurrentProcess());
+                    info!("[DeepSleep] Memória RAM liberada via K32EmptyWorkingSet!");
                 }
             }
         });
@@ -2718,6 +3033,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
 
             match event {
+                GatewayEvent::VoiceDisconnected => {
+                    let app_w = app_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            info!("🚪 Desconectando UI do canal de voz (sessão encerrada/deslocada por outro cliente)");
+                            ui.set_is_in_voice(false);
+                            ui.set_is_voice_connecting(false);
+                            ui.set_is_screen_sharing(false);
+                            ui.set_has_active_stream(false);
+                            ui.set_popped_out_stream_uid("".into());
+                            ui.set_voice_participants(slint::ModelRc::new(slint::VecModel::from(vec![])));
+                        }
+                    });
+                }
                 GatewayEvent::Connected { user_tag } => {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {

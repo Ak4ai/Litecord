@@ -13,3 +13,5 @@ build_*.txt
 *.txt
 scratch/
 scratch_*
+*.tar.gz
+release-pkg/

@@ -1,6 +1,6 @@
 [package]
 name = "litecord"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "Ultra-lightweight, high-performance native Discord client in Rust with custom speech ducking"
 authors = ["Litecord Project"]
