@@ -762,6 +762,7 @@ async fn fetch_and_populate_channels(
                             code_block: "".into(),
                             reply_author: "".into(),
                             reply_content: "".into(),
+                            reply_command: "".into(),
                             links: slint::ModelRc::default(),
                             buttons: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
@@ -1005,6 +1006,7 @@ async fn load_messages_for_channel(
                             code_block: "".into(),
                             reply_author: "".into(),
                             reply_content: "".into(),
+                            reply_command: "".into(),
                             links: slint::ModelRc::default(),
                             buttons: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
@@ -1013,7 +1015,7 @@ async fn load_messages_for_channel(
                         msgs_val.iter().rev().map(|m| {
                             let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
-                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
+                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(m);
                             
                             let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                             let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
@@ -1046,6 +1048,7 @@ async fn load_messages_for_channel(
                                 code_block: code_block.into(),
                                 reply_author: reply_author.into(),
                                 reply_content: reply_content.into(),
+                                reply_command: reply_command.into(),
                                 links: slint::ModelRc::from(links_model),
                                 buttons: slint::ModelRc::from(buttons_model),
                                 timestamp: "Agora".into(),
@@ -1089,6 +1092,7 @@ async fn load_messages_for_channel(
                         code_block: "".into(),
                         reply_author: "".into(),
                         reply_content: "".into(),
+                        reply_command: "".into(),
                         links: slint::ModelRc::default(),
                         buttons: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
@@ -2716,6 +2720,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 code_block: "".into(),
                 reply_author: "".into(),
                 reply_content: "".into(),
+                reply_command: "".into(),
                 links: slint::ModelRc::default(),
                 buttons: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
@@ -2864,7 +2869,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
                                     let msg_id = m["id"].as_str().unwrap_or("");
                                     let author = format_discord_author(m);
-                                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(m);
+                                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(m);
                                     
                                     let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                                     let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
@@ -2897,6 +2902,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         code_block: code_block.into(),
                                         reply_author: reply_author.into(),
                                         reply_content: reply_content.into(),
+                                        reply_command: reply_command.into(),
                                         links: slint::ModelRc::from(links_model),
                                         buttons: slint::ModelRc::from(buttons_model),
                                         timestamp: "Anterior".into(),
@@ -3407,6 +3413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     code_block: "".into(),
                     reply_author: "".into(),
                     reply_content: "".into(),
+                    reply_command: "".into(),
                     links: slint::ModelRc::default(),
                     buttons: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
@@ -3828,7 +3835,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons, timestamp } => {
+                GatewayEvent::MessageCreated { channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3851,7 +3858,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                     label: l.label.clone().into(),
                                     url: l.url.clone().into(),
-                                }).collect();
+                                    }).collect();
                                 let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
                                 let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
@@ -3876,6 +3883,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     code_block: code_block.into(),
                                     reply_author: reply_author.into(),
                                     reply_content: reply_content.into(),
+                                    reply_command: reply_command.into(),
                                     links: slint::ModelRc::from(links_model),
                                     buttons: slint::ModelRc::from(buttons_model),
                                     timestamp: timestamp.into(),

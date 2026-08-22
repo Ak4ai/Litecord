@@ -75,6 +75,7 @@ struct ChatMessage {
     code_block: string,
     reply_author: string,
     reply_content: string,
+    reply_command: string,
     links: [LinkItem],
     buttons: [MessageButton],
 }
@@ -229,7 +230,7 @@ component ChatMessagesView inherits Rectangle {
                     padding: 8px;
                     spacing: 4px;
 
-                    if msg.reply-author != "": Rectangle {
+                    if msg.reply-author != "" || msg.reply-command != "": Rectangle {
                         background: #1e293b;
                         border-radius: 4px;
                         border-width: 1px;
@@ -241,11 +242,12 @@ component ChatMessagesView inherits Rectangle {
 
                             HorizontalLayout {
                                 spacing: 6px;
+                                alignment: start;
 
                                 VerticalLayout {
                                     alignment: center;
                                     Image {
-                                        source: @image-url("../assets/reply.svg");
+                                        source: msg.reply-command != "" ? @image-url("../assets/terminal.svg") : @image-url("../assets/reply.svg");
                                         width: 11px;
                                         height: 11px;
                                         colorize: #3b82f6;
@@ -254,15 +256,47 @@ component ChatMessagesView inherits Rectangle {
                                 }
 
                                 Text {
-                                    text: root.tr_replying_to + msg.reply-author;
-                                    color: #3b82f6;
-                                    font-size: 10px;
+                                    text: msg.reply-command != "" ? msg.reply-author : (root.tr_replying_to + msg.reply-author);
+                                    color: #58a6ff;
+                                    font-size: 11px;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
+
+                                if msg.reply-command != "": Text {
+                                    text: "usou";
+                                    color: #94a3b8;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+
+                                if msg.reply-command != "": Rectangle {
+                                    height: 18px;
+                                    background: rep_cmd_ta.has-hover ? #4752c4 : #5865f233;
+                                    border-radius: 3px;
+                                    border-width: 1px;
+                                    border-color: #5865f2;
+                                    HorizontalLayout {
+                                        padding-left: 5px;
+                                        padding-right: 5px;
+                                        spacing: 3px;
+                                        alignment: center;
+                                        Text {
+                                            text: msg.reply-command;
+                                            color: rep_cmd_ta.has-hover ? #ffffff : #58a6ff;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    rep_cmd_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.click_command(msg.reply-command); }
+                                    }
+                                }
                             }
 
-                            Text {
+                            if msg.reply-content != "": Text {
                                 text: msg.reply-content;
                                 color: #94a3b8;
                                 font-size: 10.5px;

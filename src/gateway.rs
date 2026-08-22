@@ -52,6 +52,7 @@ pub enum GatewayEvent {
         code_block: String,
         reply_author: String,
         reply_content: String,
+        reply_command: String,
         links: Vec<LinkData>,
         buttons: Vec<MessageButtonData>,
         timestamp: String,
@@ -1244,7 +1245,7 @@ pub fn extract_commands_from_text(text: &str, commands: &mut Vec<String>) {
     }
 }
 
-pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
+pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<MessageLineData>, String, Vec<MessageLineData>, String, String, String, String, String, String, Vec<LinkData>, Vec<MessageButtonData>) {
     let mut content_parts: Vec<String> = Vec::new();
     let mut commands: Vec<String> = Vec::new();
     let mut content_lines: Vec<MessageLineData> = Vec::new();
@@ -1255,6 +1256,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     let mut embed_footer = String::new();
     let mut reply_author = String::new();
     let mut reply_content = String::new();
+    let mut reply_command = String::new();
     let msg_type = m["type"].as_u64().unwrap_or(0);
 
     // Extract embed color (first embed's color if present)
@@ -1286,27 +1288,24 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
         }
     }
 
-    // Handle interaction context (type 20 = slash command, 23 = context menu)
-    if msg_type == 20 || msg_type == 23 {
-        if let Some(interaction) = m["interaction"].as_object()
-            .or_else(|| m["interaction_metadata"].as_object()) {
-            let cmd_name = interaction.get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("comando");
-            let user_name = interaction.get("user")
-                .and_then(|u| u["global_name"].as_str()
-                    .or_else(|| u["username"].as_str()))
-                .unwrap_or("");
-            let cmd_str = format!("/{}", cmd_name);
-            if !commands.contains(&cmd_str) {
-                commands.push(cmd_str.clone());
-            }
-            if !user_name.is_empty() {
-                content_parts.push(format!("[/{} por {}]", cmd_name, user_name));
-            } else {
-                content_parts.push(format!("[/{}]", cmd_name));
-            }
+    // Handle interaction context (type 20 = slash command, 23 = context menu, or message with interaction)
+    if let Some(interaction) = m["interaction"].as_object()
+        .or_else(|| m["interaction_metadata"].as_object()) {
+        let cmd_name = interaction.get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("comando");
+        let user_name = interaction.get("user")
+            .and_then(|u| u["global_name"].as_str()
+                .or_else(|| u["username"].as_str()))
+            .unwrap_or("");
+        let cmd_str = format!("/{}", cmd_name);
+        if !commands.contains(&cmd_str) {
+            commands.push(cmd_str.clone());
         }
+        if !user_name.is_empty() {
+            reply_author = user_name.to_string();
+        }
+        reply_command = cmd_str;
     }
 
     // 1. Raw Text Content — parsed into lines and regular text
@@ -1589,13 +1588,13 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
 
     let embed_content = embed_parts_all.join("\n\n");
 
-    (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons)
+    (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons)
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.
 #[allow(dead_code)]
 pub fn format_discord_message(m: &Value) -> String {
-    let (content, _, _, embed, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
+    let (content, _, _, embed, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(m);
     if embed.is_empty() {
         content
     } else if content.is_empty() {
@@ -2117,7 +2116,7 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
-                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, links, buttons) = format_discord_message_parts(&v["d"]);
+                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
@@ -2133,6 +2132,7 @@ impl GatewayClient {
                         code_block,
                         reply_author,
                         reply_content,
+                        reply_command,
                         links,
                         buttons,
                         timestamp,
