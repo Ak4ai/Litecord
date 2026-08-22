@@ -1404,31 +1404,42 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB as u32;
 
-        let mut bgra_buf = vec![0u8; total_pixels * 4];
-        GetDIBits(
-            hdc_mem,
-            hbm_screen,
-            0,
-            target_h,
-            bgra_buf.as_mut_ptr() as _,
-            &mut bmi,
-            DIB_RGB_COLORS,
-        );
-
         let mut rgb_bytes = vec![0u8; total_pixels * 3];
 
-        for (i, pixel) in slice.iter_mut().enumerate() {
-            let offset_bgra = i * 4;
-            let offset_rgb = i * 3;
-            let b = bgra_buf[offset_bgra];
-            let g = bgra_buf[offset_bgra + 1];
-            let r = bgra_buf[offset_bgra + 2];
-
-            *pixel = Rgba8Pixel::new(r, g, b, 255);
-            rgb_bytes[offset_rgb] = r;
-            rgb_bytes[offset_rgb + 1] = g;
-            rgb_bytes[offset_rgb + 2] = b;
+        thread_local! {
+            static CAPTURE_BGRA_POOL: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::new());
         }
+
+        CAPTURE_BGRA_POOL.with(|cell| {
+            let mut bgra_buf = cell.borrow_mut();
+            if bgra_buf.len() < total_pixels * 4 {
+                bgra_buf.resize(total_pixels * 4, 0);
+            }
+
+            GetDIBits(
+                hdc_mem,
+                hbm_screen,
+                0,
+                target_h,
+                bgra_buf.as_mut_ptr() as _,
+                &mut bmi,
+                DIB_RGB_COLORS,
+            );
+
+            let bgra_slice = &bgra_buf[..total_pixels * 4];
+            for (i, pixel) in slice.iter_mut().enumerate() {
+                let offset_bgra = i * 4;
+                let offset_rgb = i * 3;
+                let b = bgra_slice[offset_bgra];
+                let g = bgra_slice[offset_bgra + 1];
+                let r = bgra_slice[offset_bgra + 2];
+
+                *pixel = Rgba8Pixel::new(r, g, b, 255);
+                rgb_bytes[offset_rgb] = r;
+                rgb_bytes[offset_rgb + 1] = g;
+                rgb_bytes[offset_rgb + 2] = b;
+            }
+        });
 
         SelectObject(hdc_mem, old_obj);
         DeleteObject(hbm_screen);
