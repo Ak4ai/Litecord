@@ -1019,7 +1019,7 @@ async fn load_guild_command_index(
     }
 }
 
-fn map_message_lines(lines: &[gateway::MessageLineData], app_weak: &slint::Weak<AppWindow>) -> slint::ModelRc<MessageLine> {
+fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, app_weak: &slint::Weak<AppWindow>) -> slint::ModelRc<MessageLine> {
     let emoji_mgr = emoji_cache::get_emoji_cache();
     let slint_lines: Vec<MessageLine> = lines.iter().map(|line| {
         let slint_blocks: Vec<MessageBlock> = line.blocks.iter().map(|b| {
@@ -1027,7 +1027,7 @@ fn map_message_lines(lines: &[gateway::MessageLineData], app_weak: &slint::Weak<
                 if let Some(img) = emoji_mgr.get(&b.emoji_id) {
                     img
                 } else {
-                    emoji_mgr.fetch_async(&b.emoji_id, app_weak.clone());
+                    emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
                     slint::Image::default()
                 }
             } else {
@@ -1039,6 +1039,7 @@ fn map_message_lines(lines: &[gateway::MessageLineData], app_weak: &slint::Weak<
                 is_link: b.is_link,
                 is_command: b.is_command,
                 is_emoji: b.is_emoji,
+                emoji_id: b.emoji_id.clone().into(),
                 emoji_img,
                 url: b.url.clone().into(),
                 command_name: b.command_name.clone().into(),
@@ -1098,6 +1099,8 @@ async fn load_messages_for_channel(
     channel_id: &str,
 ) -> bool {
     info!("Carregando mensagens do canal {}...", channel_id);
+    emoji_cache::get_emoji_cache().set_active_channel(channel_id);
+    let ch_id_for_emojis = channel_id.to_string();
     let app_weak_load = app_weak.clone();
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
@@ -1162,9 +1165,9 @@ async fn load_messages_for_channel(
                                 author: author.into(),
                                 content: content.into(),
                                 commands: slint::ModelRc::from(commands_model),
-                                content_lines: map_message_lines(&content_lines, &app_weak_load),
+                                content_lines: map_message_lines(&content_lines, &ch_id_for_emojis, &app_weak_load),
                                 embed_content: embed_content.into(),
-                                embed_lines: map_message_lines(&embed_lines, &app_weak_load),
+                                embed_lines: map_message_lines(&embed_lines, &ch_id_for_emojis, &app_weak_load),
                                 embed_color: parse_hex_color(&embed_color),
                                 embed_footer: embed_footer.into(),
                                 code_block: code_block.into(),
@@ -2990,7 +2993,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let has_more = msgs_val.len() >= 30;
                         if let Some(oldest) = msgs_val.last() {
                             if let Some(id_str) = oldest["id"].as_str() {
-                                get_oldest_message_map().lock().unwrap().insert(ch_id_clone, id_str.to_string());
+                                get_oldest_message_map().lock().unwrap().insert(ch_id_clone.clone(), id_str.to_string());
                             }
                         }
 
@@ -3027,9 +3030,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         author: author.into(),
                                         content: content.into(),
                                         commands: slint::ModelRc::from(commands_model),
-                                        content_lines: map_message_lines(&content_lines, &app_w_inner),
+                                        content_lines: map_message_lines(&content_lines, &ch_id_clone, &app_w_inner),
                                         embed_content: embed_content.into(),
-                                        embed_lines: map_message_lines(&embed_lines, &app_w_inner),
+                                        embed_lines: map_message_lines(&embed_lines, &ch_id_clone, &app_w_inner),
                                         embed_color: parse_hex_color(&embed_color),
                                         embed_footer: embed_footer.into(),
                                         code_block: code_block.into(),
@@ -4024,9 +4027,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     author: author.into(),
                                     content: content.into(),
                                     commands: slint::ModelRc::from(commands_model),
-                                    content_lines: map_message_lines(&content_lines, &app_weak_inner),
+                                    content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
                                     embed_content: embed_content.into(),
-                                    embed_lines: map_message_lines(&embed_lines, &app_weak_inner),
+                                    embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
@@ -4084,9 +4087,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if !id.is_empty() && msg.id == id.as_str() {
                                     msg.content = content.clone().into();
                                     msg.commands = slint::ModelRc::from(commands_model.clone());
-                                    msg.content_lines = map_message_lines(&content_lines, &app_weak_inner);
+                                    msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
                                     msg.embed_content = embed_content.clone().into();
-                                    msg.embed_lines = map_message_lines(&embed_lines, &app_weak_inner);
+                                    msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
                                     msg.embed_color = parse_hex_color(&embed_color);
                                     msg.embed_footer = embed_footer.clone().into();
                                     msg.code_block = code_block.clone().into();
@@ -4113,9 +4116,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     author: "Bot".into(),
                                     content: content.into(),
                                     commands: slint::ModelRc::from(commands_model),
-                                    content_lines: map_message_lines(&content_lines, &app_weak_inner),
+                                    content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
                                     embed_content: embed_content.into(),
-                                    embed_lines: map_message_lines(&embed_lines, &app_weak_inner),
+                                    embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
