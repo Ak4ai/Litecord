@@ -801,6 +801,70 @@ pub struct MessageButtonData {
     pub is_disabled: bool,
 }
 
+fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, lines: &mut Vec<MessageLineData>) {
+    let trimmed = before.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    
+    // If before is long (> 40 chars), find the best natural breaking point (punctuation or space)
+    // so the text immediately preceding the command chip is short (< 35 chars) and stays on the same line with the chip!
+    if trimmed.chars().count() > 40 {
+        let chars: Vec<char> = trimmed.chars().collect();
+        let total = chars.len();
+        
+        let mut split_idx = None;
+        for i in (15..total.saturating_sub(12)).rev() {
+            let c = chars[i];
+            if c == '.' || c == '!' || c == '?' || c == ':' || c == ';' || c == ',' {
+                split_idx = Some(i + 1);
+                break;
+            }
+        }
+        if split_idx.is_none() {
+            for i in (15..total.saturating_sub(12)).rev() {
+                if chars[i] == ' ' {
+                    split_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if let Some(idx) = split_idx {
+            let p1: String = chars[..idx].iter().collect();
+            let p2: String = chars[idx..].iter().collect();
+            if !p1.trim().is_empty() {
+                line_blocks.push(MessageBlockData {
+                    text: parse_discord_markdown(p1.trim()),
+                    is_link: false,
+                    is_command: false,
+                    url: String::new(),
+                    command_name: String::new(),
+                });
+                lines.push(MessageLineData { blocks: std::mem::take(line_blocks) });
+            }
+            if !p2.is_empty() {
+                line_blocks.push(MessageBlockData {
+                    text: parse_discord_markdown(&p2),
+                    is_link: false,
+                    is_command: false,
+                    url: String::new(),
+                    command_name: String::new(),
+                });
+            }
+            return;
+        }
+    }
+
+    line_blocks.push(MessageBlockData {
+        text: parse_discord_markdown(before),
+        is_link: false,
+        is_command: false,
+        url: String::new(),
+        command_name: String::new(),
+    });
+}
+
 pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageLineData> {
     let mut lines = Vec::new();
     if input.is_empty() {
@@ -909,20 +973,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         let clean_cmd = cmd_name.trim().trim_start_matches('/');
                         if !clean_cmd.is_empty() {
                             if !before.is_empty() {
-                                let parsed_before = parse_discord_markdown(before);
-                                if !parsed_before.trim().is_empty() {
-                                    line_blocks.push(MessageBlockData {
-                                        text: parsed_before,
-                                        is_link: false,
-                                        is_command: false,
-                                        url: String::new(),
-                                        command_name: String::new(),
-                                    });
-                                    if before.trim().chars().count() > 35 {
-                                        lines.push(MessageLineData { blocks: line_blocks });
-                                        line_blocks = Vec::new();
-                                    }
-                                }
+                                push_text_before_cmd(before, &mut line_blocks, &mut lines);
                             }
                             line_blocks.push(MessageBlockData {
                                 text: format!("/{}", clean_cmd),
