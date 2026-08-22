@@ -40,6 +40,7 @@ pub enum GatewayEvent {
     VoiceStatesUpdated,
     VoiceDisconnected,
     MessageCreated {
+        id: String,
         channel_id: String,
         author: String,
         content: String,
@@ -56,6 +57,27 @@ pub enum GatewayEvent {
         links: Vec<LinkData>,
         buttons: Vec<MessageButtonData>,
         timestamp: String,
+    },
+    MessageUpdated {
+        id: String,
+        channel_id: String,
+        content: String,
+        commands: Vec<String>,
+        content_lines: Vec<MessageLineData>,
+        embed_content: String,
+        embed_lines: Vec<MessageLineData>,
+        embed_color: String,
+        embed_footer: String,
+        code_block: String,
+        reply_author: String,
+        reply_content: String,
+        reply_command: String,
+        links: Vec<LinkData>,
+        buttons: Vec<MessageButtonData>,
+    },
+    MessageDeleted {
+        id: String,
+        channel_id: String,
     },
     GuildLoaded {
         guild: GuildData,
@@ -1573,11 +1595,11 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             12 => "[Canal seguido adicionado]".to_string(),
             14 => "[Servidor desqualificado da descoberta]".to_string(),
             15 => "[Servidor requalificado na descoberta]".to_string(),
-            19 => "[Resposta]".to_string(),
-            20 => "[Comando de barra]".to_string(),
+            19 => String::new(),
+            20 => String::new(),
             21 => "[Mensagem inicial de thread]".to_string(),
             22 => "[Lembrete de convite]".to_string(),
-            23 => "[Comando de menu de contexto]".to_string(),
+            23 => String::new(),
             24 => "[Acao do AutoMod]".to_string(),
             25 => "[Compra de assinatura de cargo]".to_string(),
             _ => "[Conteudo especial]".to_string(),
@@ -2114,12 +2136,14 @@ impl GatewayClient {
                     }
                 }
                 "MESSAGE_CREATE" => {
+                    let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let author = format_discord_author(&v["d"]);
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
+                        id,
                         channel_id,
                         author,
                         content,
@@ -2137,6 +2161,34 @@ impl GatewayClient {
                         buttons,
                         timestamp,
                     }).await;
+                }
+                "MESSAGE_UPDATE" => {
+                    let id = v["d"]["id"].as_str().unwrap_or("").to_string();
+                    let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons) = format_discord_message_parts(&v["d"]);
+
+                    let _ = self.event_tx.send(GatewayEvent::MessageUpdated {
+                        id,
+                        channel_id,
+                        content,
+                        commands,
+                        content_lines,
+                        embed_content,
+                        embed_lines,
+                        embed_color,
+                        embed_footer,
+                        code_block,
+                        reply_author,
+                        reply_content,
+                        reply_command,
+                        links,
+                        buttons,
+                    }).await;
+                }
+                "MESSAGE_DELETE" => {
+                    let id = v["d"]["id"].as_str().unwrap_or("").to_string();
+                    let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+                    let _ = self.event_tx.send(GatewayEvent::MessageDeleted { id, channel_id }).await;
                 }
                 "GUILD_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();

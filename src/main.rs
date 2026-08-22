@@ -3835,7 +3835,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, timestamp } => {
+                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3871,7 +3871,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
 
                                 current_msgs.push(ChatMessage {
-                                    id: "".into(),
+                                    id: id.into(),
                                     author: author.into(),
                                     content: content.into(),
                                     commands: slint::ModelRc::from(commands_model),
@@ -3900,6 +3900,101 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         });
                     }
+                }
+                GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons } => {
+                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    if channel_id != current_active_ch {
+                        continue;
+                    }
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_weak_inner.upgrade() {
+                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+
+                            let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                            let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
+                            let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
+                                label: l.label.clone().into(),
+                                url: l.url.clone().into(),
+                            }).collect();
+                            let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                            let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
+                                label: b.label.clone().into(),
+                                url: b.url.clone().into(),
+                                emoji: b.emoji.clone().into(),
+                                style_type: b.style_type,
+                                is_disabled: b.is_disabled,
+                            }).collect();
+                            let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
+
+                            let mut found = false;
+                            for msg in current_msgs.iter_mut() {
+                                if !id.is_empty() && msg.id == id.as_str() {
+                                    msg.content = content.clone().into();
+                                    msg.commands = slint::ModelRc::from(commands_model.clone());
+                                    msg.content_lines = map_message_lines(&content_lines);
+                                    msg.embed_content = embed_content.clone().into();
+                                    msg.embed_lines = map_message_lines(&embed_lines);
+                                    msg.embed_color = parse_hex_color(&embed_color);
+                                    msg.embed_footer = embed_footer.clone().into();
+                                    msg.code_block = code_block.clone().into();
+                                    if !reply_author.is_empty() {
+                                        msg.reply_author = reply_author.clone().into();
+                                    }
+                                    if !reply_content.is_empty() {
+                                        msg.reply_content = reply_content.clone().into();
+                                    }
+                                    if !reply_command.is_empty() {
+                                        msg.reply_command = reply_command.clone().into();
+                                    }
+                                    msg.links = slint::ModelRc::from(links_model.clone());
+                                    msg.buttons = slint::ModelRc::from(buttons_model.clone());
+                                    found = true;
+                                    break;
+                                }
+                            }
+
+                            if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty()) {
+                                current_msgs.push(ChatMessage {
+                                    id: id.into(),
+                                    author: "Bot".into(),
+                                    content: content.into(),
+                                    commands: slint::ModelRc::from(commands_model),
+                                    content_lines: map_message_lines(&content_lines),
+                                    embed_content: embed_content.into(),
+                                    embed_lines: map_message_lines(&embed_lines),
+                                    embed_color: parse_hex_color(&embed_color),
+                                    embed_footer: embed_footer.into(),
+                                    code_block: code_block.into(),
+                                    reply_author: reply_author.into(),
+                                    reply_content: reply_content.into(),
+                                    reply_command: reply_command.into(),
+                                    links: slint::ModelRc::from(links_model),
+                                    buttons: slint::ModelRc::from(buttons_model),
+                                    timestamp: "Agora".into(),
+                                });
+                            }
+
+                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                            ui.set_messages(model.into());
+                        }
+                    });
+                }
+                GatewayEvent::MessageDeleted { id, channel_id } => {
+                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    if channel_id != current_active_ch {
+                        continue;
+                    }
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_weak_inner.upgrade() {
+                            let current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
+                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                            ui.set_messages(model.into());
+                        }
+                    });
                 }
                 GatewayEvent::VoiceStatesUpdated => {
                     let gid = active_guild_inner.lock().unwrap().clone();
