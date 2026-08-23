@@ -67,6 +67,31 @@ git push origin feat/amazing-feature
 
 ---
 
+## 🚀 Releasing New Versions (Maintainers)
+
+Litecord uses automated GitHub Actions CI/CD to build and publish releases. To release a new version cleanly without duplicate assets or changelogs:
+
+1. Update the version in `Cargo.toml`:
+   ```toml
+   [package]
+   version = "0.x.y"
+   ```
+2. Run `cargo check` to update `Cargo.lock`.
+3. Commit and push to `dev`, then merge to `main`.
+4. Create and push the version tag:
+   ```bash
+   git tag v0.x.y
+   git push origin v0.x.y
+   ```
+5. **GitHub Actions will automatically**:
+   - Compile the Windows Release Binary (`cargo build --release`)
+   - Generate `Litecord-Setup-x64.exe` (Inno Setup)
+   - Generate `litecord-windows-x64-portable.zip`
+   - Compile and package `litecord-linux-x64.tar.gz`
+   - Publish the official release attaching exactly those 3 standardized files.
+
+---
+
 ## 👑 Recognition & Credits
 
 Once your Pull Request is reviewed and merged:
