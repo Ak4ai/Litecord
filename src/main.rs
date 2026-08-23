@@ -1093,6 +1093,37 @@ fn map_message_attachments(
     slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_atts)))
 }
 
+fn map_message_buttons(
+    buttons: &[gateway::MessageButtonData],
+    channel_id: &str,
+    app_weak: &slint::Weak<AppWindow>,
+) -> slint::ModelRc<MessageButton> {
+    let emoji_mgr = emoji_cache::get_emoji_cache();
+    let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| {
+        let emoji_img = if !b.emoji_id.is_empty() {
+            if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+                img
+            } else {
+                emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
+                slint::Image::default()
+            }
+        } else {
+            slint::Image::default()
+        };
+
+        MessageButton {
+            label: b.label.clone().into(),
+            url: b.url.clone().into(),
+            emoji: b.emoji.clone().into(),
+            emoji_id: b.emoji_id.clone().into(),
+            emoji_img,
+            style_type: b.style_type,
+            is_disabled: b.is_disabled,
+        }
+    }).collect();
+    slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_buttons)))
+}
+
 async fn load_messages_for_channel(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
@@ -1151,15 +1182,6 @@ async fn load_messages_for_channel(
                             }).collect();
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                            let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
-                                label: b.label.clone().into(),
-                                url: b.url.clone().into(),
-                                emoji: b.emoji.clone().into(),
-                                style_type: b.style_type,
-                                is_disabled: b.is_disabled,
-                            }).collect();
-                            let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
-
                             ChatMessage {
                                 id: msg_id.into(),
                                 author: author.into(),
@@ -1175,7 +1197,7 @@ async fn load_messages_for_channel(
                                 reply_content: reply_content.into(),
                                 reply_command: reply_command.into(),
                                 links: slint::ModelRc::from(links_model),
-                                buttons: slint::ModelRc::from(buttons_model),
+                                buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
                                 attachments: map_message_attachments(&attachments, &app_weak_load),
                                 timestamp: "Agora".into(),
                             }
@@ -3016,15 +3038,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }).collect();
                                     let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                                    let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
-                                        label: b.label.clone().into(),
-                                        url: b.url.clone().into(),
-                                        emoji: b.emoji.clone().into(),
-                                        style_type: b.style_type,
-                                        is_disabled: b.is_disabled,
-                                    }).collect();
-                                    let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
-
                                     ChatMessage {
                                         id: msg_id.into(),
                                         author: author.into(),
@@ -3040,7 +3053,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         reply_content: reply_content.into(),
                                         reply_command: reply_command.into(),
                                         links: slint::ModelRc::from(links_model),
-                                        buttons: slint::ModelRc::from(buttons_model),
+                                        buttons: map_message_buttons(&buttons, &ch_id_clone, &app_w_inner),
                                         attachments: map_message_attachments(&attachments, &app_w_inner),
                                         timestamp: "Anterior".into(),
                                     }
@@ -4013,15 +4026,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }).collect();
                                 let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                                let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
-                                    label: b.label.clone().into(),
-                                    url: b.url.clone().into(),
-                                    emoji: b.emoji.clone().into(),
-                                    style_type: b.style_type,
-                                    is_disabled: b.is_disabled,
-                                }).collect();
-                                let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
-
                                 current_msgs.push(ChatMessage {
                                     id: id.into(),
                                     author: author.into(),
@@ -4037,7 +4041,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     reply_content: reply_content.into(),
                                     reply_command: reply_command.into(),
                                     links: slint::ModelRc::from(links_model),
-                                    buttons: slint::ModelRc::from(buttons_model),
+                                    buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
                                     attachments: map_message_attachments(&attachments, &app_weak_inner),
                                     timestamp: timestamp.into(),
                                 });
@@ -4073,15 +4077,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }).collect();
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                            let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| MessageButton {
-                                label: b.label.clone().into(),
-                                url: b.url.clone().into(),
-                                emoji: b.emoji.clone().into(),
-                                style_type: b.style_type,
-                                is_disabled: b.is_disabled,
-                            }).collect();
-                            let buttons_model = std::rc::Rc::new(slint::VecModel::from(slint_buttons));
-
                             let mut found = false;
                             for msg in current_msgs.iter_mut() {
                                 if !id.is_empty() && msg.id == id.as_str() {
@@ -4103,7 +4098,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         msg.reply_command = reply_command.clone().into();
                                     }
                                     msg.links = slint::ModelRc::from(links_model.clone());
-                                    msg.buttons = slint::ModelRc::from(buttons_model.clone());
+                                    msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
                                     msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
                                     found = true;
                                     break;
@@ -4126,7 +4121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     reply_content: reply_content.into(),
                                     reply_command: reply_command.into(),
                                     links: slint::ModelRc::from(links_model),
-                                    buttons: slint::ModelRc::from(buttons_model),
+                                    buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
                                     attachments: map_message_attachments(&attachments, &app_weak_inner),
                                     timestamp: "Agora".into(),
                                 });

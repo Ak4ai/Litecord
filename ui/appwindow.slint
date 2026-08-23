@@ -76,6 +76,8 @@ struct MessageButton {
     label: string,
     url: string,
     emoji: string,
+    emoji_id: string,
+    emoji_img: image,
     style_type: int,
     is_disabled: bool,
 }
@@ -829,7 +831,17 @@ component ChatMessagesView inherits Rectangle {
                                 spacing: 6px;
                                 alignment: center;
 
-                                if btn.emoji != "": VerticalLayout {
+                                if btn.emoji-img.width > 0 : VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: btn.emoji-img;
+                                        width: 14px;
+                                        height: 14px;
+                                        image-fit: contain;
+                                    }
+                                }
+
+                                if btn.emoji != "" && btn.emoji-img.width == 0 : VerticalLayout {
                                     alignment: center;
                                     Text {
                                         text: btn.emoji;

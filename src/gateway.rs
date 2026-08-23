@@ -850,8 +850,57 @@ pub struct MessageButtonData {
     pub label: String,
     pub url: String,
     pub emoji: String,
+    pub emoji_id: String,
     pub style_type: i32,
     pub is_disabled: bool,
+}
+
+pub fn is_emoji_char(c: char) -> bool {
+    let u = c as u32;
+    matches!(u,
+        0x1F600..=0x1F64F | // Emoticons
+        0x1F300..=0x1F5FF | // Misc Symbols and Pictographs
+        0x1F680..=0x1F6FF | // Transport and Map
+        0x1F1E6..=0x1F1FF | // Flags
+        0x2600..=0x26FF   | // Misc symbols (e.g. ⚡, ⚠️, ⚽, ☕)
+        0x2700..=0x27BF   | // Dingbats (e.g. ✨, ❌, ❓, ❗)
+        0x1F900..=0x1F9FF | // Supplemental Symbols
+        0x1FA70..=0x1FAFF | // Symbols Extended-A
+        0x2300..=0x23FF   | // Media & Tech (⏮, ⏭, ⏯, ⏸, ⏹, ⏺, ⏩, ⏪, ⏫, ⏬, ⏰, ⏳)
+        0x25A0..=0x25FF   | // Geometric Shapes (▶, ◀, ◼, ◻)
+        0x2B00..=0x2BFF   | // Misc Symbols and Arrows (⬅, ⬆, ⬇, ⭐, ⭕)
+        0x2934..=0x2935   | // Arrows
+        0x3030 | 0x303D | 0x3297 | 0x3299 | 0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x2199 | 0x21A9..=0x21AA
+    )
+}
+
+pub fn find_next_unicode_emoji(s: &str) -> Option<(usize, usize, String, String)> {
+    let mut char_indices = s.char_indices().peekable();
+    while let Some((idx, c)) = char_indices.next() {
+        if is_emoji_char(c) {
+            let mut end_idx = idx + c.len_utf8();
+            let mut emoji_chars = vec![c];
+
+            while let Some(&(next_idx, next_c)) = char_indices.peek() {
+                if next_c == '\u{fe0f}' || next_c == '\u{fe0e}' || next_c == '\u{200d}' || (0x1f3fb..=0x1f3ff).contains(&(next_c as u32)) || (is_emoji_char(next_c) && emoji_chars.last() == Some(&'\u{200d}')) {
+                    char_indices.next();
+                    end_idx = next_idx + next_c.len_utf8();
+                    emoji_chars.push(next_c);
+                } else {
+                    break;
+                }
+            }
+
+            let hex_parts: Vec<String> = emoji_chars.iter()
+                .filter(|&&ch| ch != '\u{fe0f}' && ch != '\u{fe0e}')
+                .map(|&ch| format!("{:x}", ch as u32))
+                .collect();
+            let twemoji_hex = hex_parts.join("-");
+            let emoji_text = s[idx..end_idx].to_string();
+            return Some((idx, end_idx - idx, emoji_text, format!("u_{}", twemoji_hex)));
+        }
+    }
+    None
 }
 
 #[derive(Clone, Default, Debug)]
@@ -974,12 +1023,14 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                 (None, Some(hs)) => Some(hs),
                 (None, None) => None,
             };
+            let next_unicode = find_next_unicode_emoji(rem);
 
             let mut candidates: Vec<(usize, &str)> = Vec::new();
             if let Some(idx) = next_bracket { candidates.push((idx, "bracket")); }
             if let Some(idx) = next_cmd { candidates.push((idx, "cmd")); }
             if let Some((idx, _)) = next_emoji { candidates.push((idx, "emoji")); }
             if let Some(idx) = next_raw_url { candidates.push((idx, "raw_url")); }
+            if let Some((idx, _, _, _)) = next_unicode { candidates.push((idx, "unicode_emoji")); }
 
             if candidates.is_empty() {
                 let parsed = parse_discord_markdown(rem);
@@ -1194,6 +1245,35 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             url: String::new(),
                             command_name: String::new(),
                         });
+                        rem = &rem[slice_len..];
+                    }
+                }
+                "unicode_emoji" => {
+                    if let Some((u_idx, u_len, u_text, u_id)) = find_next_unicode_emoji(rem) {
+                        let before = &rem[..u_idx];
+                        if !before.is_empty() {
+                            line_blocks.push(MessageBlockData {
+                                text: parse_discord_markdown(before),
+                                is_link: false,
+                                is_command: false,
+                                is_emoji: false,
+                                emoji_id: String::new(),
+                                url: String::new(),
+                                command_name: String::new(),
+                            });
+                        }
+                        line_blocks.push(MessageBlockData {
+                            text: u_text,
+                            is_link: false,
+                            is_command: false,
+                            is_emoji: true,
+                            emoji_id: u_id,
+                            url: String::new(),
+                            command_name: String::new(),
+                        });
+                        rem = &rem[u_idx + u_len..];
+                    } else {
+                        let slice_len = first_idx + 1;
                         rem = &rem[slice_len..];
                     }
                 }
@@ -1678,9 +1758,21 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                             let is_disabled = comp["disabled"].as_bool().unwrap_or(false);
                             
                             let mut emoji_str = String::new();
+                            let mut emoji_id_for_btn = String::new();
                             if let Some(emoji_obj) = comp.get("emoji") {
-                                if let Some(emoji_name) = emoji_obj["name"].as_str() {
-                                    emoji_str = emoji_name.to_string();
+                                if let Some(id) = emoji_obj["id"].as_str() {
+                                    if !id.is_empty() {
+                                        emoji_id_for_btn = id.to_string();
+                                        emoji_str = emoji_obj["name"].as_str().unwrap_or("").to_string();
+                                    }
+                                }
+                                if emoji_id_for_btn.is_empty() {
+                                    if let Some(emoji_name) = emoji_obj["name"].as_str() {
+                                        emoji_str = emoji_name.to_string();
+                                        if let Some((_, _, _, hex_id)) = find_next_unicode_emoji(emoji_name) {
+                                            emoji_id_for_btn = hex_id;
+                                        }
+                                    }
                                 }
                             }
 
@@ -1689,6 +1781,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                                     label: label.to_string(),
                                     url: url.to_string(),
                                     emoji: emoji_str,
+                                    emoji_id: emoji_id_for_btn,
                                     style_type: style,
                                     is_disabled,
                                 });
@@ -1701,6 +1794,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                                         label: placeholder.to_string(),
                                         url: String::new(),
                                         emoji: "📋".to_string(),
+                                        emoji_id: "u_1f4cb".to_string(),
                                         style_type: 2,
                                         is_disabled: true,
                                     });

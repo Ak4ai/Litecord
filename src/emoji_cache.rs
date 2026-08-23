@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+﻿use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,11 +38,11 @@ pub fn get_emoji_cache() -> Arc<EmojiCache> {
         }
 
         Arc::new(EmojiCache {
-            memory_cache: Mutex::new(HashMap::with_capacity(128)),
+            memory_cache: Mutex::new(HashMap::with_capacity(256)),
             in_flight: Mutex::new(HashSet::new()),
             active_channel: Mutex::new(String::new()),
             active_generation: AtomicU64::new(1),
-            semaphore: Arc::new(Semaphore::new(6)), // Up to 6 parallel downloads
+            semaphore: Arc::new(Semaphore::new(8)), // Up to 8 parallel downloads
             disk_dir,
         })
     }).clone()
@@ -103,7 +103,7 @@ impl EmojiCache {
                         dec.height,
                     );
                     if let Ok(mut guard) = self.memory_cache.lock() {
-                        if guard.len() >= 250 {
+                        if guard.len() >= 300 {
                             guard.clear();
                         }
                         guard.insert(emoji_id.to_string(), dec);
@@ -116,7 +116,7 @@ impl EmojiCache {
         None
     }
 
-    /// Prioritized async downloader: prioritizes emojis from the active screen/channel
+    /// Prioritized async downloader: supports both Discord custom emojis and Unicode Twemoji
     pub fn fetch_priority_async(&self, emoji_id: &str, channel_id: &str, app_weak: slint::Weak<crate::AppWindow>) {
         if emoji_id.is_empty() {
             return;
@@ -160,7 +160,13 @@ impl EmojiCache {
                 return;
             }
 
-            let url = format!("https://cdn.discordapp.com/emojis/{}.png?size=48&quality=lossless", id_str);
+            let url = if id_str.starts_with("u_") {
+                let hex = &id_str[2..];
+                format!("https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{}.png", hex)
+            } else {
+                format!("https://cdn.discordapp.com/emojis/{}.png?size=48&quality=lossless", id_str)
+            };
+
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
                 .build();
@@ -175,7 +181,7 @@ impl EmojiCache {
                             // Decode in background thread
                             if let Some(dec) = decode_bytes_to_rgba(&bytes) {
                                 if let Ok(mut guard) = cache_arc.memory_cache.lock() {
-                                    if guard.len() >= 250 {
+                                    if guard.len() >= 300 {
                                         guard.clear();
                                     }
                                     guard.insert(id_str.clone(), dec);
@@ -194,7 +200,7 @@ impl EmojiCache {
                                             for mut msg in current_msgs {
                                                 let mut msg_changed = false;
 
-                                                // Update content_lines
+                                                // 1. Update content_lines
                                                 let current_content_lines: Vec<crate::MessageLine> = msg.content_lines.iter().collect();
                                                 let mut updated_content_lines = Vec::with_capacity(current_content_lines.len());
                                                 for line in current_content_lines {
@@ -212,7 +218,7 @@ impl EmojiCache {
                                                     });
                                                 }
 
-                                                // Update embed_lines
+                                                // 2. Update embed_lines
                                                 let current_embed_lines: Vec<crate::MessageLine> = msg.embed_lines.iter().collect();
                                                 let mut updated_embed_lines = Vec::with_capacity(current_embed_lines.len());
                                                 for line in current_embed_lines {
@@ -230,9 +236,21 @@ impl EmojiCache {
                                                     });
                                                 }
 
+                                                // 3. Update buttons
+                                                let current_buttons: Vec<crate::MessageButton> = msg.buttons.iter().collect();
+                                                let mut updated_buttons = Vec::with_capacity(current_buttons.len());
+                                                for mut btn in current_buttons {
+                                                    if btn.emoji_id == id_clone.as_str() {
+                                                        btn.emoji_img = img.clone();
+                                                        msg_changed = true;
+                                                    }
+                                                    updated_buttons.push(btn);
+                                                }
+
                                                 if msg_changed {
                                                     msg.content_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_content_lines)));
                                                     msg.embed_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_embed_lines)));
+                                                    msg.buttons = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_buttons)));
                                                     any_changed = true;
                                                 }
                                                 updated_msgs.push(msg);
