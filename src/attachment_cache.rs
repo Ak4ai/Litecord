@@ -138,7 +138,7 @@ impl AttachmentCache {
                 if let Ok(resp) = client.get(&thumb_url).send().await {
                     if resp.status().is_success() {
                         if let Ok(bytes) = resp.bytes().await {
-                            if let Some(dec) = decode_bytes_to_rgba(&bytes) {
+                            if let Some(dec) = decode_bytes_to_minecraft_pixel_art(&bytes) {
                                 if let Ok(mut guard) = cache_arc.preview_cache.lock() {
                                     if guard.len() >= 100 {
                                         guard.clear();
@@ -275,6 +275,29 @@ impl AttachmentCache {
 fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedImage> {
     if let Ok(dyn_img) = image::load_from_memory(bytes) {
         let rgba = dyn_img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        Some(DecodedImage {
+            width,
+            height,
+            rgba: rgba.into_raw(),
+        })
+    } else {
+        None
+    }
+}
+
+fn decode_bytes_to_minecraft_pixel_art(bytes: &[u8]) -> Option<DecodedImage> {
+    if let Ok(dyn_img) = image::load_from_memory(bytes) {
+        // Downscale to chunky retro grid (28 x 16 blocks)
+        let block_w = 28;
+        let block_h = 16;
+        let small = dyn_img.resize_exact(block_w, block_h, image::imageops::FilterType::Nearest);
+        
+        // Upscale using Nearest Neighbor (10x -> 280 x 160) so each block is a sharp solid square
+        let pixel_scale = 10;
+        let chunky = small.resize_exact(block_w * pixel_scale, block_h * pixel_scale, image::imageops::FilterType::Nearest);
+        
+        let rgba = chunky.to_rgba8();
         let (width, height) = rgba.dimensions();
         Some(DecodedImage {
             width,
