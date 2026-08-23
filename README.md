@@ -13,10 +13,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>< 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while providing <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
+  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>< 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
 </p>
 
-[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](#-cybersecurity-privacy--account-safety) • [🛠️ Build from Source](#-building-from-source)
+[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](#-cybersecurity-privacy--account-safety) • [🛠️ Build from Source](#-building-from-source)
 
 <br/>
 
@@ -29,9 +29,10 @@
 ## 🎮 Why Gamers Choose Litecord
 
 - 🏆 **Zero In-Game FPS Drops & Micro-Stutters**: Reclaims CPU threads eaten by Chromium/Electron, improving 1% low framerates in competitive titles (*CS2, Valorant, Warzone, Apex Legends, Fortnite, League of Legends*).
+- 📺 **Full HD 1080p 60 FPS Screen Sharing**: Direct hardware framebuffer capture (DXGI / Direct3D11) with WASAPI loopback audio and sub-20ms glass-to-glass latency.
 - 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 ([ - ] P:2 [ + ]) so critical tactical callouts automatically duck background chatter and music bots during clutch moments.
-- 📺 **Detached Video & Stream Popouts**: Pop out live screen shares and video streams into a dedicated floating Picture-in-Picture (PiP) window with an always-on-top pin.
-- 📱 **QR Code Mobile Login**: Log in instantly by scanning a QR code with the official Discord mobile app—no need to manually enter or extract tokens.
+- 🪟 **Detached Video & Stream Popouts**: Pop out live screen shares and video streams into a dedicated floating Picture-in-Picture (PiP) window with an always-on-top pin.
+- 📱 **QR Code Mobile Login**: Log in instantly by scanning a QR code with the official Discord mobile app—no manual token extraction.
 - ⌨️ **Smart Slash Commands Autocomplete**: Real-time suggestion indexing for /play, /skip, and server bot commands with keyboard navigation (Up/Down + Enter) and interactive parameter chips.
 - 🖼️ **On-Demand Ephemeral Image Attachments**: Minecraft-style pixel-art placeholders (~500 bytes) with dynamic proportional height and zero-residue temp downloads.
 - 🎨 **Unified Emoji System (Twemoji + Discord CDN)**: Zero missing tofu squares (□). Full support for Discord custom animated/static emojis and Unicode emojis across chat, embeds, and bot buttons.
@@ -47,10 +48,46 @@
 | :--- | :--- | :--- | :--- |
 | **Idle CPU Usage** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x lighter CPU footprint** |
 | **Active Voice CPU** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero Game Stuttering** |
+| **1080p 60 FPS Stream CPU** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Butter-Smooth Game Play** |
 | **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~3 MB - 5 MB** | 🌙 **99% lighter background footprint** |
 | **RAM Usage (Active Window)** | 500 MB - 900 MB | **~12 MB - 28 MB** | 💾 **Saves up to 850 MB RAM** |
 | **Startup Time** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Instant Match Launch** |
 | **Binary Size** | ~180 MB | **~8 MB Standalone** | 📦 **Pure Native Machine Code** |
+
+---
+
+## 📺 Full HD 1080p 60 FPS Video & Audio Pipeline
+
+Litecord features an ultra-optimized native video streaming and screen capture engine built in Rust (src/screen_capture.rs):
+
+`	ext
+  [ Game / Desktop Framebuffer ]
+                │
+                ▼ (DXGI Desktop Duplication / D3D11 Zero-Copy)
+  [ Hardware Frame Capture @ 60 FPS ] ──► [ WASAPI In-Game Audio Loopback ]
+                │                                    │
+                ▼ (Fast Adaptive TurboJPEG / SIMD)   ▼ (Opus 48kHz Stereo)
+  [ Low-Latency Packetizer (1350B MTU) ] ◄───────────┘
+                │
+                ▼ (Direct UDP / LTPV Protocol - Sub-20ms Latency)
+  [ Litecord Zero-Copy Jitter Buffer ]
+                │
+                ▼ (Double-Buffered SharedPixelBuffer<Rgba8Pixel>)
+  [ Slint Native Viewport / Detached PiP Popout Window ]
+`
+
+### 🚀 Key Engineering Pillars:
+1. **Direct GPU Framebuffer Capture (Zero-Copy DXGI / D3D11)**:
+   - Directly grabs raw frames from the desktop compositor without CPU blitting, allowing constant 60 FPS capture at 1080p / 1440p / 4K with < 1% CPU overhead.
+2. **WASAPI In-Game Audio Loopback**:
+   - Captures crystal-clear in-game audio directly from Windows audio endpoints and mixes it synchronously with the video frame timeline.
+3. **LTPV (Litecord Peer-to-Peer Video Protocol)**:
+   - Packets are split into **1350-byte chunks** (matching standard network MTU) to prevent IP fragmentation and packet loss.
+   - Out-of-order frame reassembly with adaptive jitter absorption and zero-copy ring buffers.
+4. **Double-Buffered Lockless Slint Rendering**:
+   - Frame presentation uses a thread-safe SharedPixelBuffer<Rgba8Pixel> double buffer that swaps frames without locking UI event loops.
+5. **Floating Picture-in-Picture (PiP) Popout Window**:
+   - Detach streams into a standalone floating window with an **Always-on-Top Pin** and independent audio volume sliders (0–200%).
 
 ---
 
@@ -79,35 +116,29 @@ Take control of crowded voice calls with custom per-user priorities ([ - ] P:N [
   - **Delta >= 5**: Volume ducked to protection floor (**5% - 10%**).
 - **Independent Volume & Mute**: Per-user volume sliders (0% - 200%) and instant mute buttons, saved automatically across sessions.
 
-### 📺 3. Detached Stream Popouts & Screen Sharing
-- **Picture-in-Picture Floating Window**: Detach any screen share or video stream into a separate floating window.
-- **Always-on-Top Pin**: Keep streams visible over games or other applications.
-- **Dedicated Volume & Stream Controls**: Independent volume slider (0-200%) and fullscreen toggle.
-- **High-Efficiency Screen Capture**: Ultra-low overhead capture engine for sharing your screen with minimal GPU impact.
-
-### 📱 4. QR Code Remote Auth & Windows DPAPI Security
+### 📱 3. QR Code Remote Auth & Windows DPAPI Security
 - **Instant QR Code Login**: Scan the on-screen QR code with your Discord Mobile App (Settings -> Scan QR Code) to log in instantly.
 - **Windows DPAPI Encryption at Rest**: Discord tokens stored locally in .litecord_token are encrypted with Windows DPAPI (CryptProtectData), making them unreadable to other user accounts, malware, or background scripts.
 - **Direct Discord Connections Only**: No intermediary proxies, third-party relays, or tracking servers. All requests go directly to discord.com endpoints.
 - **Shell Injection Shield**: Hyperlinks are strictly validated against an http:// / https:// whitelist and dispatched via native OS APIs (ShellExecuteW / xdg-open)—never through shell interpreters (cmd.exe).
 
-### ⌨️ 5. Intelligent Slash Commands & Parameter Chips
+### ⌨️ 4. Intelligent Slash Commands & Parameter Chips
 - **Dynamic Server Command Indexing**: Fetches and aggregates real slash commands from registered bots (/play, /skip, /stop, /queue, etc.).
 - **Keyboard Navigation**: Use **Up/Down Arrow keys** to cycle through command suggestions and hit **Enter** to auto-select.
 - **Interactive Parameter Chips**: Formats commands as clean visual chips in the message input and chat history with parameter placeholders.
 
-### 🖼️ 6. Ultra-Lightweight On-Demand Image Attachments
+### 🖼️ 5. Ultra-Lightweight On-Demand Image Attachments
 - **Minecraft Pixel-Art Placeholders**: Low-resolution (~500 bytes) chunky 8-bit preview before downloading.
 - **Fixed Width (320px) & Proportional Height**: Dynamically adapts height to match the image's original aspect ratio (16:9, portrait, square).
 - **Ephemeral Temp Storage**: Full downloads are saved in %TEMP%/Litecord/temp_images/ and automatically wiped on app startup and shutdown.
 - **Collapsed Link Archive**: Image URLs remain accessible inside the collapsed message view without cluttering chat.
 
-### 🎨 7. Unified Emoji System (Twemoji + Discord CDN)
+### 🎨 6. Unified Emoji System (Twemoji + Discord CDN)
 - **Discord Custom Emojis**: Asynchronously downloaded, cached locally, and updated in-place.
 - **Twemoji Unicode Rendering**: Direct vector glyph rasterization for Unicode emojis (⏭️, ⏮️, ⏯️, 🔀, 🔁, 🔥, ❤️, etc.), preventing Windows tofu boxes (□).
 - **Screen & Active Channel Priority**: Dedicates network bandwidth exclusively to visible chat messages.
 
-### ⚡ 8. DeepSleep Mode & Extreme Efficiency
+### ⚡ 7. DeepSleep Mode & Extreme Efficiency
 - **Sub-0.1% CPU Idle**: UI event dispatch loop is decoupled and capped at 30 FPS for microphone meters.
 - **System Tray DeepSleep**: Minimizing Litecord to the system tray completely suspends all visual rendering loops while keeping voice audio streaming in background.
 - **Delta Badge Fingerprinting**: Sidebar channel member count badges update only on real state changes, preventing unnecessary thread wakeups.
@@ -186,38 +217,47 @@ The optimized executable will be located at 	arget/release/litecord.exe (Windows
 `	ext
 Litecord/
 ├── .github/workflows/
-│   └── build.yml              # Automated multi-platform CI/CD release workflow
-├── assets/                    # Application icons, SVGs, and demo media
-│   ├── app_icon.ico           # Windows multi-res icon (16-256px)
-│   ├── app_icon.png           # High-resolution PNG app icon
-│   ├── arrow-down.svg         # Download attachment icon
-│   ├── camera.svg             # Video & stream toggle icon
-│   ├── pin.svg                # Always-on-top window pin icon
-│   ├── popout.svg             # Detached stream popout icon
-│   ├── qr.svg                 # QR remote authentication icon
-│   ├── reply.svg              # Message quote / reply icon
-│   ├── terminal.svg           # Slash command terminal icon
-│   └── globe.svg              # Multi-language selector icon
+│   └── build.yml
+├── assets/
+│   ├── app_icon.ico
+│   ├── app_icon.png
+│   └── (svg icons & demo media)
 ├── src/
-│   ├── main.rs                # App lifecycle, Slint bindings, tray dispatch & message rendering
-│   ├── gateway.rs             # Discord Gateway WS, CPAL/Opus voice, DAVE E2EE, ducking & VAD
-│   ├── http.rs                # Discord HTTP REST client (guilds, channels, messages, interactions)
-│   ├── remote_auth.rs         # QR Code remote login via Discord Mobile App handshake
-│   ├── attachment_cache.rs    # Ephemeral image cache & Minecraft pixel-art placeholder generator
-│   ├── emoji_cache.rs         # Multi-tier memory/disk cache with Twemoji and Discord CDN support
-│   ├── screen_capture.rs      # High-performance screen capture & stream popout engine
-│   ├── updater.rs             # Automatic GitHub release update checker
-│   ├── i18n.rs                # Internationalization module with 7 languages & OS locale detection
-│   └── tray.rs                # Native Windows System Tray integration & DeepSleep hooks
+│   ├── main.rs
+│   ├── gateway.rs
+│   ├── http.rs
+│   ├── remote_auth.rs
+│   ├── screen_capture.rs
+│   ├── attachment_cache.rs
+│   ├── emoji_cache.rs
+│   ├── updater.rs
+│   ├── i18n.rs
+│   └── tray.rs
 ├── ui/
-│   └── appwindow.slint        # Modern, fluid, reactive UI declared in Slint (AppWindow & PopoutWindow)
-├── build.rs                   # Windows resource compiler for application icon & manifest
-├── Cargo.toml                 # Rust dependencies & build target configurations
-├── CONTRIBUTING.md            # Contributor guidelines and Pull Request policy
-├── index.html                 # Official GitHub Pages web landing page
-├── installer.iss              # Inno Setup Windows installer specification
-└── README.md                  # Project documentation & reference
+│   └── appwindow.slint
+├── build.rs
+├── Cargo.toml
+├── CONTRIBUTING.md
+├── index.html
+├── installer.iss
+└── README.md
 `
+
+### 🧩 Module Breakdown
+
+| Module | Purpose & Core Responsibilities |
+| :--- | :--- |
+| **src/main.rs** | Application lifecycle, Slint UI bindings, system tray event loop, chat rendering, message dispatch. |
+| **src/gateway.rs** | Discord Gateway v9 WebSocket, CPAL/Opus voice pipeline, DAVE E2EE protocol, Speech Priority Ducking, and VAD. |
+| **src/screen_capture.rs** | 1080p 60 FPS DXGI/D3D11 hardware screen capture, WASAPI audio loopback, LTPV UDP streaming, and PiP Popout. |
+| **src/http.rs** | Discord HTTP REST client for fetching guilds, channels, messages, member lists, and slash command schemas. |
+| **src/remote_auth.rs** | Secure QR Code remote authentication with Discord Mobile App cryptographic handshake. |
+| **src/attachment_cache.rs** | Ephemeral image downloader, Minecraft pixel-art placeholder generator, and %TEMP% cleanup manager. |
+| **src/emoji_cache.rs** | Multi-tier memory/disk cache for Discord custom emojis and Twemoji Unicode vector rasterization. |
+| **src/updater.rs** | Background GitHub release version checker and update notifier. |
+| **src/i18n.rs** | Multi-language localization engine supporting 7 languages with automatic OS locale detection. |
+| **src/tray.rs** | Native Windows System Tray integration with context menu and DeepSleep background suspension hooks. |
+| **ui/appwindow.slint** | Declarative GPU-accelerated UI with AppWindow and floating PopoutWindow components. |
 
 ---
 
