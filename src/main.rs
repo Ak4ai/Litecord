@@ -1075,14 +1075,23 @@ fn map_message_attachments(
             slint::Image::default()
         };
 
+        let (width, height) = if a.width > 0 && a.height > 0 {
+            (a.width, a.height)
+        } else if is_downloaded {
+            let sz = full_img.size();
+            (sz.width as i32, sz.height as i32)
+        } else {
+            (a.width, a.height)
+        };
+
         MessageAttachment {
             id: a.id.clone().into(),
             filename: a.filename.clone().into(),
             url: a.url.clone().into(),
             proxy_url: a.proxy_url.clone().into(),
             size_str: a.size_str.clone().into(),
-            width: a.width,
-            height: a.height,
+            width,
+            height,
             is_image: a.is_image,
             is_downloaded,
             is_loading: false,

@@ -889,8 +889,9 @@ component ChatMessagesView inherits Rectangle {
                         alignment: start;
 
                         for att in msg.attachments : Rectangle {
+                            property <length> img-height: (att.width > 0 && att.height > 0) ? min(520px, max(120px, 320px * att.height / att.width)) : 200px;
                             width: att.is_image ? 320px : 280px;
-                            height: att.is_image ? (att.is_downloaded ? 220px : 150px) : 48px;
+                            height: att.is_image ? img-height : 48px;
                             background: #1e1f22;
                             border-radius: 8px;
                             border-width: 1px;

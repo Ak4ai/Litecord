@@ -232,6 +232,9 @@ impl AttachmentCache {
                             let _ = std::fs::write(&file_path, &bytes);
 
                             if let Some(dec) = decode_bytes_to_rgba(&bytes) {
+                                let img_w = dec.width as i32;
+                                let img_h = dec.height as i32;
+
                                 if let Ok(mut guard) = cache_arc.full_cache.lock() {
                                     if guard.len() >= 30 {
                                         guard.clear();
@@ -251,6 +254,10 @@ impl AttachmentCache {
                                                 if att.id == id_done.as_str() {
                                                     att.is_loading = false;
                                                     att.is_downloaded = true;
+                                                    if att.width <= 0 || att.height <= 0 {
+                                                        att.width = img_w;
+                                                        att.height = img_h;
+                                                    }
                                                     if let Some(img) = cache_arc.get_full(&id_done, &filename_str) {
                                                         att.full_img = img;
                                                     }
