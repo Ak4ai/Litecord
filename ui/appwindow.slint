@@ -885,7 +885,7 @@ component ChatMessagesView inherits Rectangle {
                             border-color: #2b2d31;
                             clip: true;
 
-                            // 1. Downloaded Full Crisp Image
+                            // 1. Downloaded Full Crisp Image (Clean & Raw)
                             if att.is_image && att.is_downloaded : Image {
                                 width: 100%;
                                 height: 100%;
@@ -906,55 +906,6 @@ component ChatMessagesView inherits Rectangle {
                                 width: 100%;
                                 height: 100%;
                                 background: #00000077;
-                            }
-
-                            // Filename pill on top-left of image card
-                            if att.is_image : Rectangle {
-                                x: 8px;
-                                y: 8px;
-                                height: 20px;
-                                background: #000000aa;
-                                border-radius: 4px;
-
-                                HorizontalLayout {
-                                    padding-left: 6px;
-                                    padding-right: 6px;
-                                    alignment: center;
-
-                                    Text {
-                                        text: att.filename;
-                                        color: #cbd5e1;
-                                        font-size: 11px;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                        max-width: 230px;
-                                    }
-                                }
-                            }
-
-                            // External link / open in browser icon in top-right corner (always accessible)
-                            if att.is_image : Rectangle {
-                                x: parent.width - 32px;
-                                y: 8px;
-                                width: 24px;
-                                height: 24px;
-                                background: ext_img_ta.has-hover ? #5865f2 : #000000aa;
-                                border-radius: 4px;
-
-                                Image {
-                                    width: 12px;
-                                    height: 12px;
-                                    source: @image-url("../assets/external-link.svg");
-                                    colorize: #ffffff;
-                                    image-fit: contain;
-                                    x: 6px;
-                                    y: 6px;
-                                }
-
-                                ext_img_ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.open_link(att.url); }
-                                }
                             }
 
                             // 4. Rounded Rectangle Download Button in the center (when not downloaded)
@@ -1042,7 +993,7 @@ component ChatMessagesView inherits Rectangle {
                         }
                     }
 
-                    if msg.links.length > 0 : VerticalLayout {
+                    if msg.links.length > 0 && !is-collapsed : VerticalLayout {
                         spacing: 4px;
                         padding-top: 4px;
                         for link in msg.links : Rectangle {

@@ -1634,6 +1634,11 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                         url: url.clone(),
                     });
                 }
+            } else if !url.is_empty() {
+                links.push(LinkData {
+                    label: format!("Imagem: {}", filename),
+                    url: url.clone(),
+                });
             }
 
             attachments_list.push(MessageAttachmentData {
