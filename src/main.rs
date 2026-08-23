@@ -7,6 +7,8 @@ mod i18n;
 mod remote_auth;
 mod updater;
 mod screen_capture;
+mod emoji_cache;
+mod attachment_cache;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
@@ -719,6 +721,9 @@ async fn fetch_and_populate_channels(
                 info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
             }
 
+            // Pre-load application commands for this guild (bots like music bots, 24/7, moderation)
+            load_guild_command_index(http, app_weak.clone(), guild_id).await;
+
             // Try to find the first readable text channel automatically
             let text_channels: Vec<&ChannelData> = channels_data.iter().filter(|c| !c.is_voice).collect();
             let mut loaded_readable = false;
@@ -750,13 +755,19 @@ async fn fetch_and_populate_channels(
                             id: "".into(),
                             author: "Litecord System".into(),
                             content: "🔒 Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                            commands: slint::ModelRc::default(),
+                            content_lines: slint::ModelRc::default(),
                             embed_content: "".into(),
+                            embed_lines: slint::ModelRc::default(),
                             embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                             embed_footer: "".into(),
                             code_block: "".into(),
                             reply_author: "".into(),
                             reply_content: "".into(),
+                            reply_command: "".into(),
                             links: slint::ModelRc::default(),
+                            buttons: slint::ModelRc::default(),
+                            attachments: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }];
                         let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
@@ -772,12 +783,365 @@ async fn fetch_and_populate_channels(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CommandSuggestionItem {
+    pub name: String,
+    pub desc: String,
+    pub usage: String,
+    pub app_id: String,
+    pub app_name: String,
+    pub cmd_id: String,
+    pub version: String,
+    pub param_name: String,
+    pub param_desc: String,
+    pub is_required: bool,
+}
+
+pub static MASTER_COMMAND_SUGGESTIONS: std::sync::OnceLock<Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>>> = std::sync::OnceLock::new();
+
+pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>> {
+    MASTER_COMMAND_SUGGESTIONS.get_or_init(|| {
+        Arc::new(std::sync::Mutex::new(vec![
+            CommandSuggestionItem {
+                name: "/play".to_string(),
+                desc: "Tocar música ou adicionar à fila".to_string(),
+                usage: "/play <query>".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "query".to_string(),
+                param_desc: "Nome da música ou link do YouTube/Spotify".to_string(),
+                is_required: true,
+            },
+            CommandSuggestionItem {
+                name: "/skip".to_string(),
+                desc: "Pular para a próxima música".to_string(),
+                usage: "/skip".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/stop".to_string(),
+                desc: "Parar reprodução e limpar a fila".to_string(),
+                usage: "/stop".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/pause".to_string(),
+                desc: "Pausar a reprodução atual".to_string(),
+                usage: "/pause".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/resume".to_string(),
+                desc: "Retomar a reprodução pausada".to_string(),
+                usage: "/resume".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/queue".to_string(),
+                desc: "Ver a fila de músicas atual".to_string(),
+                usage: "/queue".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/nowplaying".to_string(),
+                desc: "Exibir a música tocando agora".to_string(),
+                usage: "/nowplaying".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+            CommandSuggestionItem {
+                name: "/247".to_string(),
+                desc: "Manter o bot 24/7 conectado no canal de voz".to_string(),
+                usage: "/247".to_string(),
+                app_id: "".to_string(),
+                app_name: "Música".to_string(),
+                cmd_id: "".to_string(),
+                version: "".to_string(),
+                param_name: "".to_string(),
+                param_desc: "".to_string(),
+                is_required: false,
+            },
+        ]))
+    }).clone()
+}
+
+async fn load_guild_command_index(
+    http: &DiscordHttpClient,
+    app_weak: slint::Weak<AppWindow>,
+    guild_id: &str,
+) {
+    if guild_id.is_empty() || guild_id == "@me" {
+        return;
+    }
+    match http.get_guild_application_command_index(guild_id).await {
+        Ok(data) => {
+            // Build map of application_id -> Application / Bot Name
+            let mut app_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            if let Some(apps) = data["applications"].as_array() {
+                for app in apps {
+                    let app_id = app["id"].as_str().unwrap_or("").to_string();
+                    let app_name = app["name"].as_str()
+                        .or_else(|| app["bot"]["global_name"].as_str())
+                        .or_else(|| app["bot"]["username"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !app_id.is_empty() && !app_name.is_empty() {
+                        app_names.insert(app_id, app_name);
+                    }
+                }
+            }
+
+            if let Some(cmds) = data["application_commands"].as_array() {
+                let mut items: Vec<CommandSuggestionItem> = Vec::new();
+                for cmd in cmds {
+                    let name = cmd["name"].as_str().unwrap_or("");
+                    if name.is_empty() { continue; }
+                    let desc = cmd["description"].as_str().unwrap_or("");
+                    let app_id = cmd["application_id"].as_str().unwrap_or("");
+                    let cmd_id = cmd["id"].as_str().unwrap_or("");
+                    let version = cmd["version"].as_str().unwrap_or("");
+                    let app_name = app_names.get(app_id).cloned().unwrap_or_else(|| {
+                        if !app_id.is_empty() { "Bot".to_string() } else { String::new() }
+                    });
+                    
+                    let mut param_name = String::new();
+                    let mut param_desc = String::new();
+                    let mut is_required = false;
+                    
+                    if let Some(opts) = cmd["options"].as_array() {
+                        // Find first required option, or fallback to first option if present
+                        let required_opt = opts.iter().find(|o| o["required"].as_bool().unwrap_or(false));
+                        if let Some(opt) = required_opt {
+                            param_name = opt["name"].as_str().unwrap_or("").to_string();
+                            param_desc = opt["description"].as_str().unwrap_or("").to_string();
+                            is_required = true;
+                        } else if let Some(opt) = opts.first() {
+                            // Option is optional — do not force a required parameter pill
+                            let opt_name = opt["name"].as_str().unwrap_or("");
+                            let opt_desc = opt["description"].as_str().unwrap_or("");
+                            param_desc = format!("Opcional: {} ({})", opt_name, opt_desc);
+                            is_required = false;
+                        }
+                    }
+                    
+                    let usage = if param_name.is_empty() {
+                        format!("/{}", name)
+                    } else if is_required {
+                        format!("/{} <{}>", name, param_name)
+                    } else {
+                        format!("/{} [{}]", name, param_name)
+                    };
+                    
+                    items.push(CommandSuggestionItem {
+                        name: format!("/{}", name),
+                        desc: desc.to_string(),
+                        usage,
+                        app_id: app_id.to_string(),
+                        app_name,
+                        cmd_id: cmd_id.to_string(),
+                        version: version.to_string(),
+                        param_name,
+                        param_desc,
+                        is_required,
+                    });
+                }
+                
+                if !items.is_empty() {
+                    let count = items.len();
+                    if let Ok(mut master) = get_master_command_suggestions().lock() {
+                        master.clear();
+                        master.extend(items.clone());
+                    }
+
+                    let slint_suggestions: Vec<CommandSuggestion> = items.into_iter().map(|item| CommandSuggestion {
+                        name: item.name.into(),
+                        desc: item.desc.into(),
+                        usage: item.usage.into(),
+                        app_id: item.app_id.into(),
+                        app_name: item.app_name.into(),
+                        cmd_id: item.cmd_id.into(),
+                        version: item.version.into(),
+                        param_name: item.param_name.into(),
+                        param_desc: item.param_desc.into(),
+                        is_required: item.is_required,
+                    }).collect();
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_weak.upgrade() {
+                            let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
+                            ui.set_command_suggestions(model.into());
+                            info!("✅ Carregados {} comandos inteligentes reais dos bots do servidor com identificadores!", count);
+                        }
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Não foi possível carregar o índice de comandos do servidor {}: {}", guild_id, e);
+        }
+    }
+}
+
+fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, app_weak: &slint::Weak<AppWindow>) -> slint::ModelRc<MessageLine> {
+    let emoji_mgr = emoji_cache::get_emoji_cache();
+    let slint_lines: Vec<MessageLine> = lines.iter().map(|line| {
+        let slint_blocks: Vec<MessageBlock> = line.blocks.iter().map(|b| {
+            let emoji_img = if b.is_emoji {
+                if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+                    img
+                } else {
+                    emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
+                    slint::Image::default()
+                }
+            } else {
+                slint::Image::default()
+            };
+
+            MessageBlock {
+                text: b.text.clone().into(),
+                is_link: b.is_link,
+                is_command: b.is_command,
+                is_emoji: b.is_emoji,
+                emoji_id: b.emoji_id.clone().into(),
+                emoji_img,
+                url: b.url.clone().into(),
+                command_name: b.command_name.clone().into(),
+            }
+        }).collect();
+        MessageLine {
+            blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_blocks))),
+        }
+    }).collect();
+    slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_lines)))
+}
+
+fn map_message_attachments(
+    attachments: &[gateway::MessageAttachmentData],
+    app_weak: &slint::Weak<AppWindow>,
+) -> slint::ModelRc<MessageAttachment> {
+    let att_cache = attachment_cache::get_attachment_cache();
+    let slint_atts: Vec<MessageAttachment> = attachments.iter().map(|a| {
+        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full(&a.id, &a.filename) {
+            (true, img)
+        } else {
+            (false, slint::Image::default())
+        };
+
+        let preview_img = if a.is_image && !is_downloaded {
+            if let Some(p) = att_cache.get_preview(&a.id) {
+                p
+            } else {
+                att_cache.fetch_preview_async(&a.id, &a.proxy_url, app_weak.clone());
+                slint::Image::default()
+            }
+        } else {
+            slint::Image::default()
+        };
+
+        let (width, height) = if a.width > 0 && a.height > 0 {
+            (a.width, a.height)
+        } else if is_downloaded {
+            let sz = full_img.size();
+            (sz.width as i32, sz.height as i32)
+        } else {
+            (a.width, a.height)
+        };
+
+        MessageAttachment {
+            id: a.id.clone().into(),
+            filename: a.filename.clone().into(),
+            url: a.url.clone().into(),
+            proxy_url: a.proxy_url.clone().into(),
+            size_str: a.size_str.clone().into(),
+            width,
+            height,
+            is_image: a.is_image,
+            is_downloaded,
+            is_loading: false,
+            full_img,
+            preview_img,
+        }
+    }).collect();
+    slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_atts)))
+}
+
+fn map_message_buttons(
+    buttons: &[gateway::MessageButtonData],
+    channel_id: &str,
+    app_weak: &slint::Weak<AppWindow>,
+) -> slint::ModelRc<MessageButton> {
+    let emoji_mgr = emoji_cache::get_emoji_cache();
+    let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| {
+        let emoji_img = if !b.emoji_id.is_empty() {
+            if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+                img
+            } else {
+                emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
+                slint::Image::default()
+            }
+        } else {
+            slint::Image::default()
+        };
+
+        MessageButton {
+            label: b.label.clone().into(),
+            url: b.url.clone().into(),
+            emoji: b.emoji.clone().into(),
+            emoji_id: b.emoji_id.clone().into(),
+            emoji_img,
+            style_type: b.style_type,
+            is_disabled: b.is_disabled,
+        }
+    }).collect();
+    slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(slint_buttons)))
+}
+
 async fn load_messages_for_channel(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
     channel_id: &str,
 ) -> bool {
     info!("Carregando mensagens do canal {}...", channel_id);
+    emoji_cache::get_emoji_cache().set_active_channel(channel_id);
+    let ch_id_for_emojis = channel_id.to_string();
+    let app_weak_load = app_weak.clone();
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
             let has_more = msgs_val.len() >= 30;
@@ -797,21 +1161,30 @@ async fn load_messages_for_channel(
                             id: "".into(),
                             author: "Litecord System".into(),
                             content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                            commands: slint::ModelRc::default(),
+                            content_lines: slint::ModelRc::default(),
                             embed_content: "".into(),
+                            embed_lines: slint::ModelRc::default(),
                             embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                             embed_footer: "".into(),
                             code_block: "".into(),
                             reply_author: "".into(),
                             reply_content: "".into(),
+                            reply_command: "".into(),
                             links: slint::ModelRc::default(),
+                            buttons: slint::ModelRc::default(),
+                            attachments: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
                             let msg_id = m["id"].as_str().unwrap_or("");
                             let author = format_discord_author(m);
-                            let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
+                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
                             
+                            let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                            let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
                             let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                 label: l.label.clone().into(),
                                 url: l.url.clone().into(),
@@ -822,13 +1195,19 @@ async fn load_messages_for_channel(
                                 id: msg_id.into(),
                                 author: author.into(),
                                 content: content.into(),
+                                commands: slint::ModelRc::from(commands_model),
+                                content_lines: map_message_lines(&content_lines, &ch_id_for_emojis, &app_weak_load),
                                 embed_content: embed_content.into(),
+                                embed_lines: map_message_lines(&embed_lines, &ch_id_for_emojis, &app_weak_load),
                                 embed_color: parse_hex_color(&embed_color),
                                 embed_footer: embed_footer.into(),
                                 code_block: code_block.into(),
                                 reply_author: reply_author.into(),
                                 reply_content: reply_content.into(),
+                                reply_command: reply_command.into(),
                                 links: slint::ModelRc::from(links_model),
+                                buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
+                                attachments: map_message_attachments(&attachments, &app_weak_load),
                                 timestamp: "Agora".into(),
                             }
                         }).collect()
@@ -861,13 +1240,19 @@ async fn load_messages_for_channel(
                         id: "".into(),
                         author: "Litecord System".into(),
                         content: friendly_msg.into(),
+                        commands: slint::ModelRc::default(),
+                        content_lines: slint::ModelRc::default(),
                         embed_content: "".into(),
+                        embed_lines: slint::ModelRc::default(),
                         embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                         embed_footer: "".into(),
                         code_block: "".into(),
                         reply_author: "".into(),
                         reply_content: "".into(),
+                        reply_command: "".into(),
                         links: slint::ModelRc::default(),
+                        buttons: slint::ModelRc::default(),
+                        attachments: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
                     }];
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
@@ -973,6 +1358,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = writeln!(f, "{}", msg);
         }
     }));
+
+    attachment_cache::cleanup_temp_attachments();
 
     let log_file = std::fs::OpenOptions::new().create(true).append(true).open("litecord_app.log").ok();
     let logger = AppLogger { file: Mutex::new(log_file) };
@@ -1255,6 +1642,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
         }
+    });
+
+    let app_weak_dl = app_weak.clone();
+    app.on_download_attachment(move |att_id: SharedString, filename: SharedString, url: SharedString| {
+        let cache = attachment_cache::get_attachment_cache();
+        cache.download_full_async(att_id.as_str(), filename.as_str(), url.as_str(), app_weak_dl.clone());
     });
 
     // Popout Stream Window Callbacks & Window Manager
@@ -2484,13 +2877,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "".into(),
                 author: "Litecord Voice".into(),
                 content: "🔴 Desconectado da sala de voz.".into(),
+                commands: slint::ModelRc::default(),
+                content_lines: slint::ModelRc::default(),
                 embed_content: "".into(),
+                embed_lines: slint::ModelRc::default(),
                 embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                 embed_footer: "".into(),
                 code_block: "".into(),
                 reply_author: "".into(),
                 reply_content: "".into(),
+                reply_command: "".into(),
                 links: slint::ModelRc::default(),
+                buttons: slint::ModelRc::default(),
+                attachments: slint::ModelRc::default(),
                 timestamp: "Agora".into(),
             });
             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -2625,7 +3024,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let has_more = msgs_val.len() >= 30;
                         if let Some(oldest) = msgs_val.last() {
                             if let Some(id_str) = oldest["id"].as_str() {
-                                get_oldest_message_map().lock().unwrap().insert(ch_id_clone, id_str.to_string());
+                                get_oldest_message_map().lock().unwrap().insert(ch_id_clone.clone(), id_str.to_string());
                             }
                         }
 
@@ -2637,8 +3036,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let older_slint_msgs: Vec<ChatMessage> = msgs_val.iter().rev().map(|m| {
                                     let msg_id = m["id"].as_str().unwrap_or("");
                                     let author = format_discord_author(m);
-                                    let (content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links) = format_discord_message_parts(m);
+                                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
                                     
+                                    let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                                    let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
                                     let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                         label: l.label.clone().into(),
                                         url: l.url.clone().into(),
@@ -2649,13 +3051,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         id: msg_id.into(),
                                         author: author.into(),
                                         content: content.into(),
+                                        commands: slint::ModelRc::from(commands_model),
+                                        content_lines: map_message_lines(&content_lines, &ch_id_clone, &app_w_inner),
                                         embed_content: embed_content.into(),
+                                        embed_lines: map_message_lines(&embed_lines, &ch_id_clone, &app_w_inner),
                                         embed_color: parse_hex_color(&embed_color),
                                         embed_footer: embed_footer.into(),
                                         code_block: code_block.into(),
                                         reply_author: reply_author.into(),
                                         reply_content: reply_content.into(),
+                                        reply_command: reply_command.into(),
                                         links: slint::ModelRc::from(links_model),
+                                        buttons: map_message_buttons(&buttons, &ch_id_clone, &app_w_inner),
+                                        attachments: map_message_attachments(&attachments, &app_w_inner),
                                         timestamp: "Anterior".into(),
                                     }
                                 }).collect();
@@ -3155,13 +3563,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: "".into(),
                     author: "Litecord Voice".into(),
                     content: format!("🔊 Entrou no canal de voz: {}", ch_name).into(),
+                    commands: slint::ModelRc::default(),
+                    content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
+                    embed_lines: slint::ModelRc::default(),
                     embed_color: slint::Color::from_rgb_u8(88, 101, 242),
                     embed_footer: "".into(),
                     code_block: "".into(),
                     reply_author: "".into(),
                     reply_content: "".into(),
+                    reply_command: "".into(),
                     links: slint::ModelRc::default(),
+                    buttons: slint::ModelRc::default(),
+                    attachments: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -3246,6 +3660,178 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(http) = http_opt {
             tokio::spawn(async move {
                 let _ = http.send_message(&channel_id, &content_str).await;
+            });
+        }
+    });
+
+    // Click Command Callback (fills input with command parameter pill)
+    let app_weak_cmd = app_weak.clone();
+    app.on_click_command(move |cmd: SharedString| {
+        if let Some(ui) = app_weak_cmd.upgrade() {
+            let cmd_str = cmd.to_string();
+            let clean_cmd = if cmd_str.starts_with('/') { cmd_str } else { format!("/{}", cmd_str) };
+            
+            let master = get_master_command_suggestions().lock().unwrap().clone();
+            if let Some(found) = master.iter().find(|s| s.name.to_lowercase() == clean_cmd.to_lowercase()) {
+                ui.set_active_command_name(found.name.clone().into());
+                ui.set_active_param_name(found.param_name.clone().into());
+                let pdesc = if found.param_desc.is_empty() {
+                    if found.param_name.is_empty() { format!("Pressione Enter para executar {}", found.name) } else { found.desc.clone() }
+                } else {
+                    found.param_desc.clone()
+                };
+                ui.set_active_param_desc(pdesc.into());
+                ui.set_active_command_app_id(found.app_id.clone().into());
+                ui.set_active_command_cmd_id(found.cmd_id.clone().into());
+                ui.set_active_command_version(found.version.clone().into());
+            } else {
+                ui.set_active_command_name(clean_cmd.clone().into());
+                ui.set_active_param_name("".into());
+                ui.set_active_param_desc(format!("Pressione Enter para executar {}", clean_cmd).into());
+                ui.set_active_command_app_id("".into());
+                ui.set_active_command_cmd_id("".into());
+                ui.set_active_command_version("".into());
+            }
+            ui.set_command_arg_text("".into());
+            ui.set_chat_input_text("".into());
+            ui.set_show_command_suggestions(false);
+        }
+    });
+
+    // Handle Input Change Callback (ranked real-time autocomplete filtering)
+    let app_weak_inp = app_weak.clone();
+    app.on_handle_input_change(move |text: SharedString| {
+        if let Some(ui) = app_weak_inp.upgrade() {
+            let t = text.to_string();
+            let trimmed = t.trim();
+            if trimmed.starts_with('/') {
+                let query = trimmed.to_lowercase();
+                let master = get_master_command_suggestions().lock().unwrap().clone();
+                
+                // If user typed "/play " (with trailing space and matched a command):
+                if t.ends_with(' ') && t.starts_with('/') {
+                    let cmd_word = t.trim();
+                    if let Some(found) = master.iter().find(|c| c.name.to_lowercase() == cmd_word.to_lowercase()) {
+                        ui.set_active_command_name(found.name.clone().into());
+                        ui.set_active_param_name(found.param_name.clone().into());
+                        let pdesc = if found.param_desc.is_empty() {
+                            if found.param_name.is_empty() { format!("Pressione Enter para executar {}", found.name) } else { found.desc.clone() }
+                        } else {
+                            found.param_desc.clone()
+                        };
+                        ui.set_active_param_desc(pdesc.into());
+                        ui.set_active_command_app_id(found.app_id.clone().into());
+                        ui.set_active_command_cmd_id(found.cmd_id.clone().into());
+                        ui.set_active_command_version(found.version.clone().into());
+                        ui.set_command_arg_text("".into());
+                        ui.set_chat_input_text("".into());
+                        ui.set_show_command_suggestions(false);
+                        return;
+                    }
+                }
+
+                let mut scored: Vec<(i32, CommandSuggestionItem)> = master.into_iter().filter_map(|cmd| {
+                    let name_lower = cmd.name.to_lowercase();
+                    let desc_lower = cmd.desc.to_lowercase();
+                    let app_lower = cmd.app_name.to_lowercase();
+                    
+                    if name_lower == query {
+                        Some((1000, cmd))
+                    } else if name_lower.starts_with(&query) {
+                        Some((500 - (name_lower.len() as i32), cmd))
+                    } else if name_lower.contains(&query) {
+                        Some((200, cmd))
+                    } else if app_lower.contains(&query.trim_start_matches('/')) {
+                        Some((150, cmd))
+                    } else if desc_lower.contains(&query.trim_start_matches('/')) {
+                        Some((100, cmd))
+                    } else if query == "/" {
+                        Some((50, cmd))
+                    } else {
+                        None
+                    }
+                }).collect();
+
+                scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+                let filtered_suggestions: Vec<CommandSuggestion> = scored.into_iter().map(|(_, item)| CommandSuggestion {
+                    name: item.name.into(),
+                    desc: item.desc.into(),
+                    usage: item.usage.into(),
+                    app_id: item.app_id.into(),
+                    app_name: item.app_name.into(),
+                    cmd_id: item.cmd_id.into(),
+                    version: item.version.into(),
+                    param_name: item.param_name.into(),
+                    param_desc: item.param_desc.into(),
+                    is_required: item.is_required,
+                }).collect();
+
+                let is_empty = filtered_suggestions.is_empty();
+                let model = std::rc::Rc::new(slint::VecModel::from(filtered_suggestions));
+                ui.set_command_suggestions(model.into());
+                ui.set_show_command_suggestions(!is_empty);
+            } else {
+                ui.set_show_command_suggestions(false);
+            }
+        }
+    });
+
+    // Execute Active Command Callback (Discord Slash Command interaction or text message fallback)
+    let http_client_cmd = Arc::clone(&http_client);
+    let active_channel_cmd = Arc::clone(&active_channel_id);
+    let active_guild_cmd = Arc::clone(&active_guild_id);
+    app.on_execute_active_command(move |cmd_name: SharedString, arg_value: SharedString, app_id: SharedString, cmd_id: SharedString, version: SharedString, param_name: SharedString| {
+        let cmd_name_str = cmd_name.to_string();
+        let arg_val_str = arg_value.to_string();
+        let app_id_str = app_id.to_string();
+        let cmd_id_str = cmd_id.to_string();
+        let version_str = version.to_string();
+        let param_name_str = param_name.to_string();
+        
+        let channel_id = active_channel_cmd.lock().unwrap().clone();
+        let guild_id = active_guild_cmd.lock().unwrap().clone();
+        let http_opt = http_client_cmd.lock().unwrap().as_ref().cloned();
+
+        if let Some(http) = http_opt {
+            tokio::spawn(async move {
+                let clean_name = cmd_name_str.trim_start_matches('/').to_string();
+                if !app_id_str.is_empty() && !cmd_id_str.is_empty() {
+                    let mut options = Vec::new();
+                    if !arg_val_str.is_empty() {
+                        let opt_name = if param_name_str.is_empty() { "query".to_string() } else { param_name_str };
+                        options.push(serde_json::json!({
+                            "type": 3,
+                            "name": opt_name,
+                            "value": arg_val_str
+                        }));
+                    }
+                    if let Err(e) = http.send_slash_command_interaction(
+                        &guild_id,
+                        &channel_id,
+                        &app_id_str,
+                        &cmd_id_str,
+                        &clean_name,
+                        &version_str,
+                        options,
+                        ""
+                    ).await {
+                        warn!("Falha ao enviar slash command interaction (tentando fallback): {}", e);
+                        let fallback_msg = if arg_val_str.is_empty() {
+                            format!("/{}", clean_name)
+                        } else {
+                            format!("/{} {}", clean_name, arg_val_str)
+                        };
+                        let _ = http.send_message(&channel_id, &fallback_msg).await;
+                    }
+                } else {
+                    let fallback_msg = if arg_val_str.is_empty() {
+                        cmd_name_str
+                    } else {
+                        format!("{} {}", cmd_name_str, arg_val_str)
+                    };
+                    let _ = http.send_message(&channel_id, &fallback_msg).await;
+                }
             });
         }
     });
@@ -3423,7 +4009,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { channel_id, author, content, embed_content, embed_color, embed_footer, code_block, reply_author, reply_content, links, timestamp } => {
+                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, timestamp } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     if channel_id != current_active_ch {
                         // Message is for a different channel or different server — IGNORE from current chat UI!
@@ -3440,23 +4026,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ui) = app_weak_inner.upgrade() {
                                 let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
 
+                                let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                                let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
                                 let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
                                     label: l.label.clone().into(),
                                     url: l.url.clone().into(),
-                                }).collect();
+                                    }).collect();
                                 let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
                                 current_msgs.push(ChatMessage {
-                                    id: "".into(),
+                                    id: id.into(),
                                     author: author.into(),
                                     content: content.into(),
+                                    commands: slint::ModelRc::from(commands_model),
+                                    content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
                                     embed_content: embed_content.into(),
+                                    embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
                                     embed_color: parse_hex_color(&embed_color),
                                     embed_footer: embed_footer.into(),
                                     code_block: code_block.into(),
                                     reply_author: reply_author.into(),
                                     reply_content: reply_content.into(),
+                                    reply_command: reply_command.into(),
                                     links: slint::ModelRc::from(links_model),
+                                    buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
+                                    attachments: map_message_attachments(&attachments, &app_weak_inner),
                                     timestamp: timestamp.into(),
                                 });
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
@@ -3471,6 +4066,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         });
                     }
+                }
+                GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
+                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    if channel_id != current_active_ch {
+                        continue;
+                    }
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_weak_inner.upgrade() {
+                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+
+                            let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                            let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
+                            let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
+                                label: l.label.clone().into(),
+                                url: l.url.clone().into(),
+                            }).collect();
+                            let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                            let mut found = false;
+                            for msg in current_msgs.iter_mut() {
+                                if !id.is_empty() && msg.id == id.as_str() {
+                                    msg.content = content.clone().into();
+                                    msg.commands = slint::ModelRc::from(commands_model.clone());
+                                    msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
+                                    msg.embed_content = embed_content.clone().into();
+                                    msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
+                                    msg.embed_color = parse_hex_color(&embed_color);
+                                    msg.embed_footer = embed_footer.clone().into();
+                                    msg.code_block = code_block.clone().into();
+                                    if !reply_author.is_empty() {
+                                        msg.reply_author = reply_author.clone().into();
+                                    }
+                                    if !reply_content.is_empty() {
+                                        msg.reply_content = reply_content.clone().into();
+                                    }
+                                    if !reply_command.is_empty() {
+                                        msg.reply_command = reply_command.clone().into();
+                                    }
+                                    msg.links = slint::ModelRc::from(links_model.clone());
+                                    msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
+                                    msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
+                                    found = true;
+                                    break;
+                                }
+                            }
+
+                            if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty()) {
+                                current_msgs.push(ChatMessage {
+                                    id: id.into(),
+                                    author: "Bot".into(),
+                                    content: content.into(),
+                                    commands: slint::ModelRc::from(commands_model),
+                                    content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
+                                    embed_content: embed_content.into(),
+                                    embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
+                                    embed_color: parse_hex_color(&embed_color),
+                                    embed_footer: embed_footer.into(),
+                                    code_block: code_block.into(),
+                                    reply_author: reply_author.into(),
+                                    reply_content: reply_content.into(),
+                                    reply_command: reply_command.into(),
+                                    links: slint::ModelRc::from(links_model),
+                                    buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
+                                    attachments: map_message_attachments(&attachments, &app_weak_inner),
+                                    timestamp: "Agora".into(),
+                                });
+                            }
+
+                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                            ui.set_messages(model.into());
+                        }
+                    });
+                }
+                GatewayEvent::MessageDeleted { id, channel_id } => {
+                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    if channel_id != current_active_ch {
+                        continue;
+                    }
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_weak_inner.upgrade() {
+                            let current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
+                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                            ui.set_messages(model.into());
+                        }
+                    });
                 }
                 GatewayEvent::VoiceStatesUpdated => {
                     let gid = active_guild_inner.lock().unwrap().clone();
