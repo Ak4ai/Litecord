@@ -18,3 +18,5 @@ release-pkg/
 .vscode/
 .idea/
 *.pdb
+*.bat
+*.zip

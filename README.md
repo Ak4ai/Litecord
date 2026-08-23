@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # Litecord 🚀
 ### Ultra-Lightweight, High-Performance Native Discord Client for Gamers
@@ -13,7 +13,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>< 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while giving your squad revolutionary <b>IGL / Shot-Caller Speech Priority Ducking</b>.
+  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>< 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while providing revolutionary <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Image Attachments</b>.
 </p>
 
 [🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [🛡️ Security & Safety](#-cybersecurity-privacy--account-safety) • [🛠️ Build from Source](#-building-from-source)
@@ -29,10 +29,12 @@
 ## 🎮 Why Gamers Choose Litecord
 
 - 🏆 **Zero In-Game FPS Drops & Micro-Stutters**: Reclaims CPU threads eaten by Chromium/Electron, improving 1% low framerates in competitive titles (*CS2, Valorant, Warzone, Apex Legends, Fortnite, League of Legends*).
-- 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 (`[ - ] P:2 [ + ]`) so critical tactical callouts automatically duck background noise and music during clutch rounds.
+- 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 ([ - ] P:2 [ + ]) so critical tactical callouts automatically duck background noise and music during clutch rounds.
+- ⌨️ **Smart Slash Commands Autocomplete**: Instant suggestions for /play, /skip, and bot commands with keyboard navigation (Up/Down + Enter) and real-time parameter chips.
+- 🖼️ **On-Demand Ephemeral Image Attachments**: Minecraft-style pixel-art preview (~500 bytes) with dynamic proportional height and on-demand full downloads to %TEMP%.
+- 🎨 **Unified Emoji System (Twemoji + Discord CDN)**: Zero missing tofu squares (□). Full support for Discord custom emojis and Unicode emojis in messages, embeds, and bot buttons.
 - ⚡ **Sub-5 MB DeepSleep RAM**: Drops physical memory down to **~3 MB – 5 MB** when minimized to the system tray, freeing maximum RAM for games.
 - 🎙️ **Opus PLC (Packet Loss Concealment)**: Prevents robotic voice stuttering and crackles even when your GPU/CPU is at 100% load during intense firefights.
-- 🌙 **DeepSleep Tray Suspension**: Drops visual rendering to 0.0% CPU and ~3 MB RAM when minimized, keeping crystal-clear voice communication alive in the background while you game.
 
 ---
 
@@ -43,7 +45,7 @@
 | **Idle CPU Usage** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x lighter CPU footprint** |
 | **Active Voice CPU** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero Game Stuttering** |
 | **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~3 MB - 5 MB** | 🌙 **99% lighter background footprint** |
-| **RAM Usage (Active Window)** | 500 MB - 900 MB | **~12 MB - 25 MB** | 💾 **Saves up to 850 MB RAM** |
+| **RAM Usage (Active Window)** | 500 MB - 900 MB | **~12 MB - 28 MB** | 💾 **Saves up to 850 MB RAM** |
 | **Startup Time** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Instant Match Launch** |
 | **Binary Size** | ~180 MB | **~8 MB Standalone** | 📦 **Pure Native Machine Code** |
 
@@ -65,45 +67,56 @@
 <br/>
 
 ### 👑 2. Dynamic Speech Priority & Smart Ducking
-Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N [ + ]`):
-- **Hierarchical Attenuation**: When multiple people talk at once, lower-priority speakers are automatically attenuated smoothly based on the priority difference (`Delta = max_priority - user_priority`):
+Take control of crowded voice calls with custom per-user priorities ([ - ] P:N [ + ]):
+- **Hierarchical Attenuation**: When multiple people talk at once, lower-priority speakers are automatically attenuated smoothly based on the priority difference (Delta = max_priority - user_priority):
   - **Delta = 1** (e.g., Priority 1 vs 0): Volume reduced to **50%**.
   - **Delta = 2** (e.g., Priority 2 vs 0): Volume reduced to **40%**.
   - **Delta = 3** (e.g., Priority 3 vs 0): Volume reduced to **30%**.
   - **Delta >= 5**: Volume ducked to protection floor (**5% - 10%**).
 - **Independent Volume & Mute**: Per-user volume sliders (0% - 200%) and instant mute buttons, saved automatically across sessions.
 
-### ⚡ 3. DeepSleep Mode & Extreme Efficiency
+### ⌨️ 3. Intelligent Slash Commands & Parameter Chips
+- **Dynamic Server Command Indexing**: Fetches and aggregates real slash commands from registered bots (/play, /skip, /stop, /queue, etc.).
+- **Keyboard Navigation**: Use **Up/Down Arrow keys** to cycle through command suggestions and hit **Enter** to auto-select.
+- **Interactive Parameter Chips**: Formats commands as clean visual chips in the message input and chat history with parameter placeholders.
+
+### 🖼️ 4. Ultra-Lightweight On-Demand Image Attachments
+- **Minecraft Pixel-Art Placeholders**: Low-resolution (~500 bytes) chunky 8-bit preview before downloading.
+- **Fixed Width (320px) & Proportional Height**: Dynamically adapts height to match the image's original aspect ratio (16:9, portrait, square).
+- **Ephemeral Temp Storage**: Full downloads are saved in %TEMP%/Litecord/temp_images/ and automatically wiped on app startup and shutdown.
+- **Collapsed Link Archive**: Image URLs remain accessible inside the collapsed message view without cluttering chat.
+
+### 🎨 5. Unified Emoji System (Twemoji + Discord CDN)
+- **Discord Custom Emojis**: Asynchronously downloaded, cached locally, and updated in-place.
+- **Twemoji Unicode Rendering**: Direct vector glyph rasterization for Unicode emojis (⏭️, ⏮️, ⏯️, 🔀, 🔁, 🔥, ❤️, etc.), preventing Windows tofu boxes (□).
+- **Screen & Active Channel Priority**: Dedicates network bandwidth exclusively to visible chat messages.
+
+### ⚡ 6. DeepSleep Mode & Extreme Efficiency
 - **Sub-0.1% CPU Idle**: UI event dispatch loop is decoupled and capped at 30 FPS for microphone meters.
 - **System Tray DeepSleep**: Minimizing Litecord to the system tray completely suspends all visual rendering loops while keeping voice audio streaming in background.
 - **Delta Badge Fingerprinting**: Sidebar channel member count badges update only on real state changes, preventing unnecessary thread wakeups.
 
-### 🛡️ 4. Enterprise-Grade Security & Privacy
-- **DPAPI Token Encryption at Rest**: Discord tokens stored locally in `.litecord_token` are encrypted with Windows DPAPI (`CryptProtectData`), making them unreadable to unauthorized processes or other user accounts.
-- **Shell Injection Shield**: Chat hyperlinks are strictly validated (`http://` and `https://`) and dispatched directly to the default browser via the native Windows `ShellExecuteW` API—never through `cmd.exe`.
+### 🛡️ 7. Enterprise-Grade Security & Privacy
+- **DPAPI Token Encryption at Rest**: Discord tokens stored locally in .litecord_token are encrypted with Windows DPAPI (CryptProtectData), making them unreadable to unauthorized processes or other user accounts.
+- **Shell Injection Shield**: Chat hyperlinks are strictly validated (http:// and https://) and dispatched directly to the default browser via the native Windows ShellExecuteW API—never through cmd.exe.
 - **Zero Telemetry**: Litecord does not track, collect, or upload any user analytics.
-
-### 💾 5. Automatic Settings Persistence
-- **Voice Activity Sensitivity (VAD Threshold)**: Slider position is written to `.litecord_audio_config.json` and restored on startup.
-- **Audio Device Memory**: Remembers your preferred microphone and speaker devices.
-- **User Audio Profiles**: Preserves volume and priority assignments per Discord user ID.
 
 ---
 
 ## 🛡️ Cybersecurity, Privacy & Account Safety
 
-When choosing an alternative client for Discord, **security and account integrity are paramount**. Here is an exact breakdown of how Litecord protects your machine, your credentials, and your account:
+When choosing an alternative client for Discord, **security and account integrity are paramount**:
 
 ### 🔒 1. Zero-Trust Security Architecture
-- **Direct Discord Connections Only (Zero Intermediaries):** Litecord connects directly from your machine to official Discord endpoints (`https://discord.com/api` and `wss://gateway.discord.gg`). There are **no proxy servers, no third-party APIs, and no telemetry backends**.
-- **Windows DPAPI Local Encryption at Rest:** On Windows, session tokens are encrypted locally using the Windows Data Protection API (`CryptProtectData`). The encrypted `.litecord_token` file is cryptographically bound to your Windows user logon credentials—preventing info-stealers, background scripts, or unauthorized accounts from reading it.
-- **Shell Injection & RCE Shield:** Chat hyperlinks are strictly validated against an `http://` and `https://` protocol whitelist and dispatched directly to your default browser via native OS APIs (`ShellExecuteW` on Windows / `xdg-open` on Linux)—never through shell interpreters (`cmd.exe` or `sh`).
-- **100% Open Source & Auditable (MIT):** Every single line of Rust code is public and open for community audit. You can inspect the entire networking, cryptographic DAVE, and token handling logic or compile the binary yourself from source.
+- **Direct Discord Connections Only (Zero Intermediaries):** Litecord connects directly from your machine to official Discord endpoints (https://discord.com/api and wss://gateway.discord.gg). There are **no proxy servers, no third-party APIs, and no telemetry backends**.
+- **Windows DPAPI Local Encryption at Rest:** On Windows, session tokens are encrypted locally using the Windows Data Protection API (CryptProtectData). The encrypted .litecord_token file is cryptographically bound to your Windows user logon credentials.
+- **Shell Injection & RCE Shield:** Chat hyperlinks are strictly validated against an http:// and https:// protocol whitelist and dispatched directly to your default browser via native OS APIs (ShellExecuteW on Windows / xdg-open on Linux).
+- **100% Open Source & Auditable (MIT):** Every single line of Rust code is public and open for community audit.
 
 ### ⚠️ 2. Discord Terms of Service (ToS) & Account Safety
 - **Strictly Human-Driven (Zero Automation / Selfbots):** Litecord is engineered purely as a lightweight interactive desktop client for human gamers. It contains **no automated scrapers, no auto-responders, no mass-messaging tools, and no bot scripts** that trigger Discord's automated anti-abuse detection heuristics.
 - **Official Gateway Protocol Compliance:** Connects via standard Discord Gateway v9 and Voice Gateway v9 channels, emitting normal human-paced interaction events and respecting API rate limits.
-- **Transparent ToS Disclaimer:** Like all third-party Discord software (*Vencord, BetterDiscord, Ripcord*), using an alternative client is technically against Discord's Terms of Service. In practice, Discord's automated enforcement systems target automated abuse, mass scraping, token raids, and spam bots rather than human users using lightweight voice clients. However, as with any third-party tool, Litecord is provided for performance and educational purposes, and users should use it with informed awareness.
+- **Transparent ToS Disclaimer:** Like all third-party Discord software (*Vencord, BetterDiscord, Ripcord*), using an alternative client is technically against Discord's Terms of Service. Litecord is provided for performance and educational purposes.
 
 ---
 
@@ -113,9 +126,9 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup** | `Litecord-Setup-x64.exe` | Official Inno Setup installer with Desktop shortcut, Start Menu entry, and uninstaller. |
-| **💼 Windows Portable** | `litecord-windows-x64-portable.zip` | Standalone zero-install executable (`litecord.exe`). Unpack and run anywhere. |
-| **🐧 Linux Standalone** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA and System Tray support. |
+| **🪟 Windows Release (v0.3.0)** | Litecord-v0.3.0-windows-x64.zip | Standalone executable (litecord.exe). Unpack and run anywhere. |
+| **🪟 Windows Setup** | Litecord-Setup-x64.exe | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🐧 Linux Standalone** | litecord-linux-x64.tar.gz | Native x86_64 Linux binary compiled with ALSA and System Tray support. |
 
 ---
 
@@ -123,54 +136,58 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 Open your terminal and paste:
 
-```bash
+`ash
 curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
-```
+`
 
 The script will:
 1. 📥 Download the latest pre-compiled binary from GitHub Releases automatically
-2. 📂 Install it to `~/.local/bin/litecord`
-3. 🖥️ Create a `.desktop` entry for your app launcher
-4. ✅ Tell you if you need to add `~/.local/bin` to your `$PATH`
+2. 📂 Install it to ~/.local/bin/litecord
+3. 🖥️ Create a .desktop entry for your app launcher
+4. ✅ Tell you if you need to add ~/.local/bin to your $PATH
 
-> **Requirements:** `curl` and `tar` (pre-installed on virtually all Linux distros).
+> **Requirements:** curl and 	ar (pre-installed on virtually all Linux distros).
 
 ---
 
 ## 🛠️ Building from Source
 
-
 ### Prerequisites
-- **Rust Toolchain**: 2021 Edition or later (`rustup install stable`)
+- **Rust Toolchain**: 2021 Edition or later (ustup install stable)
 - **Cargo**: Included with Rust
 
 ### 📦 Run Development Mode
-```bash
+`ash
 cargo run
-```
+`
 
 ### ⚡ Build Optimized Release Binary
-```bash
+`ash
 cargo build --release
-```
-The optimized executable will be located at `target/release/litecord.exe` (Windows) or `target/release/litecord` (Linux).
+`
+The optimized executable will be located at 	arget/release/litecord.exe (Windows) or 	arget/release/litecord (Linux).
 
 ---
 
 ## 📂 Project Architecture
 
-```text
+`	ext
 Litecord/
 ├── .github/workflows/
 │   └── build.yml              # Automated multi-platform CI/CD release workflow
 ├── assets/
 │   ├── app_icon.ico           # Multi-resolution Windows PE application icon (16-256px)
 │   ├── app_icon.png           # Embedded high-res application & tray icon
+│   ├── arrow-down.svg         # Download icon
+│   ├── terminal.svg           # Slash command terminal icon
 │   └── globe.svg              # Language selector vector icon
 ├── src/
 │   ├── main.rs                # Application lifecycle, Slint UI bindings, tray & auth
 │   ├── gateway.rs             # Discord Gateway WS, CPAL/Opus voice pipeline, ducking & VAD
+│   ├── attachment_cache.rs    # On-demand ephemeral image downloader & Minecraft pixel-art preview
+│   ├── emoji_cache.rs         # Multi-tier memory/disk cache with Twemoji and Discord CDN support
 │   ├── http.rs                # Discord HTTP REST client (guilds, channels, messages)
+│   ├── screen_capture.rs      # High-performance screen capture & stream popout engine
 │   ├── i18n.rs                # Internationalization module with 7 languages & OS detection
 │   └── tray.rs                # Native Windows System Tray integration
 ├── ui/
@@ -180,7 +197,7 @@ Litecord/
 ├── index.html                 # Official GitHub Pages web landing page
 ├── installer.iss              # Inno Setup Windows installer specification
 └── README.md                  # Project documentation & reference
-```
+`
 
 ---
 
@@ -190,13 +207,8 @@ We welcome all developers, gamers, and audio enthusiasts to help build Litecord!
 
 ### 🎯 Project Vision & Philosophy:
 Litecord is built to be a **simple, clean, and ultra-lightweight interface for gamers** to use Discord without background lag, high CPU/RAM overhead, or bloat. 
-- **Core Track (`main`)**: Strictly dedicated to performance, low-latency audio, and minimal essentials (< 0.1% CPU, < 35 MB RAM).
-- **Alternative Branches & Releases**: Any modifications, experimental expansions, or heavier features that deviate from this minimal philosophy will still be reviewed with care, and merged/published as **alternative branches or alternative release tracks** to keep the core clean and lightning-fast.
-
-### 💡 Contribution & Credit Policy:
-- If you use or modify Litecord code to develop improvements, bug fixes, or new features, **please submit your work back to this repository as a [Pull Request (PR)](https://github.com/Ak4ai/Litecord/pulls)**.
-- Every merged contribution will be **officially credited below in the Contributors Hall of Fame**, detailing your contributions and proportional impact on the project.
-- Read our full [**Contributing Guidelines (`CONTRIBUTING.md`)**](CONTRIBUTING.md) for setup and code style instructions.
+- **Core Track (main)**: Strictly dedicated to performance, low-latency audio, and minimal essentials (< 0.1% CPU, < 35 MB RAM).
+- **Alternative Branches & Releases**: Any modifications or experimental features can be published as alternative branches or release tracks.
 
 ### 👑 Contributors Hall of Fame
 | Contributor | Role / Contributions | Impact |
@@ -208,7 +220,4 @@ Litecord is built to be a **simple, clean, and ultra-lightweight interface for g
 
 ## 📄 License
 
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for more details.
-
-
-
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for more details.
