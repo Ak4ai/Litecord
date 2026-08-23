@@ -117,7 +117,7 @@ jobs:
   create-release:
     name: Publish GitHub Release
     needs: [build-windows, build-linux]
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -148,7 +148,8 @@ jobs:
             release-artifacts/Litecord-Setup-x64.exe
             release-artifacts/litecord-windows-x64-portable.zip
             release-artifacts/litecord-linux-x64.tar.gz
-          generate_release_notes: true
+          generate_release_notes: false
+          append_body: false
           draft: false
           prerelease: false
 
