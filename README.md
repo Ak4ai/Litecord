@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # Litecord 🚀
 ### Ultra-Lightweight, High-Performance Native Discord Client for Gamers
@@ -185,9 +185,10 @@ curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bas
 
 The script will:
 1. 📥 Download the latest pre-compiled binary from GitHub Releases automatically
-2. 📂 Install it to `~/.local/bin/litecord`
-3. 🖥️ Create a `.desktop` entry for your app launcher
-4. ✅ Tell you if you need to add `~/.local/bin` to your `$PATH`
+2. 🔧 Automatically detect and install runtime dependencies (`xdotool`, `libayatana-appindicator`) on Arch Linux, Debian/Ubuntu, and Fedora
+3. 📂 Install it to `~/.local/bin/litecord`
+4. 🖥️ Create a `.desktop` entry for your app launcher
+5. ✅ Tell you if you need to add `~/.local/bin` to your `$PATH`
 
 > **Requirements:** `curl` and `tar` (pre-installed on virtually all Linux distros).
 
