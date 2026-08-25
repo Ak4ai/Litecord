@@ -700,9 +700,12 @@ impl ScreenCaptureManager {
                                             src_addr.port()
                                         };
 
-                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), peer_port);
+                                        let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
+                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            if explicit_addr != src_addr {
+                                                peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                            }
                                         }
 
                                         // Instant reciprocal heartbeat so transmitter gets our direct IP and RX port
@@ -722,7 +725,10 @@ impl ScreenCaptureManager {
                                             ack_pkt.extend_from_slice(uname_bytes);
                                             ack_pkt.extend_from_slice(&my_rx.to_be_bytes());
 
-                                            let _ = socket.send_to(&ack_pkt, peer_p2p_addr);
+                                            let _ = socket.send_to(&ack_pkt, src_addr);
+                                            if explicit_addr != src_addr {
+                                                let _ = socket.send_to(&ack_pkt, explicit_addr);
+                                            }
                                             for target in get_broadcast_addresses() {
                                                 let _ = socket.send_to(&ack_pkt, target);
                                             }
@@ -730,7 +736,7 @@ impl ScreenCaptureManager {
 
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
                                         if prev_state != Some(is_streaming) {
-                                            info!("📡 Usuário {} ({}) alterou estado de stream: {}", pkt_uid, peer_p2p_addr, is_streaming);
+                                            info!("📡 Usuário {} ({}) alterou estado de stream: {}", pkt_uid, src_addr, is_streaming);
                                             on_state(pkt_uid, is_streaming);
                                         }
                                     }
@@ -750,11 +756,14 @@ impl ScreenCaptureManager {
                                             src_addr.port()
                                         };
 
-                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), peer_port);
+                                        let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
+                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            if explicit_addr != src_addr {
+                                                peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                            }
                                         }
-                                        info!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, peer_p2p_addr);
+                                        info!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, src_addr);
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
