@@ -865,16 +865,72 @@ impl ScreenCaptureManager {
     }
 }
 
+pub fn resolve_public_stun_address() -> Option<SocketAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
+    
+    // Resolve STUN server hostname (stun.l.google.com:19302)
+    let stun_server: SocketAddr = match "stun.l.google.com:19302".to_socket_addrs() {
+        Ok(mut addrs) => addrs.next()?,
+        Err(_) => "74.125.141.127:19302".parse().ok()?,
+    };
+
+    let stun_req: [u8; 20] = [
+        0x00, 0x01, // Binding Request
+        0x00, 0x00, // Length
+        0x21, 0x12, 0xa4, 0x42, // Magic Cookie
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+    ];
+
+    if socket.send_to(&stun_req, stun_server).is_err() {
+        return None;
+    }
+
+    let mut buf = [0u8; 256];
+    if let Ok((amt, _)) = socket.recv_from(&mut buf) {
+        if amt >= 32 && buf[0] == 0x01 && buf[1] == 0x01 {
+            let mut i = 20;
+            while i + 4 <= amt {
+                let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
+                let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+                if i + 4 + attr_len > amt {
+                    break;
+                }
+                if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
+                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112;
+                    let ip = std::net::Ipv4Addr::new(
+                        buf[i + 8] ^ 0x21,
+                        buf[i + 9] ^ 0x12,
+                        buf[i + 10] ^ 0xa4,
+                        buf[i + 11] ^ 0x42,
+                    );
+                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                } else if attr_type == 0x0001 && attr_len >= 8 { // MAPPED-ADDRESS
+                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]);
+                    let ip = std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11]);
+                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                }
+                i += 4 + ((attr_len + 3) & !3);
+            }
+        }
+    }
+    None
+}
+
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
     
-    // Broadcast to local port cluster (50005..=50007) on loopback & 255.255.255.255
+    // 1. Broadcast to local port cluster (50005..=50007) on loopback & 255.255.255.255
     for port in 50005..=50007 {
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
+        // Add VirtualBox NAT gateway & default subnets (10.0.2.2, 10.0.2.15, 10.0.2.255)
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 2, 2)), port));
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 2, 15)), port));
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 2, 255)), port));
     }
 
-    // Query active adapter IPv4 address via routing table probe
+    // 2. Query active adapter IPv4 address via routing table probe
     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
         if socket.connect("8.8.8.8:80").is_ok() {
             if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
@@ -884,9 +940,23 @@ fn get_broadcast_addresses() -> Vec<SocketAddr> {
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
                         port,
                     ));
+                    addrs.push(SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 1)),
+                        port,
+                    ));
+                    addrs.push(SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 2)),
+                        port,
+                    ));
                 }
             }
         }
+    }
+
+    // 3. Resolve STUN Public Internet Address for global P2P hole punching
+    if let Some(pub_addr) = resolve_public_stun_address() {
+        info!("🌐 IP Público STUN detectado para P2P Global: {}", pub_addr);
+        addrs.push(pub_addr);
     }
 
     addrs
