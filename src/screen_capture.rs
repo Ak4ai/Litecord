@@ -171,10 +171,22 @@ impl ScreenCaptureManager {
     pub fn announce_presence(&self) {
         let current_cid = self.channel_id.load(Ordering::Relaxed);
         if current_cid == 0 { return; }
-        let my_uid = self.my_user_id.load(Ordering::Relaxed);
+        let mut my_uid = self.my_user_id.load(Ordering::Relaxed);
+        if my_uid == 0 {
+            my_uid = crate::gateway::get_my_user_id();
+            if my_uid > 0 {
+                self.my_user_id.store(my_uid, Ordering::Relaxed);
+            }
+        }
         let my_instance_id = get_process_instance_id();
         let my_rx = get_my_rx_port();
-        let uname = self.my_username.lock().unwrap().clone();
+        let mut uname = self.my_username.lock().unwrap().clone();
+        if uname.is_empty() {
+            uname = crate::gateway::get_my_username();
+            if !uname.is_empty() {
+                *self.my_username.lock().unwrap() = uname.clone();
+            }
+        }
         let uname_bytes = uname.as_bytes();
 
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
@@ -193,6 +205,11 @@ impl ScreenCaptureManager {
 
             for target in get_broadcast_addresses() {
                 let _ = socket.send_to(&ack_pkt, target);
+            }
+            if let Ok(peers) = self.known_peers.lock() {
+                for (&_, &(addr, _)) in peers.iter() {
+                    let _ = socket.send_to(&ack_pkt, addr);
+                }
             }
         }
     }
@@ -657,12 +674,24 @@ impl ScreenCaptureManager {
 
                 while is_running.load(Ordering::Relaxed) {
                     let current_cid = channel_id_atomic.load(Ordering::Relaxed);
-                    let my_uid = my_user_id_atomic.load(Ordering::Relaxed);
+                    let mut my_uid = my_user_id_atomic.load(Ordering::Relaxed);
+                    if my_uid == 0 {
+                        my_uid = crate::gateway::get_my_user_id();
+                        if my_uid > 0 {
+                            my_user_id_atomic.store(my_uid, Ordering::Relaxed);
+                        }
+                    }
 
                     // Proactive presence heartbeat every 2s to punch through NAT routers and VirtualBox gateways
-                    if last_outbound_heartbeat.elapsed() >= Duration::from_secs(2) && current_cid > 0 && my_uid > 0 {
+                    if last_outbound_heartbeat.elapsed() >= Duration::from_secs(2) && current_cid > 0 {
                         last_outbound_heartbeat = Instant::now();
-                        let uname = my_username_arc.lock().unwrap().clone();
+                        let mut uname = my_username_arc.lock().unwrap().clone();
+                        if uname.is_empty() {
+                            uname = crate::gateway::get_my_username();
+                            if !uname.is_empty() {
+                                *my_username_arc.lock().unwrap() = uname.clone();
+                            }
+                        }
                         let uname_bytes = uname.as_bytes();
                         let mut hb_pkt = Vec::with_capacity(30 + uname_bytes.len());
                         hb_pkt.extend_from_slice(MAGIC);
@@ -678,6 +707,11 @@ impl ScreenCaptureManager {
 
                         for target in get_broadcast_addresses() {
                             let _ = socket.send_to(&hb_pkt, target);
+                        }
+                        if let Ok(peers) = peers_store.lock() {
+                            for (&_, &(addr, _)) in peers.iter() {
+                                let _ = socket.send_to(&hb_pkt, addr);
+                            }
                         }
                     }
 
@@ -930,13 +964,14 @@ impl ScreenCaptureManager {
 
 pub fn resolve_public_stun_address() -> Option<SocketAddr> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
+    socket.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
     
-    // Resolve STUN server hostname (stun.l.google.com:19302)
-    let stun_server: SocketAddr = match "stun.l.google.com:19302".to_socket_addrs() {
-        Ok(mut addrs) => addrs.next()?,
-        Err(_) => "74.125.141.127:19302".parse().ok()?,
-    };
+    let stun_servers = [
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302",
+        "stun2.l.google.com:19302",
+        "stun.cloudflare.com:3478",
+    ];
 
     let stun_req: [u8; 20] = [
         0x00, 0x01, // Binding Request
@@ -945,35 +980,39 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
     ];
 
-    if socket.send_to(&stun_req, stun_server).is_err() {
-        return None;
-    }
-
-    let mut buf = [0u8; 256];
-    if let Ok((amt, _)) = socket.recv_from(&mut buf) {
-        if amt >= 32 && buf[0] == 0x01 && buf[1] == 0x01 {
-            let mut i = 20;
-            while i + 4 <= amt {
-                let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
-                let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
-                if i + 4 + attr_len > amt {
-                    break;
+    for s_host in stun_servers {
+        if let Ok(mut addrs) = s_host.to_socket_addrs() {
+            if let Some(stun_server) = addrs.next() {
+                if socket.send_to(&stun_req, stun_server).is_ok() {
+                    let mut buf = [0u8; 256];
+                    if let Ok((amt, _)) = socket.recv_from(&mut buf) {
+                        if amt >= 32 && buf[0] == 0x01 && buf[1] == 0x01 {
+                            let mut i = 20;
+                            while i + 4 <= amt {
+                                let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
+                                let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+                                if i + 4 + attr_len > amt {
+                                    break;
+                                }
+                                if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
+                                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112;
+                                    let ip = std::net::Ipv4Addr::new(
+                                        buf[i + 8] ^ 0x21,
+                                        buf[i + 9] ^ 0x12,
+                                        buf[i + 10] ^ 0xa4,
+                                        buf[i + 11] ^ 0x42,
+                                    );
+                                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                                } else if attr_type == 0x0001 && attr_len >= 8 { // MAPPED-ADDRESS
+                                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]);
+                                    let ip = std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11]);
+                                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                                }
+                                i += 4 + ((attr_len + 3) & !3);
+                            }
+                        }
+                    }
                 }
-                if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
-                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112;
-                    let ip = std::net::Ipv4Addr::new(
-                        buf[i + 8] ^ 0x21,
-                        buf[i + 9] ^ 0x12,
-                        buf[i + 10] ^ 0xa4,
-                        buf[i + 11] ^ 0x42,
-                    );
-                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
-                } else if attr_type == 0x0001 && attr_len >= 8 { // MAPPED-ADDRESS
-                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]);
-                    let ip = std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11]);
-                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
-                }
-                i += 4 + ((attr_len + 3) & !3);
             }
         }
     }
