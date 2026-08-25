@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, UdpSocket, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(not(windows))]
 use std::sync::atomic::AtomicU8;
