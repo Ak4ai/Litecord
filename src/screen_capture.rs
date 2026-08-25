@@ -653,10 +653,33 @@ impl ScreenCaptureManager {
                 let mut last_stream_activity: HashMap<u64, Instant> = HashMap::new();
 
                 let my_instance_id = get_process_instance_id();
+                let mut last_outbound_heartbeat = Instant::now() - Duration::from_secs(10);
 
                 while is_running.load(Ordering::Relaxed) {
                     let current_cid = channel_id_atomic.load(Ordering::Relaxed);
                     let my_uid = my_user_id_atomic.load(Ordering::Relaxed);
+
+                    // Proactive presence heartbeat every 2s to punch through NAT routers and VirtualBox gateways
+                    if last_outbound_heartbeat.elapsed() >= Duration::from_secs(2) && current_cid > 0 && my_uid > 0 {
+                        last_outbound_heartbeat = Instant::now();
+                        let uname = my_username_arc.lock().unwrap().clone();
+                        let uname_bytes = uname.as_bytes();
+                        let mut hb_pkt = Vec::with_capacity(30 + uname_bytes.len());
+                        hb_pkt.extend_from_slice(MAGIC);
+                        hb_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+                        hb_pkt.push(OP_HEARTBEAT);
+                        hb_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                        hb_pkt.extend_from_slice(&my_uid.to_be_bytes());
+                        hb_pkt.push(0);
+                        hb_pkt.push(2);
+                        hb_pkt.push(uname_bytes.len() as u8);
+                        hb_pkt.extend_from_slice(uname_bytes);
+                        hb_pkt.extend_from_slice(&bound_port.to_be_bytes());
+
+                        for target in get_broadcast_addresses() {
+                            let _ = socket.send_to(&hb_pkt, target);
+                        }
+                    }
 
                     match socket.recv_from(&mut recv_buf) {
                         Ok((len, src_addr)) => {
