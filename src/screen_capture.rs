@@ -197,6 +197,37 @@ impl ScreenCaptureManager {
         }
     }
 
+    pub fn register_remote_peer(&self, uid: u64, addr: SocketAddr) {
+        if let Ok(mut peers) = self.known_peers.lock() {
+            peers.insert(uid, (addr, Instant::now()));
+            info!("🌐 Peer remoto P2P registrado: User ID {} -> {}", uid, addr);
+        }
+        let current_cid = self.channel_id.load(Ordering::Relaxed);
+        let my_uid = self.my_user_id.load(Ordering::Relaxed);
+        let my_instance_id = get_process_instance_id();
+        let my_rx = get_my_rx_port();
+        let uname = self.my_username.lock().unwrap().clone();
+        let uname_bytes = uname.as_bytes();
+
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let mut ack_pkt = Vec::with_capacity(30 + uname_bytes.len());
+            ack_pkt.extend_from_slice(MAGIC);
+            ack_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+            ack_pkt.push(OP_HEARTBEAT);
+            ack_pkt.extend_from_slice(&current_cid.to_be_bytes());
+            ack_pkt.extend_from_slice(&my_uid.to_be_bytes());
+            ack_pkt.push(0);
+            ack_pkt.push(2);
+            ack_pkt.push(uname_bytes.len() as u8);
+            ack_pkt.extend_from_slice(uname_bytes);
+            ack_pkt.extend_from_slice(&my_rx.to_be_bytes());
+
+            for _ in 0..3 {
+                let _ = socket.send_to(&ack_pkt, addr);
+            }
+        }
+    }
+
     pub fn shared_buffer(&self) -> Arc<SharedFrameBuffer> {
         Arc::clone(&self.shared_buffer)
     }
