@@ -3324,7 +3324,7 @@ pub async fn connect_voice_gateway(
                                                                             let limited_r = soft_limit(mixed_r);
                                                                             if out_channels >= 2 {
                                                                                 output[f * out_channels + 0] = limited_l;
-                                                                                        output[f * out_channels + 1] = limited_r;
+                                                                                output[f * out_channels + 1] = limited_r;
                                                                                 for ch in 2..out_channels {
                                                                                     output[f * out_channels + ch] = 0.0;
                                                                                 }

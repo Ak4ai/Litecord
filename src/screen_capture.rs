@@ -2529,8 +2529,15 @@ pub fn ensure_stream_audio_playback_started() {
                 let channels = config.channels() as usize;
                 let queue = get_stream_audio_queue();
 
-                let err_fn = |err| {
-                    warn!("Erro no playback de áudio do stream: {}", err);
+                let last_err_time = Arc::new(Mutex::new(Option::<Instant>::None));
+                let last_err_c = Arc::clone(&last_err_time);
+                let err_fn = move |err| {
+                    if let Ok(mut guard) = last_err_c.lock() {
+                        if guard.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+                            *guard = Some(Instant::now());
+                            warn!("Erro no playback de áudio do stream: {}", err);
+                        }
+                    }
                 };
 
                 let stream_res = match config.sample_format() {
