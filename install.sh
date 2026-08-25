@@ -35,18 +35,18 @@ done
 # ── Check & Install System Dependencies ───────────────────────────────────────
 info "Checking runtime dependencies for Linux..."
 if command -v pacman >/dev/null 2>&1; then
-  info "Arch Linux detected. Installing runtime dependencies (xdotool, libayatana-appindicator)..."
-  sudo pacman -S --needed --noconfirm xdotool libayatana-appindicator libappindicator-gtk3 2>/dev/null || true
+  info "Arch Linux detected. Installing runtime dependencies (xdotool, libayatana-appindicator, clang)..."
+  sudo pacman -S --needed --noconfirm xdotool libayatana-appindicator libappindicator-gtk3 clang 2>/dev/null || true
   if [ ! -f /usr/lib/libxdo.so.3 ] && [ -f /usr/lib/libxdo.so.4 ]; then
     sudo ln -sf /usr/lib/libxdo.so.4 /usr/lib/libxdo.so.3 2>/dev/null || true
   fi
 elif command -v apt-get >/dev/null 2>&1; then
-  info "Debian/Ubuntu detected. Installing runtime dependencies (libayatana-appindicator3-1, xdotool)..."
+  info "Debian/Ubuntu detected. Installing runtime dependencies (libayatana-appindicator3-1, xdotool, libclang-dev)..."
   sudo apt-get update -qq 2>/dev/null || true
-  sudo apt-get install -y --no-install-recommends libayatana-appindicator3-1 xdotool 2>/dev/null || true
+  sudo apt-get install -y --no-install-recommends libayatana-appindicator3-1 xdotool libclang-dev 2>/dev/null || true
 elif command -v dnf >/dev/null 2>&1; then
-  info "Fedora detected. Installing runtime dependencies (libayatana-appindicator-gtk3, xdotool)..."
-  sudo dnf install -y libayatana-appindicator-gtk3 xdotool 2>/dev/null || true
+  info "Fedora detected. Installing runtime dependencies (libayatana-appindicator-gtk3, xdotool, clang)..."
+  sudo dnf install -y libayatana-appindicator-gtk3 xdotool clang 2>/dev/null || true
 fi
 
 # ── Fetch latest release ──────────────────────────────────────────────────────
