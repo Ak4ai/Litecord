@@ -682,8 +682,8 @@ impl ScreenCaptureManager {
                         }
                     }
 
-                    // Proactive presence heartbeat every 2s to punch through NAT routers and VirtualBox gateways
-                    if last_outbound_heartbeat.elapsed() >= Duration::from_secs(2) && current_cid > 0 {
+                    // Proactive presence heartbeat every 5s (WebRTC Keep-Alive standard) to maintain NAT pinholes
+                    if last_outbound_heartbeat.elapsed() >= Duration::from_secs(5) && current_cid > 0 {
                         last_outbound_heartbeat = Instant::now();
                         let mut uname = my_username_arc.lock().unwrap().clone();
                         if uname.is_empty() {
@@ -820,7 +820,7 @@ impl ScreenCaptureManager {
                                                 peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
                                             }
                                         }
-                                        info!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, src_addr);
+                                        log::debug!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, src_addr);
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
