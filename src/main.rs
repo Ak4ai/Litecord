@@ -1387,6 +1387,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_i18n_translations(&app, initial_lang);
     info!("🌐 Idioma inicial configurado: {:?}", initial_lang);
 
+    #[cfg(target_os = "linux")]
+    {
+        app.set_is_linux(true);
+    }
+
     let saved_audio_cfg = gateway::load_persisted_audio_config();
     app.set_vad_threshold(saved_audio_cfg.vad_threshold);
     app.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
@@ -1416,6 +1421,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(pop_win) = popout_weak_init.upgrade() {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
+                        let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
                         winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(320.0, 180.0)));
                         winit_pop.set_visible(false);
                         #[cfg(target_os = "windows")]
@@ -1677,6 +1683,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         SetForegroundWindow(hwnd as _);
                     }
                 }
+                #[cfg(target_os = "linux")]
+                {
+                    let is_p = pop_win.get_is_pinned();
+                    if is_p {
+                        set_linux_window_keep_above(true);
+                    }
+                }
                 let _ = pop_win.window().with_winit_window(|w| {
                     w.set_visible(true);
                     w.set_minimized(false);
@@ -1704,6 +1717,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         SetWindowPos(hwnd as _, insert_after as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
                     }
                 }
+                #[cfg(target_os = "linux")]
+                {
+                    set_linux_window_keep_above(new_pinned);
+                }
                 let _ = pop.window().with_winit_window(move |w| {
                     w.set_window_level(if new_pinned {
                         winit::window::WindowLevel::AlwaysOnTop
@@ -1719,6 +1736,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_start_window_drag(move || {
             if let Some(pop) = pop_w_drag.upgrade() {
+                static LAST_POP_DRAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                let last = LAST_POP_DRAG.load(Ordering::Relaxed);
+                if now.saturating_sub(last) < 200 {
+                    return;
+                }
+                LAST_POP_DRAG.store(now, Ordering::Relaxed);
+
+                pop.set_drag_area_enabled(false);
+
+                let pop_weak_timer = pop.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+                    if let Some(pop_inst) = pop_weak_timer.upgrade() {
+                        pop_inst.set_drag_area_enabled(true);
+                    }
+                });
+
                 let _ = pop.window().with_winit_window(|winit_win| {
                     let _ = winit_win.drag_window();
                 });
@@ -1730,8 +1764,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_toggle_fullscreen(move || {
             if let Some(pop) = pop_w_fs.upgrade() {
-                let is_fs = pop.window().is_maximized();
-                pop.window().set_maximized(!is_fs);
+                let current = pop.get_is_maximized();
+                let next = !current;
+                pop.set_is_maximized(next);
+                pop.window().set_maximized(next);
             }
         });
     }
@@ -1757,6 +1793,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_drag_resize(move |edge: slint::SharedString| {
             if let Some(pop) = pop_w_resize.upgrade() {
+                static LAST_POP_RESIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                let last = LAST_POP_RESIZE.load(Ordering::Relaxed);
+                if now.saturating_sub(last) < 200 {
+                    return;
+                }
+                LAST_POP_RESIZE.store(now, Ordering::Relaxed);
+
+                pop.set_drag_area_enabled(false);
+
+                let pop_weak_timer = pop.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+                    if let Some(pop_inst) = pop_weak_timer.upgrade() {
+                        pop_inst.set_drag_area_enabled(true);
+                    }
+                });
+
                 let _ = pop.window().with_winit_window(move |winit_win| {
                     let dir = match edge.as_str() {
                         "top" => winit::window::ResizeDirection::North,
@@ -1785,6 +1838,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(pop) = pop_w_ghost.upgrade() {
             new_state = !pop.get_is_intangible();
             pop.set_is_intangible(new_state);
+            let hittest = !new_state;
+            let _ = pop.window().with_winit_window(move |w| {
+                let _ = w.set_cursor_hittest(hittest);
+            });
+            if new_state {
+                info!("👻 Modo Intangível ATIVADO no popup (cliques atravessam para os jogos/apps)!");
+            } else {
+                info!("🖱️ Modo Intangível DESATIVADO no popup (janela volta a receber cliques).");
+            }
         }
         if let Some(ui) = app_weak_ghost.upgrade() {
             ui.set_is_popout_intangible(new_state);
@@ -1798,10 +1860,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
                 if new_state {
                     SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT as i32 | WS_EX_LAYERED as i32);
-                    info!("👻 Modo Intangível ATIVADO no popup (cliques atravessam para os jogos/apps)!");
                 } else {
                     SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
-                    info!("🖱️ Modo Intangível DESATIVADO no popup (janela volta a receber cliques).");
                 }
             }
         }
@@ -1838,6 +1898,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(pop) = pop_w_close.upgrade() {
                 pop.set_is_intangible(false);
+                let _ = pop.window().with_winit_window(|w| {
+                    let _ = w.set_cursor_hittest(true);
+                });
                 pop.set_user_id("".into());
                 let _ = pop.hide();
             }
@@ -2070,6 +2133,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         pop.set_stream_frame(frame);
                                     }
                                 }
+
+                                static UI_PREV_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                                static LAST_UI_STAT_TIME: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+                                let count = UI_PREV_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                if let Ok(mut slot) = LAST_UI_STAT_TIME.lock() {
+                                    let now = std::time::Instant::now();
+                                    if slot.is_none() {
+                                        *slot = Some(now);
+                                    } else if let Some(last) = *slot {
+                                        if now.duration_since(last) >= std::time::Duration::from_secs(1) {
+                                            let elapsed_s = now.duration_since(last).as_secs_f64();
+                                            let fps = (count as f64) / elapsed_s;
+                                            log::info!("📊 [TELEMETRIA] Slint UI Local Preview: {:.1} FPS ({} frames em {:.2}s)", fps, count, elapsed_s);
+                                            UI_PREV_FRAMES.store(0, std::sync::atomic::Ordering::Relaxed);
+                                            *slot = Some(now);
+                                        }
+                                    }
+                                }
                             }
                         });
                     }
@@ -2194,6 +2276,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_is_popout_intangible(false);
                 if let Some(pop) = pop_w_unhide.upgrade() {
                     pop.set_is_intangible(false);
+                    let _ = pop.window().with_winit_window(|w| {
+                        let _ = w.set_cursor_hittest(true);
+                    });
                     pop.set_user_id("".into());
                     let _ = pop.hide();
                 }
@@ -3875,10 +3960,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Custom window controls for frameless mode
     let app_weak_drag = app_weak.clone();
+    static LAST_DRAG_TS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     app.on_drag_window(move || {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last = LAST_DRAG_TS.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 250 {
+            return;
+        }
+        LAST_DRAG_TS.store(now, Ordering::Relaxed);
         if let Some(app_instance) = app_weak_drag.upgrade() {
+            app_instance.set_drag_area_enabled(false);
             let _ = app_instance.window().with_winit_window(|winit_window| {
                 let _ = winit_window.drag_window();
+            });
+            let app_w = app_weak_drag.clone();
+            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+                if let Some(app_inst) = app_w.upgrade() {
+                    app_inst.set_drag_area_enabled(true);
+                }
             });
         }
     });
@@ -3886,6 +3988,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_resize = app_weak.clone();
     app.on_drag_resize(move |edge: SharedString| {
         if let Some(app_instance) = app_weak_resize.upgrade() {
+            app_instance.set_drag_area_enabled(false);
             let _ = app_instance.window().with_winit_window(|winit_window| {
                 let dir = match edge.as_str() {
                     "top" => winit::window::ResizeDirection::North,
@@ -3899,6 +4002,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => return,
                 };
                 let _ = winit_window.drag_resize_window(dir);
+            });
+            let app_w = app_weak_resize.clone();
+            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+                if let Some(app_inst) = app_w.upgrade() {
+                    app_inst.set_drag_area_enabled(true);
+                }
             });
         }
     });
@@ -4619,5 +4728,48 @@ fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn set_linux_window_keep_above(is_pinned: bool) {
+    let pin_val = if is_pinned { "true" } else { "false" };
+    let script_code = format!(
+        "var list = workspace.windowList ? workspace.windowList() : (workspace.clientList ? workspace.clientList() : []);\nfor (var i = 0; i < list.length; ++i) {{\n    var w = list[i];\n    if (w.caption.indexOf(\"Transmiss\\u00e3o Desanexada\") !== -1 || (w.caption.indexOf(\"Litecord\") !== -1 && w.caption.indexOf(\"Ultra-Lightweight\") === -1)) {{\n        w.keepAbove = {};\n    }}\n}}\n",
+        pin_val
+    );
 
+    let script_path = format!("/tmp/litecord_pin_{}.js", std::process::id());
+    if std::fs::write(&script_path, script_code).is_ok() {
+        let plugin_name = format!("litecord_pin_{}", std::process::id());
+        let output = std::process::Command::new("busctl")
+            .args(&[
+                "--user",
+                "call",
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting",
+                "loadScript",
+                "ss",
+                &script_path,
+                &plugin_name,
+            ])
+            .output();
 
+        if let Ok(out) = output {
+            let out_str = String::from_utf8_lossy(&out.stdout);
+            if let Some(id_str) = out_str.trim().split_whitespace().last() {
+                if let Ok(script_id) = id_str.parse::<i32>() {
+                    let script_obj = format!("/Scripting/Script{}", script_id);
+                    let _ = std::process::Command::new("busctl")
+                        .args(&["--user", "call", "org.kde.KWin", &script_obj, "org.kde.kwin.Script", "run"])
+                        .output();
+                    let _ = std::process::Command::new("busctl")
+                        .args(&["--user", "call", "org.kde.KWin", &script_obj, "org.kde.kwin.Script", "stop"])
+                        .output();
+                    let _ = std::process::Command::new("busctl")
+                        .args(&["--user", "call", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s", &plugin_name])
+                        .output();
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&script_path);
+    }
+}

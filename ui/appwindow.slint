@@ -1117,6 +1117,9 @@ export component AppWindow inherits Window {
     callback handle_input_change(string /* text */);
     callback execute_active_command(string /* cmd_name */, string /* arg_value */, string /* app_id */, string /* cmd_id */, string /* version */, string /* param_name */);
 
+    in-out property <bool> is_linux: false;
+    in-out property <bool> drag_area_enabled: true;
+
     // Smart Command Autocomplete & Parameter Properties
     in-out property <string> chat_input_text: "";
     in-out property <bool> show_command_suggestions: false;
@@ -1318,11 +1321,11 @@ export component AppWindow inherits Window {
             height: 32px;
             background: #111214;
 
-            TouchArea {
-                width: 100%;
+            if root.drag_area_enabled: TouchArea {
+                width: parent.width - 150px;
                 height: 100%;
                 pointer-event(event) => {
-                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
                         root.drag_window();
                     }
                 }
@@ -2435,6 +2438,40 @@ export component AppWindow inherits Window {
                                                             }
                                                         }
                                                     }
+                                                }
+                                            }
+                                        }
+
+                                        // Self-Stream Discord-Style Banner Overlay
+                                        if p.is_self: Rectangle {
+                                            x: (parent.width - 200px) / 2;
+                                            y: parent.height - 34px;
+                                            width: 200px;
+                                            height: 26px;
+                                            background: #000000cc;
+                                            border-radius: 13px;
+                                            border-width: 1px;
+                                            border-color: #5865f2;
+
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                spacing: 6px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/monitor.svg");
+                                                        width: 12px;
+                                                        height: 12px;
+                                                        colorize: #5865f2;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "Você está transmitindo";
+                                                    color: #ffffff;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
                                                 }
                                             }
                                         }
@@ -3836,7 +3873,7 @@ export component AppWindow inherits Window {
 
     // Window Drag Resize Borders & Corner Handles (on PointerEventKind.down for 0-latency instant resize)
     // Left edge
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 12px;
         width: 7px;
@@ -3849,7 +3886,7 @@ export component AppWindow inherits Window {
         }
     }
     // Right edge
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: parent.width - 7px;
         y: 12px;
         width: 7px;
@@ -3862,7 +3899,7 @@ export component AppWindow inherits Window {
         }
     }
     // Top edge
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: 12px;
         y: 0px;
         width: parent.width - 24px;
@@ -3875,7 +3912,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom edge
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: 12px;
         y: parent.height - 7px;
         width: parent.width - 24px;
@@ -3888,7 +3925,7 @@ export component AppWindow inherits Window {
         }
     }
     // Top-Left Corner
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 0px;
         width: 12px;
@@ -3901,7 +3938,7 @@ export component AppWindow inherits Window {
         }
     }
     // Top-Right Corner
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: parent.width - 12px;
         y: 0px;
         width: 12px;
@@ -3914,7 +3951,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom-Left Corner
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: 0px;
         y: parent.height - 12px;
         width: 12px;
@@ -3927,7 +3964,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom-Right Corner
-    TouchArea {
+    if root.drag_area_enabled: TouchArea {
         x: parent.width - 12px;
         y: parent.height - 12px;
         width: 12px;
@@ -4228,7 +4265,7 @@ export component AppWindow inherits Window {
                                                 colorize: root.stream_source_tab == "screens" ? #ffffff : #949ba4;
                                             }
                                             Text {
-                                                text: "Telas";
+                                                text: root.is_linux ? "Telas / Janelas" : "Telas";
                                                 color: root.stream_source_tab == "screens" ? #ffffff : #949ba4;
                                                 font-size: 13px;
                                                 font-weight: root.stream_source_tab == "screens" ? 700 : 500;
@@ -4256,8 +4293,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
-                                // Tab: Janelas (Captura de Janela)
-                                Rectangle {
+                                // Tab: Janelas (Captura de Janela apenas no Windows)
+                                if !root.is_linux: Rectangle {
                                     background: transparent;
                                     VerticalLayout {
                                         alignment: center;
@@ -4405,7 +4442,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             Text {
-                                                text: scr.name;
+                                                text: root.is_linux ? "Tela / Janela" : scr.name;
                                                 color: root.stream_selected_source_index == idx ? #ffffff : #dbdee1;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -4414,7 +4451,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             Text {
-                                                text: scr.resolution;
+                                                text: root.is_linux ? "Portal nativo do sistema" : scr.resolution;
                                                 color: #80848e;
                                                 font-size: 10px;
                                                 horizontal-alignment: center;
@@ -4433,7 +4470,7 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            if root.stream_source_tab == "windows": Flickable {
+                            if !root.is_linux && root.stream_source_tab == "windows": Flickable {
                                 viewport-height: 110px;
                                 height: 110px;
                                 interactive: true;
@@ -5017,6 +5054,8 @@ export component PopoutStreamWindow inherits Window {
     title: "Litecord - Transmissão Desanexada";
     no-frame: true;
     background: #111214;
+    preferred-width: 640px;
+    preferred-height: 360px;
     min-width: 320px;
     min-height: 180px;
     default-font-family: "Segoe UI, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
@@ -5036,6 +5075,9 @@ export component PopoutStreamWindow inherits Window {
     in-out property <bool> is_pinned: false;
     in-out property <bool> is_intangible: false;
     in-out property <bool> show_controls: true;
+    in-out property <bool> is_maximized: false;
+    in-out property <bool> drag_area_enabled: true;
+    in-out property <bool> is_linux: false;
 
     callback toggle_pin();
     callback toggle_intangible();
@@ -5076,7 +5118,7 @@ export component PopoutStreamWindow inherits Window {
         drop-shadow-color: #00000088;
 
         // Background Drag Handle (placed first so buttons on top receive clicks!)
-        TouchArea {
+        if root.drag_area_enabled: TouchArea {
             width: 100%;
             height: 100%;
             pointer-event(event) => {
@@ -5293,7 +5335,7 @@ export component PopoutStreamWindow inherits Window {
                         background: pop_fs_ta.has-hover ? #35373c : transparent;
 
                         Image {
-                            source: @image-url("../assets/chrome-maximize.svg");
+                            source: root.is_maximized ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
                             width: 12px;
                             height: 12px;
                             colorize: #dbdee1;
@@ -5336,7 +5378,7 @@ export component PopoutStreamWindow inherits Window {
 
     // Window Drag Resize Borders & Corner Handles (0-latency hardware resize)
     // Left edge
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 12px;
         width: 8px;
@@ -5349,7 +5391,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Right edge
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 8px;
         y: 12px;
         width: 8px;
@@ -5362,7 +5404,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Top edge
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 12px;
         y: 0px;
         width: parent.width - 24px;
@@ -5375,7 +5417,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Bottom edge
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 12px;
         y: parent.height - 8px;
         width: parent.width - 24px;
@@ -5388,7 +5430,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Top-Left Corner
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 0px;
         width: 14px;
@@ -5401,7 +5443,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Top-Right Corner
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 14px;
         y: 0px;
         width: 14px;
@@ -5414,7 +5456,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Bottom-Left Corner
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: parent.height - 14px;
         width: 14px;
@@ -5427,7 +5469,7 @@ export component PopoutStreamWindow inherits Window {
         }
     }
     // Bottom-Right Corner
-    TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 14px;
         y: parent.height - 14px;
         width: 14px;

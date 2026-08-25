@@ -73,12 +73,28 @@ pub fn list_cameras() -> Vec<CameraItemInfo> {
     let mut result = Vec::new();
     if let Ok(devs) = cameras::devices() {
         for (i, dev) in devs.into_iter().enumerate() {
-            let name = dev.name.clone();
-            result.push(CameraItemInfo {
-                id: format!("{}", i),
-                name,
-                index: i as u32,
-            });
+            let test_config_mjpeg = cameras::StreamConfig {
+                resolution: cameras::Resolution { width: 640, height: 480 },
+                framerate: 30,
+                pixel_format: cameras::PixelFormat::Mjpeg,
+            };
+            let can_open = cameras::open(&dev, test_config_mjpeg).is_ok() || {
+                let test_config_yuyv = cameras::StreamConfig {
+                    resolution: cameras::Resolution { width: 640, height: 480 },
+                    framerate: 30,
+                    pixel_format: cameras::PixelFormat::Yuyv,
+                };
+                cameras::open(&dev, test_config_yuyv).is_ok()
+            };
+
+            if can_open || cfg!(windows) {
+                let name = dev.name.clone();
+                result.push(CameraItemInfo {
+                    id: format!("{}", i),
+                    name,
+                    index: i as u32,
+                });
+            }
         }
     }
     result
@@ -187,6 +203,24 @@ impl ScreenCaptureManager {
 
     pub fn stop(&self) {
         stop_window_border_overlay();
+        #[cfg(not(windows))]
+        {
+            PORTAL_INITIALIZED.store(false, Ordering::SeqCst);
+            if let Ok(mut slot) = PORTAL_FRAME.lock() {
+                *slot = None;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(mut lock) = PORTAL_CHILD.lock() {
+                    if let Some(mut child) = lock.take() {
+                        let _ = child.kill();
+                    }
+                }
+                if let Ok(mut cb_slot) = PORTAL_LOCAL_CB.lock() {
+                    *cb_slot = None;
+                }
+            }
+        }
         if self.is_running.swap(false, Ordering::SeqCst) {
             info!("🛑 Parando captura e transmissão de tela P2P...");
             let cid = self.channel_id.load(Ordering::Relaxed);
@@ -218,12 +252,21 @@ impl ScreenCaptureManager {
     /// Starts the capture and UDP transmitter thread
     pub fn start<F>(&self, target_hwnd: isize, camera_index: Option<u32>, res: i32, fps: i32, include_audio: bool, on_local_frame: F)
     where
-        F: Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + 'static,
+        F: Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static,
     {
         if self.is_running.swap(true, Ordering::SeqCst) {
             warn!("Transmissão de tela já está em execução.");
             return;
         }
+
+        let on_local_arc: Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static> = Arc::new(on_local_frame);
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(mut cb_slot) = PORTAL_LOCAL_CB.lock() {
+                *cb_slot = Some(Arc::clone(&on_local_arc));
+            }
+        }
+        let on_local_tx = Arc::clone(&on_local_arc);
 
         let is_running = Arc::clone(&self.is_running);
         let channel_id_atomic = Arc::clone(&self.channel_id);
@@ -261,6 +304,7 @@ impl ScreenCaptureManager {
                 let socket = match UdpSocket::bind("0.0.0.0:0") {
                     Ok(s) => {
                         let _ = s.set_broadcast(true);
+                        let _ = s.set_nonblocking(true);
                         s
                     }
                     Err(e) => {
@@ -275,21 +319,42 @@ impl ScreenCaptureManager {
                             let cam_w = target_w.min(1280);
                             let cam_h = target_h.min(720);
                             let cam_fps = (target_fps as u32).min(60);
-                            let config = cameras::StreamConfig {
-                                resolution: cameras::Resolution { width: cam_w, height: cam_h },
-                                framerate: cam_fps,
-                                pixel_format: cameras::PixelFormat::Bgra8,
-                            };
-                            match cameras::open(&dev, config) {
-                                Ok(cam) => {
-                                    info!("📷 Câmera '{}' aberta com sucesso ({}x{} @ {} FPS)!", dev.name, cam_w, cam_h, cam_fps);
-                                    Some(cam)
-                                }
-                                Err(e) => {
-                                    warn!("Falha ao abrir câmera: {:?}", e);
-                                    None
+                            let mut opened = None;
+                            let formats = [
+                                cameras::PixelFormat::Mjpeg,
+                                cameras::PixelFormat::Yuyv,
+                                cameras::PixelFormat::Nv12,
+                                cameras::PixelFormat::Bgra8,
+                                cameras::PixelFormat::Rgb8,
+                                cameras::PixelFormat::Rgba8,
+                            ];
+                            let resolutions = [
+                                cameras::Resolution { width: cam_w, height: cam_h },
+                                cameras::Resolution { width: 1280, height: 720 },
+                                cameras::Resolution { width: 640, height: 480 },
+                                cameras::Resolution { width: 640, height: 360 },
+                            ];
+                            let framerates = [cam_fps, 30, 15, 10];
+                            'outer: for fmt in formats {
+                                for res_test in resolutions {
+                                    for fps_test in framerates {
+                                        let config = cameras::StreamConfig {
+                                            resolution: res_test,
+                                            framerate: fps_test,
+                                            pixel_format: fmt,
+                                        };
+                                        if let Ok(cam) = cameras::open(&dev, config) {
+                                            info!("📷 Câmera '{}' aberta com sucesso ({}x{} @ {} FPS, {:?})!", dev.name, res_test.width, res_test.height, fps_test, fmt);
+                                            opened = Some(cam);
+                                            break 'outer;
+                                        }
+                                    }
                                 }
                             }
+                            if opened.is_none() {
+                                warn!("Falha ao abrir câmera '{}' em todos os formatos de pixel testados.", dev.name);
+                            }
+                            opened
                         } else {
                             None
                         }
@@ -343,6 +408,10 @@ impl ScreenCaptureManager {
                     }
                 }
 
+                let mut tx_frame_count = 0u64;
+                let mut last_tx_stats = std::time::Instant::now();
+                let mut total_encode_us = 0u128;
+
                 while is_running.load(Ordering::Relaxed) {
                     let start_time = Instant::now();
                     let cid = channel_id_atomic.load(Ordering::Relaxed);
@@ -382,20 +451,24 @@ impl ScreenCaptureManager {
                         last_announce = Instant::now();
                     }
 
-                    let capture_res = if let Some(ref cam) = camera_handle {
-                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(15)) {
-                            let (w, h) = (frame.width, frame.height);
-                            let total = (w * h) as usize;
-                            if let Ok(rgba_bytes) = cameras::to_rgba8(&frame) {
-                                let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
-                                pixel_buf.make_mut_bytes().copy_from_slice(&rgba_bytes);
-                                let mut rgb = Vec::with_capacity(total * 3);
-                                for p in rgba_bytes.chunks_exact(4) {
-                                    rgb.push(p[0]);
-                                    rgb.push(p[1]);
-                                    rgb.push(p[2]);
+                    let capture_res = if camera_index.is_some() {
+                        if let Some(ref cam) = camera_handle {
+                            if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(50)) {
+                                let (w, h) = (frame.width, frame.height);
+                                let total = (w * h) as usize;
+                                if let Ok(rgba_bytes) = cameras::to_rgba8(&frame) {
+                                    let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+                                    pixel_buf.make_mut_bytes().copy_from_slice(&rgba_bytes);
+                                    let mut rgb = Vec::with_capacity(total * 3);
+                                    for p in rgba_bytes.chunks_exact(4) {
+                                        rgb.push(p[0]);
+                                        rgb.push(p[1]);
+                                        rgb.push(p[2]);
+                                    }
+                                    Some((pixel_buf, rgb))
+                                } else {
+                                    None
                                 }
-                                Some((pixel_buf, rgb))
                             } else {
                                 None
                             }
@@ -403,17 +476,24 @@ impl ScreenCaptureManager {
                             None
                         }
                     } else {
-                        capture_screen_rgb(target_hwnd, target_w, target_h)
+                        capture_screen_rgb(target_hwnd, target_w, target_h, target_fps)
                     };
 
                     if let Some((pixel_buf, rgb_data)) = capture_res {
                         let cur_w = pixel_buf.width();
                         let cur_h = pixel_buf.height();
                         buffer.publish(pixel_buf.clone());
-                        on_local_frame(pixel_buf);
+                        if camera_index.is_some() || cfg!(windows) {
+                            on_local_tx(pixel_buf);
+                        }
 
-                        // Compress frame to JPEG using fast AVX2 SIMD encoder
-                        if let Some(jpeg_bytes) = encode_jpeg(&rgb_data, cur_w, cur_h, 65) {
+                        // Compress frame to JPEG using fast SIMD encoder
+                        let enc_start = Instant::now();
+                        let jpeg_opt = encode_jpeg(&rgb_data, cur_w, cur_h, 65);
+                        let enc_dur = enc_start.elapsed().as_micros();
+                        total_encode_us += enc_dur;
+
+                        if let Some(jpeg_bytes) = jpeg_opt {
                             frame_seq = frame_seq.wrapping_add(1);
                             let total_len = jpeg_bytes.len();
                             let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
@@ -450,6 +530,17 @@ impl ScreenCaptureManager {
                                     let _ = socket.send_to(&pkt, target);
                                 }
                             }
+                        }
+
+                        tx_frame_count += 1;
+                        if last_tx_stats.elapsed() >= Duration::from_secs(1) {
+                            let elapsed_s = last_tx_stats.elapsed().as_secs_f64();
+                            let fps = (tx_frame_count as f64) / elapsed_s;
+                            let avg_enc_ms = (total_encode_us as f64) / (tx_frame_count.max(1) as f64) / 1000.0;
+                            log::info!("📊 [TELEMETRIA] TX Loop: {:.1} FPS | Encode JPEG Médio: {:.2} ms/frame", fps, avg_enc_ms);
+                            tx_frame_count = 0;
+                            total_encode_us = 0;
+                            last_tx_stats = Instant::now();
                         }
                     }
 
@@ -910,15 +1001,32 @@ pub fn list_screens() -> Vec<MonitorItemInfo> {
 
 #[cfg(not(windows))]
 pub fn list_screens() -> Vec<MonitorItemInfo> {
-    vec![
-        MonitorItemInfo {
+    let mut screens = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        use x11rb::connection::Connection;
+        if let Ok((conn, screen_num)) = x11rb::connect(None) {
+            let root = &conn.setup().roots[screen_num];
+            screens.push(MonitorItemInfo {
+                id: 0,
+                name: "Tela Principal".to_string(),
+                resolution: format!("{} × {}", root.width_in_pixels, root.height_in_pixels),
+                is_primary: true,
+                hwnd: root.root as isize,
+            });
+        }
+    }
+
+    if screens.is_empty() {
+        screens.push(MonitorItemInfo {
             id: 0,
             name: "Tela 1 (Principal)".to_string(),
             resolution: "1920 × 1080".to_string(),
             is_primary: true,
             hwnd: 0,
-        }
-    ]
+        });
+    }
+    screens
 }
 
 #[cfg(windows)]
@@ -1225,30 +1333,82 @@ unsafe fn extract_window_icon_rgba(hwnd: windows_sys::Win32::Foundation::HWND) -
 
 #[cfg(not(windows))]
 pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
-    vec![
-        CapturableWindowItem {
-            id: "1".to_string(),
-            title: "Navegador Web (Firefox / Chrome)".to_string(),
-            app_name: "Google Chrome".to_string(),
+    let mut windows = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt;
+
+        if std::env::var("DISPLAY").is_err() {
+            std::env::set_var("DISPLAY", ":0");
+        }
+        if std::env::var("XAUTHORITY").is_err() {
+            if let Ok(entries) = std::fs::read_dir("/run/user/1000") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("xauth_") {
+                        std::env::set_var("XAUTHORITY", entry.path());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Ok((conn, screen_num)) = x11rb::connect(None) {
+            let root = conn.setup().roots[screen_num].root;
+            if let Ok(tree) = conn.query_tree(root) {
+                if let Ok(tree_reply) = tree.reply() {
+                    for &win in tree_reply.children.iter().rev() {
+                        if let Ok(attrs) = conn.get_window_attributes(win) {
+                            if let Ok(attr_reply) = attrs.reply() {
+                                if attr_reply.map_state == x11rb::protocol::xproto::MapState::VIEWABLE {
+                                    if let Ok(name_prop) = conn.get_property(
+                                        false,
+                                        win,
+                                        x11rb::protocol::xproto::AtomEnum::WM_NAME,
+                                        x11rb::protocol::xproto::AtomEnum::STRING,
+                                        0,
+                                        1024,
+                                    ) {
+                                        if let Ok(prop_reply) = name_prop.reply() {
+                                            if !prop_reply.value.is_empty() {
+                                                if let Ok(title) = String::from_utf8(prop_reply.value) {
+                                                    let clean_title = title.trim().to_string();
+                                                    if !clean_title.is_empty() && clean_title != "Desktop" {
+                                                        windows.push(CapturableWindowItem {
+                                                            id: format!("{}", win),
+                                                            title: clean_title.clone(),
+                                                            app_name: clean_title,
+                                                            icon_rgba: None,
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if windows.is_empty() {
+        windows.push(CapturableWindowItem {
+            id: "0".to_string(),
+            title: "Área de Trabalho".to_string(),
+            app_name: "Desktop".to_string(),
             icon_rgba: None,
-        },
-        CapturableWindowItem {
-            id: "2".to_string(),
-            title: "Terminal de Linha de Comando".to_string(),
-            app_name: "Terminal".to_string(),
-            icon_rgba: None,
-        },
-        CapturableWindowItem {
-            id: "3".to_string(),
-            title: "Editor de Código".to_string(),
-            app_name: "Visual Studio Code".to_string(),
-            icon_rgba: None,
-        },
-    ]
+        });
+    }
+    windows
 }
 
 #[cfg(windows)]
-fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
+fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_fps: u64) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
@@ -1455,32 +1615,292 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32) -> Optio
 }
 
 #[cfg(not(windows))]
-fn capture_screen_rgb(_target_hwnd: isize, target_w: u32, target_h: u32) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
-    static FRAME_COUNTER: AtomicU8 = AtomicU8::new(0);
+static PORTAL_FRAME: std::sync::Mutex<Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)>> = std::sync::Mutex::new(None);
+#[cfg(not(windows))]
+static PORTAL_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static PORTAL_LOCAL_CB: std::sync::Mutex<Option<std::sync::Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static>>> = std::sync::Mutex::new(None);
+#[cfg(target_os = "linux")]
+static PORTAL_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64) {
+    if PORTAL_INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("Falha ao criar tokio runtime para Portal ScreenCast: {:?}", e);
+                PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        };
+
+        rt.block_on(async move {
+            use ashpd::desktop::{
+                PersistMode,
+                screencast::{
+                    CursorMode, OpenPipeWireRemoteOptions, Screencast,
+                    SelectSourcesOptions, SourceType, StartCastOptions,
+                },
+                CreateSessionOptions,
+            };
+            use std::os::fd::AsRawFd;
+            use std::process::{Command, Stdio};
+            use std::io::Read;
+
+            log::info!("📡 Solicitando sessão nativa do XDG Desktop Portal ScreenCast via conexão D-Bus dedicada...");
+            let conn = match ashpd::zbus::connection::Builder::session() {
+                Ok(b) => match b.build().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!("Falha ao estabelecer conexão D-Bus privada para Portal: {:?}", e);
+                        PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    log::error!("Falha ao construir builder D-Bus para Portal: {:?}", e);
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let proxy = match Screencast::with_connection(conn).await {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("Falha ao conectar no Screencast Portal: {:?}", e);
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let session = match proxy.create_session(CreateSessionOptions::default()).await {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Falha ao criar sessão do ScreenCast: {:?}", e);
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let select_opts = SelectSourcesOptions::default()
+                .set_cursor_mode(CursorMode::Embedded)
+                .set_sources(SourceType::Monitor | SourceType::Window)
+                .set_multiple(false)
+                .set_restore_token(None)
+                .set_persist_mode(PersistMode::DoNot);
+
+            if let Err(e) = proxy.select_sources(&session, select_opts).await {
+                log::error!("Falha ao selecionar fontes de captura no Portal: {:?}", e);
+                let _ = session.close().await;
+                PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+
+            let response = match proxy.start(&session, None, StartCastOptions::default()).await {
+                Ok(r) => match r.response() {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        log::error!("Resposta de erro do Portal ScreenCast: {:?}", e);
+                        let _ = session.close().await;
+                        PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    log::error!("Falha ao iniciar captura no Portal ScreenCast: {:?}", e);
+                    let _ = session.close().await;
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let stream = match response.streams().first() {
+                Some(s) => s,
+                None => {
+                    log::error!("Nenhum stream retornado pelo Portal ScreenCast");
+                    let _ = session.close().await;
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let node_id = stream.pipe_wire_node_id();
+            let pw_fd = match proxy.open_pipe_wire_remote(&session, OpenPipeWireRemoteOptions::default()).await {
+                Ok(fd) => fd,
+                Err(e) => {
+                    log::error!("Falha ao abrir PipeWire Remote: {:?}", e);
+                    let _ = session.close().await;
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let raw_fd = pw_fd.as_raw_fd();
+            unsafe {
+                let flags = libc::fcntl(raw_fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                }
+            }
+
+            log::info!("🎉 Conectando GStreamer ao PipeWire Node ID={}, FD={} ({}x{} @ {} FPS)...", node_id, raw_fd, target_w, target_h, target_fps);
+
+            let (dst_w, dst_h) = (target_w, target_h);
+            let frame_size = (dst_w * dst_h * 4) as usize;
+            let total_pixels = (dst_w * dst_h) as usize;
+
+            let mut gst_args = vec![
+                "-q".to_string(),
+                "pipewiresrc".to_string(),
+                format!("fd={}", raw_fd),
+                format!("path={}", node_id),
+                "do-timestamp=true".to_string(),
+                "keepalive-time=1000".to_string(),
+                "!".to_string(),
+            ];
+
+            if target_fps < 60 {
+                gst_args.push("videorate".to_string());
+                gst_args.push("!".to_string());
+            }
+
+            gst_args.extend_from_slice(&[
+                "videoconvert".to_string(),
+                "n-threads=4".to_string(),
+                "!".to_string(),
+                "videoscale".to_string(),
+                "n-threads=4".to_string(),
+                "method=0".to_string(),
+                "!".to_string(),
+            ]);
+
+            if target_fps < 60 {
+                gst_args.push(format!("video/x-raw,format=RGBA,width={},height={},framerate={}/1", dst_w, dst_h, target_fps));
+            } else {
+                gst_args.push(format!("video/x-raw,format=RGBA,width={},height={}", dst_w, dst_h));
+            }
+
+            gst_args.extend_from_slice(&[
+                "!".to_string(),
+                "queue".to_string(),
+                "max-size-buffers=1".to_string(),
+                "max-size-bytes=0".to_string(),
+                "max-size-time=0".to_string(),
+                "leaky=downstream".to_string(),
+                "!".to_string(),
+                "fdsink".to_string(),
+                "fd=1".to_string(),
+                "sync=false".to_string(),
+            ]);
+
+            let mut child = match Command::new("gst-launch-1.0")
+                .args(&gst_args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Falha ao iniciar pipeline GStreamer PipeWire: {:?}", e);
+                    let _ = session.close().await;
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let mut stdout = match child.stdout.take() {
+                Some(s) => s,
+                None => {
+                    let _ = session.close().await;
+                    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            if let Ok(mut lock) = PORTAL_CHILD.lock() {
+                if let Some(mut old) = lock.take() {
+                    let _ = old.kill();
+                }
+                *lock = Some(child);
+            }
+
+            let mut raw_buf = vec![0u8; frame_size];
+            let mut pw_frame_count = 0u64;
+            let mut last_pw_stats = std::time::Instant::now();
+
+            while PORTAL_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) && stdout.read_exact(&mut raw_buf).is_ok() {
+                pw_frame_count += 1;
+                let now = std::time::Instant::now();
+                if now.duration_since(last_pw_stats) >= std::time::Duration::from_secs(1) {
+                    let elapsed_s = now.duration_since(last_pw_stats).as_secs_f64();
+                    let fps = (pw_frame_count as f64) / elapsed_s;
+                    log::info!("📊 [TELEMETRIA] PipeWire GStreamer Source: {:.1} FPS ({} frames em {:.2}s)", fps, pw_frame_count, elapsed_s);
+                    pw_frame_count = 0;
+                    last_pw_stats = now;
+                }
+
+                let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(dst_w, dst_h);
+                pixel_buffer.make_mut_bytes().copy_from_slice(&raw_buf);
+
+                if let Ok(cb_guard) = PORTAL_LOCAL_CB.lock() {
+                    if let Some(ref local_cb) = *cb_guard {
+                        local_cb(pixel_buffer.clone());
+                    }
+                }
+
+                let mut rgb_bytes = vec![0u8; total_pixels * 3];
+                for (chunk, rgb_chunk) in raw_buf.chunks_exact(4).zip(rgb_bytes.chunks_exact_mut(3)) {
+                    rgb_chunk[0] = chunk[0];
+                    rgb_chunk[1] = chunk[1];
+                    rgb_chunk[2] = chunk[2];
+                }
+
+                if let Some(digit) = get_test_watermark_digit() {
+                    draw_test_watermark(pixel_buffer.make_mut_slice(), &mut rgb_bytes, dst_w, dst_h, digit);
+                }
+
+                if let Ok(mut slot) = PORTAL_FRAME.lock() {
+                    *slot = Some((pixel_buffer, rgb_bytes));
+                }
+            }
+
+            if let Ok(mut lock) = PORTAL_CHILD.lock() {
+                if let Some(mut child) = lock.take() {
+                    let _ = child.kill();
+                }
+            }
+            let _ = session.close().await;
+            log::info!("🛑 Sessão do XDG Desktop Portal ScreenCast fechada com sucesso via D-Bus!");
+            PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    });
+}
+
+#[cfg(not(windows))]
+fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
+    #[cfg(target_os = "linux")]
+    {
+        init_wayland_portal_screencast(target_w, target_h, target_fps);
+
+        if let Ok(slot) = PORTAL_FRAME.lock() {
+            if let Some(ref frame) = *slot {
+                return Some(frame.clone());
+            }
+        }
+    }
 
     let total_pixels = (target_w * target_h) as usize;
     let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(target_w, target_h);
     let slice = pixel_buffer.make_mut_slice();
-    let mut rgb_bytes = vec![0u8; total_pixels * 3];
+    let rgb_bytes = vec![24u8; total_pixels * 3];
 
-    let counter = FRAME_COUNTER.fetch_add(2, Ordering::Relaxed);
-
-    for (i, pixel) in slice.iter_mut().enumerate() {
-        let x = (i % target_w as usize) as u8;
-        let y = (i / target_w as usize) as u8;
-        let r = x.wrapping_add(counter);
-        let g = y.wrapping_add(counter / 2);
-        let b = 180u8;
-
-        *pixel = Rgba8Pixel::new(r, g, b, 255);
-        let offset_rgb = i * 3;
-        rgb_bytes[offset_rgb] = r;
-        rgb_bytes[offset_rgb + 1] = g;
-        rgb_bytes[offset_rgb + 2] = b;
-    }
-
-    if let Some(digit) = get_test_watermark_digit() {
-        draw_test_watermark(slice, &mut rgb_bytes, target_w, target_h, digit);
+    for pixel in slice.iter_mut() {
+        *pixel = Rgba8Pixel::new(24, 24, 24, 255);
     }
 
     Some((pixel_buffer, rgb_bytes))

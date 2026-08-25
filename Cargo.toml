@@ -47,6 +47,9 @@ windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "W
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
+libc = "0.2"
 
 [build-dependencies]
 slint-build = "1.9"

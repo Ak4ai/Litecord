@@ -302,14 +302,80 @@ pub async fn download_and_install_update(
                 let new_bin = extract_dir.join("litecord");
                 let target_bin = install_bin_dir.join("litecord");
                 if new_bin.exists() {
-                    let _ = std::fs::copy(&new_bin, &target_bin);
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&target_bin, std::fs::Permissions::from_mode(0o755));
+                        let _ = std::fs::set_permissions(&new_bin, std::fs::Permissions::from_mode(0o755));
                     }
-                    info!("✅ Litecord atualizado com sucesso em {:?}! Reiniciando...", target_bin);
-                    let _ = std::process::Command::new(&target_bin).spawn();
+
+                    // On Linux/Unix, replacing a running binary in-place with fs::copy fails with ETXTBSY (Text file busy).
+                    // We write to a temporary file in the same directory and use atomic rename (or remove_file + copy).
+                    let temp_target = install_bin_dir.join(format!(".litecord_update_{}", std::process::id()));
+                    let mut updated = false;
+                    if let Ok(_) = std::fs::copy(&new_bin, &temp_target) {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&temp_target, std::fs::Permissions::from_mode(0o755));
+                        }
+                        if std::fs::rename(&temp_target, &target_bin).is_ok() {
+                            updated = true;
+                        }
+                    }
+
+                    if !updated {
+                        // Fallback: unlink running destination first, then copy
+                        let _ = std::fs::remove_file(&target_bin);
+                        if let Ok(_) = std::fs::copy(&new_bin, &target_bin) {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(&target_bin, std::fs::Permissions::from_mode(0o755));
+                            }
+                            updated = true;
+                        }
+                    }
+
+                    // Also update the currently running executable location if it's outside ~/.local/bin
+                    let mut bin_to_spawn = target_bin.clone();
+                    if let Ok(curr_exe) = std::env::current_exe() {
+                        if curr_exe.exists() {
+                            if curr_exe != target_bin {
+                                if let Some(parent) = curr_exe.parent() {
+                                    let curr_temp = parent.join(format!(".litecord_currexe_update_{}", std::process::id()));
+                                    if let Ok(_) = std::fs::copy(&new_bin, &curr_temp) {
+                                        #[cfg(unix)]
+                                        {
+                                            use std::os::unix::fs::PermissionsExt;
+                                            let _ = std::fs::set_permissions(&curr_temp, std::fs::Permissions::from_mode(0o755));
+                                        }
+                                        if std::fs::rename(&curr_temp, &curr_exe).is_ok() {
+                                            bin_to_spawn = curr_exe;
+                                        }
+                                    }
+                                }
+                            } else {
+                                bin_to_spawn = curr_exe;
+                            }
+                        }
+                    }
+
+                    // Update desktop icon if packaged in archive
+                    let new_icon = extract_dir.join("assets/app_icon.png");
+                    if new_icon.exists() {
+                        let icon_512 = PathBuf::from(&home).join(".local/share/icons/hicolor/512x512/apps/litecord.png");
+                        let icon_256 = PathBuf::from(&home).join(".local/share/icons/hicolor/256x256/apps/litecord.png");
+                        let icon_pix = PathBuf::from(&home).join(".local/share/pixmaps/litecord.png");
+                        let _ = std::fs::create_dir_all(icon_512.parent().unwrap());
+                        let _ = std::fs::create_dir_all(icon_256.parent().unwrap());
+                        let _ = std::fs::create_dir_all(icon_pix.parent().unwrap());
+                        let _ = std::fs::copy(&new_icon, &icon_512);
+                        let _ = std::fs::copy(&new_icon, &icon_256);
+                        let _ = std::fs::copy(&new_icon, &icon_pix);
+                    }
+
+                    info!("✅ Litecord atualizado com sucesso em {:?}! Reiniciando...", bin_to_spawn);
+                    let _ = std::process::Command::new(&bin_to_spawn).spawn();
                     std::process::exit(0);
                 }
             }
