@@ -1946,38 +1946,17 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let frame_size = (dst_w * dst_h * 4) as usize;
             let total_pixels = (dst_w * dst_h) as usize;
 
-            let mut gst_args = vec![
+            let gst_args = vec![
                 "-q".to_string(),
                 "pipewiresrc".to_string(),
                 format!("fd={}", raw_fd),
                 format!("path={}", node_id),
                 "do-timestamp=true".to_string(),
-                "keepalive-time=1000".to_string(),
                 "!".to_string(),
-            ];
-
-            if target_fps < 60 {
-                gst_args.push("videorate".to_string());
-                gst_args.push("!".to_string());
-            }
-
-            gst_args.extend_from_slice(&[
                 "videoconvert".to_string(),
                 "n-threads=4".to_string(),
                 "!".to_string(),
-                "videoscale".to_string(),
-                "n-threads=4".to_string(),
-                "method=0".to_string(),
-                "!".to_string(),
-            ]);
-
-            if target_fps < 60 {
-                gst_args.push(format!("video/x-raw,format=RGBA,width={},height={},framerate={}/1", dst_w, dst_h, target_fps));
-            } else {
-                gst_args.push(format!("video/x-raw,format=RGBA,width={},height={}", dst_w, dst_h));
-            }
-
-            gst_args.extend_from_slice(&[
+                format!("video/x-raw,format=RGBA,width={},height={}", dst_w, dst_h),
                 "!".to_string(),
                 "queue".to_string(),
                 "max-size-buffers=1".to_string(),
@@ -1988,7 +1967,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 "fdsink".to_string(),
                 "fd=1".to_string(),
                 "sync=false".to_string(),
-            ]);
+            ];
 
             let mut child = match Command::new("gst-launch-1.0")
                 .args(&gst_args)
