@@ -63,6 +63,7 @@ BINARY_PATH=$(find "$TMP_DIR" -name "$BINARY_NAME" -type f | head -1)
 [ -z "$BINARY_PATH" ] && error "Binary '${BINARY_NAME}' not found in archive."
 
 chmod +x "$BINARY_PATH"
+rm -f "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null || true
 cp "$BINARY_PATH" "${INSTALL_DIR}/${BINARY_NAME}"
 success "Binary installed: ${BOLD}${INSTALL_DIR}/${BINARY_NAME}${RESET}"
 
