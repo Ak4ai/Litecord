@@ -962,7 +962,17 @@ impl ScreenCaptureManager {
     }
 }
 
+static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
+
 pub fn resolve_public_stun_address() -> Option<SocketAddr> {
+    if let Ok(guard) = CACHED_STUN_ADDR.lock() {
+        if let Some((addr, time)) = *guard {
+            if time.elapsed() < Duration::from_secs(60) {
+                return Some(addr);
+            }
+        }
+    }
+
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
     
@@ -994,7 +1004,7 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
                                 if i + 4 + attr_len > amt {
                                     break;
                                 }
-                                if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
+                                let res_addr = if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
                                     let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112;
                                     let ip = std::net::Ipv4Addr::new(
                                         buf[i + 8] ^ 0x21,
@@ -1002,11 +1012,20 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
                                         buf[i + 10] ^ 0xa4,
                                         buf[i + 11] ^ 0x42,
                                     );
-                                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                                    Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
                                 } else if attr_type == 0x0001 && attr_len >= 8 { // MAPPED-ADDRESS
                                     let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]);
                                     let ip = std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11]);
-                                    return Some(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                                    Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(addr) = res_addr {
+                                    if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+                                        *guard = Some((addr, Instant::now()));
+                                    }
+                                    return Some(addr);
                                 }
                                 i += 4 + ((attr_len + 3) & !3);
                             }
@@ -1057,8 +1076,9 @@ fn get_broadcast_addresses() -> Vec<SocketAddr> {
 
     // 3. Resolve STUN Public Internet Address for global P2P hole punching
     if let Some(pub_addr) = resolve_public_stun_address() {
-        info!("🌐 IP Público STUN detectado para P2P Global: {}", pub_addr);
-        addrs.push(pub_addr);
+        for port in 50005..=50007 {
+            addrs.push(SocketAddr::new(pub_addr.ip(), port));
+        }
     }
 
     addrs
