@@ -1988,6 +1988,8 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 "videoconvert".to_string(),
                 "n-threads=4".to_string(),
                 "!".to_string(),
+                "videoscale".to_string(),
+                "!".to_string(),
             ];
 
             if target_fps > 0 && target_fps < 120 {
@@ -2123,6 +2125,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                         }
                     }
                 }
+                PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
             }
 
             if let Ok(mut lock) = PORTAL_CHILD.lock() {
