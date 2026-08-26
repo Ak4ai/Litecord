@@ -2099,6 +2099,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (0, None, ui.get_stream_include_audio())
                 };
 
+                #[cfg(target_os = "linux")]
+                screen_capture::reset_wayland_portal_cancelled();
+
                 info!("▶️ Iniciando transmissão P2P (tab={}, {} @ {} FPS, hwnd={}, cam={:?}, audio={})...", source_tab, res_str, target_fps, target_hwnd, camera_index, include_audio);
                 ui.set_tr_stream_quality(format!("{} {}fps", res_str, target_fps).into());
 

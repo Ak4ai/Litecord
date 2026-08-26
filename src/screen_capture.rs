@@ -1810,19 +1810,45 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_
 static PORTAL_FRAME: std::sync::Mutex<Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)>> = std::sync::Mutex::new(None);
 #[cfg(not(windows))]
 static PORTAL_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(windows))]
+static PORTAL_CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static PORTAL_LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 #[cfg(target_os = "linux")]
 static PORTAL_LOCAL_CB: std::sync::Mutex<Option<std::sync::Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static>>> = std::sync::Mutex::new(None);
 #[cfg(target_os = "linux")]
 static PORTAL_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "linux")]
+pub fn reset_wayland_portal_cancelled() {
+    PORTAL_CANCELLED.store(false, std::sync::atomic::Ordering::SeqCst);
+    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(target_os = "linux")]
 fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64) {
+    if PORTAL_CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    if let Ok(guard) = PORTAL_LAST_ATTEMPT.lock() {
+        if let Some(last) = *guard {
+            if last.elapsed() < std::time::Duration::from_secs(3) {
+                return;
+            }
+        }
+    }
+
     if PORTAL_INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
 
+    if let Ok(mut guard) = PORTAL_LAST_ATTEMPT.lock() {
+        *guard = Some(std::time::Instant::now());
+    }
+
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
             Ok(r) => r,
             Err(e) => {
                 log::error!("Falha ao criar tokio runtime para Portal ScreenCast: {:?}", e);
@@ -1830,6 +1856,8 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 return;
             }
         };
+
+        let _guard = rt.enter();
 
         rt.block_on(async move {
             use ashpd::desktop::{
@@ -1899,6 +1927,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                     Err(e) => {
                         log::error!("Resposta de erro do Portal ScreenCast: {:?}", e);
                         let _ = session.close().await;
+                        PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                         PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                         return;
                     }
@@ -1906,6 +1935,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 Err(e) => {
                     log::error!("Falha ao iniciar captura no Portal ScreenCast: {:?}", e);
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1916,6 +1946,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 None => {
                     log::error!("Nenhum stream retornado pelo Portal ScreenCast");
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1927,20 +1958,29 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 Err(e) => {
                     log::error!("Falha ao abrir PipeWire Remote: {:?}", e);
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
             };
 
             let raw_fd = pw_fd.as_raw_fd();
+            let dup_fd = unsafe { libc::dup(raw_fd) };
+            if dup_fd < 0 {
+                log::error!("Falha ao duplicar PipeWire FD via libc::dup");
+                let _ = session.close().await;
+                PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+
             unsafe {
-                let flags = libc::fcntl(raw_fd, libc::F_GETFD);
+                let flags = libc::fcntl(dup_fd, libc::F_GETFD);
                 if flags >= 0 {
-                    libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                    libc::fcntl(dup_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                 }
             }
 
-            log::info!("🎉 Conectando GStreamer ao PipeWire Node ID={}, FD={} ({}x{} @ {} FPS)...", node_id, raw_fd, target_w, target_h, target_fps);
+            log::info!("🎉 Conectando GStreamer ao PipeWire Node ID={}, FD={} (dup_fd={}) ({}x{} @ {} FPS)...", node_id, raw_fd, dup_fd, target_w, target_h, target_fps);
 
             let (dst_w, dst_h) = (target_w, target_h);
             let frame_size = (dst_w * dst_h * 4) as usize;
@@ -1949,7 +1989,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let mut gst_args = vec![
                 "-q".to_string(),
                 "pipewiresrc".to_string(),
-                format!("fd={}", raw_fd),
+                format!("fd={}", dup_fd),
                 format!("path={}", node_id),
                 "do-timestamp=true".to_string(),
                 "!".to_string(),
@@ -1988,16 +2028,21 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 Ok(c) => c,
                 Err(e) => {
                     log::error!("Falha ao iniciar pipeline GStreamer PipeWire: {:?}", e);
+                    unsafe { libc::close(dup_fd); };
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
             };
 
+            unsafe { libc::close(dup_fd); };
+
             let mut stdout = match child.stdout.take() {
                 Some(s) => s,
                 None => {
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -2048,6 +2093,11 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 if let Ok(mut slot) = PORTAL_FRAME.lock() {
                     *slot = Some((pixel_buffer, rgb_bytes));
                 }
+            }
+
+            if pw_frame_count == 0 {
+                log::warn!("⚠️ GStreamer PipeWire não produziu quadros. Interrompendo loop do Portal.");
+                PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
             }
 
             if let Ok(mut lock) = PORTAL_CHILD.lock() {
