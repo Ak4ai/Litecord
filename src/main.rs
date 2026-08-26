@@ -1528,6 +1528,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if event.id == show_id_c {
                     should_restore = true;
                 } else if event.id == quit_id_c {
+                    #[cfg(target_os = "linux")]
+                    screen_capture::kill_portal_child();
                     std::process::exit(0);
                 }
             }
@@ -4061,8 +4063,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let sm_for_close = Arc::clone(&screen_manager);
     app.on_close_window(move || {
         info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        sm_for_close.stop();
+        #[cfg(target_os = "linux")]
+        screen_capture::kill_portal_child();
         std::process::exit(0);
     });
 

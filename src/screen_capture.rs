@@ -791,9 +791,13 @@ impl ScreenCaptureManager {
                                             }
                                         }
 
+                                        // Ignore own user's stream state to prevent seeing own screen as a peer stream
+                                        if pkt_uid == my_uid && my_uid != 0 {
+                                            continue;
+                                        }
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
                                         if prev_state != Some(is_streaming) {
-                                            info!("📡 Usuário {} ({}) alterou estado de stream: {}", pkt_uid, src_addr, is_streaming);
+                                            info!("📡 Usuário {} alterou estado de stream: {}", pkt_uid, is_streaming);
                                             on_state(pkt_uid, is_streaming);
                                         }
                                     }
@@ -826,6 +830,10 @@ impl ScreenCaptureManager {
                                 OP_VIDEO_CHUNK => {
                                     // Only accept video chunks if we are in the same voice channel
                                     if current_cid == 0 || (pkt_cid != 0 && pkt_cid != current_cid) {
+                                        continue;
+                                    }
+                                    // Ignore own video chunks (loopback from other instances)
+                                    if pkt_uid == my_uid && my_uid != 0 {
                                         continue;
                                     }
                                     if len > 33 {
@@ -1823,6 +1831,18 @@ static PORTAL_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::
 pub fn reset_wayland_portal_cancelled() {
     PORTAL_CANCELLED.store(false, std::sync::atomic::Ordering::SeqCst);
     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(target_os = "linux")]
+pub fn kill_portal_child() {
+    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Ok(mut lock) = PORTAL_CHILD.lock() {
+        if let Some(mut child) = lock.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
