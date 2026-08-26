@@ -1965,22 +1965,14 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             };
 
             let raw_fd = pw_fd.as_raw_fd();
-            let dup_fd = unsafe { libc::dup(raw_fd) };
-            if dup_fd < 0 {
-                log::error!("Falha ao duplicar PipeWire FD via libc::dup");
-                let _ = session.close().await;
-                PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
-                return;
-            }
-
             unsafe {
-                let flags = libc::fcntl(dup_fd, libc::F_GETFD);
+                let flags = libc::fcntl(raw_fd, libc::F_GETFD);
                 if flags >= 0 {
-                    libc::fcntl(dup_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                    libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                 }
             }
 
-            log::info!("🎉 Conectando GStreamer ao PipeWire Node ID={}, FD={} (dup_fd={}) ({}x{} @ {} FPS)...", node_id, raw_fd, dup_fd, target_w, target_h, target_fps);
+            log::info!("🎉 Conectando GStreamer ao PipeWire Node ID={}, FD={} ({}x{} @ {} FPS)...", node_id, raw_fd, target_w, target_h, target_fps);
 
             let (dst_w, dst_h) = (target_w, target_h);
             let frame_size = (dst_w * dst_h * 4) as usize;
@@ -1989,7 +1981,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let mut gst_args = vec![
                 "-q".to_string(),
                 "pipewiresrc".to_string(),
-                format!("fd={}", dup_fd),
+                format!("fd={}", raw_fd),
                 format!("path={}", node_id),
                 "do-timestamp=true".to_string(),
                 "!".to_string(),
@@ -2019,16 +2011,17 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 "sync=false".to_string(),
             ]);
 
+            log::info!("🔧 GStreamer pipeline args: {:?}", gst_args);
+
             let mut child = match Command::new("gst-launch-1.0")
                 .args(&gst_args)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
             {
                 Ok(c) => c,
                 Err(e) => {
                     log::error!("Falha ao iniciar pipeline GStreamer PipeWire: {:?}", e);
-                    unsafe { libc::close(dup_fd); };
                     let _ = session.close().await;
                     PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -2036,7 +2029,22 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 }
             };
 
-            unsafe { libc::close(dup_fd); };
+            // Spawn a thread to log GStreamer stderr for debugging
+            if let Some(stderr) = child.stderr.take() {
+                std::thread::Builder::new()
+                    .name("gst-stderr-logger".to_string())
+                    .spawn(move || {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(stderr);
+                        for line in reader.lines() {
+                            match line {
+                                Ok(l) => log::warn!("🎬 [GStreamer STDERR]: {}", l),
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                    .ok();
+            }
 
             let mut stdout = match child.stdout.take() {
                 Some(s) => s,
@@ -2058,8 +2066,16 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let mut raw_buf = vec![0u8; frame_size];
             let mut pw_frame_count = 0u64;
             let mut last_pw_stats = std::time::Instant::now();
+            let first_frame_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut got_first_frame = false;
+
+            log::info!("⏳ Aguardando primeiro quadro do GStreamer PipeWire (timeout 10s)...");
 
             while PORTAL_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) && stdout.read_exact(&mut raw_buf).is_ok() {
+                if !got_first_frame {
+                    got_first_frame = true;
+                    log::info!("✅ Primeiro quadro do GStreamer PipeWire recebido com sucesso!");
+                }
                 pw_frame_count += 1;
                 let now = std::time::Instant::now();
                 if now.duration_since(last_pw_stats) >= std::time::Duration::from_secs(1) {
@@ -2095,9 +2111,18 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 }
             }
 
-            if pw_frame_count == 0 {
-                log::warn!("⚠️ GStreamer PipeWire não produziu quadros. Interrompendo loop do Portal.");
-                PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+            if !got_first_frame {
+                log::error!("❌ GStreamer PipeWire encerrou sem produzir nenhum quadro! Pipeline falhou.");
+                // Check if child exited with an error
+                if let Ok(mut lock) = PORTAL_CHILD.lock() {
+                    if let Some(ref mut child) = *lock {
+                        match child.try_wait() {
+                            Ok(Some(status)) => log::error!("❌ GStreamer exit status: {}", status),
+                            Ok(None) => log::warn!("⚠️ GStreamer ainda está rodando mas stdout fechou"),
+                            Err(e) => log::error!("❌ Erro ao verificar status do GStreamer: {:?}", e),
+                        }
+                    }
+                }
             }
 
             if let Ok(mut lock) = PORTAL_CHILD.lock() {
