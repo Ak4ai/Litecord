@@ -328,7 +328,12 @@ impl ScreenCaptureManager {
             480 => (854u32, 480u32),
             _ => (1280u32, 720u32),
         };
-        let target_fps = (fps.clamp(15, 60)) as u64;
+        // Cap 1080p streams to 30fps in P2P to keep UDP bandwidth manageable
+        let target_fps = if res == 1080 {
+            (fps.clamp(15, 30)) as u64
+        } else {
+            (fps.clamp(15, 60)) as u64
+        };
 
         if camera_index.is_none() && target_hwnd != 0 {
             start_window_border_overlay(target_hwnd);
@@ -535,9 +540,14 @@ impl ScreenCaptureManager {
                             on_local_tx(pixel_buf);
                         }
 
-                        // Compress frame to JPEG using fast SIMD encoder
+                        // Adaptive JPEG quality: lower for higher resolutions to keep UDP frames manageable
+                        let jpeg_quality = match (cur_w, cur_h) {
+                            (w, _) if w >= 1920 => 40u8, // 1080p: ~50-80KB per frame
+                            (w, _) if w >= 1280 => 55u8, // 720p: ~40-60KB per frame
+                            _ => 70u8,                   // 480p and below: ~20-35KB
+                        };
                         let enc_start = Instant::now();
-                        let jpeg_opt = encode_jpeg(&rgb_data, cur_w, cur_h, 65);
+                        let jpeg_opt = encode_jpeg(&rgb_data, cur_w, cur_h, jpeg_quality);
                         let enc_dur = enc_start.elapsed().as_micros();
                         total_encode_us += enc_dur;
 
@@ -860,6 +870,7 @@ impl ScreenCaptureManager {
                                         });
 
                                         if frame_entry.seq != seq {
+                                            // New sequence: drop incomplete old frame but keep last assembled one
                                             frame_entry.seq = seq;
                                             frame_entry.total_chunks = total;
                                             frame_entry.received.clear();
