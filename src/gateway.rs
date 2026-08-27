@@ -1988,12 +1988,17 @@ impl GatewayClient {
                     }
                 });
 
+                let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
+
                 // Read incoming Gateway messages loop
                 while let Some(msg_result) = read.next().await {
                     match msg_result {
                         Ok(Message::Text(text)) => {
                             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                                 let op = value["op"].as_u64().unwrap_or(99);
+                                if let Some(s) = value["s"].as_i64() {
+                                    last_seq_arc.store(s, Ordering::Relaxed);
+                                }
 
                                 match op {
                                     10 => {
@@ -2005,7 +2010,12 @@ impl GatewayClient {
                                         info!("Heartbeat interval recebido: {} ms", heartbeat_interval);
 
                                         // Send initial Heartbeat (Opcode 1)
-                                        let hb_initial = serde_json::json!({ "op": 1, "d": null });
+                                        let last_s = last_seq_arc.load(Ordering::Relaxed);
+                                        let hb_initial = if last_s >= 0 {
+                                            serde_json::json!({ "op": 1, "d": last_s })
+                                        } else {
+                                            serde_json::json!({ "op": 1, "d": null })
+                                        };
                                         {
                                             let mut w = write_arc.lock().await;
                                             let _ = w.send(Message::Text(hb_initial.to_string().into())).await;
@@ -2057,10 +2067,16 @@ impl GatewayClient {
 
                                         // Spawn Heartbeat Loop
                                         let write_hb = Arc::clone(&write_arc);
+                                        let last_seq_hb = Arc::clone(&last_seq_arc);
                                         tokio::spawn(async move {
                                             loop {
                                                 sleep(Duration::from_millis(heartbeat_interval)).await;
-                                                let hb = serde_json::json!({ "op": 1, "d": null });
+                                                let last_s = last_seq_hb.load(Ordering::Relaxed);
+                                                let hb = if last_s >= 0 {
+                                                    serde_json::json!({ "op": 1, "d": last_s })
+                                                } else {
+                                                    serde_json::json!({ "op": 1, "d": null })
+                                                };
                                                 let mut w = write_hb.lock().await;
                                                 if let Err(e) = w.send(Message::Text(hb.to_string().into())).await {
                                                     warn!("Falha ao enviar Heartbeat: {:?}", e);

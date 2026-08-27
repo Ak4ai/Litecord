@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, UdpSocket, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(not(windows))]
 use std::sync::atomic::AtomicU8;
@@ -35,6 +35,18 @@ pub fn set_my_rx_port(port: u16) {
     MY_RX_PORT.store(port, Ordering::Relaxed);
 }
 
+static CURRENT_TX_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static KEYFRAME_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn request_intra_keyframe() {
+    KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+pub fn get_tx_fps() -> f32 {
+    let raw = CURRENT_TX_FPS.load(Ordering::Relaxed);
+    (raw as f32) / 10.0
+}
+
 // Litecord P2P Video
 const CHUNK_SIZE: usize = 1350; // Optimized MTU for local & VPN UDP transmission without fragmentation
 
@@ -44,6 +56,7 @@ const OP_VIDEO_CHUNK: u8 = 2;
 const OP_STOP: u8 = 3;
 const OP_HEARTBEAT: u8 = 4;
 pub const OP_AUDIO_FRAME: u8 = 5;
+pub const OP_KEYFRAME_REQ: u8 = 6;
 
 #[derive(Debug, Clone)]
 pub struct MonitorItemInfo {
@@ -171,14 +184,32 @@ impl ScreenCaptureManager {
     pub fn announce_presence(&self) {
         let current_cid = self.channel_id.load(Ordering::Relaxed);
         if current_cid == 0 { return; }
-        let my_uid = self.my_user_id.load(Ordering::Relaxed);
+        let mut my_uid = self.my_user_id.load(Ordering::Relaxed);
+        if my_uid == 0 {
+            my_uid = crate::gateway::get_my_user_id();
+            if my_uid > 0 {
+                self.my_user_id.store(my_uid, Ordering::Relaxed);
+            }
+        }
         let my_instance_id = get_process_instance_id();
         let my_rx = get_my_rx_port();
-        let uname = self.my_username.lock().unwrap().clone();
+        let mut uname = self.my_username.lock().unwrap().clone();
+        if uname.is_empty() {
+            uname = crate::gateway::get_my_username();
+            if !uname.is_empty() {
+                *self.my_username.lock().unwrap() = uname.clone();
+            }
+        }
         let uname_bytes = uname.as_bytes();
 
-        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-            let _ = socket.set_broadcast(true);
+        let socket_opt = get_shared_p2p_socket().or_else(|| {
+            UdpSocket::bind("0.0.0.0:0").ok().map(|s| {
+                let _ = s.set_broadcast(true);
+                Arc::new(s)
+            })
+        });
+
+        if let Some(socket) = socket_opt {
             let mut ack_pkt = Vec::with_capacity(30 + uname_bytes.len());
             ack_pkt.extend_from_slice(MAGIC);
             ack_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
@@ -193,6 +224,49 @@ impl ScreenCaptureManager {
 
             for target in get_broadcast_addresses() {
                 let _ = socket.send_to(&ack_pkt, target);
+            }
+            if let Ok(peers) = self.known_peers.lock() {
+                for (&_, &(addr, _)) in peers.iter() {
+                    let _ = socket.send_to(&ack_pkt, addr);
+                }
+            }
+        }
+    }
+
+    pub fn register_remote_peer(&self, uid: u64, addr: SocketAddr) {
+        if let Ok(mut peers) = self.known_peers.lock() {
+            peers.insert(uid, (addr, Instant::now()));
+            info!("🌐 Peer remoto P2P registrado: User ID {} -> {}", uid, addr);
+        }
+        let current_cid = self.channel_id.load(Ordering::Relaxed);
+        let my_uid = self.my_user_id.load(Ordering::Relaxed);
+        let my_instance_id = get_process_instance_id();
+        let my_rx = get_my_rx_port();
+        let uname = self.my_username.lock().unwrap().clone();
+        let uname_bytes = uname.as_bytes();
+
+        let socket_opt = get_shared_p2p_socket().or_else(|| {
+            UdpSocket::bind("0.0.0.0:0").ok().map(|s| {
+                let _ = s.set_broadcast(true);
+                Arc::new(s)
+            })
+        });
+
+        if let Some(socket) = socket_opt {
+            let mut ack_pkt = Vec::with_capacity(30 + uname_bytes.len());
+            ack_pkt.extend_from_slice(MAGIC);
+            ack_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+            ack_pkt.push(OP_HEARTBEAT);
+            ack_pkt.extend_from_slice(&current_cid.to_be_bytes());
+            ack_pkt.extend_from_slice(&my_uid.to_be_bytes());
+            ack_pkt.push(0);
+            ack_pkt.push(2);
+            ack_pkt.push(uname_bytes.len() as u8);
+            ack_pkt.extend_from_slice(uname_bytes);
+            ack_pkt.extend_from_slice(&my_rx.to_be_bytes());
+
+            for _ in 0..3 {
+                let _ = socket.send_to(&ack_pkt, addr);
             }
         }
     }
@@ -222,6 +296,7 @@ impl ScreenCaptureManager {
             }
         }
         if self.is_running.swap(false, Ordering::SeqCst) {
+            CURRENT_TX_FPS.store(0, Ordering::Relaxed);
             info!("🛑 Parando captura e transmissão de tela P2P...");
             let cid = self.channel_id.load(Ordering::Relaxed);
             let uid = self.my_user_id.load(Ordering::Relaxed);
@@ -250,7 +325,7 @@ impl ScreenCaptureManager {
     }
 
     /// Starts the capture and UDP transmitter thread
-    pub fn start<F>(&self, target_hwnd: isize, camera_index: Option<u32>, res: i32, fps: i32, include_audio: bool, on_local_frame: F)
+    pub fn start<F>(&self, target_hwnd: isize, screen_index: usize, camera_index: Option<u32>, res: i32, fps: i32, include_audio: bool, on_local_frame: F)
     where
         F: Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static,
     {
@@ -280,6 +355,7 @@ impl ScreenCaptureManager {
             480 => (854u32, 480u32),
             _ => (1280u32, 720u32),
         };
+        // Uncapped 60 FPS across all resolutions thanks to lightweight H.264 temporal compression
         let target_fps = (fps.clamp(15, 60)) as u64;
 
         if camera_index.is_none() && target_hwnd != 0 {
@@ -296,22 +372,47 @@ impl ScreenCaptureManager {
             );
         }
 
-        info!("🖥️ Iniciando transmissão P2P ({}x{} @ {} FPS, hwnd={}, cam={:?}, audio={})...", target_w, target_h, target_fps, target_hwnd, camera_index, camera_index.is_none() && include_audio);
+        info!("🖥️ Iniciando transmissão P2P H.264 ({}x{} @ {} FPS, screen_idx={}, hwnd={}, cam={:?}, audio={})...", target_w, target_h, target_fps, screen_index, target_hwnd, camera_index, camera_index.is_none() && include_audio);
 
         std::thread::Builder::new()
             .name("screen-capture-tx".to_string())
             .spawn(move || {
-                let socket = match UdpSocket::bind("0.0.0.0:0") {
-                    Ok(s) => {
-                        let _ = s.set_broadcast(true);
-                        let _ = s.set_nonblocking(true);
-                        s
-                    }
-                    Err(e) => {
-                        warn!("Falha ao criar socket UDP TX: {:?}", e);
-                        return;
-                    }
+                #[cfg(windows)]
+                unsafe {
+                    windows_sys::Win32::Media::timeBeginPeriod(1);
+                }
+
+                let num_threads = std::thread::available_parallelism().map(|n| n.get() as u16).unwrap_or(8).clamp(2, 16);
+                let usage = if camera_index.is_some() {
+                    openh264::encoder::UsageType::CameraVideoRealTime
+                } else {
+                    openh264::encoder::UsageType::ScreenContentRealTime
                 };
+                let enc_config = openh264::encoder::EncoderConfig::new()
+                    .usage_type(usage)
+                    .set_multiple_thread_idc(num_threads)
+                    .set_bitrate_bps(5_000_000)
+                    .max_frame_rate(target_fps as f32)
+                    .enable_skip_frame(false)
+                    .rate_control_mode(openh264::encoder::RateControlMode::Quality);
+
+                let mut h264_encoder = openh264::encoder::Encoder::with_api_config(
+                    openh264::OpenH264API::from_source(),
+                    enc_config,
+                ).or_else(|_| openh264::encoder::Encoder::new()).ok();
+
+                if h264_encoder.is_some() {
+                    info!("🚀 Encoder nativo OpenH264 ({:?} SIMD, {} threads) inicializado para 1080p 60 FPS!", usage, num_threads);
+                } else {
+                    warn!("⚠️ Falha ao inicializar OpenH264. Usando fallback de JPEG.");
+                }
+
+                let socket = get_shared_p2p_socket().unwrap_or_else(|| {
+                    let s = UdpSocket::bind("0.0.0.0:0").unwrap();
+                    let _ = s.set_broadcast(true);
+                    let _ = s.set_nonblocking(true);
+                    Arc::new(s)
+                });
 
                 let camera_handle = if let Some(cam_idx) = camera_index {
                     if let Ok(devs) = cameras::devices() {
@@ -366,54 +467,283 @@ impl ScreenCaptureManager {
                 };
 
                 let bcast_targets = get_broadcast_addresses();
-                let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));
-                let mut frame_seq: u32 = 0;
-                let mut last_announce = Instant::now() - Duration::from_secs(10);
+                let (tx_frame, rx_frame) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32, u128, u128)>(6);
+                let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
+                let is_running_cap = Arc::clone(&is_running);
 
-                // Initial 3x announce burst for instant <10ms peer discovery
-                {
-                    let cid = channel_id_atomic.load(Ordering::Relaxed);
-                    let uid = my_user_id_atomic.load(Ordering::Relaxed);
-                    let uname = my_username_arc.lock().unwrap().clone();
-                    let uname_bytes = uname.as_bytes();
-                    let inst = get_process_instance_id();
-                    let my_rx = get_my_rx_port();
-                    let mut ann_pkt = Vec::with_capacity(32 + uname_bytes.len());
-                    ann_pkt.extend_from_slice(MAGIC);
-                    ann_pkt.extend_from_slice(&inst.to_be_bytes());
-                    ann_pkt.push(OP_ANNOUNCE);
-                    ann_pkt.extend_from_slice(&cid.to_be_bytes());
-                    ann_pkt.extend_from_slice(&uid.to_be_bytes());
-                    ann_pkt.push(1); // is_streaming = true
-                    ann_pkt.push(match res {
-                        1080 => 108,
-                        480 => 48,
-                        _ => 72,
-                    });
-                    ann_pkt.push(target_fps as u8);
-                    ann_pkt.push(uname_bytes.len() as u8);
-                    ann_pkt.extend_from_slice(uname_bytes);
-                    ann_pkt.extend_from_slice(&my_rx.to_be_bytes());
+                // =========================================================================
+                // ESTÁGIO 1: Captura Windows Graphics Capture (WGC - GPU Direct 60-100 FPS)
+                // =========================================================================
+                #[cfg(windows)]
+                let wgc_started = if camera_index.is_none() {
+                    use windows_capture::{
+                        capture::{Context, GraphicsCaptureApiHandler},
+                        frame::Frame,
+                        graphics_capture_api::InternalCaptureControl,
+                        monitor::Monitor,
+                        window::Window,
+                        settings::{
+                            ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+                            MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+                        },
+                    };
 
-                    for _ in 0..3 {
-                        for target in &bcast_targets {
-                            let _ = socket.send_to(&ann_pkt, target);
-                        }
-                        if let Ok(peers) = peers_store.lock() {
-                            for (&_, &(addr, _)) in peers.iter() {
-                                let _ = socket.send_to(&ann_pkt, addr);
-                            }
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
+                    struct WgcHandler {
+                        tx_frame: std::sync::mpsc::SyncSender<(Vec<u8>, u32, u32, u128, u128)>,
+                        rx_recycle: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>,
+                        is_running: Arc<AtomicBool>,
+                        target_w: u32,
+                        target_h: u32,
                     }
+
+                    struct WgcFlags {
+                        tx_frame: std::sync::mpsc::SyncSender<(Vec<u8>, u32, u32, u128, u128)>,
+                        rx_recycle: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>,
+                        is_running: Arc<AtomicBool>,
+                        target_fps: u64,
+                        target_w: u32,
+                        target_h: u32,
+                    }
+
+                    impl GraphicsCaptureApiHandler for WgcHandler {
+                        type Flags = WgcFlags;
+                        type Error = Box<dyn std::error::Error + Send + Sync>;
+
+                        fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+                            Ok(Self {
+                                tx_frame: ctx.flags.tx_frame,
+                                rx_recycle: ctx.flags.rx_recycle,
+                                is_running: ctx.flags.is_running,
+                                target_w: ctx.flags.target_w,
+                                target_h: ctx.flags.target_h,
+                            })
+                        }
+
+                        fn on_frame_arrived(
+                            &mut self,
+                            frame: &mut Frame,
+                            capture_control: InternalCaptureControl,
+                        ) -> Result<(), Self::Error> {
+                            if !self.is_running.load(Ordering::Relaxed) {
+                                capture_control.stop();
+                                return Ok(());
+                            }
+
+                            let (w, h) = (frame.width(), frame.height());
+                            if let Ok(mut fb) = frame.buffer() {
+                                let slice = fb.as_raw_buffer();
+                                let canvas_w = self.target_w;
+                                let canvas_h = self.target_h;
+                                let total_canvas_bytes = (canvas_w * canvas_h * 4) as usize;
+
+                                let mut cur_buf = if let Ok(rx) = self.rx_recycle.lock() {
+                                    rx.try_recv().unwrap_or_else(|_| Vec::with_capacity(total_canvas_bytes))
+                                } else {
+                                    Vec::with_capacity(total_canvas_bytes)
+                                };
+                                if cur_buf.len() != total_canvas_bytes {
+                                    cur_buf.resize(total_canvas_bytes, 0);
+                                }
+
+                                fit_bgra_to_canvas(slice, w, h, canvas_w, canvas_h, &mut cur_buf);
+                                let _ = self.tx_frame.try_send((cur_buf, canvas_w, canvas_h, 0, 0));
+                            }
+                            Ok(())
+                        }
+
+                        fn on_closed(&mut self) -> Result<(), Self::Error> {
+                            Ok(())
+                        }
+                    }
+
+                    let rx_recycle_arc = Arc::new(std::sync::Mutex::new(rx_recycle));
+                    let flags = WgcFlags {
+                        tx_frame: tx_frame.clone(),
+                        rx_recycle: Arc::clone(&rx_recycle_arc),
+                        is_running: Arc::clone(&is_running),
+                        target_fps,
+                        target_w,
+                        target_h,
+                    };
+
+                    let tx_frame_fallback = tx_frame.clone();
+                    let is_running_fallback = Arc::clone(&is_running);
+                    let mut started = false;
+
+                    if target_hwnd != 0 {
+                        let win = Window::from_raw_hwnd(target_hwnd as *mut std::ffi::c_void);
+                        let settings = Settings::new(
+                            win,
+                            CursorCaptureSettings::Default,
+                            DrawBorderSettings::WithoutBorder,
+                            SecondaryWindowSettings::Default,
+                            MinimumUpdateIntervalSettings::Default,
+                            DirtyRegionSettings::Default,
+                            ColorFormat::Bgra8,
+                            flags,
+                        );
+                        std::thread::Builder::new()
+                            .name("wgc-capture-thread".to_string())
+                            .spawn(move || {
+                                info!("⚡ Iniciando Windows Graphics Capture (WGC) para Janela HWND={}", target_hwnd);
+                                if let Err(e) = WgcHandler::start(settings) {
+                                    warn!("⚠️ WGC falhou ({:?}), acionando fallback GDI...", e);
+                                    let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
+                                    let frame_interval = Duration::from_nanos(1_000_000_000 / target_fps.max(1));
+                                    while is_running_fallback.load(Ordering::Relaxed) {
+                                        let t_start = Instant::now();
+                                        if let Some((blt, pix)) = capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf) {
+                                            let _ = tx_frame_fallback.try_send((cur_buf.clone(), target_w, target_h, blt, pix));
+                                        }
+                                        let el = t_start.elapsed();
+                                        if el < frame_interval {
+                                            std::thread::sleep(frame_interval - el);
+                                        }
+                                    }
+                                }
+                            })
+                            .ok();
+                        started = true;
+                    } else {
+                        let monitor_opt = if let Ok(monitors) = Monitor::enumerate() {
+                            monitors.into_iter().nth(screen_index).or_else(|| Monitor::primary().ok())
+                        } else {
+                            Monitor::primary().ok()
+                        };
+
+                        if let Some(monitor) = monitor_opt {
+                            let mon_name = monitor.name().unwrap_or_else(|_| format!("Monitor #{}", screen_index + 1));
+                            let settings = Settings::new(
+                                monitor,
+                                CursorCaptureSettings::Default,
+                                DrawBorderSettings::WithoutBorder,
+                                SecondaryWindowSettings::Default,
+                                MinimumUpdateIntervalSettings::Default,
+                                DirtyRegionSettings::Default,
+                                ColorFormat::Bgra8,
+                                flags,
+                            );
+                            std::thread::Builder::new()
+                                .name("wgc-capture-thread".to_string())
+                                .spawn(move || {
+                                    info!("⚡ Iniciando Windows Graphics Capture (WGC) para {} (alvo: {} FPS)", mon_name, target_fps);
+                                    if let Err(e) = WgcHandler::start(settings) {
+                                        warn!("⚠️ WGC falhou ({:?}), acionando fallback GDI...", e);
+                                        let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
+                                        let frame_interval = Duration::from_nanos(1_000_000_000 / target_fps.max(1));
+                                        while is_running_fallback.load(Ordering::Relaxed) {
+                                            let t_start = Instant::now();
+                                            if let Some((blt, pix)) = capture_screen_rgb(0, target_w, target_h, target_fps, &mut cur_buf) {
+                                                let _ = tx_frame_fallback.try_send((cur_buf.clone(), target_w, target_h, blt, pix));
+                                            }
+                                            let el = t_start.elapsed();
+                                            if el < frame_interval {
+                                                std::thread::sleep(frame_interval - el);
+                                            }
+                                        }
+                                    }
+                                })
+                                .ok();
+                            started = true;
+                        }
+                    }
+                    started
+                } else {
+                    false
+                };
+
+                #[cfg(not(windows))]
+                let wgc_started = false;
+
+                if !wgc_started {
+                    // Fallback para Câmera ou Captura Tradicional
+                    std::thread::Builder::new()
+                        .name("screen-capture-worker".to_string())
+                        .spawn(move || {
+                            #[cfg(windows)]
+                            unsafe {
+                                windows_sys::Win32::Media::timeBeginPeriod(1);
+                            }
+
+                            let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));
+                            let mut next_cap_time = Instant::now() + frame_interval;
+
+                            while is_running_cap.load(Ordering::Relaxed) {
+                                let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
+
+                                let cap_res = if camera_index.is_some() {
+                                    if let Some(ref cam) = camera_handle {
+                                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(50)) {
+                                            let (w, h) = (frame.width, frame.height);
+                                            if let Ok(mut rgba_bytes) = cameras::to_rgba8(&frame) {
+                                                for chunk in rgba_bytes.chunks_exact_mut(4) {
+                                                    chunk.swap(0, 2); // RGBA -> BGRA
+                                                }
+                                                cur_buf = rgba_bytes;
+                                                Some((w, h, 0u128, 0u128))
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf)
+                                        .map(|(blt, pix)| (target_w, target_h, blt, pix))
+                                };
+
+                                if let Some((w, h, blt, pix)) = cap_res {
+                                    let _ = tx_frame.try_send((cur_buf, w, h, blt, pix));
+                                }
+
+                                let now = Instant::now();
+                                if now < next_cap_time {
+                                    let rem = next_cap_time - now;
+                                    if rem > Duration::from_millis(3) {
+                                        std::thread::sleep(rem - Duration::from_millis(2));
+                                    }
+                                    while Instant::now() < next_cap_time {
+                                        std::hint::spin_loop();
+                                    }
+                                    next_cap_time += frame_interval;
+                                } else {
+                                    if now - next_cap_time > Duration::from_millis(100) {
+                                        next_cap_time = now + frame_interval;
+                                    } else {
+                                        next_cap_time += frame_interval;
+                                    }
+                                }
+                            }
+
+                            #[cfg(windows)]
+                            unsafe {
+                                windows_sys::Win32::Media::timeEndPeriod(1);
+                            }
+                        })
+                        .ok();
                 }
 
+                // =========================================================================
+                // ESTÁGIO 2: Worker de Encode OpenH264 e Emissão UDP (Em Paralelo)
+                // =========================================================================
                 let mut tx_frame_count = 0u64;
                 let mut last_tx_stats = std::time::Instant::now();
                 let mut total_encode_us = 0u128;
+                let mut total_blt_us = 0u128;
+                let mut total_pix_us = 0u128;
+                let mut last_local_preview = Instant::now() - Duration::from_secs(1);
+                let mut last_announce = Instant::now() - Duration::from_secs(10);
+                let mut last_idr = Instant::now();
+                let mut frame_seq: u32 = 0;
+
+                let frame_target_interval = Duration::from_micros(1_000_000 / target_fps.max(1));
+                let mut next_tick = Instant::now();
+                let mut latest_cached_frame: Option<(Vec<u8>, u32, u32, u128, u128)> = None;
 
                 while is_running.load(Ordering::Relaxed) {
-                    let start_time = Instant::now();
                     let cid = channel_id_atomic.load(Ordering::Relaxed);
                     let uid = my_user_id_atomic.load(Ordering::Relaxed);
 
@@ -451,106 +781,165 @@ impl ScreenCaptureManager {
                         last_announce = Instant::now();
                     }
 
-                    let capture_res = if camera_index.is_some() {
-                        if let Some(ref cam) = camera_handle {
-                            if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(50)) {
-                                let (w, h) = (frame.width, frame.height);
-                                let total = (w * h) as usize;
-                                if let Ok(rgba_bytes) = cameras::to_rgba8(&frame) {
-                                    let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
-                                    pixel_buf.make_mut_bytes().copy_from_slice(&rgba_bytes);
-                                    let mut rgb = Vec::with_capacity(total * 3);
-                                    for p in rgba_bytes.chunks_exact(4) {
-                                        rgb.push(p[0]);
-                                        rgb.push(p[1]);
-                                        rgb.push(p[2]);
-                                    }
-                                    Some((pixel_buf, rgb))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
+                    // Drena quadros novos da GPU para sempre ter o frame mais atualizado
+                    while let Ok(new_frame) = rx_frame.try_recv() {
+                        if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
+                            let _ = tx_recycle.try_send(old_buf);
                         }
-                    } else {
-                        capture_screen_rgb(target_hwnd, target_w, target_h, target_fps)
+                    }
+
+                    // Se nenhum quadro chegou ainda, aguarda até 30ms pelo primeiro
+                    if latest_cached_frame.is_none() {
+                        match rx_frame.recv_timeout(Duration::from_millis(30)) {
+                            Ok(first_frame) => {
+                                latest_cached_frame = Some(first_frame);
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+
+                    // Pacer CFR de 60.0 FPS rígido (Relógio de precisão sem drift de encode para 60 FPS cravados)
+                    let now = Instant::now();
+                    if now < next_tick {
+                        let sleep_dur = (next_tick - now).min(frame_target_interval);
+                        if sleep_dur > Duration::from_millis(1) {
+                            std::thread::sleep(sleep_dur - Duration::from_millis(1));
+                        }
+                        while Instant::now() < next_tick {
+                            std::hint::spin_loop();
+                        }
+                    }
+                    next_tick += frame_target_interval;
+                    if now > next_tick + frame_target_interval * 2 {
+                        next_tick = now + frame_target_interval;
+                    }
+
+                    let (bgra_slice, cur_w, cur_h, blt_us, pix_us) = match latest_cached_frame {
+                        Some(ref f) => (f.0.as_slice(), f.1, f.2, f.3, f.4),
+                        None => continue,
                     };
 
-                    if let Some((pixel_buf, rgb_data)) = capture_res {
-                        let cur_w = pixel_buf.width();
-                        let cur_h = pixel_buf.height();
-                        buffer.publish(pixel_buf.clone());
+                    total_blt_us += blt_us;
+                    total_pix_us += pix_us;
+
+                    // Decouple UI local preview to ~20 FPS to prevent DWM Compositor VSync contention
+                    if last_local_preview.elapsed() >= Duration::from_millis(50) {
                         if camera_index.is_some() || cfg!(windows) {
-                            on_local_tx(pixel_buf);
+                            let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(cur_w, cur_h);
+                            let slice = pixel_buffer.make_mut_slice();
+                            let bgra_chunks = bgra_slice.chunks_exact(4);
+                            for (bgra, pixel) in bgra_chunks.zip(slice.iter_mut()) {
+                                *pixel = Rgba8Pixel::new(bgra[2], bgra[1], bgra[0], 255);
+                            }
+                            buffer.publish(pixel_buffer.clone());
+                            on_local_tx(pixel_buffer);
                         }
+                        last_local_preview = Instant::now();
+                    }
 
-                        // Compress frame to JPEG using fast SIMD encoder
-                        let enc_start = Instant::now();
-                        let jpeg_opt = encode_jpeg(&rgb_data, cur_w, cur_h, 65);
-                        let enc_dur = enc_start.elapsed().as_micros();
-                        total_encode_us += enc_dur;
+                    let enc_start = Instant::now();
+                    let frame_bytes_opt = if let Some(ref mut enc) = h264_encoder {
+                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(1500) {
+                            last_idr = Instant::now();
+                            enc.force_intra_frame();
+                        }
+                        encode_h264(enc, bgra_slice, cur_w, cur_h)
+                    } else {
+                        let mut rgb = Vec::with_capacity((cur_w * cur_h * 3) as usize);
+                        for p in bgra_slice.chunks_exact(4) {
+                            rgb.push(p[2]);
+                            rgb.push(p[1]);
+                            rgb.push(p[0]);
+                        }
+                        encode_jpeg(&rgb, cur_w, cur_h, 55)
+                    };
+                    let enc_dur = enc_start.elapsed().as_micros();
+                    total_encode_us += enc_dur;
 
-                        if let Some(jpeg_bytes) = jpeg_opt {
-                            frame_seq = frame_seq.wrapping_add(1);
-                            let total_len = jpeg_bytes.len();
-                            let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
+                    if let Some(frame_bytes) = frame_bytes_opt {
+                        frame_seq = frame_seq.wrapping_add(1);
+                        let total_len = frame_bytes.len();
+                        let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
 
-                            // Send directly to known peers; fallback to broadcast only if no peers discovered yet
-                            let mut target_addrs: Vec<SocketAddr> = Vec::new();
-                            if let Ok(peers) = peers_store.lock() {
-                                for (&_, &(addr, _)) in peers.iter() {
+                        // Send directly to active peers (or fallback to LAN broadcast if no peers found yet)
+                        let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(16);
+                        target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 50005));
+                        if let Ok(mut peers) = peers_store.lock() {
+                            let now = Instant::now();
+                            peers.retain(|_, (addr, seen)| {
+                                let is_private = match addr.ip() {
+                                    std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
+                                    _ => false,
+                                };
+                                is_private || now.duration_since(*seen) < Duration::from_secs(60)
+                            });
+                            for (&_, &(addr, _)) in peers.iter() {
+                                if !target_addrs.contains(&addr) {
                                     target_addrs.push(addr);
                                 }
                             }
-                            if target_addrs.is_empty() {
-                                target_addrs.extend_from_slice(&bcast_targets);
+                        }
+                        for bcast in &bcast_targets {
+                            if !target_addrs.contains(bcast) {
+                                target_addrs.push(*bcast);
+                            }
+                        }
+
+                        for chunk_idx in 0..total_chunks {
+                            let start = (chunk_idx as usize) * CHUNK_SIZE;
+                            let end = (start + CHUNK_SIZE).min(total_len);
+                            let chunk_slice = &frame_bytes[start..end];
+
+                            let inst = get_process_instance_id();
+                            let mut pkt = Vec::with_capacity(33 + chunk_slice.len());
+                            pkt.extend_from_slice(MAGIC);
+                            pkt.extend_from_slice(&inst.to_be_bytes());
+                            pkt.push(OP_VIDEO_CHUNK);
+                            pkt.extend_from_slice(&cid.to_be_bytes());
+                            pkt.extend_from_slice(&uid.to_be_bytes());
+                            pkt.extend_from_slice(&frame_seq.to_be_bytes());
+                            pkt.extend_from_slice(&total_chunks.to_be_bytes());
+                            pkt.extend_from_slice(&chunk_idx.to_be_bytes());
+                            pkt.extend_from_slice(chunk_slice);
+
+                            for target in &target_addrs {
+                                let _ = socket.send_to(&pkt, target);
                             }
 
-                            for chunk_idx in 0..total_chunks {
-                                let start = (chunk_idx as usize) * CHUNK_SIZE;
-                                let end = (start + CHUNK_SIZE).min(total_len);
-                                let chunk_slice = &jpeg_bytes[start..end];
-
-                                let inst = get_process_instance_id();
-                                let mut pkt = Vec::with_capacity(33 + chunk_slice.len());
-                                pkt.extend_from_slice(MAGIC);
-                                pkt.extend_from_slice(&inst.to_be_bytes());
-                                pkt.push(OP_VIDEO_CHUNK);
-                                pkt.extend_from_slice(&cid.to_be_bytes());
-                                pkt.extend_from_slice(&uid.to_be_bytes());
-                                pkt.extend_from_slice(&frame_seq.to_be_bytes());
-                                pkt.extend_from_slice(&total_chunks.to_be_bytes());
-                                pkt.extend_from_slice(&chunk_idx.to_be_bytes());
-                                pkt.extend_from_slice(chunk_slice);
-
-                                for target in &target_addrs {
-                                    let _ = socket.send_to(&pkt, target);
+                            // Micro-pace multi-chunk bursts using CPU spin loop (12µs, zero OS sleep) to prevent Wi-Fi FIFO drops
+                            if total_chunks > 1 {
+                                let spin_start = Instant::now();
+                                while spin_start.elapsed() < Duration::from_micros(12) {
+                                    std::hint::spin_loop();
                                 }
                             }
                         }
-
-                        tx_frame_count += 1;
-                        if last_tx_stats.elapsed() >= Duration::from_secs(1) {
-                            let elapsed_s = last_tx_stats.elapsed().as_secs_f64();
-                            let fps = (tx_frame_count as f64) / elapsed_s;
-                            let avg_enc_ms = (total_encode_us as f64) / (tx_frame_count.max(1) as f64) / 1000.0;
-                            log::info!("📊 [TELEMETRIA] TX Loop: {:.1} FPS | Encode JPEG Médio: {:.2} ms/frame", fps, avg_enc_ms);
-                            tx_frame_count = 0;
-                            total_encode_us = 0;
-                            last_tx_stats = Instant::now();
-                        }
                     }
 
-                    let elapsed = start_time.elapsed();
-                    if elapsed < frame_interval {
-                        std::thread::sleep(frame_interval - elapsed);
+                    tx_frame_count += 1;
+                    if last_tx_stats.elapsed() >= Duration::from_secs(1) {
+                        let elapsed_s = last_tx_stats.elapsed().as_secs_f64();
+                        let fps = (tx_frame_count as f64) / elapsed_s;
+                        CURRENT_TX_FPS.store((fps * 10.0).round() as u32, Ordering::Relaxed);
+                        let n = tx_frame_count.max(1) as f64;
+                        let avg_enc_ms = (total_encode_us as f64) / n / 1000.0;
+                        let avg_blt_ms = (total_blt_us as f64) / n / 1000.0;
+                        let avg_pix_ms = (total_pix_us as f64) / n / 1000.0;
+                        log::info!("📊 [TELEMETRIA] Pipeline H.264: {:.1} FPS (Alvo: {} FPS) | Blt: {:.2}ms, Pixels: {:.2}ms | Encode: {:.2} ms", fps, target_fps, avg_blt_ms, avg_pix_ms, avg_enc_ms);
+                        tx_frame_count = 0;
+                        total_encode_us = 0;
+                        total_blt_us = 0;
+                        total_pix_us = 0;
+                        last_tx_stats = Instant::now();
                     }
                 }
 
+                CURRENT_TX_FPS.store(0, Ordering::Relaxed);
                 stop_window_border_overlay();
+                #[cfg(windows)]
+                unsafe {
+                    windows_sys::Win32::Media::timeEndPeriod(1);
+                }
                 info!("🖥️ Thread emissora de tela/vídeo finalizada.");
             })
             .expect("Falha ao iniciar thread TX");
@@ -566,6 +955,14 @@ impl ScreenCaptureManager {
             return;
         }
 
+        start_global_signaling(
+            Arc::clone(&self.channel_id),
+            Arc::clone(&self.my_user_id),
+            Arc::clone(&self.my_username),
+            Arc::clone(&self.is_running),
+            Arc::clone(&self.known_peers),
+        );
+
         let is_running = Arc::clone(&self.is_receiver_running);
         let is_tx_running = Arc::clone(&self.is_running);
         let channel_id_atomic = Arc::clone(&self.channel_id);
@@ -579,70 +976,145 @@ impl ScreenCaptureManager {
                 let (socket, bound_port) = {
                     let mut bound = None;
                     for port in P2P_VIDEO_PORT..=(P2P_VIDEO_PORT + 10) {
-                        if let Ok(s) = UdpSocket::bind(format!("0.0.0.0:{}", port)) {
-                            let _ = s.set_broadcast(true);
-                            let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
-                            bound = Some((s, port));
-                            break;
+                        if let Ok(addr) = format!("0.0.0.0:{}", port).parse::<SocketAddr>() {
+                            if let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)) {
+                                let _ = sock.set_reuse_address(true);
+                                let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
+                                let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+                                let _ = sock.set_broadcast(true);
+                                let _ = sock.set_read_timeout(Some(Duration::from_millis(5)));
+                                if sock.bind(&addr.into()).is_ok() {
+                                    let std_sock: UdpSocket = sock.into();
+                                    bound = Some((std_sock, port));
+                                    break;
+                                }
+                            }
                         }
                     }
                     match bound {
                         Some(pair) => pair,
                         None => {
-                            match UdpSocket::bind("0.0.0.0:0") {
-                                Ok(s) => {
-                                    let _ = s.set_broadcast(true);
-                                    let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
-                                    let p = s.local_addr().map(|a| a.port()).unwrap_or(P2P_VIDEO_PORT);
-                                    (s, p)
-                                }
-                                Err(e2) => {
-                                    warn!("Falha ao inicializar socket UDP RX: {:?}", e2);
+                            if let Ok(addr) = "0.0.0.0:0".parse::<SocketAddr>() {
+                                if let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)) {
+                                    let _ = sock.set_reuse_address(true);
+                                    let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
+                                    let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+                                    let _ = sock.set_broadcast(true);
+                                    let _ = sock.set_read_timeout(Some(Duration::from_millis(5)));
+                                    if sock.bind(&addr.into()).is_ok() {
+                                        let std_sock: UdpSocket = sock.into();
+                                        let p = std_sock.local_addr().map(|a| a.port()).unwrap_or(P2P_VIDEO_PORT);
+                                        (std_sock, p)
+                                    } else {
+                                        warn!("Falha ao bind socket UDP RX");
+                                        return;
+                                    }
+                                } else {
+                                    warn!("Falha ao criar socket UDP RX");
                                     return;
                                 }
+                            } else {
+                                warn!("Falha ao parsear endereço UDP RX");
+                                return;
                             }
                         }
                     }
                 };
 
                 set_my_rx_port(bound_port);
-                info!("📡 Receptor UDP P2P de vídeo escutando na porta {}...", bound_port);
-
+                let socket = Arc::new(socket);
+                if let Ok(mut lock) = SHARED_P2P_SOCKET.lock() {
+                    *lock = Some(Arc::clone(&socket));
+                }
                 let mut recv_buf = vec![0u8; 65535];
                 struct InFlightFrame {
-                    seq: u32,
                     total_chunks: u16,
                     received: HashMap<u16, Vec<u8>>,
                     first_seen: Instant,
                 }
-                let mut in_flight: HashMap<u64, InFlightFrame> = HashMap::new();
+                let mut in_flight: HashMap<u64, HashMap<u32, InFlightFrame>> = HashMap::new();
+                let mut last_rendered_seq: HashMap<u64, u32> = HashMap::new();
+                let mut h264_decoders: HashMap<u64, openh264::decoder::Decoder> = HashMap::new();
                 let mut peer_names: HashMap<u64, String> = HashMap::new();
                 let mut peer_fps: HashMap<u64, u8> = HashMap::new();
                 let mut active_streaming_users: HashMap<u64, bool> = HashMap::new();
                 let mut last_stream_activity: HashMap<u64, Instant> = HashMap::new();
+                let mut rx_frame_count: HashMap<u64, u64> = HashMap::new();
+                let mut rx_last_stats: HashMap<u64, Instant> = HashMap::new();
+                let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
 
                 let my_instance_id = get_process_instance_id();
+                let mut last_outbound_heartbeat = Instant::now() - Duration::from_secs(10);
 
                 while is_running.load(Ordering::Relaxed) {
-                    let current_cid = channel_id_atomic.load(Ordering::Relaxed);
-                    let my_uid = my_user_id_atomic.load(Ordering::Relaxed);
+                    let mut current_cid = channel_id_atomic.load(Ordering::Relaxed);
+                    if current_cid == 0 {
+                        current_cid = crate::gateway::get_my_voice_channel_id();
+                        if current_cid > 0 {
+                            channel_id_atomic.store(current_cid, Ordering::Relaxed);
+                        }
+                    }
+                    let mut my_uid = my_user_id_atomic.load(Ordering::Relaxed);
+                    if my_uid == 0 {
+                        my_uid = crate::gateway::get_my_user_id();
+                        if my_uid > 0 {
+                            my_user_id_atomic.store(my_uid, Ordering::Relaxed);
+                        }
+                    }
 
-                    match socket.recv_from(&mut recv_buf) {
-                        Ok((len, src_addr)) => {
-                            if len < 25 || &recv_buf[0..4] != MAGIC {
-                                continue;
+                    // Proactive presence heartbeat every 1.5s to maintain direct peer routes and NAT pinholes
+                    if last_outbound_heartbeat.elapsed() >= Duration::from_millis(1500) {
+                        last_outbound_heartbeat = Instant::now();
+                        let mut uname = my_username_arc.lock().unwrap().clone();
+                        if uname.is_empty() {
+                            uname = crate::gateway::get_my_username();
+                            if !uname.is_empty() {
+                                *my_username_arc.lock().unwrap() = uname.clone();
                             }
-                            let pkt_inst = u32::from_be_bytes(recv_buf[4..8].try_into().unwrap());
-                            if pkt_inst == my_instance_id {
-                                // Ignore self-broadcast packets from our own process
-                                continue;
+                        }
+                        let uname_bytes = uname.as_bytes();
+                        let mut hb_pkt = Vec::with_capacity(30 + uname_bytes.len());
+                        hb_pkt.extend_from_slice(MAGIC);
+                        hb_pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+                        hb_pkt.push(OP_HEARTBEAT);
+                        hb_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                        hb_pkt.extend_from_slice(&my_uid.to_be_bytes());
+                        hb_pkt.push(0);
+                        hb_pkt.push(2);
+                        hb_pkt.push(uname_bytes.len() as u8);
+                        hb_pkt.extend_from_slice(uname_bytes);
+                        hb_pkt.extend_from_slice(&bound_port.to_be_bytes());
+
+                        for target in get_broadcast_addresses() {
+                            let _ = socket.send_to(&hb_pkt, target);
+                        }
+                        if let Ok(peers) = peers_store.lock() {
+                            for (&_, &(addr, _)) in peers.iter() {
+                                let _ = socket.send_to(&hb_pkt, addr);
                             }
+                        }
+                    }
+
+                    for _ in 0..128 {
+                        match socket.recv_from(&mut recv_buf) {
+                            Ok((len, src_addr)) => {
+                                if len < 25 || &recv_buf[0..4] != MAGIC {
+                                    continue;
+                                }
+                                let pkt_inst = u32::from_be_bytes(recv_buf[4..8].try_into().unwrap());
+                                if pkt_inst == my_instance_id {
+                                    // Ignore self-broadcast packets from our own process
+                                    continue;
+                                }
                             let op = recv_buf[8];
                             let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
                             let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
 
                             match op {
                                 OP_ANNOUNCE => {
+                                    if current_cid == 0 {
+                                        current_cid = crate::gateway::get_my_voice_channel_id();
+                                    }
                                     if len >= 28 {
                                         let is_streaming = recv_buf[25] == 1;
                                         
@@ -669,9 +1141,12 @@ impl ScreenCaptureManager {
                                             src_addr.port()
                                         };
 
-                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), peer_port);
+                                        let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
+                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            if explicit_addr != src_addr {
+                                                peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                            }
                                         }
 
                                         // Instant reciprocal heartbeat so transmitter gets our direct IP and RX port
@@ -691,15 +1166,25 @@ impl ScreenCaptureManager {
                                             ack_pkt.extend_from_slice(uname_bytes);
                                             ack_pkt.extend_from_slice(&my_rx.to_be_bytes());
 
-                                            let _ = socket.send_to(&ack_pkt, peer_p2p_addr);
+                                            let _ = socket.send_to(&ack_pkt, src_addr);
+                                            if explicit_addr != src_addr {
+                                                let _ = socket.send_to(&ack_pkt, explicit_addr);
+                                            }
                                             for target in get_broadcast_addresses() {
                                                 let _ = socket.send_to(&ack_pkt, target);
                                             }
                                         }
 
+                                        // Only ignore stream announce if this specific local instance is already actively transmitting
+                                        if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
+                                            continue;
+                                        }
+                                        if is_streaming {
+                                            last_stream_activity.insert(pkt_uid, Instant::now());
+                                        }
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
                                         if prev_state != Some(is_streaming) {
-                                            info!("📡 Usuário {} ({}) alterou estado de stream: {}", pkt_uid, peer_p2p_addr, is_streaming);
+                                            info!("📡 Usuário {} alterou estado de stream: {}", pkt_uid, is_streaming);
                                             on_state(pkt_uid, is_streaming);
                                         }
                                     }
@@ -719,16 +1204,26 @@ impl ScreenCaptureManager {
                                             src_addr.port()
                                         };
 
-                                        let peer_p2p_addr = SocketAddr::new(src_addr.ip(), peer_port);
+                                        let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (peer_p2p_addr, Instant::now()));
+                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            if explicit_addr != src_addr {
+                                                peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                            }
                                         }
-                                        info!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, peer_p2p_addr);
+                                        log::debug!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, src_addr);
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
+                                    if current_cid == 0 {
+                                        current_cid = crate::gateway::get_my_voice_channel_id();
+                                    }
                                     // Only accept video chunks if we are in the same voice channel
                                     if current_cid == 0 || (pkt_cid != 0 && pkt_cid != current_cid) {
+                                        continue;
+                                    }
+                                    // Only ignore incoming video chunks if this specific local instance is actively transmitting
+                                    if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
                                         continue;
                                     }
                                     if len > 33 {
@@ -743,54 +1238,142 @@ impl ScreenCaptureManager {
 
                                         last_stream_activity.insert(pkt_uid, Instant::now());
                                         if active_streaming_users.insert(pkt_uid, true) != Some(true) {
-                                            info!("📡 Novo stream de vídeo recebido do usuário {}!", pkt_uid);
+                                            info!("📡 Novo stream de vídeo recebido do usuário {}! Solicitando Keyframe inicial...", pkt_uid);
+                                            last_rendered_seq.remove(&pkt_uid);
+                                            h264_decoders.remove(&pkt_uid);
+                                            in_flight.remove(&pkt_uid);
                                             on_state(pkt_uid, true);
+
+                                            let inst = get_process_instance_id();
+                                            let mut req_pkt = Vec::with_capacity(25);
+                                            req_pkt.extend_from_slice(MAGIC);
+                                            req_pkt.extend_from_slice(&inst.to_be_bytes());
+                                            req_pkt.push(OP_KEYFRAME_REQ);
+                                            req_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                                            req_pkt.extend_from_slice(&pkt_uid.to_be_bytes());
+                                            let _ = socket.send_to(&req_pkt, src_addr);
                                         }
 
-                                        let frame_entry = in_flight.entry(pkt_uid).or_insert_with(|| InFlightFrame {
-                                            seq,
-                                            total_chunks: total,
-                                            received: HashMap::new(),
-                                            first_seen: Instant::now(),
+                                        let user_frames = in_flight.entry(pkt_uid).or_insert_with(HashMap::new);
+
+                                        // Cleanup stale incomplete frames older than 60ms and trigger PLI if frames are dropped
+                                        let mut lost_frame_detected = false;
+                                        user_frames.retain(|&s, f| {
+                                            if f.first_seen.elapsed() > Duration::from_millis(60) || s < seq.saturating_sub(6) {
+                                                lost_frame_detected = true;
+                                                false
+                                            } else {
+                                                true
+                                            }
                                         });
 
-                                        if frame_entry.seq != seq {
-                                            frame_entry.seq = seq;
-                                            frame_entry.total_chunks = total;
-                                            frame_entry.received.clear();
-                                            frame_entry.first_seen = Instant::now();
+                                        if lost_frame_detected {
+                                            let last_req = last_pli_req.entry(pkt_uid).or_insert_with(|| Instant::now() - Duration::from_secs(10));
+                                            if last_req.elapsed() >= Duration::from_millis(100) {
+                                                *last_req = Instant::now();
+                                                let inst = get_process_instance_id();
+                                                let mut req_pkt = Vec::with_capacity(25);
+                                                req_pkt.extend_from_slice(MAGIC);
+                                                req_pkt.extend_from_slice(&inst.to_be_bytes());
+                                                req_pkt.push(OP_KEYFRAME_REQ);
+                                                req_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                                                req_pkt.extend_from_slice(&pkt_uid.to_be_bytes());
+                                                let _ = socket.send_to(&req_pkt, src_addr);
+                                                for bcast in get_broadcast_addresses() {
+                                                    let _ = socket.send_to(&req_pkt, bcast);
+                                                }
+                                            }
                                         }
+
+                                        let frame_entry = user_frames.entry(seq).or_insert_with(|| InFlightFrame {
+                                            total_chunks: total,
+                                            received: HashMap::with_capacity(total as usize),
+                                            first_seen: Instant::now(),
+                                        });
 
                                         frame_entry.received.insert(idx, chunk_data);
 
                                         if frame_entry.received.len() == (total as usize) {
-                                            let mut complete_jpeg = Vec::new();
+                                            let mut complete_frame = Vec::new();
                                             for i in 0..total {
                                                 if let Some(c) = frame_entry.received.get(&i) {
-                                                    complete_jpeg.extend_from_slice(c);
+                                                    complete_frame.extend_from_slice(c);
                                                 }
                                             }
-                                            frame_entry.received.clear();
+                                            user_frames.remove(&seq);
 
-                                            if let Some((pixel_buffer, _w, h)) = decode_jpeg(&complete_jpeg) {
-                                                if let Ok(mut f_map) = get_active_stream_frames().lock() {
-                                                    f_map.insert(pkt_uid, pixel_buffer.clone());
+                                            let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
+                                            let is_newer = seq > last_seq || (last_seq.wrapping_sub(seq) > 0x8000_0000);
+
+                                            if is_newer || last_rendered_seq.get(&pkt_uid).is_none() {
+                                                last_rendered_seq.insert(pkt_uid, seq);
+                                                // Retain recent in-flight frames within 120ms or up to 6 sequences behind to allow smooth UDP reordering
+                                                if user_frames.len() > 6 {
+                                                    user_frames.retain(|&s, f| f.first_seen.elapsed() < Duration::from_millis(120) && s > seq.saturating_sub(6));
                                                 }
-                                                let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
-                                                let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(30);
-                                                let quality_label = format!("{}p {}fps", h, fps_val);
-                                                on_frame(pkt_uid, uname, quality_label, pixel_buffer);
+                                                if let Some((pixel_buffer, _w, h)) = decode_video_frame(&mut h264_decoders, pkt_uid, &complete_frame) {
+                                                    last_stream_activity.insert(pkt_uid, Instant::now());
+                                                    let count = rx_frame_count.entry(pkt_uid).or_insert(0);
+                                                    *count += 1;
+                                                    let last_stats = rx_last_stats.entry(pkt_uid).or_insert_with(Instant::now);
+                                                    if last_stats.elapsed() >= Duration::from_secs(1) {
+                                                        let elapsed_s = last_stats.elapsed().as_secs_f64();
+                                                        let rx_fps = (*count as f64) / elapsed_s;
+                                                        info!("📥 [TELEMETRIA RX] Vídeo recebido do peer {}: {:.1} FPS ({} quadros em {:.2}s) | {}p", pkt_uid, rx_fps, *count, elapsed_s, h);
+                                                        *count = 0;
+                                                        *last_stats = Instant::now();
+                                                    }
+
+                                                    if let Ok(mut f_map) = get_active_stream_frames().lock() {
+                                                        f_map.insert(pkt_uid, pixel_buffer.clone());
+                                                    }
+                                                    let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
+                                                    let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(30);
+                                                    let quality_label = format!("{}p {}fps (H.264)", h, fps_val);
+                                                    on_frame(pkt_uid, uname, quality_label, pixel_buffer);
+                                                } else {
+                                                    // Decode failed on P-frame due to packet loss -> Request immediate IDR Keyframe (WebRTC PLI mechanism)
+                                                    let last_req = last_pli_req.entry(pkt_uid).or_insert_with(|| Instant::now() - Duration::from_secs(10));
+                                                    if last_req.elapsed() >= Duration::from_millis(150) {
+                                                        *last_req = Instant::now();
+                                                        let inst = get_process_instance_id();
+                                                        let mut req_pkt = Vec::with_capacity(25);
+                                                        req_pkt.extend_from_slice(MAGIC);
+                                                        req_pkt.extend_from_slice(&inst.to_be_bytes());
+                                                        req_pkt.push(OP_KEYFRAME_REQ);
+                                                        req_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                                                        req_pkt.extend_from_slice(&pkt_uid.to_be_bytes());
+                                                        let _ = socket.send_to(&req_pkt, src_addr);
+                                                        if let Ok(peers) = peers_store.lock() {
+                                                            if let Some(&(p_addr, _)) = peers.get(&pkt_uid) {
+                                                                if p_addr != src_addr {
+                                                                    let _ = socket.send_to(&req_pkt, p_addr);
+                                                                }
+                                                            }
+                                                        }
+                                                        for bcast in get_broadcast_addresses() {
+                                                            let _ = socket.send_to(&req_pkt, bcast);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
+                                    }
+                                }
+                                OP_KEYFRAME_REQ => {
+                                    if is_tx_running.load(Ordering::Relaxed) {
+                                        KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
                                     }
                                 }
                                 OP_STOP => {
                                     if len >= 21 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[13..21].try_into().unwrap());
-                                        if pkt_uid != my_uid || my_uid == 0 {
+                                        if !is_tx_running.load(Ordering::Relaxed) || pkt_uid != my_uid {
                                             info!("📡 Usuário {} encerrou a transmissão de tela.", pkt_uid);
                                             active_streaming_users.insert(pkt_uid, false);
                                             in_flight.remove(&pkt_uid);
+                                            last_rendered_seq.remove(&pkt_uid);
+                                            h264_decoders.remove(&pkt_uid);
                                             if let Ok(mut frames) = get_active_stream_frames().lock() {
                                                 frames.remove(&pkt_uid);
                                             }
@@ -812,26 +1395,24 @@ impl ScreenCaptureManager {
                                         if is_tx_running.load(Ordering::Relaxed) {
                                             continue;
                                         }
-                                        if pkt_uid != my_uid || my_uid == 0 {
-                                            ensure_stream_audio_playback_started();
-                                            let vol = get_stream_volume(pkt_uid);
-                                            if vol > 0.001 {
-                                                let sample_count = u16::from_be_bytes(recv_buf[34..36].try_into().unwrap()) as usize;
-                                                let pcm_bytes = &recv_buf[36..len];
-                                                let expected_bytes = sample_count * 2;
-                                                if pcm_bytes.len() >= expected_bytes && sample_count > 0 {
-                                                    let queue = get_stream_audio_queue();
-                                                    let mut q_guard = queue.lock().unwrap();
-                                                    // Limit queue size to 100ms (4800 samples) to eliminate lag & stutter
-                                                    if q_guard.len() > 4800 {
-                                                        let excess = q_guard.len() - 2400;
-                                                        q_guard.drain(0..excess);
-                                                    }
-                                                    for i in 0..sample_count {
-                                                        let s_i16 = i16::from_le_bytes([pcm_bytes[i*2], pcm_bytes[i*2 + 1]]);
-                                                        let s_f32 = (s_i16 as f32 / 32768.0) * vol;
-                                                        q_guard.push_back(s_f32);
-                                                    }
+                                        ensure_stream_audio_playback_started();
+                                        let vol = get_stream_volume(pkt_uid);
+                                        if vol > 0.001 {
+                                            let sample_count = u16::from_be_bytes(recv_buf[34..36].try_into().unwrap()) as usize;
+                                            let pcm_bytes = &recv_buf[36..len];
+                                            let expected_bytes = sample_count * 2;
+                                            if pcm_bytes.len() >= expected_bytes && sample_count > 0 {
+                                                let queue = get_stream_audio_queue();
+                                                let mut q_guard = queue.lock().unwrap();
+                                                // Limit queue size to 100ms (4800 samples) to eliminate lag & stutter
+                                                if q_guard.len() > 4800 {
+                                                    let excess = q_guard.len() - 2400;
+                                                    q_guard.drain(0..excess);
+                                                }
+                                                for i in 0..sample_count {
+                                                    let s_i16 = i16::from_le_bytes([pcm_bytes[i*2], pcm_bytes[i*2 + 1]]);
+                                                    let s_f32 = (s_i16 as f32 / 32768.0) * vol;
+                                                    q_guard.push_back(s_f32);
                                                 }
                                             }
                                         }
@@ -841,17 +1422,21 @@ impl ScreenCaptureManager {
                             }
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                            // Read timeout
+                            break;
                         }
-                        Err(_) => {}
+                        Err(_) => break,
                     }
+                }
 
-                    // Check stream timeouts (> 2.5s sem quadros)
+                    // Check stream timeouts (> 8.0s sem quadros)
                     let now = Instant::now();
                     for (&uid, &last_act) in last_stream_activity.iter() {
-                        if now.duration_since(last_act) > Duration::from_millis(2500) {
+                        if now.duration_since(last_act) > Duration::from_millis(8000) {
                             if active_streaming_users.insert(uid, false) == Some(true) {
                                 info!("📡 Stream do usuário {} expirou por inatividade.", uid);
+                                last_rendered_seq.remove(&uid);
+                                h264_decoders.remove(&uid);
+                                in_flight.remove(&uid);
                                 if let Ok(mut frames) = get_active_stream_frames().lock() {
                                     frames.remove(&uid);
                                 }
@@ -865,20 +1450,406 @@ impl ScreenCaptureManager {
     }
 }
 
+static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
+
+pub fn get_shared_p2p_socket() -> Option<Arc<UdpSocket>> {
+    SHARED_P2P_SOCKET.lock().ok()?.clone()
+}
+
+fn encode_mqtt_string(s: &str) -> Vec<u8> {
+    let mut v = Vec::with_capacity(2 + s.len());
+    let len = s.len() as u16;
+    v.extend_from_slice(&len.to_be_bytes());
+    v.extend_from_slice(s.as_bytes());
+    v
+}
+
+fn build_mqtt_connect_pkt(client_id: &str) -> Vec<u8> {
+    let mut payload = encode_mqtt_string(client_id);
+    let mut var_header = vec![
+        0x00, 0x04, b'M', b'Q', b'T', b'T', // Protocol Name
+        0x04, // Protocol Level (3.1.1)
+        0x02, // Connect Flags (Clean Session)
+        0x00, 0x3C, // Keep Alive (60s)
+    ];
+    let mut body = Vec::new();
+    body.append(&mut var_header);
+    body.append(&mut payload);
+
+    let mut pkt = vec![0x10]; // CONNECT packet type
+    let len = body.len();
+    pkt.push(len as u8);
+    pkt.extend_from_slice(&body);
+    pkt
+}
+
+fn build_mqtt_subscribe_pkt(pkt_id: u16, topic: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&pkt_id.to_be_bytes());
+    body.extend_from_slice(&encode_mqtt_string(topic));
+    body.push(0); // QoS 0
+
+    let mut pkt = vec![0x82]; // SUBSCRIBE packet type
+    pkt.push(body.len() as u8);
+    pkt.extend_from_slice(&body);
+    pkt
+}
+
+fn build_mqtt_publish_pkt(topic: &str, payload: &[u8]) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&encode_mqtt_string(topic));
+    body.extend_from_slice(payload);
+
+    let mut pkt = vec![0x30]; // PUBLISH packet type (QoS 0)
+    let len = body.len();
+    if len < 128 {
+        pkt.push(len as u8);
+    } else {
+        pkt.push(((len & 0x7F) | 0x80) as u8);
+        pkt.push((len >> 7) as u8);
+    }
+    pkt.extend_from_slice(&body);
+    pkt
+}
+
+fn get_local_lan_addresses(port: u16) -> Vec<SocketAddr> {
+    let mut addrs = Vec::new();
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
+                addrs.push(SocketAddr::new(std::net::IpAddr::V4(*local.ip()), port));
+            }
+        }
+    }
+    addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
+    addrs
+}
+
+fn parse_and_handle_mqtt_messages(
+    buf: &[u8],
+    current_cid: u64,
+    my_inst: u32,
+    peers_store: &Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
+) {
+    if let Some(json_start) = buf.iter().position(|&b| b == b'{') {
+        if let Some(json_end) = buf.iter().rposition(|&b| b == b'}') {
+            if json_end >= json_start {
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&buf[json_start..=json_end]) {
+                    let pkt_cid = val["cid"].as_u64().unwrap_or(0);
+                    let pkt_uid = val["uid"].as_u64().unwrap_or(0);
+                    let pkt_inst = val["inst"].as_u64().unwrap_or(0) as u32;
+
+                    if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 {
+                        let mut addrs_to_punch = Vec::new();
+
+                        // 1. LAN IPs
+                        if let Some(lan_arr) = val["lan_ips"].as_array() {
+                            for item in lan_arr {
+                                if let Some(s) = item.as_str() {
+                                    if let Ok(addr) = s.parse::<SocketAddr>() {
+                                        addrs_to_punch.push(addr);
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. WAN IP
+                        if let Some(wan_str) = val["wan_ip"].as_str() {
+                            if let Ok(addr) = wan_str.parse::<SocketAddr>() {
+                                if !addrs_to_punch.contains(&addr) {
+                                    addrs_to_punch.push(addr);
+                                }
+                            }
+                        }
+
+                        if !addrs_to_punch.is_empty() {
+                            if let Ok(mut peers) = peers_store.lock() {
+                                for (i, &addr) in addrs_to_punch.iter().enumerate() {
+                                    let key = if i == 0 { pkt_uid } else { pkt_uid.wrapping_add((i as u64) << 32) };
+                                    peers.insert(key, (addr, Instant::now()));
+                                }
+                            }
+
+                            // Send UDP Hole Punch packet immediately through shared socket
+                            if let Some(socket) = get_shared_p2p_socket() {
+                                let mut punch_pkt = Vec::with_capacity(32);
+                                punch_pkt.extend_from_slice(MAGIC);
+                                punch_pkt.extend_from_slice(&my_inst.to_be_bytes());
+                                punch_pkt.push(OP_HEARTBEAT);
+                                punch_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                                punch_pkt.extend_from_slice(&crate::gateway::get_my_user_id().to_be_bytes());
+                                punch_pkt.push(0);
+                                punch_pkt.push(2);
+                                punch_pkt.push(0);
+                                punch_pkt.extend_from_slice(&get_my_rx_port().to_be_bytes());
+
+                                for target in addrs_to_punch {
+                                    let _ = socket.send_to(&punch_pkt, target);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn start_global_signaling(
+    channel_id: Arc<AtomicU64>,
+    my_user_id: Arc<AtomicU64>,
+    my_username: Arc<Mutex<String>>,
+    is_tx_running: Arc<AtomicBool>,
+    peers_store: Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
+) {
+    std::thread::Builder::new()
+        .name("global-p2p-signaling".to_string())
+        .spawn(move || {
+            let my_inst = get_process_instance_id();
+            let brokers = ["broker.emqx.io:1883", "test.mosquitto.org:1883"];
+            let mut broker_idx = 0;
+
+            loop {
+                let mut cid = channel_id.load(Ordering::Relaxed);
+                if cid == 0 {
+                    cid = crate::gateway::get_my_voice_channel_id();
+                    if cid > 0 {
+                        channel_id.store(cid, Ordering::Relaxed);
+                    }
+                }
+                if cid == 0 {
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+
+                let broker = brokers[broker_idx % brokers.len()];
+                broker_idx = broker_idx.wrapping_add(1);
+
+                use std::io::{Read, Write};
+                let mut stream = match std::net::TcpStream::connect_timeout(&match broker.to_socket_addrs() {
+                    Ok(mut addrs) => match addrs.next() {
+                        Some(a) => a,
+                        None => { std::thread::sleep(Duration::from_secs(1)); continue; }
+                    },
+                    Err(_) => { std::thread::sleep(Duration::from_secs(1)); continue; }
+                }, Duration::from_secs(4)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("⚠️ Falha ao conectar ao broker de sinalização P2P {}: {:?}. Tentando próximo...", broker, e);
+                        std::thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                let client_id = format!("litecord_{}_{}", cid, my_inst);
+                let conn_pkt = build_mqtt_connect_pkt(&client_id);
+                if stream.write_all(&conn_pkt).is_err() {
+                    continue;
+                }
+
+                let mut connack = [0u8; 4];
+                if stream.read_exact(&mut connack).is_err() || connack[0] != 0x20 || connack[3] != 0x00 {
+                    continue;
+                }
+
+                let topic = format!("litecord/voice/{}", cid);
+                let sub_pkt = build_mqtt_subscribe_pkt(1, &topic);
+                if stream.write_all(&sub_pkt).is_err() {
+                    continue;
+                }
+
+                info!("🌐 Conectado à rede de sinalização global P2P ({}) para o canal {}!", broker, cid);
+
+                let mut last_pub = Instant::now() - Duration::from_secs(10);
+                let mut last_tx_state = false;
+                let mut read_buf = vec![0u8; 4096];
+
+                while channel_id.load(Ordering::Relaxed) == cid {
+                    let cur_tx = is_tx_running.load(Ordering::Relaxed);
+                    let mut my_uid = my_user_id.load(Ordering::Relaxed);
+                    if my_uid == 0 {
+                        my_uid = crate::gateway::get_my_user_id();
+                    }
+
+                    if last_pub.elapsed() >= Duration::from_secs(2) || cur_tx != last_tx_state {
+                        last_pub = Instant::now();
+                        last_tx_state = cur_tx;
+
+                        let my_rx_port = get_my_rx_port();
+                        let wan_addr = resolve_public_stun_address().map(|a| SocketAddr::new(a.ip(), my_rx_port));
+                        let lan_addrs = get_local_lan_addresses(my_rx_port);
+
+                        let uname = my_username.lock().unwrap().clone();
+                        let payload = serde_json::json!({
+                            "op": "presence",
+                            "cid": cid,
+                            "uid": my_uid,
+                            "inst": my_inst,
+                            "uname": uname,
+                            "streaming": cur_tx,
+                            "rx_port": my_rx_port,
+                            "lan_ips": lan_addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                            "wan_ip": wan_addr.map(|a| a.to_string()),
+                        });
+
+                        let pub_pkt = build_mqtt_publish_pkt(&topic, payload.to_string().as_bytes());
+                        if stream.write_all(&pub_pkt).is_err() {
+                            break;
+                        }
+                    }
+
+                    match stream.read(&mut read_buf) {
+                        Ok(n) if n > 0 => {
+                            parse_and_handle_mqtt_messages(&read_buf[..n], cid, my_inst, &peers_store);
+                        }
+                        Ok(_) => {
+                            break;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                            // continue
+                        }
+                        Err(_) => {
+                            break;
+                        }
+                    }
+                }
+
+                info!("🛑 Desconectado da sala de sinalização P2P para o canal {}", cid);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        })
+        .expect("Falha ao iniciar thread de sinalização global P2P");
+}
+
+static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
+
+pub fn resolve_public_stun_address() -> Option<SocketAddr> {
+    if let Ok(guard) = CACHED_STUN_ADDR.lock() {
+        if let Some((addr, time)) = *guard {
+            if time.elapsed() < Duration::from_secs(60) {
+                return Some(addr);
+            }
+        }
+    }
+
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+    
+    let stun_servers = [
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302",
+        "stun2.l.google.com:19302",
+        "stun.cloudflare.com:3478",
+    ];
+
+    let stun_req: [u8; 20] = [
+        0x00, 0x01, // Binding Request
+        0x00, 0x00, // Length
+        0x21, 0x12, 0xa4, 0x42, // Magic Cookie
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+    ];
+
+    for s_host in stun_servers {
+        if let Ok(mut addrs) = s_host.to_socket_addrs() {
+            if let Some(stun_server) = addrs.next() {
+                if socket.send_to(&stun_req, stun_server).is_ok() {
+                    let mut buf = [0u8; 256];
+                    if let Ok((amt, _)) = socket.recv_from(&mut buf) {
+                        if amt >= 32 && buf[0] == 0x01 && buf[1] == 0x01 {
+                            let mut i = 20;
+                            while i + 4 <= amt {
+                                let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
+                                let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+                                if i + 4 + attr_len > amt {
+                                    break;
+                                }
+                                let res_addr = if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
+                                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112;
+                                    let ip = std::net::Ipv4Addr::new(
+                                        buf[i + 8] ^ 0x21,
+                                        buf[i + 9] ^ 0x12,
+                                        buf[i + 10] ^ 0xa4,
+                                        buf[i + 11] ^ 0x42,
+                                    );
+                                    Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
+                                } else if attr_type == 0x0001 && attr_len >= 8 { // MAPPED-ADDRESS
+                                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]);
+                                    let ip = std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11]);
+                                    Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(addr) = res_addr {
+                                    if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+                                        *guard = Some((addr, Instant::now()));
+                                    }
+                                    return Some(addr);
+                                }
+                                i += 4 + ((attr_len + 3) & !3);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // HTTPS Fallback for firewalls/ISPs that block UDP STUN ports
+    let https_endpoints = [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://icanhazip.com",
+    ];
+    for ep in https_endpoints {
+        if let Ok(resp) = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(1500))
+            .build()
+            .and_then(|c| c.get(ep).send())
+        {
+            if let Ok(text) = resp.text() {
+                if let Ok(ip) = text.trim().parse::<std::net::IpAddr>() {
+                    let rx_port = get_my_rx_port();
+                    let addr = SocketAddr::new(ip, rx_port);
+                    if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+                        *guard = Some((addr, Instant::now()));
+                    }
+                    return Some(addr);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
     
-    // Broadcast to local port cluster (50005..=50007) on loopback & 255.255.255.255
+    // 1. Broadcast to local port cluster (50005..=50007) on loopback & 255.255.255.255
     for port in 50005..=50007 {
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
+        // Add VirtualBox NAT gateway & default subnets (10.0.2.2, 10.0.2.15, 10.0.2.255)
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 2, 2)), port));
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 2, 15)), port));
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 2, 255)), port));
     }
 
-    // Query active adapter IPv4 address via routing table probe
+    // 2. Query active adapter IPv4 address via routing table probe
     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
         if socket.connect("8.8.8.8:80").is_ok() {
             if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
                 let octets = local.ip().octets();
+                for host in 1..=30 {
+                    if host != octets[3] {
+                        addrs.push(SocketAddr::new(
+                            std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], host)),
+                            50005,
+                        ));
+                    }
+                }
                 for port in 50005..=50007 {
                     addrs.push(SocketAddr::new(
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
@@ -889,7 +1860,226 @@ fn get_broadcast_addresses() -> Vec<SocketAddr> {
         }
     }
 
+    // 3. Resolve STUN Public Internet Address for global P2P hole punching
+    if let Some(pub_addr) = resolve_public_stun_address() {
+        for port in 50005..=50007 {
+            addrs.push(SocketAddr::new(pub_addr.ip(), port));
+        }
+    }
+
     addrs
+}
+
+fn fit_bgra_to_canvas(
+    src_bgra: &[u8],
+    src_w: u32,
+    src_h: u32,
+    canvas_w: u32,
+    canvas_h: u32,
+    out_bgra: &mut [u8],
+) {
+    if src_w == 0 || src_h == 0 || canvas_w == 0 || canvas_h == 0 {
+        return;
+    }
+
+    // Calcula o stride real por linha da textura (GPU D3D11 Texture2D pitch)
+    let src_stride_bytes = if src_h > 0 && src_bgra.len() >= (src_h as usize) {
+        src_bgra.len() / (src_h as usize)
+    } else {
+        (src_w as usize) * 4
+    };
+    let src_stride_u32 = src_stride_bytes / 4;
+
+    // Fast direct copy if dimensions match (even with GPU row pitch padding)
+    if src_w == canvas_w && src_h == canvas_h {
+        let row_bytes = (canvas_w as usize) * 4;
+        if src_stride_bytes == row_bytes {
+            let total = row_bytes * (canvas_h as usize);
+            if src_bgra.len() >= total && out_bgra.len() >= total {
+                out_bgra[..total].copy_from_slice(&src_bgra[..total]);
+                return;
+            }
+        }
+        for y in 0..canvas_h as usize {
+            let src_off = y * src_stride_bytes;
+            let dst_off = y * row_bytes;
+            if src_off + row_bytes <= src_bgra.len() && dst_off + row_bytes <= out_bgra.len() {
+                out_bgra[dst_off..dst_off + row_bytes].copy_from_slice(&src_bgra[src_off..src_off + row_bytes]);
+            }
+        }
+        return;
+    }
+
+    let total_pixels = (canvas_w * canvas_h) as usize;
+    let canvas_u32: &mut [u32] = unsafe {
+        std::slice::from_raw_parts_mut(out_bgra.as_mut_ptr() as *mut u32, total_pixels)
+    };
+    canvas_u32.fill(0xFF111214); // Fundo escuro (#111214) estilo Discord/YouTube
+
+    let scale_w = canvas_w as f32 / src_w as f32;
+    let scale_h = canvas_h as f32 / src_h as f32;
+    let scale = scale_w.min(scale_h);
+
+    let dest_w = ((src_w as f32 * scale).round() as u32).clamp(2, canvas_w) & !1;
+    let dest_h = ((src_h as f32 * scale).round() as u32).clamp(2, canvas_h) & !1;
+    let dest_x = ((canvas_w.saturating_sub(dest_w)) / 2) & !1;
+    let dest_y = ((canvas_h.saturating_sub(dest_h)) / 2) & !1;
+
+    let x_step = ((src_w as u64) << 16) / (dest_w as u64);
+    let y_step = ((src_h as u64) << 16) / (dest_h as u64);
+
+    let src_u32: &[u32] = unsafe {
+        std::slice::from_raw_parts(src_bgra.as_ptr() as *const u32, src_bgra.len() / 4)
+    };
+
+    let mut src_y_accum = 0u64;
+    for dy in 0..dest_h {
+        let sy = ((src_y_accum >> 16) as usize).min((src_h as usize) - 1);
+        let src_row_start = sy * src_stride_u32;
+        let src_row_end = (src_row_start + (src_w as usize)).min(src_u32.len());
+        if src_row_start >= src_u32.len() {
+            break;
+        }
+        let src_row = &src_u32[src_row_start..src_row_end];
+
+        let dst_row_start = ((dest_y + dy) * canvas_w + dest_x) as usize;
+        let dst_row = &mut canvas_u32[dst_row_start..dst_row_start + dest_w as usize];
+
+        let mut src_x_accum = 0u64;
+        for dx in 0..dest_w {
+            let sx = ((src_x_accum >> 16) as usize).min(src_row.len().saturating_sub(1));
+            dst_row[dx as usize] = src_row[sx];
+            src_x_accum += x_step;
+        }
+        src_y_accum += y_step;
+    }
+}
+
+thread_local! {
+    static ENCODE_YUV_POOL: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::new());
+}
+
+fn encode_h264(encoder: &mut openh264::encoder::Encoder, bgra_data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    use openh264::formats::YUVSlices;
+    let w = (width as usize) & !1;
+    let h = (height as usize) & !1;
+    if w == 0 || h == 0 || bgra_data.len() < w * h * 4 {
+        return None;
+    }
+    let u_base = w * h;
+    let v_base = u_base / 4;
+    let total_yuv = u_base + v_base * 2;
+
+    ENCODE_YUV_POOL.with(|cell| {
+        let mut yuv_buffer = cell.borrow_mut();
+        if yuv_buffer.len() < total_yuv {
+            yuv_buffer.resize(total_yuv, 0);
+        }
+
+        // Ultra-fast Rayon parallel fixed-point BT.601 conversion (< 0.8 ms para 1080p em qualquer CPU)
+        {
+            use rayon::prelude::*;
+            let (y_plane, uv_plane) = yuv_buffer.split_at_mut(u_base);
+            let (u_plane, v_plane) = uv_plane.split_at_mut(v_base);
+
+            let y_ptr = y_plane.as_mut_ptr() as usize;
+            let u_ptr = u_plane.as_mut_ptr() as usize;
+            let v_ptr = v_plane.as_mut_ptr() as usize;
+
+            let row_pairs: Vec<usize> = (0..h).step_by(2).collect();
+            row_pairs.par_chunks(32).for_each(|chunk| {
+                let y_mut = y_ptr as *mut u8;
+                let u_mut = u_ptr as *mut u8;
+                let v_mut = v_ptr as *mut u8;
+
+                for &j in chunk {
+                    let row0_bgra = &bgra_data[j * w * 4..(j + 1) * w * 4];
+                    let row1_bgra = &bgra_data[(j + 1) * w * 4..(j + 2) * w * 4];
+                    let base0 = j * w;
+                    let base1 = (j + 1) * w;
+                    let uv_row = (j / 2) * (w / 2);
+
+                    for i in (0..w).step_by(2) {
+                        let b0 = row0_bgra[i * 4] as i32;
+                        let g0 = row0_bgra[i * 4 + 1] as i32;
+                        let r0 = row0_bgra[i * 4 + 2] as i32;
+                        unsafe {
+                            *y_mut.add(base0 + i) = (((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16) as u8;
+
+                            let b1 = row0_bgra[(i + 1) * 4] as i32;
+                            let g1 = row0_bgra[(i + 1) * 4 + 1] as i32;
+                            let r1 = row0_bgra[(i + 1) * 4 + 2] as i32;
+                            *y_mut.add(base0 + i + 1) = (((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16) as u8;
+
+                            let b2 = row1_bgra[i * 4] as i32;
+                            let g2 = row1_bgra[i * 4 + 1] as i32;
+                            let r2 = row1_bgra[i * 4 + 2] as i32;
+                            *y_mut.add(base1 + i) = (((66 * r2 + 129 * g2 + 25 * b2 + 128) >> 8) + 16) as u8;
+
+                            let b3 = row1_bgra[(i + 1) * 4] as i32;
+                            let g3 = row1_bgra[(i + 1) * 4 + 1] as i32;
+                            let r3 = row1_bgra[(i + 1) * 4 + 2] as i32;
+                            *y_mut.add(base1 + i + 1) = (((66 * r3 + 129 * g3 + 25 * b3 + 128) >> 8) + 16) as u8;
+
+                            let r_avg = (r0 + r1 + r2 + r3) >> 2;
+                            let g_avg = (g0 + g1 + g2 + g3) >> 2;
+                            let b_avg = (b0 + b1 + b2 + b3) >> 2;
+
+                            let uv_idx = uv_row + (i / 2);
+                            *u_mut.add(uv_idx) = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128) as u8;
+                            *v_mut.add(uv_idx) = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128) as u8;
+                        }
+                    }
+                }
+            });
+        }
+
+        let (y_plane, uv_plane) = yuv_buffer.split_at(u_base);
+        let (u_plane, v_plane) = uv_plane.split_at(v_base);
+        let yuv_slices = YUVSlices::new((y_plane, u_plane, v_plane), (w, h), (w, w / 2, w / 2));
+
+        if let Ok(stream) = encoder.encode(&yuv_slices) {
+            Some(stream.to_vec())
+        } else {
+            None
+        }
+    })
+}
+
+fn decode_video_frame(
+    decoders: &mut HashMap<u64, openh264::decoder::Decoder>,
+    peer_uid: u64,
+    frame_data: &[u8],
+) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u32, u32)> {
+    if frame_data.is_empty() { return None; }
+    
+    // Check if legacy JPEG header (0xFF, 0xD8)
+    if frame_data.len() >= 2 && frame_data[0] == 0xFF && frame_data[1] == 0xD8 {
+        return decode_jpeg(frame_data);
+    }
+
+    use openh264::formats::YUVSource;
+    let decoder = decoders.entry(peer_uid).or_insert_with(|| {
+        openh264::decoder::Decoder::new().expect("Falha ao criar Decoder H.264")
+    });
+
+    match decoder.decode(frame_data) {
+        Ok(Some(decoded_yuv)) => {
+            let (w, h) = decoded_yuv.dimensions();
+            if w > 0 && h > 0 {
+                let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
+                decoded_yuv.write_rgba8(pixel_buffer.make_mut_bytes());
+                return Some((pixel_buffer, w as u32, h as u32));
+            }
+        }
+        Ok(None) => {}
+        Err(_e) => {
+            if let Ok(fresh) = openh264::decoder::Decoder::new() {
+                *decoder = fresh;
+            }
+        }
+    }
+    None
 }
 
 fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
@@ -1408,11 +2598,11 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
 }
 
 #[cfg(windows)]
-fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_fps: u64) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
+fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_fps: u64, out_bgra: &mut Vec<u8>) -> Option<(u128, u128)> {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
-        FillRect, GetDC, GetDIBits, ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject,
+        FillRect, GetDC, ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt,
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, SRCCOPY,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1429,188 +2619,218 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_
         ) -> windows_sys::Win32::Foundation::BOOL;
     }
 
+    struct GdiCaptureContext {
+        hdc_desktop: windows_sys::Win32::Graphics::Gdi::HDC,
+        hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC,
+        hbm_dib: windows_sys::Win32::Graphics::Gdi::HBITMAP,
+        p_bits: *mut u8,
+        hdc_win_mem: windows_sys::Win32::Graphics::Gdi::HDC,
+        hbm_win: windows_sys::Win32::Graphics::Gdi::HBITMAP,
+        win_w: i32,
+        win_h: i32,
+        dark_brush: windows_sys::Win32::Graphics::Gdi::HBRUSH,
+        target_w: u32,
+        target_h: u32,
+    }
+
+    thread_local! {
+        static GDI_CAPTURE_CACHE: std::cell::RefCell<Option<GdiCaptureContext>> = std::cell::RefCell::new(None);
+    }
+
     unsafe {
-        let hwnd_desktop = GetDesktopWindow();
-        let hdc_desktop = GetDC(hwnd_desktop);
-        if hdc_desktop.is_null() {
-            return None;
-        }
-
-        let hdc_mem = CreateCompatibleDC(hdc_desktop);
-        if hdc_mem.is_null() {
-            ReleaseDC(hwnd_desktop, hdc_desktop);
-            return None;
-        }
-
-        let hbm_screen = CreateCompatibleBitmap(hdc_desktop, target_w as i32, target_h as i32);
-        if hbm_screen.is_null() {
-            DeleteDC(hdc_mem);
-            ReleaseDC(hwnd_desktop, hdc_desktop);
-            return None;
-        }
-
-        let old_obj = SelectObject(hdc_mem, hbm_screen);
-
-        if target_hwnd != 0 {
-            let hwnd = target_hwnd as windows_sys::Win32::Foundation::HWND;
-            if IsWindow(hwnd) == 0 {
-                SelectObject(hdc_mem, old_obj);
-                DeleteObject(hbm_screen);
-                DeleteDC(hdc_mem);
-                ReleaseDC(hwnd_desktop, hdc_desktop);
-                return None;
-            }
-
-            let mut rc: RECT = std::mem::zeroed();
-            GetWindowRect(hwnd, &mut rc);
-            let win_w = (rc.right - rc.left).max(1);
-            let win_h = (rc.bottom - rc.top).max(1);
-
-            let hdc_win_mem = CreateCompatibleDC(hdc_desktop);
-            let hbm_win = CreateCompatibleBitmap(hdc_desktop, win_w, win_h);
-            let old_win_obj = SelectObject(hdc_win_mem, hbm_win);
-
-            let mut captured_ok = false;
-            if IsIconic(hwnd) == 0 {
-                // 1. Try PrintWindow with PW_RENDERFULLCONTENT (0x2) for direct compositor capture without occlusion
-                if PrintWindow(hwnd, hdc_win_mem, 2) != 0 {
-                    captured_ok = true;
+        GDI_CAPTURE_CACHE.with(|cell| {
+            let mut cache_opt = cell.borrow_mut();
+            if let Some(ref cache) = *cache_opt {
+                if cache.target_w != target_w || cache.target_h != target_h {
+                    // Clean up old handles if dimensions changed
+                    DeleteObject(cache.dark_brush);
+                    if !cache.hbm_win.is_null() {
+                        DeleteObject(cache.hbm_win);
+                    }
+                    if !cache.hdc_win_mem.is_null() {
+                        DeleteDC(cache.hdc_win_mem);
+                    }
+                    DeleteObject(cache.hbm_dib);
+                    DeleteDC(cache.hdc_mem);
+                    ReleaseDC(std::ptr::null_mut(), cache.hdc_desktop);
+                    *cache_opt = None;
                 }
             }
 
-            // 2. Fallback to direct window DC if PrintWindow failed
-            if !captured_ok && IsIconic(hwnd) == 0 {
-                let hdc_win = GetDC(hwnd);
-                if !hdc_win.is_null() {
-                    BitBlt(hdc_win_mem, 0, 0, win_w, win_h, hdc_win, 0, 0, SRCCOPY);
-                    ReleaseDC(hwnd, hdc_win);
-                    captured_ok = true;
+            if cache_opt.is_none() {
+                let hdc_desktop = GetDC(std::ptr::null_mut());
+                if hdc_desktop.is_null() {
+                    return None;
+                }
+
+                let hdc_mem = CreateCompatibleDC(hdc_desktop);
+                if hdc_mem.is_null() {
+                    ReleaseDC(std::ptr::null_mut(), hdc_desktop);
+                    return None;
+                }
+
+                let mut bmi: BITMAPINFO = std::mem::zeroed();
+                bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+                bmi.bmiHeader.biWidth = target_w as i32;
+                bmi.bmiHeader.biHeight = -(target_h as i32); // Top-down
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB as u32;
+
+                let mut p_bits: *mut std::ffi::c_void = std::ptr::null_mut();
+                let hbm_dib = CreateDIBSection(
+                    hdc_desktop,
+                    &bmi,
+                    DIB_RGB_COLORS,
+                    &mut p_bits,
+                    std::ptr::null_mut(),
+                    0,
+                );
+                if hbm_dib.is_null() || p_bits.is_null() {
+                    DeleteDC(hdc_mem);
+                    ReleaseDC(std::ptr::null_mut(), hdc_desktop);
+                    return None;
+                }
+
+                SelectObject(hdc_mem, hbm_dib);
+                let hdc_win_mem = CreateCompatibleDC(hdc_desktop);
+                let dark_brush = CreateSolidBrush(0x00141211); // COLORREF: 0x00BBGGRR
+
+                *cache_opt = Some(GdiCaptureContext {
+                    hdc_desktop,
+                    hdc_mem,
+                    hbm_dib,
+                    p_bits: p_bits as *mut u8,
+                    hdc_win_mem,
+                    hbm_win: std::ptr::null_mut(),
+                    win_w: 0,
+                    win_h: 0,
+                    dark_brush,
+                    target_w,
+                    target_h,
+                });
+            }
+
+            let cache = cache_opt.as_mut().unwrap();
+            let hdc_desktop = cache.hdc_desktop;
+            let hdc_mem = cache.hdc_mem;
+            let hdc_win_mem = cache.hdc_win_mem;
+            let dark_brush = cache.dark_brush;
+            let p_bits = cache.p_bits;
+
+            let t_blt_start = Instant::now();
+            if target_hwnd != 0 {
+                let hwnd = target_hwnd as windows_sys::Win32::Foundation::HWND;
+                if IsWindow(hwnd) == 0 {
+                    return None;
+                }
+
+                let mut rc: RECT = std::mem::zeroed();
+                GetWindowRect(hwnd, &mut rc);
+                let win_w = (rc.right - rc.left).max(1);
+                let win_h = (rc.bottom - rc.top).max(1);
+
+                if cache.win_w != win_w || cache.win_h != win_h || cache.hbm_win.is_null() {
+                    if !cache.hbm_win.is_null() {
+                        DeleteObject(cache.hbm_win);
+                    }
+                    cache.hbm_win = CreateCompatibleBitmap(hdc_desktop, win_w, win_h);
+                    cache.win_w = win_w;
+                    cache.win_h = win_h;
+                    SelectObject(hdc_win_mem, cache.hbm_win);
+                }
+
+                let mut captured_ok = false;
+                if IsIconic(hwnd) == 0 {
+                    // 1. Tenta PrintWindow com PW_RENDERFULLCONTENT (2) para janelas DirectX/DWM
+                    if PrintWindow(hwnd, hdc_win_mem, 2) != 0 {
+                        captured_ok = true;
+                    }
+                }
+
+                // 2. Fallback para crop direto do desktop (garante fidelidade visual e zero rabiscos)
+                if !captured_ok && IsIconic(hwnd) == 0 {
+                    let src_x = rc.left.max(0);
+                    let src_y = rc.top.max(0);
+                    BitBlt(hdc_win_mem, 0, 0, win_w, win_h, hdc_desktop, src_x, src_y, SRCCOPY);
+                }
+
+                // Fill background with dark letterbox/pillarbox color (#111214)
+                let target_rc = RECT { left: 0, top: 0, right: target_w as i32, bottom: target_h as i32 };
+                FillRect(hdc_mem, &target_rc, dark_brush);
+
+                // Compute aspect-ratio preserving dimensions
+                let scale_w = target_w as f32 / win_w as f32;
+                let scale_h = target_h as f32 / win_h as f32;
+                let scale = scale_w.min(scale_h);
+
+                let dest_w = ((win_w as f32 * scale).round() as i32).max(1);
+                let dest_h = ((win_h as f32 * scale).round() as i32).max(1);
+                let dest_x = ((target_w as i32 - dest_w) / 2).max(0);
+                let dest_y = ((target_h as i32 - dest_h) / 2).max(0);
+
+                SetStretchBltMode(hdc_mem, COLORONCOLOR);
+                SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
+                StretchBlt(
+                    hdc_mem,
+                    dest_x,
+                    dest_y,
+                    dest_w,
+                    dest_h,
+                    hdc_win_mem,
+                    0,
+                    0,
+                    win_w,
+                    win_h,
+                    SRCCOPY,
+                );
+            } else {
+                // Full screen capture
+                let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                let screen_h = GetSystemMetrics(SM_CYSCREEN);
+
+                if screen_w == target_w as i32 && screen_h == target_h as i32 {
+                    BitBlt(
+                        hdc_mem,
+                        0,
+                        0,
+                        target_w as i32,
+                        target_h as i32,
+                        hdc_desktop,
+                        0,
+                        0,
+                        SRCCOPY,
+                    );
+                } else {
+                    SetStretchBltMode(hdc_mem, COLORONCOLOR);
+                    SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
+                    StretchBlt(
+                        hdc_mem,
+                        0,
+                        0,
+                        target_w as i32,
+                        target_h as i32,
+                        hdc_desktop,
+                        0,
+                        0,
+                        screen_w,
+                        screen_h,
+                        SRCCOPY,
+                    );
                 }
             }
+            let blt_dur_us = t_blt_start.elapsed().as_micros();
 
-            // 3. Fallback to desktop crop if window is minimized or special GDI overlay
-            if !captured_ok {
-                let src_x = rc.left.max(0);
-                let src_y = rc.top.max(0);
-                BitBlt(hdc_win_mem, 0, 0, win_w, win_h, hdc_desktop, src_x, src_y, SRCCOPY);
+            let t_pix_start = Instant::now();
+            let total_bytes = (target_w * target_h * 4) as usize;
+            if out_bgra.len() != total_bytes {
+                out_bgra.resize(total_bytes, 0);
             }
+            std::ptr::copy_nonoverlapping(p_bits, out_bgra.as_mut_ptr(), total_bytes);
+            let pix_dur_us = t_pix_start.elapsed().as_micros();
 
-            // Fill background with dark letterbox/pillarbox color (#111214)
-            let dark_brush = CreateSolidBrush(0x00141211); // COLORREF: 0x00BBGGRR
-            let target_rc = RECT { left: 0, top: 0, right: target_w as i32, bottom: target_h as i32 };
-            FillRect(hdc_mem, &target_rc, dark_brush);
-            DeleteObject(dark_brush);
-
-            // Compute aspect-ratio preserving dimensions
-            let scale_w = target_w as f32 / win_w as f32;
-            let scale_h = target_h as f32 / win_h as f32;
-            let scale = scale_w.min(scale_h);
-
-            let dest_w = ((win_w as f32 * scale).round() as i32).max(1);
-            let dest_h = ((win_h as f32 * scale).round() as i32).max(1);
-            let dest_x = ((target_w as i32 - dest_w) / 2).max(0);
-            let dest_y = ((target_h as i32 - dest_h) / 2).max(0);
-
-            SetStretchBltMode(hdc_mem, COLORONCOLOR);
-            SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
-            StretchBlt(
-                hdc_mem,
-                dest_x,
-                dest_y,
-                dest_w,
-                dest_h,
-                hdc_win_mem,
-                0,
-                0,
-                win_w,
-                win_h,
-                SRCCOPY,
-            );
-
-            SelectObject(hdc_win_mem, old_win_obj);
-            DeleteObject(hbm_win);
-            DeleteDC(hdc_win_mem);
-        } else {
-            // Full screen capture
-            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
-            SetStretchBltMode(hdc_mem, COLORONCOLOR);
-            SetBrushOrgEx(hdc_mem, 0, 0, std::ptr::null_mut());
-            StretchBlt(
-                hdc_mem,
-                0,
-                0,
-                target_w as i32,
-                target_h as i32,
-                hdc_desktop,
-                0,
-                0,
-                screen_w,
-                screen_h,
-                SRCCOPY,
-            );
-        }
-
-        let total_pixels = (target_w * target_h) as usize;
-        let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(target_w, target_h);
-        let slice = pixel_buffer.make_mut_slice();
-
-        let mut bmi: BITMAPINFO = std::mem::zeroed();
-        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = target_w as i32;
-        bmi.bmiHeader.biHeight = -(target_h as i32);
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB as u32;
-
-        let mut rgb_bytes = vec![0u8; total_pixels * 3];
-
-        thread_local! {
-            static CAPTURE_BGRA_POOL: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::new());
-        }
-
-        CAPTURE_BGRA_POOL.with(|cell| {
-            let mut bgra_buf = cell.borrow_mut();
-            if bgra_buf.len() < total_pixels * 4 {
-                bgra_buf.resize(total_pixels * 4, 0);
-            }
-
-            GetDIBits(
-                hdc_mem,
-                hbm_screen,
-                0,
-                target_h,
-                bgra_buf.as_mut_ptr() as _,
-                &mut bmi,
-                DIB_RGB_COLORS,
-            );
-
-            let bgra_slice = &bgra_buf[..total_pixels * 4];
-            for (i, pixel) in slice.iter_mut().enumerate() {
-                let offset_bgra = i * 4;
-                let offset_rgb = i * 3;
-                let b = bgra_slice[offset_bgra];
-                let g = bgra_slice[offset_bgra + 1];
-                let r = bgra_slice[offset_bgra + 2];
-
-                *pixel = Rgba8Pixel::new(r, g, b, 255);
-                rgb_bytes[offset_rgb] = r;
-                rgb_bytes[offset_rgb + 1] = g;
-                rgb_bytes[offset_rgb + 2] = b;
-            }
-        });
-
-        SelectObject(hdc_mem, old_obj);
-        DeleteObject(hbm_screen);
-        DeleteDC(hdc_mem);
-        ReleaseDC(hwnd_desktop, hdc_desktop);
-
-        if let Some(digit) = get_test_watermark_digit() {
-            draw_test_watermark(slice, &mut rgb_bytes, target_w, target_h, digit);
-        }
-
-        Some((pixel_buffer, rgb_bytes))
+            Some((blt_dur_us, pix_dur_us))
+        })
     }
 }
 
@@ -1618,19 +2838,57 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_
 static PORTAL_FRAME: std::sync::Mutex<Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)>> = std::sync::Mutex::new(None);
 #[cfg(not(windows))]
 static PORTAL_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(windows))]
+static PORTAL_CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static PORTAL_LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 #[cfg(target_os = "linux")]
 static PORTAL_LOCAL_CB: std::sync::Mutex<Option<std::sync::Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static>>> = std::sync::Mutex::new(None);
 #[cfg(target_os = "linux")]
 static PORTAL_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "linux")]
+pub fn reset_wayland_portal_cancelled() {
+    PORTAL_CANCELLED.store(false, std::sync::atomic::Ordering::SeqCst);
+    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(target_os = "linux")]
+pub fn kill_portal_child() {
+    PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
+    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Ok(mut lock) = PORTAL_CHILD.lock() {
+        if let Some(mut child) = lock.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64) {
+    if PORTAL_CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    if let Ok(guard) = PORTAL_LAST_ATTEMPT.lock() {
+        if let Some(last) = *guard {
+            if last.elapsed() < std::time::Duration::from_secs(3) {
+                return;
+            }
+        }
+    }
+
     if PORTAL_INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
 
+    if let Ok(mut guard) = PORTAL_LAST_ATTEMPT.lock() {
+        *guard = Some(std::time::Instant::now());
+    }
+
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
             Ok(r) => r,
             Err(e) => {
                 log::error!("Falha ao criar tokio runtime para Portal ScreenCast: {:?}", e);
@@ -1638,6 +2896,8 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 return;
             }
         };
+
+        let _guard = rt.enter();
 
         rt.block_on(async move {
             use ashpd::desktop::{
@@ -1707,6 +2967,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                     Err(e) => {
                         log::error!("Resposta de erro do Portal ScreenCast: {:?}", e);
                         let _ = session.close().await;
+                        PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                         PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                         return;
                     }
@@ -1714,6 +2975,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 Err(e) => {
                     log::error!("Falha ao iniciar captura no Portal ScreenCast: {:?}", e);
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1724,6 +2986,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 None => {
                     log::error!("Nenhum stream retornado pelo Portal ScreenCast");
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1735,6 +2998,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 Err(e) => {
                     log::error!("Falha ao abrir PipeWire Remote: {:?}", e);
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1760,26 +3024,17 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 format!("fd={}", raw_fd),
                 format!("path={}", node_id),
                 "do-timestamp=true".to_string(),
-                "keepalive-time=1000".to_string(),
                 "!".to_string(),
-            ];
-
-            if target_fps < 60 {
-                gst_args.push("videorate".to_string());
-                gst_args.push("!".to_string());
-            }
-
-            gst_args.extend_from_slice(&[
                 "videoconvert".to_string(),
                 "n-threads=4".to_string(),
                 "!".to_string(),
                 "videoscale".to_string(),
-                "n-threads=4".to_string(),
-                "method=0".to_string(),
                 "!".to_string(),
-            ]);
+            ];
 
-            if target_fps < 60 {
+            if target_fps > 0 && target_fps < 120 {
+                gst_args.push("videorate".to_string());
+                gst_args.push("!".to_string());
                 gst_args.push(format!("video/x-raw,format=RGBA,width={},height={},framerate={}/1", dst_w, dst_h, target_fps));
             } else {
                 gst_args.push(format!("video/x-raw,format=RGBA,width={},height={}", dst_w, dst_h));
@@ -1798,25 +3053,46 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 "sync=false".to_string(),
             ]);
 
+            log::info!("🔧 GStreamer pipeline args: {:?}", gst_args);
+
             let mut child = match Command::new("gst-launch-1.0")
                 .args(&gst_args)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
             {
                 Ok(c) => c,
                 Err(e) => {
                     log::error!("Falha ao iniciar pipeline GStreamer PipeWire: {:?}", e);
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
             };
 
+            // Spawn a thread to log GStreamer stderr for debugging
+            if let Some(stderr) = child.stderr.take() {
+                std::thread::Builder::new()
+                    .name("gst-stderr-logger".to_string())
+                    .spawn(move || {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(stderr);
+                        for line in reader.lines() {
+                            match line {
+                                Ok(l) => log::warn!("🎬 [GStreamer STDERR]: {}", l),
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                    .ok();
+            }
+
             let mut stdout = match child.stdout.take() {
                 Some(s) => s,
                 None => {
                     let _ = session.close().await;
+                    PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
                     PORTAL_INITIALIZED.store(false, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
@@ -1832,8 +3108,16 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let mut raw_buf = vec![0u8; frame_size];
             let mut pw_frame_count = 0u64;
             let mut last_pw_stats = std::time::Instant::now();
+            let first_frame_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut got_first_frame = false;
+
+            log::info!("⏳ Aguardando primeiro quadro do GStreamer PipeWire (timeout 10s)...");
 
             while PORTAL_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) && stdout.read_exact(&mut raw_buf).is_ok() {
+                if !got_first_frame {
+                    got_first_frame = true;
+                    log::info!("✅ Primeiro quadro do GStreamer PipeWire recebido com sucesso!");
+                }
                 pw_frame_count += 1;
                 let now = std::time::Instant::now();
                 if now.duration_since(last_pw_stats) >= std::time::Duration::from_secs(1) {
@@ -1869,6 +3153,21 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 }
             }
 
+            if !got_first_frame {
+                log::error!("❌ GStreamer PipeWire encerrou sem produzir nenhum quadro! Pipeline falhou.");
+                // Check if child exited with an error
+                if let Ok(mut lock) = PORTAL_CHILD.lock() {
+                    if let Some(ref mut child) = *lock {
+                        match child.try_wait() {
+                            Ok(Some(status)) => log::error!("❌ GStreamer exit status: {}", status),
+                            Ok(None) => log::warn!("⚠️ GStreamer ainda está rodando mas stdout fechou"),
+                            Err(e) => log::error!("❌ Erro ao verificar status do GStreamer: {:?}", e),
+                        }
+                    }
+                }
+                PORTAL_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+
             if let Ok(mut lock) = PORTAL_CHILD.lock() {
                 if let Some(mut child) = lock.take() {
                     let _ = child.kill();
@@ -1882,28 +3181,27 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
 }
 
 #[cfg(not(windows))]
-fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64) -> Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)> {
+fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64, out_bgra: &mut Vec<u8>) -> Option<(u128, u128)> {
     #[cfg(target_os = "linux")]
     {
         init_wayland_portal_screencast(target_w, target_h, target_fps);
 
         if let Ok(slot) = PORTAL_FRAME.lock() {
             if let Some(ref frame) = *slot {
-                return Some(frame.clone());
+                let total = (target_w * target_h * 4) as usize;
+                if out_bgra.len() != total {
+                    out_bgra.resize(total, 0);
+                }
+                return Some((0, 0));
             }
         }
     }
 
-    let total_pixels = (target_w * target_h) as usize;
-    let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(target_w, target_h);
-    let slice = pixel_buffer.make_mut_slice();
-    let rgb_bytes = vec![24u8; total_pixels * 3];
-
-    for pixel in slice.iter_mut() {
-        *pixel = Rgba8Pixel::new(24, 24, 24, 255);
+    let total = (target_w * target_h * 4) as usize;
+    if out_bgra.len() != total {
+        out_bgra.resize(total, 24);
     }
-
-    Some((pixel_buffer, rgb_bytes))
+    Some((0, 0))
 }
 
 const GLYPH_1: [u8; 12] = [
@@ -2180,13 +3478,36 @@ pub fn start_window_border_overlay(target_hwnd: isize) {
                     return;
                 }
 
-                let mut target_rc: RECT = std::mem::zeroed();
-                GetWindowRect(hwnd_target, &mut target_rc);
-                let border_pad = 3;
-                let x = target_rc.left - border_pad;
-                let y = target_rc.top - border_pad;
-                let w = (target_rc.right - target_rc.left) + (border_pad * 2);
-                let h = (target_rc.bottom - target_rc.top) + (border_pad * 2);
+                #[link(name = "dwmapi")]
+                extern "system" {
+                    fn DwmGetWindowAttribute(
+                        hwnd: HWND,
+                        dwAttribute: u32,
+                        pvAttribute: *mut std::ffi::c_void,
+                        cbAttribute: u32,
+                    ) -> i32;
+                }
+
+                let get_window_bounds = |h: HWND| -> RECT {
+                    let mut rc: RECT = std::mem::zeroed();
+                    // DWMWA_EXTENDED_FRAME_BOUNDS = 9: Obtém as dimensões visíveis exatas da janela, excluindo sombras invisíveis do DWM
+                    let hr = DwmGetWindowAttribute(
+                        h,
+                        9,
+                        &mut rc as *mut _ as *mut std::ffi::c_void,
+                        std::mem::size_of::<RECT>() as u32,
+                    );
+                    if hr != 0 || (rc.right - rc.left) <= 0 || (rc.bottom - rc.top) <= 0 {
+                        GetWindowRect(h, &mut rc);
+                    }
+                    rc
+                };
+
+                let target_rc = get_window_bounds(hwnd_target);
+                let x = target_rc.left;
+                let y = target_rc.top;
+                let w = (target_rc.right - target_rc.left).max(1);
+                let h = (target_rc.bottom - target_rc.top).max(1);
 
                 let overlay_hwnd = CreateWindowExW(
                     WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -2229,8 +3550,7 @@ pub fn start_window_border_overlay(target_hwnd: isize) {
                     if IsWindow(hwnd_target) == 0 || IsIconic(hwnd_target) != 0 {
                         ShowWindow(overlay_hwnd, SW_HIDE);
                     } else {
-                        let mut current_rc: RECT = std::mem::zeroed();
-                        GetWindowRect(hwnd_target, &mut current_rc);
+                        let current_rc = get_window_bounds(hwnd_target);
 
                         if current_rc.left != last_rc.left
                             || current_rc.top != last_rc.top
@@ -2238,10 +3558,10 @@ pub fn start_window_border_overlay(target_hwnd: isize) {
                             || current_rc.bottom != last_rc.bottom
                         {
                             last_rc = current_rc;
-                            let nx = current_rc.left - border_pad;
-                            let ny = current_rc.top - border_pad;
-                            let nw = (current_rc.right - current_rc.left) + (border_pad * 2);
-                            let nh = (current_rc.bottom - current_rc.top) + (border_pad * 2);
+                            let nx = current_rc.left;
+                            let ny = current_rc.top;
+                            let nw = (current_rc.right - current_rc.left).max(1);
+                            let nh = (current_rc.bottom - current_rc.top).max(1);
 
                             SetWindowPos(
                                 overlay_hwnd,
@@ -2337,8 +3657,15 @@ pub fn ensure_stream_audio_playback_started() {
                 let channels = config.channels() as usize;
                 let queue = get_stream_audio_queue();
 
-                let err_fn = |err| {
-                    warn!("Erro no playback de áudio do stream: {}", err);
+                let last_err_time = Arc::new(Mutex::new(Option::<Instant>::None));
+                let last_err_c = Arc::clone(&last_err_time);
+                let err_fn = move |err| {
+                    if let Ok(mut guard) = last_err_c.lock() {
+                        if guard.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+                            *guard = Some(Instant::now());
+                            warn!("Erro no playback de áudio do stream: {}", err);
+                        }
+                    }
                 };
 
                 let stream_res = match config.sample_format() {
@@ -2429,16 +3756,11 @@ pub fn start_audio_loopback_tx(
             let sample_rate = config.sample_rate().0;
             let channels = config.channels() as usize;
 
-            let socket = match UdpSocket::bind("0.0.0.0:0") {
-                Ok(s) => {
-                    let _ = s.set_broadcast(true);
-                    s
-                }
-                Err(e) => {
-                    warn!("⚠️ Falha ao criar socket UDP para áudio do stream: {:?}", e);
-                    return;
-                }
-            };
+            let socket = get_shared_p2p_socket().unwrap_or_else(|| {
+                let s = UdpSocket::bind("0.0.0.0:0").unwrap();
+                let _ = s.set_broadcast(true);
+                Arc::new(s)
+            });
 
             let bcast_targets = get_broadcast_addresses();
             let mut seq: u32 = 0;
