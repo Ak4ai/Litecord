@@ -1963,7 +1963,7 @@ fn parse_and_handle_mqtt_messages(
     if buf.is_empty() { return; }
     let key = get_voice_encryption_key(current_cid);
 
-    let mut process_json = |json_bytes: &[u8]| {
+    let process_json = |json_bytes: &[u8]| {
         if let Ok(val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
             let pkt_cid = val["cid"].as_u64().unwrap_or(0);
             let pkt_uid = val["uid"].as_u64().unwrap_or(0);
