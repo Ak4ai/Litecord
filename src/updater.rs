@@ -339,7 +339,6 @@ pub async fn download_and_install_update(
                                 use std::os::unix::fs::PermissionsExt;
                                 let _ = std::fs::set_permissions(&target_bin, std::fs::Permissions::from_mode(0o755));
                             }
-                            updated = true;
                         }
                     }
 
