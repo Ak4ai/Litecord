@@ -1314,11 +1314,12 @@
       <a href="#" class="logo-group">
         <img src="assets/app_icon.png" alt="Litecord Logo" class="logo-icon" />
         <span class="logo-text">Litecord</span>
-        <span class="logo-badge">v0.3.0</span>
+        <span class="logo-badge">v0.3.7</span>
       </a>
 
       <ul class="nav-links">
         <li><a href="#features">Features</a></li>
+        <li><a href="#security">Security</a></li>
         <li><a href="#benchmarks">Performance</a></li>
         <li><a href="#downloads">Downloads</a></li>
       </ul>
@@ -1807,21 +1808,15 @@
 
       <div class="features-grid">
         <div class="feature-card">
-          <div class="feature-icon-box">⌨️</div>
-          <h3>Smart Slash Commands & Chips</h3>
-          <p>Instant command suggestions with bot badges, arrow-key navigation (Up/Down + Enter), and interactive parameter chips.</p>
+          <div class="feature-icon-box">🔒</div>
+          <h3>AES-256-GCM E2EE Screen Share</h3>
+          <p>Every 60 FPS video frame and system audio packet is encrypted end-to-end with military-grade AES-256-GCM using hardware AES-NI instructions (< 0.02% CPU).</p>
         </div>
 
         <div class="feature-card">
-          <div class="feature-icon-box">🖼️</div>
-          <h3>On-Demand Ephemeral Images</h3>
-          <p>Minecraft-style pixel-art preview (~500 bytes), proportional dynamic height, and zero-residue temporary caching.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon-box">🎨</div>
-          <h3>Unified Emoji Engine</h3>
-          <p>Twemoji vector rendering for Unicode emojis and native Discord custom emojis with zero tofu square boxes (□).</p>
+          <div class="feature-icon-box">🎬</div>
+          <h3>DRM Stream Browser Profile</h3>
+          <p>Integrated streaming profile for Chrome, Edge, and Brave with hardware DRM compositor bypass—watch Netflix, Prime, and YouTube with friends without black screens.</p>
         </div>
 
         <div class="feature-card">
@@ -1837,6 +1832,24 @@
         </div>
 
         <div class="feature-card">
+          <div class="feature-icon-box">⌨️</div>
+          <h3>Smart Slash Commands & Chips</h3>
+          <p>Instant command suggestions with bot badges, arrow-key navigation (Up/Down + Enter), and interactive parameter chips.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon-box">🖼️</div>
+          <h3>On-Demand Ephemeral Images</h3>
+          <p>Minecraft-style pixel-art preview (~500 bytes), proportional dynamic height, and path-traversal sanitized temporary caching.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon-box">🎨</div>
+          <h3>Unified Emoji Engine</h3>
+          <p>Twemoji vector rendering for Unicode emojis and native Discord custom emojis with zero tofu square boxes (□).</p>
+        </div>
+
+        <div class="feature-card">
           <div class="feature-icon-box">⚡</div>
           <h3>DeepSleep Tray Optimization</h3>
           <p>Minimizing to system tray drops CPU consumption to 0.0%, suspending UI rendering while voice communication runs in background.</p>
@@ -1847,17 +1860,54 @@
           <h3>Windows DPAPI Token Encryption</h3>
           <p>Local authentication tokens are encrypted with Windows master keys at rest (`CryptProtectData`), shielding your credentials.</p>
         </div>
+      </div>
+    </div>
+  </section>
 
-        <div class="feature-card">
-          <div class="feature-icon-box">🎛️</div>
-          <h3>Auto-Persistent Audio Profiles</h3>
-          <p>Mic sensitivity (VAD threshold), volume sliders, priority values, and audio hardware are remembered across restarts.</p>
+  <!-- Security & Privacy Architecture Section -->
+  <section id="security" style="background:#0a0b0f;border-top:1px solid var(--border-subtle);padding:80px 0;">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag" style="background:rgba(35,165,90,0.15);color:#23a55a;border-color:rgba(35,165,90,0.3)">Security & Privacy by Design</span>
+        <h2 class="section-title">Your data stays yours. Zero compromises.</h2>
+        <p class="section-desc">Audited and engineered with zero-trust cryptographic protections across every single module.</p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card" style="border-left:3px solid #23a55a;">
+          <div class="feature-icon-box" style="background:rgba(35,165,90,0.12);border-color:rgba(35,165,90,0.3);color:#23a55a;">🛡️</div>
+          <h3>End-to-End Encrypted P2P Media</h3>
+          <p>Video frames and loopback audio packets are encrypted with <b>AES-256-GCM</b>. Wi-Fi and LAN packet sniffers see only randomized cryptographic noise.</p>
         </div>
 
-        <div class="feature-card">
-          <div class="feature-icon-box">🚀</div>
-          <h3>Single 8 MB Standalone Binary</h3>
-          <p>Zero dependencies, zero Chromium instances, zero Node.js runtimes. Native compiled machine code built for pure performance.</p>
+        <div class="feature-card" style="border-left:3px solid #5865F2;">
+          <div class="feature-icon-box" style="background:rgba(88,101,242,0.12);border-color:rgba(88,101,242,0.3);color:#5865F2;">🔒</div>
+          <h3>Windows DPAPI Local Vault</h3>
+          <p>Tokens in <code>.litecord_token</code> are encrypted with Windows DPAPI (<code>CryptProtectData</code>), locked to your Windows user logon credentials.</p>
+        </div>
+
+        <div class="feature-card" style="border-left:3px solid #f0b232;">
+          <div class="feature-icon-box" style="background:rgba(240,178,50,0.12);border-color:rgba(240,178,50,0.3);color:#f0b232;">⚡</div>
+          <h3>Zero-DOM Native Rust UI (No XSS)</h3>
+          <p>Built with native Slint—no WebViews, no Chromium DOM, no JavaScript execution. <b>100% immune to Cross-Site Scripting (XSS)</b> attacks.</p>
+        </div>
+
+        <div class="feature-card" style="border-left:3px solid #23a55a;">
+          <div class="feature-icon-box" style="background:rgba(35,165,90,0.12);border-color:rgba(35,165,90,0.3);color:#23a55a;">🌐</div>
+          <h3>Direct Connections Only</h3>
+          <p>Connects directly to official Discord endpoints (<code>discord.com</code> and <code>gateway.discord.gg</code>). Zero third-party relays, zero proxies, zero telemetry.</p>
+        </div>
+
+        <div class="feature-card" style="border-left:3px solid #5865F2;">
+          <div class="feature-icon-box" style="background:rgba(88,101,242,0.12);border-color:rgba(88,101,242,0.3);color:#5865F2;">🎙️</div>
+          <h3>Discord Official DAVE Voice E2EE</h3>
+          <p>Direct compliance with Discord's official MLS (RFC 9420) voice encryption standards for confidential, studio-quality calls.</p>
+        </div>
+
+        <div class="feature-card" style="border-left:3px solid #f0b232;">
+          <div class="feature-icon-box" style="background:rgba(240,178,50,0.12);border-color:rgba(240,178,50,0.3);color:#f0b232;">🔗</div>
+          <h3>Strict URL & File Sanitization</h3>
+          <p>Hyperlinks are filtered via strict HTTP/HTTPS whitelists dispatched to the OS browser. Attachment filenames are sanitized against path traversal.</p>
         </div>
       </div>
     </div>

@@ -47,6 +47,17 @@ pub fn cleanup_temp_attachments() {
     }
 }
 
+pub fn sanitize_filename(filename: &str) -> String {
+    let clean = std::path::Path::new(filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("attachment.bin")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
+        .collect::<String>();
+    if clean.is_empty() { "attachment.bin".to_string() } else { clean }
+}
+
 impl AttachmentCache {
     /// Check if preview is in memory or disk
     pub fn get_preview(&self, att_id: &str) -> Option<slint::Image> {
@@ -86,7 +97,8 @@ impl AttachmentCache {
         }
 
         // 2. On disk in %TEMP%
-        let file_path = self.temp_dir.join(format!("{}_{}", att_id, filename));
+        let safe_name = sanitize_filename(filename);
+        let file_path = self.temp_dir.join(format!("{}_{}", att_id, safe_name));
         if file_path.exists() {
             if let Ok(bytes) = std::fs::read(&file_path) {
                 if let Some(dec) = decode_bytes_to_rgba(&bytes) {
@@ -193,7 +205,8 @@ impl AttachmentCache {
         let cache_arc = get_attachment_cache();
         let id_str = att_id.to_string();
         let filename_str = filename.to_string();
-        let file_path = self.temp_dir.join(format!("{}_{}", att_id, filename));
+        let safe_name = sanitize_filename(filename);
+        let file_path = self.temp_dir.join(format!("{}_{}", att_id, safe_name));
         let url_str = url.to_string();
 
         // Mark loading state in UI

@@ -20,3 +20,6 @@ release-pkg/
 *.pdb
 *.bat
 *.zip
+*.pem
+*.key
+*.env

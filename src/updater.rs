@@ -168,6 +168,13 @@ pub async fn download_and_install_update(
     progress_tx: mpsc::Sender<f32>,
 ) -> Result<(), String> {
     info!("Iniciando download da atualização: {}", download_url);
+    if !download_url.starts_with("https://github.com/Ak4ai/Litecord/")
+        && !download_url.starts_with("https://objects.githubusercontent.com/")
+        && !download_url.starts_with("https://github-releases.githubusercontent.com/")
+    {
+        return Err("URL de atualização rejeitada por segurança: domínio não oficial.".to_string());
+    }
+
     let client = reqwest::Client::builder()
         .user_agent("Litecord-App-Updater")
         .build()

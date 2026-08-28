@@ -9,6 +9,7 @@ mod updater;
 mod screen_capture;
 mod emoji_cache;
 mod attachment_cache;
+pub mod gpu_encoder;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
@@ -1360,8 +1361,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     attachment_cache::cleanup_temp_attachments();
+    let _ = std::fs::remove_file("panic_log.txt");
 
-    let log_file = std::fs::OpenOptions::new().create(true).append(true).open("litecord_app.log").ok();
+    let log_file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("litecord_app.log").ok();
     let logger = AppLogger { file: Mutex::new(log_file) };
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
@@ -2026,20 +2028,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(ui) = app_w2.upgrade() {
                         if !is_streaming {
                             hidden_streams_inner.lock().unwrap().remove(uid_str.as_str());
-                            if ui.get_active_stream_user_id() == uid_str.as_str() {
+                            let cur_act_id = ui.get_active_stream_user_id().to_string();
+                            if cur_act_id == uid_str || cur_act_id.is_empty() || uid == 0 {
                                 ui.set_has_active_stream(false);
                                 ui.set_active_stream_user("".into());
                                 ui.set_active_stream_user_id("".into());
                             }
-                            if ui.get_popped_out_stream_uid() == uid_str.as_str() {
+                            if ui.get_popped_out_stream_uid() == uid_str.as_str() || uid == 0 {
                                 ui.set_popped_out_stream_uid("".into());
                                 if let Some(pop) = pop_w2.upgrade() {
                                     pop.set_user_id("".into());
                                     let _ = pop.hide();
                                 }
                             }
-                            if ui.get_focused_stream_uid() == uid_str.as_str() {
+                            if ui.get_focused_stream_uid() == uid_str.as_str() || uid == 0 {
                                 ui.set_focused_stream_uid("".into());
+                            }
+                            let cur_model = ui.get_voice_participants();
+                            for i in 0..cur_model.row_count() {
+                                if let Some(mut p) = cur_model.row_data(i) {
+                                    if p.user_id == uid_str.as_str() || uid == 0 {
+                                        p.is_streaming = false;
+                                        cur_model.set_row_data(i, p);
+                                    }
+                                }
                             }
                         }
                     }
@@ -2155,6 +2167,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
                 ui.set_is_screen_sharing(true);
             }
+        }
+    });
+
+    let app_weak_browser = app_weak.clone();
+    app.on_launch_stream_browser(move || {
+        info!("🌐 Abrindo navegador em modo de transmissão (sem travas DRM)...");
+        #[cfg(target_os = "windows")]
+        {
+            let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\".to_string());
+            let profile_dir = format!("{}\\Litecord\\StreamBrowserProfile", local_app_data);
+            let _ = std::fs::create_dir_all(&profile_dir);
+
+            let candidates = [
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+                "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+                "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+            ];
+
+            let mut launched = false;
+            for exe in candidates {
+                if std::path::Path::new(exe).exists() {
+                    let res = std::process::Command::new(exe)
+                        .arg("--disable-gpu-compositing")
+                        .arg("--disable-direct-composition")
+                        .arg("--disable-features=HardwareProtectedVideo")
+                        .arg(format!("--user-data-dir={}", profile_dir))
+                        .arg("https://www.google.com")
+                        .spawn();
+                    if res.is_ok() {
+                        info!("🚀 Navegador para transmissão iniciado com sucesso via {}", exe);
+                        launched = true;
+                        break;
+                    }
+                }
+            }
+
+            if !launched {
+                let _ = std::process::Command::new("cmd")
+                    .args(&["/c", "start", "msedge", "--disable-gpu-compositing", "--disable-direct-composition", "--disable-features=HardwareProtectedVideo", &format!("--user-data-dir={}", profile_dir), "https://www.google.com"])
+                    .spawn();
+            }
+
+            let app_w = app_weak_browser.clone();
+            slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+                if let Some(ui) = app_w.upgrade() {
+                    let windows = screen_capture::list_capturable_windows();
+                    let first_win_id = windows.first().map(|w| w.id.clone()).unwrap_or_default();
+                    let ui_windows: Vec<WindowSourceItem> = windows.into_iter().map(|w| {
+                        let mut has_icon = false;
+                        let mut icon_image = Image::default();
+                        if let Some((iw, ih, rgba)) = w.icon_rgba {
+                            let mut pixel_buf = SharedPixelBuffer::<Rgba8Pixel>::new(iw, ih);
+                            pixel_buf.make_mut_bytes().copy_from_slice(&rgba);
+                            icon_image = Image::from_rgba8(pixel_buf);
+                            has_icon = true;
+                        }
+                        WindowSourceItem {
+                            id: w.id.into(),
+                            title: w.title.into(),
+                            app_name: w.app_name.into(),
+                            has_icon,
+                            icon_image,
+                        }
+                    }).collect();
+                    ui.set_available_windows(std::rc::Rc::new(slint::VecModel::from(ui_windows)).into());
+                    if !first_win_id.is_empty() {
+                        ui.set_stream_selected_window_id(first_win_id.into());
+                    }
+                }
+            });
         }
     });
 

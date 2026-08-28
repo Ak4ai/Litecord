@@ -1113,6 +1113,7 @@ export component AppWindow inherits Window {
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
     callback unhide_stream(string /* user_id */);
+    callback launch_stream_browser();
     callback click_command(string /* command_name */);
     callback handle_input_change(string /* text */);
     callback execute_active_command(string /* cmd_name */, string /* arg_value */, string /* app_id */, string /* cmd_id */, string /* version */, string /* param_name */);
@@ -4977,6 +4978,98 @@ export component AppWindow inherits Window {
                                                 mouse-cursor: pointer;
                                                 clicked => {
                                                     root.stream_include_audio = !root.stream_include_audio;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.stream_source_tab == "windows": Rectangle {
+                                background: #2b2d31;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: #383a40;
+                                height: 52px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 12px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: start;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/globe.svg");
+                                                width: 18px;
+                                                height: 18px;
+                                                colorize: #5865f2;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+
+                                            Text {
+                                                text: "Navegador para Transmissão (Vídeos / DRM)";
+                                                color: #f2f3f5;
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                            }
+
+                                            Text {
+                                                text: "Abre o navegador sem travas de tela preta para assistir com amigos";
+                                                color: #949ba4;
+                                                font-size: 10px;
+                                            }
+                                        }
+                                    }
+
+                                    // Launch Button
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            height: 32px;
+                                            border-radius: 4px;
+                                            background: stream_browser_ta.has-hover ? #4752c4 : #5865f2;
+
+                                            HorizontalLayout {
+                                                padding-left: 12px;
+                                                padding-right: 12px;
+                                                spacing: 6px;
+                                                alignment: center;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/external-link.svg");
+                                                        width: 12px;
+                                                        height: 12px;
+                                                        colorize: #ffffff;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: "Abrir";
+                                                    color: #ffffff;
+                                                    font-size: 12px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            stream_browser_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.launch_stream_browser();
                                                 }
                                             }
                                         }
