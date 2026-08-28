@@ -3622,8 +3622,18 @@ export component AppWindow inherits Window {
                                     padding-right: 8px;
                                     spacing: 6px;
                                     alignment: center;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/lightning.svg");
+                                            width: 12px;
+                                            height: 12px;
+                                            colorize: #f0b232;
+                                            image-fit: contain;
+                                        }
+                                    }
                                     Text {
-                                        text: "⚡ Native Rust GUI";
+                                        text: "Native Rust GUI";
                                         color: #949ba4;
                                         font-size: 11px;
                                         font-weight: 600;
@@ -3652,7 +3662,7 @@ export component AppWindow inherits Window {
 
                                 VerticalLayout {
                                     padding-top: 18px;
-                                    padding-bottom: 18px;
+                                    padding-bottom: 40px;
                                     padding-left: 20px;
                                     padding-right: 20px;
                                     spacing: 18px;
@@ -3665,11 +3675,12 @@ export component AppWindow inherits Window {
 
                                         // --- ROW 1: INPUT DEVICE (MICROPHONE) + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            // Option Block (Left)
+                                            // Option Block (Left - Col 2)
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
+                                                padding-right: 16px;
                                                 spacing: 8px;
 
                                                 HorizontalLayout {
@@ -3753,60 +3764,61 @@ export component AppWindow inherits Window {
                                                 }
                                             }
 
-                                            // Guide Block (Right - Accompanying)
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/microphone.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #5865f2;
-                                                                image-fit: contain;
-                                                            }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
                                                         }
-                                                        Text {
-                                                            text: "Dispositivo de Entrada";
-                                                            color: #5865f2;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
-
                                                     Text {
-                                                        text: "Selecione o microfone principal ou headset. Recomendamos usar o dispositivo padrão ou o microfone dedicado com cancelamento de ruído.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Dispositivo de Entrada";
+                                                        color: #5865f2;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Selecione o microfone principal ou headset. Recomendamos usar o dispositivo padrão ou o microfone dedicado com cancelamento de ruído.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
 
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
                                         // --- ROW 2: OUTPUT DEVICE (SPEAKERS / HEADPHONES) + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            // Option Block (Left)
+                                            // Option Block (Left - Col 2)
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
+                                                padding-right: 16px;
                                                 spacing: 8px;
 
                                                 HorizontalLayout {
@@ -3890,60 +3902,61 @@ export component AppWindow inherits Window {
                                                 }
                                             }
 
-                                            // Guide Block (Right - Accompanying)
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/headphones.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #5865f2;
-                                                                image-fit: contain;
-                                                            }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/headphones.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
                                                         }
-                                                        Text {
-                                                            text: "Dispositivo de Saída";
-                                                            color: #5865f2;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
-
                                                     Text {
-                                                        text: "Para obter a melhor fidelidade posicional e evitar eco ou vazamento de som nas chamadas em grupo, utilize fones de ouvido estéreo.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Dispositivo de Saída";
+                                                        color: #5865f2;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Para obter a melhor fidelidade posicional e evitar eco ou vazamento de som nas chamadas em grupo, utilize fones de ouvido estéreo.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
 
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
                                         // --- ROW 3: VAD THRESHOLD SLIDER + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            // Option Block (Left)
+                                            // Option Block (Left - Col 2)
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
+                                                padding-right: 16px;
                                                 spacing: 8px;
 
                                                 HorizontalLayout {
@@ -4023,60 +4036,61 @@ export component AppWindow inherits Window {
                                                 }
                                             }
 
-                                            // Guide Block (Right - Accompanying)
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/speaker.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #23a55a;
-                                                                image-fit: contain;
-                                                            }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/speaker.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
                                                         }
-                                                        Text {
-                                                            text: "Sensibilidade (VAD)";
-                                                            color: #23a55a;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
-
                                                     Text {
-                                                        text: "Fale normalmente. Ajuste o controle para que sua voz ultrapasse a marca branca, mas ruídos como teclado mecânico e respiração fiquem abaixo.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Sensibilidade (VAD)";
+                                                        color: #23a55a;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Fale normalmente. Ajuste o controle para que sua voz ultrapasse a marca branca, mas ruídos como teclado mecânico e respiração fiquem abaixo.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
 
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
                                         // --- ROW 4: VU METER & TEST MIC + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            // Option Block (Left)
+                                            // Option Block (Left - Col 2)
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
+                                                padding-right: 16px;
                                                 spacing: 8px;
 
                                                 HorizontalLayout {
@@ -4156,146 +4170,146 @@ export component AppWindow inherits Window {
                                                 }
                                             }
 
-                                            // Guide Block (Right - Accompanying)
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/headphones.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #f0b232;
-                                                                image-fit: contain;
-                                                            }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/headphones.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #f0b232;
+                                                            image-fit: contain;
                                                         }
-                                                        Text {
-                                                            text: "Teste de Retorno (Loopback)";
-                                                            color: #f0b232;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
-
                                                     Text {
-                                                        text: "Permite escutar a sua voz tratada em tempo real com o filtro do Litecord nos seus fones para calibrar volume e clareza antes das partidas.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Teste de Retorno (Loopback)";
+                                                        color: #f0b232;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Permite escutar a sua voz tratada em tempo real com o filtro do Litecord nos seus fones para calibrar volume e clareza antes das partidas.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
 
                                         // --- ROW 5: SPEECH PRIORITY (DUCKING) + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            // Option Block (Left)
-                                            Rectangle {
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
                                                 horizontal-stretch: 1;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-right: 16px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
-                                                    spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 8px;
-                                                        Text {
-                                                            text: "👑 Atenuação de Voz Inteligente (Ducking)";
-                                                            color: #f2f3f5;
-                                                            font-size: 13px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                        Text {
-                                                            text: "ATIVO (P:1 a P:5)";
-                                                            color: #23a55a;
-                                                            font-size: 10px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/crown.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #f0b232;
+                                                            image-fit: contain;
                                                         }
                                                     }
-
                                                     Text {
-                                                        text: "O motor de áudio Opus PLC reduz automaticamente em 12dB o som dos outros membros quando líderes táticos com prioridade falam.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Atenuação de Voz Inteligente (Ducking)";
+                                                        color: #f2f3f5;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    Text {
+                                                        text: "ATIVO (P:1 a P:5)";
+                                                        color: #23a55a;
+                                                        font-size: 10px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: "O motor de áudio Opus PLC reduz automaticamente em 12dB o som dos outros membros quando líderes táticos com prioridade falam.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
 
-                                            // Guide Block (Right - Accompanying)
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/rocket.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #5865f2;
-                                                                image-fit: contain;
-                                                            }
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/rocket.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
                                                         }
-                                                        Text {
-                                                            text: "Vantagem Competitiva";
-                                                            color: #5865f2;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
-
                                                     Text {
-                                                        text: "Elimina a cacofonia em momentos decisivos de jogos FPS/MOBA, garantindo que callouts críticos se sobressaiam instantaneamente.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Vantagem Competitiva";
+                                                        color: #5865f2;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Elimina a cacofonia em momentos decisivos de jogos FPS/MOBA, garantindo que callouts críticos se sobressaiam instantaneamente.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 16px; }
                                     }
 
                                     // =============================================================
@@ -4305,11 +4319,12 @@ export component AppWindow inherits Window {
                                         spacing: 16px;
 
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            // Option Block (Left)
+                                            // Option Block (Left - Col 2)
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
+                                                padding-right: 16px;
                                                 spacing: 8px;
 
                                                 HorizontalLayout {
@@ -4393,85 +4408,88 @@ export component AppWindow inherits Window {
                                                 }
                                             }
 
-                                            // Guide Block (Right - Accompanying)
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 12px;
 
                                                 VerticalLayout {
-                                                    padding-top: 14px;
-                                                    padding-bottom: 14px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
-                                                    spacing: 12px;
-
-                                                    VerticalLayout {
-                                                        spacing: 4px;
-                                                        HorizontalLayout {
-                                                            spacing: 6px;
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Image {
-                                                                    source: @image-url("../assets/globe.svg");
-                                                                    width: 14px;
-                                                                    height: 14px;
-                                                                    colorize: #5865f2;
-                                                                    image-fit: contain;
-                                                                }
+                                                    spacing: 6px;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/globe.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #5865f2;
+                                                                image-fit: contain;
                                                             }
-                                                            Text {
-                                                                text: "Troca Instantânea";
-                                                                color: #5865f2;
-                                                                font-size: 12px;
-                                                                font-weight: 700;
-                                                                vertical-alignment: center;
-                                                            }
-                                                            Rectangle { horizontal-stretch: 1; }
                                                         }
                                                         Text {
-                                                            text: "A alteração de idioma é aplicada em tempo real em todas as janelas sem necessidade de reiniciar o Litecord.";
-                                                            color: #949ba4;
-                                                            font-size: 11px;
-                                                            wrap: word-wrap;
+                                                            text: "Troca Instantânea";
+                                                            color: #5865f2;
+                                                            font-size: 12px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
                                                         }
+                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
+                                                    Text {
+                                                        text: "A alteração de idioma é aplicada em tempo real em todas as janelas sem necessidade de reiniciar o Litecord.";
+                                                        color: #949ba4;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
+                                                    }
+                                                }
 
-                                                    VerticalLayout {
-                                                        spacing: 4px;
-                                                        HorizontalLayout {
-                                                            spacing: 6px;
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Image {
-                                                                    source: @image-url("../assets/rocket.svg");
-                                                                    width: 14px;
-                                                                    height: 14px;
-                                                                    colorize: #23a55a;
-                                                                    image-fit: contain;
-                                                                }
+                                                // Horizontal separator between the two guides
+                                                Rectangle { height: 1px; background: #282a2e; }
+
+                                                VerticalLayout {
+                                                    spacing: 6px;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/rocket.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #23a55a;
+                                                                image-fit: contain;
                                                             }
-                                                            Text {
-                                                                text: "Detecção Automática";
-                                                                color: #23a55a;
-                                                                font-size: 12px;
-                                                                font-weight: 700;
-                                                                vertical-alignment: center;
-                                                            }
-                                                            Rectangle { horizontal-stretch: 1; }
                                                         }
                                                         Text {
-                                                            text: "A opção 'Auto' identifica a região e linguagem padrão do seu sistema operacional (Windows/Linux).";
-                                                            color: #949ba4;
-                                                            font-size: 11px;
-                                                            wrap: word-wrap;
+                                                            text: "Detecção Automática";
+                                                            color: #23a55a;
+                                                            font-size: 12px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
                                                         }
+                                                        Rectangle { horizontal-stretch: 1; }
+                                                    }
+                                                    Text {
+                                                        text: "A opção 'Auto' identifica a região e linguagem padrão do seu sistema operacional (Windows/Linux).";
+                                                        color: #949ba4;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
                                                     }
                                                 }
                                             }
                                         }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 16px; }
                                     }
 
                                     // =============================================================
@@ -4482,243 +4500,279 @@ export component AppWindow inherits Window {
 
                                         // --- ROW 1: E2EE VIDEO/AUDIO + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            Rectangle {
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
                                                 horizontal-stretch: 1;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-right: 16px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
-                                                    spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 8px;
-                                                        Text {
-                                                            text: "🛡️ Criptografia E2EE de Vídeo & Som";
-                                                            color: #f2f3f5;
-                                                            font-size: 13px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                        Text {
-                                                            text: "AES-256-GCM ATIVO";
-                                                            color: #23a55a;
-                                                            font-size: 10px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/shield.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Cada quadro a 60 FPS e áudio loopback é criptografado com chaves simétricas de 256 bits via aceleração de hardware AES-NI.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Criptografia E2EE de Vídeo & Som";
+                                                        color: #f2f3f5;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    Text {
+                                                        text: "AES-256-GCM ATIVO";
+                                                        color: #23a55a;
+                                                        font-size: 10px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "Cada quadro a 60 FPS e áudio loopback é criptografado com chaves simétricas de 256 bits via aceleração de hardware AES-NI.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
 
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        Text {
-                                                            text: "🔒 Proteção Wi-Fi & LAN";
-                                                            color: #23a55a;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/shield.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
                                                         }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
                                                     Text {
-                                                        text: "Impede que qualquer pessoa no mesmo roteador capture seu stream com analisadores de pacotes como Wireshark.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Proteção Wi-Fi & LAN";
+                                                        color: #23a55a;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: "Impede que qualquer pessoa no mesmo roteador capture seu stream com analisadores de pacotes como Wireshark.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
 
                                         // --- ROW 2: WINDOWS DPAPI + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            Rectangle {
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
                                                 horizontal-stretch: 1;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-right: 16px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
-                                                    spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 8px;
-                                                        Text {
-                                                            text: "🔑 Cofre de Credenciais Windows DPAPI";
-                                                            color: #f2f3f5;
-                                                            font-size: 13px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                        Text {
-                                                            text: "PROTEGIDO";
-                                                            color: #5865f2;
-                                                            font-size: 10px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/key.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Seu token do Discord é armazenado com criptografia nativa CryptProtectData vinculada à sua conta de usuário do Windows.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Cofre de Credenciais Windows DPAPI";
+                                                        color: #f2f3f5;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    Text {
+                                                        text: "PROTEGIDO";
+                                                        color: #5865f2;
+                                                        font-size: 10px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "Seu token do Discord é armazenado com criptografia nativa CryptProtectData vinculada à sua conta de usuário do Windows.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
 
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        Text {
-                                                            text: "🛡️ Imunidade a Stealers";
-                                                            color: #5865f2;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/shield.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
                                                         }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
                                                     Text {
-                                                        text: "Scripts e malwares não autorizados não conseguem roubar sua sessão porque a chave criptográfica reside no kernel do Windows.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Imunidade a Stealers";
+                                                        color: #5865f2;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: "Scripts e malwares não autorizados não conseguem roubar sua sessão porque a chave criptográfica reside no kernel do Windows.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
 
                                         // --- ROW 3: DISCORD DAVE + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            Rectangle {
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
                                                 horizontal-stretch: 1;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-right: 16px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
-                                                    spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 8px;
-                                                        Text {
-                                                            text: "🎙️ Voz Discord Oficial (Protocolo DAVE)";
-                                                            color: #f2f3f5;
-                                                            font-size: 13px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                        Text {
-                                                            text: "MLS RFC 9420";
-                                                            color: #23a55a;
-                                                            font-size: 10px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Comunicação de voz criptografada ponta a ponta com os servidores de voz oficiais do Discord sem intermediários.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Voz Discord Oficial (Protocolo DAVE)";
+                                                        color: #f2f3f5;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                    Text {
+                                                        text: "MLS RFC 9420";
+                                                        color: #23a55a;
+                                                        font-size: 10px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "Comunicação de voz criptografada ponta a ponta com os servidores de voz oficiais do Discord sem intermediários.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
 
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        Text {
-                                                            text: "⚡ Zero Intermediários";
-                                                            color: #23a55a;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/lightning.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
                                                         }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
                                                     Text {
-                                                        text: "Conexões 100% diretas com a API do Discord. Não existem servidores de terceiros ou telemetria embutida.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Zero Intermediários";
+                                                        color: #23a55a;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: "Conexões 100% diretas com a API do Discord. Não existem servidores de terceiros ou telemetria embutida.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 16px; }
                                     }
 
                                     // =============================================================
@@ -4729,178 +4783,187 @@ export component AppWindow inherits Window {
 
                                         // --- ROW 1: UPDATER + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            Rectangle {
+                                            // Option Block (Left - Col 2)
+                                            HorizontalLayout {
                                                 horizontal-stretch: 1;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
-
-                                                HorizontalLayout {
-                                                    padding-top: 14px;
-                                                    padding-bottom: 14px;
-                                                    padding-left: 16px;
-                                                    padding-right: 16px;
-                                                    spacing: 14px;
-
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        spacing: 4px;
-                                                        horizontal-stretch: 1;
-
-                                                        HorizontalLayout {
-                                                            spacing: 8px;
-                                                            Text {
-                                                                text: "Litecord Client";
-                                                                color: #f2f3f5;
-                                                                font-size: 14px;
-                                                                font-weight: 700;
-                                                                vertical-alignment: center;
-                                                            }
-
-                                                            Text {
-                                                                text: "v" + root.app_version;
-                                                                color: #5865f2;
-                                                                font-size: 12px;
-                                                                font-weight: 700;
-                                                                vertical-alignment: center;
-                                                            }
-
-                                                            Rectangle { horizontal-stretch: 1; }
-                                                        }
-
-                                                        if root.update_check_feedback != "": Text {
-                                                            text: root.update_check_feedback;
-                                                            color: #23a55a;
-                                                            font-size: 11px;
-                                                        }
-                                                    }
-
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        Button {
-                                                            text: root.is_checking_update ? "Verificando..." : "Verificar Atualizações";
-                                                            enabled: !root.is_checking_update;
-                                                            clicked => { root.check_for_updates(); }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            Rectangle {
-                                                width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-right: 16px;
+                                                spacing: 14px;
 
                                                 VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
-                                                    spacing: 6px;
+                                                    alignment: center;
+                                                    spacing: 4px;
+                                                    horizontal-stretch: 1;
 
                                                     HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/rocket.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #f0b232;
-                                                                image-fit: contain;
-                                                            }
-                                                        }
+                                                        spacing: 8px;
                                                         Text {
-                                                            text: "🚀 Canal Oficial de Releases";
-                                                            color: #f0b232;
+                                                            text: "Litecord Client";
+                                                            color: #f2f3f5;
+                                                            font-size: 14px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+
+                                                        Text {
+                                                            text: "v" + root.app_version;
+                                                            color: #5865f2;
                                                             font-size: 12px;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
+
                                                         Rectangle { horizontal-stretch: 1; }
                                                     }
-                                                    Text {
-                                                        text: "As atualizações são verificadas diretamente no repositório do GitHub com validação de assinatura de domínio.";
-                                                        color: #949ba4;
+
+                                                    if root.update_check_feedback != "": Text {
+                                                        text: root.update_check_feedback;
+                                                        color: #23a55a;
                                                         font-size: 11px;
-                                                        wrap: word-wrap;
+                                                    }
+                                                }
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Button {
+                                                        text: root.is_checking_update ? "Verificando..." : "Verificar Atualizações";
+                                                        enabled: !root.is_checking_update;
+                                                        clicked => { root.check_for_updates(); }
                                                     }
                                                 }
                                             }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
+
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/rocket.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #f0b232;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "Canal Oficial de Releases";
+                                                        color: #f0b232;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: "As atualizações são verificadas diretamente no repositório do GitHub com validação de assinatura de domínio.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
                                         }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
 
                                         // --- ROW 2: ARCHITECTURE & DEEPSLEEP + GUIDE ---
                                         HorizontalLayout {
-                                            spacing: 16px;
+                                            spacing: 0px;
 
-                                            Rectangle {
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
                                                 horizontal-stretch: 1;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-right: 16px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 14px;
-                                                    padding-bottom: 14px;
-                                                    padding-left: 16px;
-                                                    padding-right: 16px;
-                                                    spacing: 6px;
-
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/lightning.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #f0b232;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
                                                     Text {
-                                                        text: "⚡ Performance Nativa em Rust";
+                                                        text: "Performance Nativa em Rust";
                                                         color: #f2f3f5;
                                                         font-size: 13px;
                                                         font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
-                                                    Text {
-                                                        text: "• Uso de CPU: < 0.1% em idle (0.0% no modo DeepSleep na bandeja)\n• Memória RAM: ~32 MB (contra mais de 700 MB do Electron)\n• Pipeline de áudio Opus PLC com atenuação de volume inteligente";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: "• Uso de CPU: < 0.1% em idle (0.0% no modo DeepSleep na bandeja)\n• Memória RAM: ~32 MB (contra mais de 700 MB do Electron)\n• Pipeline de áudio Opus PLC com atenuação de volume inteligente";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
 
+                                            // Vertical Separator Line between Col 2 and Col 3
                                             Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
                                                 width: 290px;
-                                                background: #1e1f22;
-                                                border-radius: 8px;
-                                                border-width: 1px;
-                                                border-color: #383a40;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
 
-                                                VerticalLayout {
-                                                    padding-top: 12px;
-                                                    padding-bottom: 12px;
-                                                    padding-left: 14px;
-                                                    padding-right: 14px;
+                                                HorizontalLayout {
                                                     spacing: 6px;
-
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        Text {
-                                                            text: "🌙 Modo DeepSleep";
-                                                            color: #23a55a;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/moon.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
                                                         }
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
                                                     Text {
-                                                        text: "Ao minimizar para a bandeja, a interface congela sua renderização para garantir 100% de FPS para seus jogos.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
+                                                        text: "Modo DeepSleep";
+                                                        color: #23a55a;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
                                                     }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+                                                Text {
+                                                    text: "Ao minimizar para a bandeja, a interface congela sua renderização para garantir 100% de FPS para seus jogos.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 16px; }
                                     }
                                 }
                             }
