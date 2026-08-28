@@ -270,6 +270,18 @@ pub fn set_my_voice_channel_id(cid: u64) {
     MY_VOICE_CHANNEL_ID.store(cid, Ordering::Relaxed);
 }
 
+static VOICE_SECRET_KEY: std::sync::OnceLock<Arc<std::sync::Mutex<Option<[u8; 32]>>>> = std::sync::OnceLock::new();
+
+#[allow(dead_code)]
+pub fn get_voice_secret_key_store() -> Arc<std::sync::Mutex<Option<[u8; 32]>>> {
+    VOICE_SECRET_KEY.get_or_init(|| Arc::new(std::sync::Mutex::new(None))).clone()
+}
+
+#[allow(dead_code)]
+pub fn get_voice_secret_key() -> Option<[u8; 32]> {
+    get_voice_secret_key_store().lock().unwrap().clone()
+}
+
 pub fn get_my_voice_channel_id() -> u64 {
     MY_VOICE_CHANNEL_ID.load(Ordering::Relaxed)
 }
@@ -1988,12 +2000,17 @@ impl GatewayClient {
                     }
                 });
 
+                let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
+
                 // Read incoming Gateway messages loop
                 while let Some(msg_result) = read.next().await {
                     match msg_result {
                         Ok(Message::Text(text)) => {
                             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                                 let op = value["op"].as_u64().unwrap_or(99);
+                                if let Some(s) = value["s"].as_i64() {
+                                    last_seq_arc.store(s, Ordering::Relaxed);
+                                }
 
                                 match op {
                                     10 => {
@@ -2005,7 +2022,12 @@ impl GatewayClient {
                                         info!("Heartbeat interval recebido: {} ms", heartbeat_interval);
 
                                         // Send initial Heartbeat (Opcode 1)
-                                        let hb_initial = serde_json::json!({ "op": 1, "d": null });
+                                        let last_s = last_seq_arc.load(Ordering::Relaxed);
+                                        let hb_initial = if last_s >= 0 {
+                                            serde_json::json!({ "op": 1, "d": last_s })
+                                        } else {
+                                            serde_json::json!({ "op": 1, "d": null })
+                                        };
                                         {
                                             let mut w = write_arc.lock().await;
                                             let _ = w.send(Message::Text(hb_initial.to_string().into())).await;
@@ -2057,10 +2079,16 @@ impl GatewayClient {
 
                                         // Spawn Heartbeat Loop
                                         let write_hb = Arc::clone(&write_arc);
+                                        let last_seq_hb = Arc::clone(&last_seq_arc);
                                         tokio::spawn(async move {
                                             loop {
                                                 sleep(Duration::from_millis(heartbeat_interval)).await;
-                                                let hb = serde_json::json!({ "op": 1, "d": null });
+                                                let last_s = last_seq_hb.load(Ordering::Relaxed);
+                                                let hb = if last_s >= 0 {
+                                                    serde_json::json!({ "op": 1, "d": last_s })
+                                                } else {
+                                                    serde_json::json!({ "op": 1, "d": null })
+                                                };
                                                 let mut w = write_hb.lock().await;
                                                 if let Err(e) = w.send(Message::Text(hb.to_string().into())).await {
                                                     warn!("Falha ao enviar Heartbeat: {:?}", e);
@@ -2584,10 +2612,11 @@ pub async fn connect_voice_gateway(
                             match op {
                                 8 => {
                                     // Voice Opcode 8: HELLO
-                                    let heartbeat_interval = val["d"]["heartbeat_interval"]
-                                        .as_u64()
-                                        .unwrap_or(20000);
-                                    info!("Voice Gateway HELLO recebido! Intervalo de Heartbeat: {} ms", heartbeat_interval);
+                                    let raw_interval = val["d"]["heartbeat_interval"]
+                                        .as_f64()
+                                        .unwrap_or(20000.0);
+                                    let heartbeat_interval = (raw_interval * 0.75).max(1000.0) as u64;
+                                    info!("Voice Gateway HELLO recebido! Intervalo de Heartbeat configurado: {} ms (servidor={}, fator=0.75)", heartbeat_interval, raw_interval);
 
                                     // 1. Send Opcode 0 Voice Identify (with max_dave_protocol_version: 1 for E2EE DAVE support)
                                     let voice_identify = serde_json::json!({
@@ -2612,17 +2641,17 @@ pub async fn connect_voice_gateway(
                                         }
                                     }
 
-                                    // 2. Spawn Voice Heartbeat loop (Opcode 3 with incremental nonces)
+                                    // 2. Spawn Voice Heartbeat loop (Opcode 3 with epoch timestamp)
                                     let write_hb = Arc::clone(&write_arc);
                                     tokio::spawn(async move {
-                                        let mut nonce: u64 = 1000;
                                         loop {
                                             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id { break; }
                                             sleep(Duration::from_millis(heartbeat_interval)).await;
-                                            nonce += 1;
-                                            let hb = serde_json::json!({ "op": 3, "d": nonce });
+                                            let t_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                                            let hb = serde_json::json!({ "op": 3, "d": t_now });
                                             let mut w = write_hb.lock().await;
-                                            if let Err(_) = w.send(Message::Text(hb.to_string().into())).await {
+                                            if let Err(e) = w.send(Message::Text(hb.to_string().into())).await {
+                                                warn!("⚠️ Falha ao enviar Heartbeat de voz (op=3): {:?}", e);
                                                 break;
                                             }
                                         }
@@ -3711,7 +3740,10 @@ pub async fn connect_voice_gateway(
                                     if let Some(key_arr) = val["d"]["secret_key"].as_array() {
                                         let key_bytes: Vec<u8> = key_arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
                                         if key_bytes.len() == 32 {
-                                            info!("Chave de criptografia AES-256 de 32 bytes configurada com SUCESSO para os pacotes de Ã¡udio!");
+                                            info!("Chave de criptografia AES-256 de 32 bytes configurada com SUCESSO para os pacotes de áudio!");
+                                            let mut fixed = [0u8; 32];
+                                            fixed.copy_from_slice(&key_bytes);
+                                            *get_voice_secret_key_store().lock().unwrap() = Some(fixed);
                                             *secret_key_arc.lock().unwrap() = Some(key_bytes);
                                         }
                                     }

@@ -1113,6 +1113,7 @@ export component AppWindow inherits Window {
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
     callback unhide_stream(string /* user_id */);
+    callback launch_stream_browser();
     callback click_command(string /* command_name */);
     callback handle_input_change(string /* text */);
     callback execute_active_command(string /* cmd_name */, string /* arg_value */, string /* app_id */, string /* cmd_id */, string /* version */, string /* param_name */);
@@ -1279,8 +1280,8 @@ export component AppWindow inherits Window {
     in-out property <bool> is_screen_sharing: false;
     in-out property <bool> show_stream_modal: false;
     in-out property <string> stream_source_tab: "screens";
-    in-out property <string> stream_selected_res: "720p";
-    in-out property <int> stream_selected_fps: 30;
+    in-out property <string> stream_selected_res: "1080p";
+    in-out property <int> stream_selected_fps: 60;
     in-out property <int> stream_selected_source_index: 0;
     in-out property <string> stream_selected_window_id: "";
     in-out property <bool> stream_include_audio: true;
@@ -1301,6 +1302,7 @@ export component AppWindow inherits Window {
     in-out property <string> tr_watching_stream: "Assistindo Transmissão";
     in-out property <string> tr_live_badge: "AO VIVO";
     in-out property <string> tr_stream_quality: "720p 30fps";
+    in-out property <string> local_preview_fps: "";
     in-out property <float> stream_remote_volume: 1.0;
     in-out property <bool> is_popout_intangible: false;
     callback set_stream_volume(string, float);
@@ -2093,7 +2095,9 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
-                                    property <bool> is_streaming_attached: (p.is_self ? (root.is_screen_sharing && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self") : (root.has_active_stream && p.is_streaming && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id));
+                                    property <bool> is_streaming_attached: (p.is_self && root.is_screen_sharing)
+                                        ? (!p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self")
+                                        : (root.has_active_stream && p.is_streaming && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
                                     property <bool> is_this_stream_focused: (root.focused_stream_uid == p.user_id || (p.is_self && (root.focused_stream_uid == "self" || root.focused_stream_uid == p.user_id)));
 
                                     height: is_streaming_attached ? (is_this_stream_focused ? 480px : 260px) : 76px;
@@ -2106,13 +2110,13 @@ export component AppWindow inherits Window {
                                         height: parent.height - 8px;
                                         background: #111214;
                                         border-radius: 8px;
-                                        border-width: p.is_speaking ? 3px : (p.is_self ? 2px : 1px);
-                                        border-color: p.is_speaking ? #23a55a : (p.is_self ? #5865f2 : #383a40);
+                                        border-width: p.is_speaking ? 3px : ((p.is_self && root.is_screen_sharing) ? 2px : 1px);
+                                        border-color: p.is_speaking ? #23a55a : ((p.is_self && root.is_screen_sharing) ? #5865f2 : #383a40);
                                         clip: true;
 
-                                        // Video Canvas (Independent dual buffers: active_stream_frame for self, remote_stream_frame for remote peer)
+                                        // Video Canvas (Independent dual buffers: active_stream_frame for self transmitter, remote_stream_frame for remote peer)
                                         Image {
-                                            source: p.is_self ? root.active_stream_frame : root.remote_stream_frame;
+                                            source: (p.is_self && root.is_screen_sharing) ? root.active_stream_frame : root.remote_stream_frame;
                                             width: 100%;
                                             height: 100%;
                                             image-fit: contain;
@@ -2182,8 +2186,38 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
 
+                                                    // Local Transmitter FPS Counter Badge (Displayed ONLY on local transmitter preview)
+                                                    if (p.is_self && root.is_screen_sharing) && root.local_preview_fps != "": Rectangle {
+                                                        background: #23a55a22;
+                                                        border-radius: 4px;
+                                                        border-width: 1px;
+                                                        border-color: #23a55a;
+                                                        height: 24px;
+                                                        HorizontalLayout {
+                                                            padding-left: 8px;
+                                                            padding-right: 8px;
+                                                            spacing: 5px;
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Rectangle {
+                                                                    width: 6px;
+                                                                    height: 6px;
+                                                                    border-radius: 3px;
+                                                                    background: #23a55a;
+                                                                }
+                                                            }
+                                                            Text {
+                                                                text: root.local_preview_fps;
+                                                                color: #23a55a;
+                                                                font-size: 11px;
+                                                                font-weight: 800;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
                                                     // Stream Audio Volume Slider (only shown for remote stream cards)
-                                                    if !p.is_self: Rectangle {
+                                                    if !(p.is_self && root.is_screen_sharing): Rectangle {
                                                         background: #000000aa;
                                                         border-radius: 4px;
                                                         height: 24px;
@@ -2254,7 +2288,7 @@ export component AppWindow inherits Window {
                                                     }
 
                                                     // If another user is streaming: Mute button and Priority controls directly on the stream card!
-                                                    if !p.is_self: HorizontalLayout {
+                                                    if !(p.is_self && root.is_screen_sharing): HorizontalLayout {
                                                         spacing: 4px;
                                                         alignment: start;
 
@@ -2367,7 +2401,7 @@ export component AppWindow inherits Window {
                                                         card_stop_ta := TouchArea {
                                                             mouse-cursor: pointer;
                                                             clicked => {
-                                                                if p.is_self {
+                                                                if (p.is_self && root.is_screen_sharing) {
                                                                     root.toggle_screen_share();
                                                                 } else {
                                                                     root.hide_stream(p.user_id);
@@ -2433,7 +2467,7 @@ export component AppWindow inherits Window {
                                                                 if is_this_stream_focused {
                                                                     root.focused_stream_uid = "";
                                                                 } else {
-                                                                    root.focused_stream_uid = p.is_self ? "self" : p.user_id;
+                                                                    root.focused_stream_uid = (p.is_self && root.is_screen_sharing) ? "self" : p.user_id;
                                                                 }
                                                             }
                                                         }
@@ -2443,7 +2477,7 @@ export component AppWindow inherits Window {
                                         }
 
                                         // Self-Stream Discord-Style Banner Overlay
-                                        if p.is_self: Rectangle {
+                                        if (p.is_self && root.is_screen_sharing): Rectangle {
                                             x: (parent.width - 200px) / 2;
                                             y: parent.height - 34px;
                                             width: 200px;
@@ -4637,8 +4671,8 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            // 4. Stream Quality Section Title
-                            Text {
+                            // 4. Stream Quality Section (Displayed ONLY for Screens and Windows, as Cameras use their optimal native sensor stream)
+                            if root.stream_source_tab != "cameras": Text {
                                 text: "QUALIDADE DA TRANSMISSÃO";
                                 color: #b5bac1;
                                 font-size: 11px;
@@ -4646,7 +4680,7 @@ export component AppWindow inherits Window {
                             }
 
                             // Resolution Selection (1080p, 720p, 480p)
-                            VerticalBox {
+                            if root.stream_source_tab != "cameras": VerticalBox {
                                 padding: 0px;
                                 spacing: 6px;
 
@@ -4742,7 +4776,7 @@ export component AppWindow inherits Window {
                             }
 
                             // Framerate Selection (60 FPS, 30 FPS, 15 FPS)
-                            VerticalBox {
+                            if root.stream_source_tab != "cameras": VerticalBox {
                                 padding: 0px;
                                 spacing: 6px;
 
@@ -4837,6 +4871,42 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            // Camera Info Note (Single sleek note only when cameras exist)
+                            if root.stream_source_tab == "cameras" && root.available_cameras.length > 0: Rectangle {
+                                background: #2b2d31;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: #383a40;
+                                height: 44px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 10px;
+                                    alignment: start;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/camera.svg");
+                                            width: 18px;
+                                            height: 18px;
+                                            colorize: #5865f2;
+                                            image-fit: contain;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "A webcam transmitirá utilizando a resolução e taxa nativas do seu dispositivo.";
+                                            color: #949ba4;
+                                            font-size: 11px;
+                                        }
+                                    }
+                                }
+                            }
+
                             // 5. Stream Audio Toggle Section (Disabled/informational for Cameras)
                             if root.stream_source_tab != "cameras": Rectangle {
                                 background: #2b2d31;
@@ -4908,6 +4978,98 @@ export component AppWindow inherits Window {
                                                 mouse-cursor: pointer;
                                                 clicked => {
                                                     root.stream_include_audio = !root.stream_include_audio;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.stream_source_tab == "windows": Rectangle {
+                                background: #2b2d31;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: #383a40;
+                                height: 52px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 12px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: start;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/globe.svg");
+                                                width: 18px;
+                                                height: 18px;
+                                                colorize: #5865f2;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+
+                                            Text {
+                                                text: "Navegador para Transmissão (Vídeos / DRM)";
+                                                color: #f2f3f5;
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                            }
+
+                                            Text {
+                                                text: "Abre o navegador sem travas de tela preta para assistir com amigos";
+                                                color: #949ba4;
+                                                font-size: 10px;
+                                            }
+                                        }
+                                    }
+
+                                    // Launch Button
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            height: 32px;
+                                            border-radius: 4px;
+                                            background: stream_browser_ta.has-hover ? #4752c4 : #5865f2;
+
+                                            HorizontalLayout {
+                                                padding-left: 12px;
+                                                padding-right: 12px;
+                                                spacing: 6px;
+                                                alignment: center;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/external-link.svg");
+                                                        width: 12px;
+                                                        height: 12px;
+                                                        colorize: #ffffff;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: "Abrir";
+                                                    color: #ffffff;
+                                                    font-size: 12px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            stream_browser_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.launch_stream_browser();
                                                 }
                                             }
                                         }
@@ -5071,6 +5233,7 @@ export component PopoutStreamWindow inherits Window {
     in-out property <image> stream_frame;
     in-out property <string> username: "Transmissão";
     in-out property <string> user_id: "";
+    in-out property <string> stream_fps: "";
     in-out property <float> stream_volume: 1.0;
     in-out property <bool> is_pinned: false;
     in-out property <bool> is_intangible: false;
@@ -5163,6 +5326,39 @@ export component PopoutStreamWindow inherits Window {
                             Text {
                                 text: "AO VIVO";
                                 color: #ffffff;
+                                font-size: 10px;
+                                font-weight: 800;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // FPS Counter Badge (Local)
+                if root.stream_fps != "": VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        background: #23a55a22;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #23a55a;
+                        height: 22px;
+                        HorizontalLayout {
+                            padding-left: 7px;
+                            padding-right: 7px;
+                            spacing: 4px;
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 5px;
+                                    height: 5px;
+                                    border-radius: 2.5px;
+                                    background: #23a55a;
+                                }
+                            }
+                            Text {
+                                text: root.stream_fps;
+                                color: #23a55a;
                                 font-size: 10px;
                                 font-weight: 800;
                                 vertical-alignment: center;
