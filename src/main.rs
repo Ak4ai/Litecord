@@ -831,6 +831,7 @@ async fn fetch_and_populate_channels(
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_w_top.upgrade() {
             ui.set_connection_status(format!("Servidor: {} | Gateway v9 (Online)", g_name_top).into());
+            ui.set_active_guild_name(g_name_top.into());
         }
     });
 
@@ -5073,9 +5074,12 @@ fn build_ui_channels(
     collapsed_cats: &std::collections::HashSet<String>,
 ) -> Vec<ChannelItem> {
     let mut ui_channels: Vec<ChannelItem> = Vec::new();
+    let mut category_count = 0;
     for ch in channels_data {
         if ch.is_category {
+            category_count += 1;
             let is_collapsed = collapsed_cats.contains(&ch.id);
+            let has_separator = category_count > 1;
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
                 name: ch.name.clone().into(),
@@ -5084,6 +5088,7 @@ fn build_ui_channels(
                 is_category: true,
                 has_parent: false,
                 is_collapsed,
+                has_separator,
             });
         } else {
             if let Some(ref pid) = ch.parent_id {
@@ -5100,6 +5105,7 @@ fn build_ui_channels(
                 is_category: false,
                 has_parent: ch.parent_id.is_some(),
                 is_collapsed: false,
+                has_separator: false,
             });
         }
     }
