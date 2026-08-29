@@ -1904,8 +1904,11 @@ use rand::RngCore;
 /// Deriva uma chave AES de 32 bytes exclusiva e sincronizada para todos os participantes do canal de voz
 fn get_voice_encryption_key(cid: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"litecord_e2ee_voice_p2p_channel_salt_v2_2026");
+    hasher.update(b"litecord_e2ee_voice_p2p_channel_salt_v3_2026");
     hasher.update(&cid.to_be_bytes());
+    if let Some(secret) = crate::gateway::get_voice_secret_key() {
+        hasher.update(&secret);
+    }
     let res = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&res);

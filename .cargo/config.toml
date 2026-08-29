@@ -2,3 +2,7 @@
 # Caso mude de usuário ou precise recompilar no notebook sem este caminho:
 # Você pode alterar o caminho abaixo ou comentar a linha para usar a pasta local target/
 target-dir = "C:/Users/Henrique/.cargo-target/litecord"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+

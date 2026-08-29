@@ -1891,8 +1891,8 @@ impl GatewayClient {
             token = token[7..].to_string();
         }
 
-        let prefix_len = token.len().min(12);
-        info!("Token sanitizado (inÃ­cio): {}...", &token[..prefix_len]);
+        let _prefix_len = token.len().min(12);
+        info!("Token sanitizado carregado com sucesso (tamanho: {} chars).", token.len());
 
         Self {
             token,
