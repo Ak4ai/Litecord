@@ -40,15 +40,31 @@ impl Language {
     }
 
     pub fn display_info(&self) -> (&'static str, &'static str) {
-        match self {
-            Language::Auto => ("🌐 Auto (System)", "Detect OS Language"),
-            Language::English => ("🇺🇸 English (US)", "Default Global"),
-            Language::Portuguese => ("🇧🇷 Português (Brasil)", "Portuguese"),
-            Language::Spanish => ("🇪🇸 Español", "Spanish"),
-            Language::German => ("🇩🇪 Deutsch", "German"),
-            Language::French => ("🇫🇷 Français", "French"),
-            Language::Russian => ("🇷🇺 Русский", "Russian"),
-            Language::Japanese => ("🇯🇵 日本語", "Japanese"),
+        #[cfg(target_os = "windows")]
+        {
+            match self {
+                Language::Auto => ("🌐 Auto (System)", "Detect OS Language"),
+                Language::English => ("🇺🇸 English (US)", "Default Global"),
+                Language::Portuguese => ("🇧🇷 Português (Brasil)", "Portuguese"),
+                Language::Spanish => ("🇪🇸 Español", "Spanish"),
+                Language::German => ("🇩🇪 Deutsch", "German"),
+                Language::French => ("🇫🇷 Français", "French"),
+                Language::Russian => ("🇷🇺 Русский", "Russian"),
+                Language::Japanese => ("🇯🇵 日本語", "Japanese"),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            match self {
+                Language::Auto => ("Auto (System)", "Detect OS Language"),
+                Language::English => ("English (US)", "Default Global"),
+                Language::Portuguese => ("Português (Brasil)", "Portuguese"),
+                Language::Spanish => ("Español", "Spanish"),
+                Language::German => ("Deutsch", "German"),
+                Language::French => ("Français", "French"),
+                Language::Russian => ("Русский", "Russian"),
+                Language::Japanese => ("日本語", "Japanese"),
+            }
         }
     }
 

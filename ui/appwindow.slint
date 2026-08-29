@@ -1230,8 +1230,8 @@ export component AppWindow inherits Window {
     in-out property <string> tr_settings_output_device: "OUTPUT DEVICE (SPEAKERS / HEADPHONES)";
     in-out property <string> tr_settings_threshold: "VOICE DETECTION SENSITIVITY (THRESHOLD)";
     in-out property <string> tr_settings_mic_level: "REAL-TIME MICROPHONE LEVEL";
-    in-out property <string> tr_settings_btn_test_start: "🎧 Test Microphone (\"Hear Yourself\")";
-    in-out property <string> tr_settings_btn_test_stop: "🎙️ Stop Testing (Listening...)";
+    in-out property <string> tr_settings_btn_test_start: "Test Microphone (\"Hear Yourself\")";
+    in-out property <string> tr_settings_btn_test_stop: "Stop Testing (Listening...)";
     in-out property <string> tr_settings_done: "Done";
     in-out property <string> tr_logout_title: "Sign Out";
     in-out property <string> tr_logout_confirm_prefix: "Do you want to log out from ";
@@ -1306,6 +1306,7 @@ export component AppWindow inherits Window {
     in-out property <string> local_preview_fps: "";
     in-out property <float> stream_remote_volume: 1.0;
     in-out property <bool> is_popout_intangible: false;
+    in-out property <bool> is_maximized: false;
     callback set_stream_volume(string, float);
     callback toggle_popout_intangible();
 
@@ -1435,7 +1436,7 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             alignment: center;
                             Image {
-                                source: @image-url("../assets/chrome-maximize.svg");
+                                source: root.is_maximized ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
                                 width: 10px;
                                 height: 10px;
                                 colorize: #dbdee1;
@@ -2183,7 +2184,7 @@ export component AppWindow inherits Window {
                     }
 
                     // Voice Room Participants Dynamic Stage Grid
-                    if !root.is_voice_connecting: Rectangle {
+                    if !root.is_voice_connecting: voice_stage_container := Rectangle {
                         vertical-stretch: 1;
                         background: #313338;
 
@@ -2205,7 +2206,11 @@ export component AppWindow inherits Window {
                                         : (root.has_active_stream && p.is_streaming && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
                                     property <bool> is_this_stream_focused: (root.focused_stream_uid == p.user_id || (p.is_self && (root.focused_stream_uid == "self" || root.focused_stream_uid == p.user_id)));
 
-                                    height: is_streaming_attached ? (is_this_stream_focused ? 480px : 260px) : 76px;
+                                    height: is_streaming_attached
+                                        ? (is_this_stream_focused
+                                            ? Math.max(360px, voice_stage_container.height - 52px)
+                                            : Math.max(200px, Math.min(280px, (voice_stage_container.height - 80px) * 0.5)))
+                                        : 76px;
                                     animate height { duration: 200ms; }
                                     background: #00000000;
 
@@ -4103,10 +4108,9 @@ export component AppWindow inherits Window {
                                                             background: #5865f2;
                                                             border-radius: 4px;
                                                             height: 18px;
+                                                            width: 44px;
 
                                                             HorizontalLayout {
-                                                                padding-left: 8px;
-                                                                padding-right: 8px;
                                                                 alignment: center;
                                                                 Text {
                                                                     text: Math.round(root.vad_threshold * 100) + "%";
@@ -4114,6 +4118,7 @@ export component AppWindow inherits Window {
                                                                     font-size: 11px;
                                                                     font-weight: 700;
                                                                     vertical-alignment: center;
+                                                                    horizontal-alignment: center;
                                                                 }
                                                             }
                                                         }
@@ -4134,7 +4139,7 @@ export component AppWindow inherits Window {
                                                     Slider {
                                                         horizontal-stretch: 1;
                                                         minimum: 0.0;
-                                                        maximum: 0.40;
+                                                        maximum: 1.0;
                                                         value: root.vad_threshold;
                                                         changed(val) => {
                                                             root.vad_threshold = val;
@@ -4143,7 +4148,7 @@ export component AppWindow inherits Window {
                                                     }
 
                                                     Text {
-                                                        text: "40%";
+                                                        text: "100%";
                                                         color: #80848e;
                                                         font-size: 11px;
                                                         font-weight: 600;
@@ -4231,14 +4236,40 @@ export component AppWindow inherits Window {
 
                                                     Rectangle { horizontal-stretch: 1; }
 
-                                                    Text {
-                                                        text: root.mic_level >= root.vad_threshold 
-                                                            ? "VOZ ATIVA (" + Math.round(root.mic_level * 100) + "% / Lim: " + Math.round(root.vad_threshold * 100) + "%)" 
-                                                            : "SILÊNCIO (" + Math.round(root.mic_level * 100) + "% / Lim: " + Math.round(root.vad_threshold * 100) + "%)";
-                                                        color: root.mic_level >= root.vad_threshold ? #23a55a : #949ba4;
-                                                        font-size: 11px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        alignment: center;
+
+                                                        Rectangle {
+                                                            background: root.mic_level >= root.vad_threshold ? #23a55a20 : #2b2d31;
+                                                            border-radius: 4px;
+                                                            border-width: 1px;
+                                                            border-color: root.mic_level >= root.vad_threshold ? #23a55a : #383a40;
+                                                            height: 18px;
+                                                            width: 68px;
+
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Text {
+                                                                    text: root.mic_level >= root.vad_threshold ? "ATIVO" : "SILÊNCIO";
+                                                                    color: root.mic_level >= root.vad_threshold ? #23a55a : #949ba4;
+                                                                    font-size: 10px;
+                                                                    font-weight: 700;
+                                                                    vertical-alignment: center;
+                                                                    horizontal-alignment: center;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Text {
+                                                            width: 36px;
+                                                            horizontal-alignment: right;
+                                                            text: Math.round(root.mic_level * 100) + "%";
+                                                            color: root.mic_level >= root.vad_threshold ? #23a55a : #949ba4;
+                                                            font-size: 11px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
                                                     }
                                                 }
 
@@ -4251,26 +4282,21 @@ export component AppWindow inherits Window {
                                                     clip: true;
 
                                                     // Active Volume Level Fill
-                                                    HorizontalLayout {
-                                                        padding: 3px;
-                                                        spacing: 0px;
-
-                                                        Rectangle {
-                                                            width: root.mic_level <= 0.005 ? 0px : Math.min(480px, Math.max(2px, (root.mic_level / 0.40) * 480px));
-                                                            height: 14px;
-                                                            background: root.mic_level >= root.vad_threshold ? #23a55a : #f0b232;
-                                                            border-radius: 4px;
-                                                        }
-
-                                                        Rectangle { horizontal-stretch: 1; }
+                                                    Rectangle {
+                                                        x: 3px;
+                                                        y: 3px;
+                                                        height: parent.height - 6px;
+                                                        width: root.mic_level <= 0.005 ? 0px : Math.min(parent.width - 6px, Math.max(2px, (parent.width - 6px) * Math.min(1.0, Math.max(0.0, root.mic_level))));
+                                                        background: root.mic_level >= root.vad_threshold ? #23a55a : #f0b232;
+                                                        border-radius: 4px;
                                                     }
 
                                                     // Threshold Position Indicator Marker Line
                                                     Rectangle {
-                                                        x: Math.min(480px, (root.vad_threshold / 0.40) * 480px + 3px);
+                                                        x: Math.min(parent.width - 5px, Math.max(3px, 3px + (parent.width - 6px) * Math.min(1.0, Math.max(0.0, root.vad_threshold))));
                                                         y: 0px;
                                                         width: 2px;
-                                                        height: 22px;
+                                                        height: parent.height;
                                                         background: #ffffff;
                                                     }
                                                 }
@@ -6563,8 +6589,8 @@ export component PopoutStreamWindow inherits Window {
     background: #111214;
     preferred-width: 640px;
     preferred-height: 360px;
-    min-width: 320px;
-    min-height: 180px;
+    min-width: 180px;
+    min-height: 120px;
     default-font-family: "Segoe UI, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
 
     // Visual boundary border
@@ -6648,8 +6674,8 @@ export component PopoutStreamWindow inherits Window {
                 spacing: 8px;
                 alignment: start;
 
-                // Live Badge
-                VerticalLayout {
+                // Live Badge (hides when width <= 340px)
+                if root.width > 340px : VerticalLayout {
                     alignment: center;
                     Rectangle {
                         background: #f23f43;
@@ -6679,8 +6705,8 @@ export component PopoutStreamWindow inherits Window {
                     }
                 }
 
-                // FPS Counter Badge (Local)
-                if root.stream_fps != "": VerticalLayout {
+                // FPS Counter Badge (Local) (hides when width <= 270px)
+                if root.stream_fps != "" && root.width > 270px : VerticalLayout {
                     alignment: center;
                     Rectangle {
                         background: #23a55a22;
@@ -6712,8 +6738,8 @@ export component PopoutStreamWindow inherits Window {
                     }
                 }
 
-                // Stream Username & Tag
-                VerticalLayout {
+                // Stream Username & Tag (hides when width <= 200px)
+                if root.width > 200px : VerticalLayout {
                     alignment: center;
                     Text {
                         text: root.username;
@@ -6721,11 +6747,12 @@ export component PopoutStreamWindow inherits Window {
                         font-size: 12px;
                         font-weight: 700;
                         vertical-alignment: center;
+                        overflow: elide;
                     }
                 }
 
-                // Dynamic Volume Slider (only shown if popout width has enough space > 380px)
-                if root.width > 380px : HorizontalLayout {
+                // Dynamic Volume Slider (only shown if popout width has enough space > 420px)
+                if root.width > 420px : HorizontalLayout {
                     spacing: 6px;
                     alignment: center;
 

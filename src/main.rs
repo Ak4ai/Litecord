@@ -106,24 +106,48 @@ fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_tr_settings_output_device(tr.settings_output_device.into());
     ui.set_tr_settings_threshold(tr.settings_threshold.into());
     ui.set_tr_settings_mic_level(tr.settings_mic_level.into());
-    ui.set_tr_settings_btn_test_start(match resolved {
-        i18n::Language::Portuguese => "🎧 Testar Microfone (\"Se Ouvir\")".into(),
-        i18n::Language::Spanish => "🎧 Probar Micrófono (\"Escucharse\")".into(),
-        i18n::Language::German => "🎧 Mikrofon testen (\"Sich hören\")".into(),
-        i18n::Language::French => "🎧 Tester le Micro (\"S'entendre\")".into(),
-        i18n::Language::Russian => "🎧 Проверить микрофон (\"Слышать себя\")".into(),
-        i18n::Language::Japanese => "🎧 マイクをテスト (自分の声を聞く)".into(),
-        _ => "🎧 Test Microphone (\"Hear Yourself\")".into(),
-    });
-    ui.set_tr_settings_btn_test_stop(match resolved {
-        i18n::Language::Portuguese => "🎙️ Parar Teste (Ouvindo...)".into(),
-        i18n::Language::Spanish => "🎙️ Detener Prueba (Escuchando...)".into(),
-        i18n::Language::German => "🎙️ Test beenden (Hören...)".into(),
-        i18n::Language::French => "🎙️ Arrêter le Test (Écoute...)".into(),
-        i18n::Language::Russian => "🎙️ Остановить тест (Слушаем...)".into(),
-        i18n::Language::Japanese => "🎙️ テスト停止 (聴取中...)".into(),
-        _ => "🎙️ Stop Testing (Listening...)".into(),
-    });
+    #[cfg(target_os = "windows")]
+    {
+        ui.set_tr_settings_btn_test_start(match resolved {
+            i18n::Language::Portuguese => "🎧 Testar Microfone (\"Se Ouvir\")".into(),
+            i18n::Language::Spanish => "🎧 Probar Micrófono (\"Escucharse\")".into(),
+            i18n::Language::German => "🎧 Mikrofon testen (\"Sich hören\")".into(),
+            i18n::Language::French => "🎧 Tester le Micro (\"S'entendre\")".into(),
+            i18n::Language::Russian => "🎧 Проверить микрофон (\"Слышать себя\")".into(),
+            i18n::Language::Japanese => "🎧 マイクをテスト (自分の声を聞く)".into(),
+            _ => "🎧 Test Microphone (\"Hear Yourself\")".into(),
+        });
+        ui.set_tr_settings_btn_test_stop(match resolved {
+            i18n::Language::Portuguese => "🎙️ Parar Teste (Ouvindo...)".into(),
+            i18n::Language::Spanish => "🎙️ Detener Prueba (Escuchando...)".into(),
+            i18n::Language::German => "🎙️ Test beenden (Hören...)".into(),
+            i18n::Language::French => "🎙️ Arrêter le Test (Écoute...)".into(),
+            i18n::Language::Russian => "🎙️ Остановить тест (Слушаем...)".into(),
+            i18n::Language::Japanese => "🎙️ テスト停止 (聴取中...)".into(),
+            _ => "🎙️ Stop Testing (Listening...)".into(),
+        });
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        ui.set_tr_settings_btn_test_start(match resolved {
+            i18n::Language::Portuguese => "Testar Microfone (\"Se Ouvir\")".into(),
+            i18n::Language::Spanish => "Probar Micrófono (\"Escucharse\")".into(),
+            i18n::Language::German => "Mikrofon testen (\"Sich hören\")".into(),
+            i18n::Language::French => "Tester le Micro (\"S'entendre\")".into(),
+            i18n::Language::Russian => "Проверить микрофон (\"Слышать себя\")".into(),
+            i18n::Language::Japanese => "マイクをテスト (自分の声を聞く)".into(),
+            _ => "Test Microphone (\"Hear Yourself\")".into(),
+        });
+        ui.set_tr_settings_btn_test_stop(match resolved {
+            i18n::Language::Portuguese => "Parar Teste (Ouvindo...)".into(),
+            i18n::Language::Spanish => "Detener Prueba (Escuchando...)".into(),
+            i18n::Language::German => "Test beenden (Hören...)".into(),
+            i18n::Language::French => "Arrêter le Test (Écoute...)".into(),
+            i18n::Language::Russian => "Остановить тест (Слушаем...)".into(),
+            i18n::Language::Japanese => "テスト停止 (聴取中...)".into(),
+            _ => "Stop Testing (Listening...)".into(),
+        });
+    }
     ui.set_tr_settings_done(tr.settings_done.into());
     ui.set_tr_logout_title(tr.logout_title.into());
     ui.set_tr_logout_confirm_prefix(tr.logout_confirm_prefix.into());
@@ -195,13 +219,31 @@ fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     result
 }
 
-fn push_to_mic_queues(q: &mut VecDeque<f32>, s: f32, level: f32) {
-    if q.len() < 96000 { q.push_back(s); }
+fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], level: f32) {
+    for &s in pcm_samples {
+        let clamped = s.clamp(-1.0, 1.0);
+        if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
+    }
     if gateway::is_testing_mic() {
+        let vad = gateway::get_vad_threshold();
+        let is_active = level >= vad;
+        static LAST_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+        let log_mtx = LAST_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+        if let Ok(mut last) = log_mtx.lock() {
+            if last.elapsed().as_millis() >= 1000 {
+                *last = std::time::Instant::now();
+                info!("🧪 [TEST MIC STATS] mic_level={:.3}, vad_threshold={:.3}, active={}", level, vad, is_active);
+            }
+        }
         if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
-            // Apply VAD threshold to loopback test: play silence if level is below threshold!
-            let sample_to_play = if level >= gateway::get_vad_threshold() { s } else { 0.0 };
-            if loop_q.len() < 96000 { loop_q.push_back(sample_to_play); }
+            if loop_q.len() > 6000 {
+                let excess = loop_q.len() - 3500;
+                loop_q.drain(0..excess);
+            }
+            for &s in loop_samples {
+                let sample_to_play = if is_active { s.clamp(-1.0, 1.0) } else { 0.0 };
+                loop_q.push_back(sample_to_play);
+            }
         }
     }
 }
@@ -218,7 +260,7 @@ fn start_mic_capture(
     } else {
         devices.into_iter().find(|d| {
             d.name().map(|n| n == device_name).unwrap_or(false)
-        })?
+        }).or_else(|| host.default_input_device())?
     };
 
     let config = target_dev.default_input_config().ok()?;
@@ -226,7 +268,7 @@ fn start_mic_capture(
     let channels = config.channels() as usize;
     let pcm_queue = gateway::get_mic_pcm_queue();
 
-    info!("Capturando microfone: {}Hz, {} canal(is)", sample_rate, channels);
+    info!("Capturando microfone: {}Hz, {} canal(is), formato={:?}", sample_rate, channels, config.sample_format());
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
@@ -253,12 +295,11 @@ fn start_mic_capture(
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for &s in &mono_samples {
-                                push_to_mic_queues(&mut q, s.clamp(-1.0, 1.0), level);
-                            }
+                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
                             let out_len = (frames as f64 * ratio) as usize;
+                            let mut resampled_buf = Vec::with_capacity(out_len);
                             for i in 0..out_len {
                                 let src_pos = i as f64 / ratio;
                                 let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
@@ -266,9 +307,10 @@ fn start_mic_capture(
                                 
                                 let s0 = mono_samples[src_idx];
                                 let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
-                                let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
-                                push_to_mic_queues(&mut q, resampled, level);
+                                let resampled = s0 * (1.0 - frac) + s1 * frac;
+                                resampled_buf.push(resampled);
                             }
+                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
                         }
                     }
                 },
@@ -302,12 +344,11 @@ fn start_mic_capture(
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for &s in &mono_samples {
-                                push_to_mic_queues(&mut q, s.clamp(-1.0, 1.0), level);
-                            }
+                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
                             let out_len = (frames as f64 * ratio) as usize;
+                            let mut resampled_buf = Vec::with_capacity(out_len);
                             for i in 0..out_len {
                                 let src_pos = i as f64 / ratio;
                                 let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
@@ -315,9 +356,10 @@ fn start_mic_capture(
                                 
                                 let s0 = mono_samples[src_idx];
                                 let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
-                                let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
-                                push_to_mic_queues(&mut q, resampled, level);
+                                let resampled = s0 * (1.0 - frac) + s1 * frac;
+                                resampled_buf.push(resampled);
                             }
+                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
                         }
                     }
                 },
@@ -351,12 +393,11 @@ fn start_mic_capture(
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            for &s in &mono_samples {
-                                push_to_mic_queues(&mut q, s.clamp(-1.0, 1.0), level);
-                            }
+                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
                         } else {
                             let ratio = 48000.0 / sample_rate as f64;
                             let out_len = (frames as f64 * ratio) as usize;
+                            let mut resampled_buf = Vec::with_capacity(out_len);
                             for i in 0..out_len {
                                 let src_pos = i as f64 / ratio;
                                 let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
@@ -364,9 +405,10 @@ fn start_mic_capture(
                                 
                                 let s0 = mono_samples[src_idx];
                                 let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
-                                let resampled = (s0 * (1.0 - frac) + s1 * frac).clamp(-1.0, 1.0);
-                                push_to_mic_queues(&mut q, resampled, level);
+                                let resampled = s0 * (1.0 - frac) + s1 * frac;
+                                resampled_buf.push(resampled);
                             }
+                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
                         }
                     }
                 },
@@ -397,17 +439,28 @@ fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
     } else {
         devices.into_iter().find(|d| {
             d.name().map(|n| n == device_name).unwrap_or(false)
-        })?
+        }).or_else(|| host.default_output_device())?
     };
 
-    let config = target_dev.default_output_config().ok()?;
+    let target_dev_name = target_dev.name().unwrap_or_else(|_| "desconhecido".to_string());
+    let config = match target_dev.default_output_config() {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("❌ [LOOPBACK] Erro ao obter default_output_config para '{}': {:?}", target_dev_name, e);
+            return None;
+        }
+    };
+    let out_sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
 
     let loop_q_arc = gateway::get_mic_loopback_queue();
 
+    info!("🎧 [LOOPBACK] Iniciando no dispositivo '{}': {}Hz, {} canal(is), formato={:?}", target_dev_name, out_sample_rate, channels, config.sample_format());
+
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&loop_q_arc);
+            let mut is_started = false;
             target_dev.build_output_stream(
                 &config.into(),
                 move |output: &mut [f32], _| {
@@ -416,10 +469,30 @@ fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         return;
                     }
                     if let Ok(mut loop_q) = q_arc.lock() {
-                        for frame in output.chunks_mut(channels.max(1)) {
-                            let sample = loop_q.pop_front().unwrap_or(0.0);
-                            for s in frame.iter_mut() {
-                                *s = sample;
+                        if !is_started {
+                            if loop_q.len() < 2000 {
+                                for s in output.iter_mut() { *s = 0.0; }
+                                return;
+                            }
+                            is_started = true;
+                        }
+                        let frames = output.len() / channels.max(1);
+                        let mut sum_sq = 0.0f32;
+                        for f in 0..frames {
+                            let s = loop_q.pop_front().unwrap_or(0.0);
+                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            sum_sq += sample * sample;
+                            for ch in 0..channels {
+                                output[f * channels + ch] = sample;
+                            }
+                        }
+                        let out_rms = (sum_sq / frames.max(1) as f32).sqrt();
+                        static LAST_OUT_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+                        let out_log_mtx = LAST_OUT_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+                        if let Ok(mut last) = out_log_mtx.lock() {
+                            if last.elapsed().as_millis() >= 1000 {
+                                *last = std::time::Instant::now();
+                                info!("🎧 [LOOPBACK PLAYBACK F32] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
                             }
                         }
                     } else {
@@ -432,6 +505,7 @@ fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
         }
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&loop_q_arc);
+            let mut is_started = false;
             target_dev.build_output_stream(
                 &config.into(),
                 move |output: &mut [i16], _| {
@@ -440,11 +514,31 @@ fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         return;
                     }
                     if let Ok(mut loop_q) = q_arc.lock() {
-                        for frame in output.chunks_mut(channels.max(1)) {
-                            let sample = loop_q.pop_front().unwrap_or(0.0);
+                        if !is_started {
+                            if loop_q.len() < 2000 {
+                                for s in output.iter_mut() { *s = 0; }
+                                return;
+                            }
+                            is_started = true;
+                        }
+                        let frames = output.len() / channels.max(1);
+                        let mut sum_sq = 0.0f32;
+                        for f in 0..frames {
+                            let s = loop_q.pop_front().unwrap_or(0.0);
+                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            sum_sq += sample * sample;
                             let val = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                            for s in frame.iter_mut() {
-                                *s = val;
+                            for ch in 0..channels {
+                                output[f * channels + ch] = val;
+                            }
+                        }
+                        let out_rms = (sum_sq / frames.max(1) as f32).sqrt();
+                        static LAST_OUT_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+                        let out_log_mtx = LAST_OUT_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+                        if let Ok(mut last) = out_log_mtx.lock() {
+                            if last.elapsed().as_millis() >= 1000 {
+                                *last = std::time::Instant::now();
+                                info!("🎧 [LOOPBACK PLAYBACK I16] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
                             }
                         }
                     } else {
@@ -452,6 +546,98 @@ fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                     }
                 },
                 move |err| { log::error!("Erro no Stream Loopback I16: {:?}", err); },
+                None,
+            ).ok()?
+        }
+        cpal::SampleFormat::I32 => {
+            let q_arc = Arc::clone(&loop_q_arc);
+            let mut is_started = false;
+            target_dev.build_output_stream(
+                &config.into(),
+                move |output: &mut [i32], _| {
+                    if !gateway::is_testing_mic() {
+                        for s in output.iter_mut() { *s = 0; }
+                        return;
+                    }
+                    if let Ok(mut loop_q) = q_arc.lock() {
+                        if !is_started {
+                            if loop_q.len() < 2000 {
+                                for s in output.iter_mut() { *s = 0; }
+                                return;
+                            }
+                            is_started = true;
+                        }
+                        let frames = output.len() / channels.max(1);
+                        let mut sum_sq = 0.0f32;
+                        for f in 0..frames {
+                            let s = loop_q.pop_front().unwrap_or(0.0);
+                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            sum_sq += sample * sample;
+                            let val = (sample * 2147483647.0).clamp(-2147483648.0, 2147483647.0) as i32;
+                            for ch in 0..channels {
+                                output[f * channels + ch] = val;
+                            }
+                        }
+                        let out_rms = (sum_sq / frames.max(1) as f32).sqrt();
+                        static LAST_OUT_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+                        let out_log_mtx = LAST_OUT_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+                        if let Ok(mut last) = out_log_mtx.lock() {
+                            if last.elapsed().as_millis() >= 1000 {
+                                *last = std::time::Instant::now();
+                                info!("🎧 [LOOPBACK PLAYBACK I32] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
+                            }
+                        }
+                    } else {
+                        for s in output.iter_mut() { *s = 0; }
+                    }
+                },
+                move |err| { log::error!("Erro no Stream Loopback I32: {:?}", err); },
+                None,
+            ).ok()?
+        }
+        cpal::SampleFormat::U16 => {
+            let q_arc = Arc::clone(&loop_q_arc);
+            let mut is_started = false;
+            target_dev.build_output_stream(
+                &config.into(),
+                move |output: &mut [u16], _| {
+                    if !gateway::is_testing_mic() {
+                        for s in output.iter_mut() { *s = 32768; }
+                        return;
+                    }
+                    if let Ok(mut loop_q) = q_arc.lock() {
+                        if !is_started {
+                            if loop_q.len() < 2000 {
+                                for s in output.iter_mut() { *s = 32768; }
+                                return;
+                            }
+                            is_started = true;
+                        }
+                        let frames = output.len() / channels.max(1);
+                        let mut sum_sq = 0.0f32;
+                        for f in 0..frames {
+                            let s = loop_q.pop_front().unwrap_or(0.0);
+                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            sum_sq += sample * sample;
+                            let val = ((sample + 1.0) * 32767.5).clamp(0.0, 65535.0) as u16;
+                            for ch in 0..channels {
+                                output[f * channels + ch] = val;
+                            }
+                        }
+                        let out_rms = (sum_sq / frames.max(1) as f32).sqrt();
+                        static LAST_OUT_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+                        let out_log_mtx = LAST_OUT_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+                        if let Ok(mut last) = out_log_mtx.lock() {
+                            if last.elapsed().as_millis() >= 1000 {
+                                *last = std::time::Instant::now();
+                                info!("🎧 [LOOPBACK PLAYBACK U16] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
+                            }
+                        }
+                    } else {
+                        for s in output.iter_mut() { *s = 32768; }
+                    }
+                },
+                move |err| { log::error!("Erro no Stream Loopback U16: {:?}", err); },
                 None,
             ).ok()?
         }
@@ -1380,10 +1566,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Iniciando Litecord v{} (Log persistente salvo em litecord_app.log)...", env!("CARGO_PKG_VERSION"));
 
     info!("🖥️ Inicializando Slint AppWindow...");
-    let app = AppWindow::new()?;
-    info!("🖥️ Exibindo janela principal (app.show())...");
-    app.show()?;
-    info!("🖥️ Janela Slint exibida com sucesso!");
+    let app = match AppWindow::new() {
+        Ok(app) => {
+            info!("🖥️ Exibindo janela principal (app.show())...");
+            if let Err(e) = app.show() {
+                log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
+                std::env::set_var("SLINT_BACKEND", "software");
+                let sw_app = AppWindow::new()?;
+                sw_app.show()?;
+                info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
+                sw_app
+            } else {
+                info!("🖥️ Janela Slint exibida com sucesso!");
+                app
+            }
+        }
+        Err(e) => {
+            log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
+            std::env::set_var("SLINT_BACKEND", "software");
+            let sw_app = AppWindow::new()?;
+            sw_app.show()?;
+            info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
+            sw_app
+        }
+    };
 
     let initial_lang = i18n::load_persisted_language_config();
     apply_i18n_translations(&app, initial_lang);
@@ -2983,18 +3189,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_weak_test_mic = app_weak.clone();
     let selected_output_test = Arc::clone(&selected_output);
+    let selected_input_test = Arc::clone(&selected_input);
     let active_loopback_test = Arc::clone(&active_loopback_stream);
+    let active_stream_test = Arc::clone(&active_mic_stream);
+    let level_tx_test = level_tx.clone();
 
     app.on_toggle_test_mic(move || {
         let now_testing = !gateway::is_testing_mic();
+        info!("🧪 [TEST MIC] Botão 'Se Ouvir' alternado para: {}", now_testing);
         gateway::set_testing_mic(now_testing);
         if let Some(ui) = app_weak_test_mic.upgrade() {
             ui.set_is_testing_mic(now_testing);
         }
         if now_testing {
+            if let Ok(mut q) = gateway::get_mic_loopback_queue().lock() {
+                q.clear();
+            }
+
+            // Ensure hardware mic capture is active so loopback buffer is fed
+            if active_stream_test.lock().unwrap().is_none() {
+                let cur_input = selected_input_test.lock().unwrap().clone();
+                info!("🎙️ [TEST MIC] Microfone inativo, iniciando captura para: '{}'", cur_input);
+                if let Some(stream) = start_mic_capture(cur_input, level_tx_test.clone()) {
+                    *active_stream_test.lock().unwrap() = Some(stream);
+                }
+            }
+
             let cur_output = selected_output_test.lock().unwrap().clone();
+            info!("🎧 [TEST MIC] Iniciando saída de loopback para: '{}'", cur_output);
             if let Some(stream) = start_mic_loopback_stream(cur_output) {
+                info!("🎧 [TEST MIC] Stream de saída criado com sucesso!");
                 *active_loopback_test.lock().unwrap() = Some(stream);
+            } else {
+                log::error!("❌ [TEST MIC] Falha ao criar stream de loopback!");
             }
         } else {
             *active_loopback_test.lock().unwrap() = None;
@@ -3383,7 +3610,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_logout(move || {
         info!("Usuário solicitou Logout da conta...");
         // 1. Remove saved token file so auto-login is cancelled
-        let _ = std::fs::remove_file(".litecord_token");
+        delete_secure_token();
 
         // 2. Disconnect voice session if active
         gateway::clear_voice_participants();
@@ -3623,7 +3850,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ).await;
 
             if !success {
-                let _ = std::fs::remove_file(".litecord_token");
+                delete_secure_token();
                 let session = remote_auth::RemoteAuthSession::start(qr_tx_startup.clone());
                 *active_qr_startup.lock().unwrap() = Some(session);
             }
@@ -4145,7 +4372,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
             let is_max = app_instance.window().is_maximized();
-            app_instance.window().set_maximized(!is_max);
+            let next = !is_max;
+            app_instance.window().set_maximized(next);
+            app_instance.set_is_maximized(next);
         }
     });
 
@@ -4502,6 +4731,7 @@ fn dpapi_protect(data: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn dpapi_protect(_data: &[u8]) -> Option<Vec<u8>> {
     None
 }
@@ -4540,22 +4770,140 @@ fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn dpapi_unprotect(_data: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn save_secure_token(token_str: &str) {
-    if let Some(encrypted) = dpapi_protect(token_str.as_bytes()) {
-        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
-        let _ = std::fs::write(".litecord_token", format!("DPAPI:{}", b64));
+fn get_secure_token_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+    let mut primary_path = std::path::PathBuf::from(".litecord_token");
+    #[cfg(unix)]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let config_dir = std::path::PathBuf::from(home).join(".config").join("litecord");
+            let _ = std::fs::create_dir_all(&config_dir);
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700));
+            primary_path = config_dir.join("session.vault");
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let config_dir = std::path::PathBuf::from(appdata).join("Litecord");
+            let _ = std::fs::create_dir_all(&config_dir);
+            primary_path = config_dir.join("session.vault");
+        }
+    }
+    let fallback_path = std::path::PathBuf::from(".litecord_token");
+    (primary_path, fallback_path)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_linux_vault_key() -> [u8; 32] {
+    use sha2::{Sha256, Digest};
+    let machine_id = std::fs::read_to_string("/etc/machine-id")
+        .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
+        .unwrap_or_else(|_| "litecord_static_mid_fallback".to_string());
+    let user_id = std::env::var("USER")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "default_user".to_string());
+    
+    let mut hasher = Sha256::new();
+    hasher.update(b"litecord_linux_vault_key_salt_v1_2026");
+    hasher.update(machine_id.trim().as_bytes());
+    hasher.update(user_id.trim().as_bytes());
+    let res = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&res);
+    key
+}
+
+#[cfg(not(target_os = "windows"))]
+fn linux_vault_protect(data: &[u8]) -> Option<Vec<u8>> {
+    use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Key, Nonce};
+    use rand::RngCore;
+
+    let key_bytes = get_linux_vault_key();
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    if let Ok(ciphertext) = cipher.encrypt(nonce, data) {
+        let mut out = Vec::with_capacity(12 + ciphertext.len());
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&ciphertext);
+        Some(out)
     } else {
-        let _ = std::fs::write(".litecord_token", token_str);
+        None
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn linux_vault_unprotect(data: &[u8]) -> Option<Vec<u8>> {
+    use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Key, Nonce};
+
+    if data.len() < 12 + 16 {
+        return None;
+    }
+    let key_bytes = get_linux_vault_key();
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&data[..12]);
+    let ciphertext = &data[12..];
+
+    cipher.decrypt(nonce, ciphertext).ok()
+}
+
+fn save_secure_token(token_str: &str) {
+    let (primary_path, fallback_path) = get_secure_token_paths();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(encrypted) = dpapi_protect(token_str.as_bytes()) {
+            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
+            let payload = format!("DPAPI:{}", b64);
+            let _ = std::fs::write(&primary_path, &payload);
+            let _ = std::fs::write(&fallback_path, &payload);
+        } else {
+            let _ = std::fs::write(&primary_path, token_str);
+            let _ = std::fs::write(&fallback_path, token_str);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(encrypted) = linux_vault_protect(token_str.as_bytes()) {
+            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
+            let payload = format!("LNX_VAULT:{}", b64);
+            let _ = std::fs::write(&primary_path, &payload);
+            let _ = std::fs::write(&fallback_path, &payload);
+        } else {
+            let _ = std::fs::write(&primary_path, token_str);
+            let _ = std::fs::write(&fallback_path, token_str);
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&primary_path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&fallback_path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+fn delete_secure_token() {
+    let (primary_path, fallback_path) = get_secure_token_paths();
+    let _ = std::fs::remove_file(primary_path);
+    let _ = std::fs::remove_file(fallback_path);
+}
+
 fn load_secure_token() -> Option<String> {
-    let raw = std::fs::read_to_string(".litecord_token").ok()?;
+    let (primary_path, fallback_path) = get_secure_token_paths();
+    let raw = std::fs::read_to_string(&primary_path)
+        .or_else(|_| std::fs::read_to_string(&fallback_path))
+        .ok()?;
     let trimmed = raw.trim();
+
+    #[cfg(target_os = "windows")]
     if let Some(rest) = trimmed.strip_prefix("DPAPI:") {
         if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
             if let Some(decrypted_bytes) = dpapi_unprotect(&encrypted_bytes) {
@@ -4568,6 +4916,21 @@ fn load_secure_token() -> Option<String> {
             }
         }
     }
+
+    #[cfg(not(target_os = "windows"))]
+    if let Some(rest) = trimmed.strip_prefix("LNX_VAULT:") {
+        if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
+            if let Some(decrypted_bytes) = linux_vault_unprotect(&encrypted_bytes) {
+                if let Ok(tok) = String::from_utf8(decrypted_bytes) {
+                    let clean = tok.trim().to_string();
+                    if !clean.is_empty() {
+                        return Some(clean);
+                    }
+                }
+            }
+        }
+    }
+
     // Fallback to plain string if legacy unencrypted format
     let clean = trimmed.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
     if !clean.is_empty() {
