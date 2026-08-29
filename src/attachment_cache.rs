@@ -152,7 +152,7 @@ impl AttachmentCache {
                         if let Ok(bytes) = resp.bytes().await {
                             if let Some(dec) = decode_bytes_to_minecraft_pixel_art(&bytes) {
                                 if let Ok(mut guard) = cache_arc.preview_cache.lock() {
-                                    if guard.len() >= 100 {
+                                    if guard.len() >= 30 {
                                         guard.clear();
                                     }
                                     guard.insert(id_str.clone(), dec);
@@ -313,8 +313,8 @@ fn decode_bytes_to_minecraft_pixel_art(bytes: &[u8]) -> Option<DecodedImage> {
         let block_h = 16;
         let small = dyn_img.resize_exact(block_w, block_h, image::imageops::FilterType::Nearest);
         
-        // Upscale using Nearest Neighbor (10x -> 280 x 160) so each block is a sharp solid square
-        let pixel_scale = 10;
+        // Upscale using Nearest Neighbor (4x -> 112 x 64) for sharp retro pixel art with minimal RAM footprint
+        let pixel_scale = 4;
         let chunky = small.resize_exact(block_w * pixel_scale, block_h * pixel_scale, image::imageops::FilterType::Nearest);
         
         let rgba = chunky.to_rgba8();

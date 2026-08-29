@@ -707,7 +707,7 @@ async fn fetch_and_populate_guilds(
                     if local_icon_path.exists() {
                         icon_path_opt = Some(local_icon_path.to_string_lossy().to_string());
                     } else if let Some(ref hash) = g_icon_hash {
-                        let icon_url = format!("https://cdn.discordapp.com/icons/{}/{}.png?size=128", g_id, hash);
+                        let icon_url = format!("https://cdn.discordapp.com/icons/{}/{}.png?size=64", g_id, hash);
                         pending_icon_downloads.push((icon_url, local_icon_path.to_string_lossy().to_string()));
                     }
 

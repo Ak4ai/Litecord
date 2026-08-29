@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +28,11 @@ pub fn get_emoji_cache() -> Arc<EmojiCache> {
     EMOJI_CACHE.get_or_init(|| {
         let mut disk_dir = std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
+            .or_else(|_| {
+                std::env::var("XDG_CACHE_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".cache")))
+            })
             .unwrap_or_else(|_| PathBuf::from("."));
         disk_dir.push("Litecord");
         disk_dir.push("cache");
@@ -38,7 +43,7 @@ pub fn get_emoji_cache() -> Arc<EmojiCache> {
         }
 
         Arc::new(EmojiCache {
-            memory_cache: Mutex::new(HashMap::with_capacity(256)),
+            memory_cache: Mutex::new(HashMap::with_capacity(64)),
             in_flight: Mutex::new(HashSet::new()),
             active_channel: Mutex::new(String::new()),
             active_generation: AtomicU64::new(1),
@@ -103,7 +108,7 @@ impl EmojiCache {
                         dec.height,
                     );
                     if let Ok(mut guard) = self.memory_cache.lock() {
-                        if guard.len() >= 300 {
+                        if guard.len() >= 64 {
                             guard.clear();
                         }
                         guard.insert(emoji_id.to_string(), dec);
@@ -181,7 +186,7 @@ impl EmojiCache {
                             // Decode in background thread
                             if let Some(dec) = decode_bytes_to_rgba(&bytes) {
                                 if let Ok(mut guard) = cache_arc.memory_cache.lock() {
-                                    if guard.len() >= 300 {
+                                    if guard.len() >= 64 {
                                         guard.clear();
                                     }
                                     guard.insert(id_str.clone(), dec);
