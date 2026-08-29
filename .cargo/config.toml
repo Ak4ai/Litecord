@@ -1,8 +1,6 @@
-# Configuração para evitar sincronização de compilações pelo OneDrive
-# Caso mude de usuário ou precise recompilar no notebook sem este caminho:
-# Você pode alterar o caminho abaixo ou comentar a linha para usar a pasta local target/
-target-dir = "C:/Users/Henrique/.cargo-target/litecord"
+[env]
+PKG_CONFIG_PATH = "/var/lib/flatpak/runtime/org.freedesktop.Sdk/x86_64/25.08/b90ed309cc1d505dea48b6a2121c5dcfac22868120eee643b0596d31f96b9bb8/files/lib/x86_64-linux-gnu/pkgconfig:/var/lib/flatpak/runtime/org.freedesktop.Sdk/x86_64/25.08/b90ed309cc1d505dea48b6a2121c5dcfac22868120eee643b0596d31f96b9bb8/files/share/pkgconfig:/usr/lib64/pkgconfig:/usr/share/pkgconfig"
+LIBRARY_PATH = "/var/home/henrique/.local/lib64:/var/lib/flatpak/runtime/org.freedesktop.Sdk/x86_64/25.08/b90ed309cc1d505dea48b6a2121c5dcfac22868120eee643b0596d31f96b9bb8/files/lib/x86_64-linux-gnu:/usr/lib64"
 
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+
 
