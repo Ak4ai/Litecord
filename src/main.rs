@@ -837,20 +837,117 @@ async fn fetch_and_populate_channels(
     match http.get_guild_channels(guild_id).await {
         Ok(chans_json) => {
             info!("{} canais encontrados no servidor!", chans_json.len());
-            let mut channels_data: Vec<ChannelData> = Vec::new();
+
+            struct RawChan {
+                id: String,
+                name: String,
+                ch_type: u64,
+                parent_id: Option<String>,
+                position: i64,
+            }
+
+            let mut raw_cats: Vec<RawChan> = Vec::new();
+            let mut raw_chans: Vec<RawChan> = Vec::new();
 
             for ch in chans_json {
                 let ch_id = ch["id"].as_str().unwrap_or("").to_string();
                 let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
                 let ch_type = ch["type"].as_u64().unwrap_or(0);
+                let parent_id = ch["parent_id"].as_str().map(|s| s.to_string());
+                let position = ch["position"].as_i64().unwrap_or(0);
 
-                // Ignore Category headers (type 4); include text (0), voice (2), news (5), stage (13), forum (15), threads (10, 11, 12)
-                if ch_type != 4 {
-                    let is_voice = ch_type == 2 || ch_type == 13;
-                    channels_data.push(ChannelData {
+                if ch_id.is_empty() { continue; }
+
+                if ch_type == 4 {
+                    raw_cats.push(RawChan {
+                        id: ch_id,
+                        name: ch_name.to_uppercase(),
+                        ch_type,
+                        parent_id: None,
+                        position,
+                    });
+                } else if ch_type == 0 || ch_type == 2 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
+                    raw_chans.push(RawChan {
                         id: ch_id,
                         name: ch_name,
+                        ch_type,
+                        parent_id,
+                        position,
+                    });
+                }
+            }
+
+            raw_cats.sort_by_key(|c| c.position);
+
+            let cat_ids: std::collections::HashSet<String> = raw_cats.iter().map(|c| c.id.clone()).collect();
+            let mut cat_map: HashMap<String, Vec<RawChan>> = HashMap::new();
+            let mut uncategorized: Vec<RawChan> = Vec::new();
+
+            for ch in raw_chans {
+                if let Some(ref pid) = ch.parent_id {
+                    if cat_ids.contains(pid) {
+                        cat_map.entry(pid.clone()).or_default().push(ch);
+                        continue;
+                    }
+                }
+                uncategorized.push(ch);
+            }
+
+            let sort_channel_list = |list: &mut Vec<RawChan>| {
+                list.sort_by(|a, b| {
+                    let a_is_voice = a.ch_type == 2 || a.ch_type == 13;
+                    let b_is_voice = b.ch_type == 2 || b.ch_type == 13;
+                    if a_is_voice == b_is_voice {
+                        a.position.cmp(&b.position)
+                    } else if !a_is_voice {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    }
+                });
+            };
+
+            sort_channel_list(&mut uncategorized);
+            for children in cat_map.values_mut() {
+                sort_channel_list(children);
+            }
+
+            let mut channels_data: Vec<ChannelData> = Vec::new();
+
+            for ch in uncategorized {
+                let is_voice = ch.ch_type == 2 || ch.ch_type == 13;
+                channels_data.push(ChannelData {
+                    id: ch.id,
+                    name: ch.name,
+                    is_voice,
+                    is_category: false,
+                    parent_id: None,
+                    position: ch.position,
+                });
+            }
+
+            for cat in raw_cats {
+                let cat_id = cat.id.clone();
+                let children = cat_map.remove(&cat_id).unwrap_or_default();
+
+                channels_data.push(ChannelData {
+                    id: cat.id,
+                    name: cat.name,
+                    is_voice: false,
+                    is_category: true,
+                    parent_id: None,
+                    position: cat.position,
+                });
+
+                for ch in children {
+                    let is_voice = ch.ch_type == 2 || ch.ch_type == 13;
+                    channels_data.push(ChannelData {
+                        id: ch.id,
+                        name: ch.name,
                         is_voice,
+                        is_category: false,
+                        parent_id: Some(cat_id.clone()),
+                        position: ch.position,
                     });
                 }
             }
@@ -879,6 +976,8 @@ async fn fetch_and_populate_channels(
                     name: ch.name.clone().into(),
                     is_voice: ch.is_voice,
                     voice_count: vcount,
+                    is_category: ch.is_category,
+                    has_parent: ch.parent_id.is_some(),
                 }
             }).collect();
 
@@ -922,7 +1021,7 @@ async fn fetch_and_populate_channels(
             load_guild_command_index(http, app_weak.clone(), guild_id).await;
 
             // Try to find the first readable text channel automatically
-            let text_channels: Vec<&ChannelData> = channels_data.iter().filter(|c| !c.is_voice).collect();
+            let text_channels: Vec<&ChannelData> = channels_data.iter().filter(|c| !c.is_voice && !c.is_category).collect();
             let mut loaded_readable = false;
 
             for text_ch in text_channels {
@@ -2997,6 +3096,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             name: ch.name.clone().into(),
                             is_voice: ch.is_voice,
                             voice_count: vcount,
+                            is_category: ch.is_category,
+                            has_parent: ch.parent_id.is_some(),
                         }
                     }).collect();
 
@@ -4633,6 +4734,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     name: ch.name.clone().into(),
                                     is_voice: ch.is_voice,
                                     voice_count: vcount,
+                                    is_category: ch.is_category,
+                                    has_parent: ch.parent_id.is_some(),
                                 }
                             }).collect();
 

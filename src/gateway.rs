@@ -22,6 +22,9 @@ pub struct ChannelData {
     pub id: String,
     pub name: String,
     pub is_voice: bool,
+    pub is_category: bool,
+    pub parent_id: Option<String>,
+    pub position: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -2461,12 +2464,15 @@ impl GatewayClient {
                             let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
                             let ch_type = ch["type"].as_u64().unwrap_or(0);
 
-                            // type 0 = text, type 2 = voice
-                            if ch_type == 0 || ch_type == 2 {
+                            // type 0 = text, type 2 = voice, type 4 = category, type 5 = news, type 13 = stage, type 15 = forum
+                            if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
                                 channels.push(ChannelData {
                                     id: ch_id,
-                                    name: ch_name,
-                                    is_voice: ch_type == 2,
+                                    name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
+                                    is_voice: ch_type == 2 || ch_type == 13,
+                                    is_category: ch_type == 4,
+                                    parent_id: ch["parent_id"].as_str().map(|s| s.to_string()),
+                                    position: ch["position"].as_i64().unwrap_or(0),
                                 });
                             }
                         }

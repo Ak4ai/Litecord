@@ -107,6 +107,8 @@ struct ChannelItem {
     name: string,
     is_voice: bool,
     voice_count: int,
+    is_category: bool,
+    has_parent: bool,
 }
 
 struct GuildItem {
@@ -1765,12 +1767,37 @@ export component AppWindow inherits Window {
                                 alignment: start;
 
                                 for channel in root.channels: Rectangle {
-                                    height: 34px;
-                                    background: #35373c;
+                                    height: channel.is_category ? 26px : 34px;
+                                    background: channel.is_category ? transparent : (channel_touch.has_hover ? #35373c : #2b2d31);
                                     border-radius: 6px;
 
-                                    HorizontalBox {
-                                        padding-left: 8px;
+                                    if channel.is_category : HorizontalLayout {
+                                        padding-left: 4px;
+                                        padding-right: 8px;
+                                        spacing: 5px;
+                                        alignment: center;
+
+                                        Text {
+                                            text: "v";
+                                            color: #949ba4;
+                                            font-size: 10px;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: channel.name;
+                                            color: #949ba4;
+                                            font-size: 11px;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    if !channel.is_category : HorizontalBox {
+                                        padding-left: channel.has_parent ? 14px : 8px;
                                         padding-right: 8px;
                                         spacing: 6px;
 
@@ -1814,7 +1841,8 @@ export component AppWindow inherits Window {
                                         }
                                     }
 
-                                    TouchArea {
+                                    channel_touch := TouchArea {
+                                        enabled: !channel.is_category;
                                         clicked => { root.select_channel(channel.id); }
                                     }
                                 }
