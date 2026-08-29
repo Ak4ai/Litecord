@@ -1260,6 +1260,7 @@ export component AppWindow inherits Window {
     in-out property <string> connection_status: "Aguardando Token de Acesso...";
     in-out property <string> user_tag: "Não conectado";
     in-out property <string> active_channel_name: "Selecione um canal";
+    in-out property <string> active_channel_id: "";
     in-out property <bool> is_muted: false;
     in-out property <bool> is_deafened: false;
     in-out property <bool> is_in_voice: false;
@@ -1769,50 +1770,84 @@ export component AppWindow inherits Window {
                                 alignment: start;
 
                                 for channel in root.channels: Rectangle {
-                                    height: channel.is_category ? 28px : 34px;
-                                    background: channel.is_category ? transparent : (touch_area.has_hover ? #35373c : transparent);
+                                    height: channel.is_category ? 30px : 34px;
+                                    background: channel.is_category ? transparent : (touch_area.has_hover ? #2563eb : #35373c);
                                     border-radius: 6px;
+                                    border-width: (!channel.is_category && channel.id == root.active_channel_id) ? 2px : 0px;
+                                    border-color: #3b82f6;
+                                    animate background { duration: 150ms; }
 
-                                    HorizontalLayout {
-                                        padding-left: channel.is_category ? 4px : (channel.has_parent ? 18px : 8px);
-                                        padding-right: 8px;
-                                        spacing: 6px;
+                                    // Category rendering (with sleek top separator line)
+                                    if channel.is_category : VerticalLayout {
+                                        padding-top: 4px;
+                                        padding-bottom: 2px;
+                                        spacing: 4px;
+                                        alignment: center;
 
-                                        // Category icon: chevron
-                                        if channel.is_category : VerticalLayout {
-                                            alignment: center;
-                                            width: 12px;
+                                        Rectangle {
+                                            height: 1px;
+                                            background: #3f4147;
+                                        }
+
+                                        HorizontalLayout {
+                                            padding-left: 4px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                width: 12px;
+                                                Text {
+                                                    text: channel.is_collapsed ? "▸" : "▾";
+                                                    color: touch_area.has_hover ? #f2f3f5 : #949ba4;
+                                                    font-size: 11px;
+                                                    font-weight: 800;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                    animate color { duration: 150ms; }
+                                                }
+                                            }
+
                                             Text {
-                                                text: channel.is_collapsed ? "▸" : "▾";
+                                                text: channel.name;
                                                 color: touch_area.has_hover ? #f2f3f5 : #949ba4;
                                                 font-size: 11px;
                                                 font-weight: 800;
-                                                horizontal-alignment: center;
+                                                horizontal-alignment: left;
                                                 vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                                overflow: elide;
                                                 animate color { duration: 150ms; }
                                             }
                                         }
+                                    }
+
+                                    // Channel rendering (Text and Voice)
+                                    if !channel.is_category : HorizontalLayout {
+                                        padding-left: channel.has_parent ? 18px : 8px;
+                                        padding-right: 8px;
+                                        spacing: 6px;
 
                                         // Voice channel icon: speaker
-                                        if !channel.is_category && channel.is_voice : VerticalLayout {
+                                        if channel.is_voice : VerticalLayout {
                                             alignment: center;
                                             width: 14px;
                                             Image {
                                                 source: @image-url("../assets/speaker.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: #23a55a;
+                                                colorize: touch_area.has_hover ? #ffffff : #23a55a;
                                                 image-fit: contain;
                                             }
                                         }
 
                                         // Text channel icon: '#'
-                                        if !channel.is_category && !channel.is_voice : VerticalLayout {
+                                        if !channel.is_voice : VerticalLayout {
                                             alignment: center;
                                             width: 14px;
                                             Text {
                                                 text: "#";
-                                                color: touch_area.has_hover ? #dbdee1 : #80848e;
+                                                color: touch_area.has_hover ? #ffffff : (channel.id == root.active_channel_id ? #93c5fd : #80848e);
                                                 font-size: 16px;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
@@ -1821,12 +1856,12 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Channel or Category Name
+                                        // Channel Name
                                         Text {
                                             text: channel.name;
-                                            color: channel.is_category ? (touch_area.has_hover ? #f2f3f5 : #949ba4) : (touch_area.has_hover ? #f2f3f5 : #dbdee1);
-                                            font-size: channel.is_category ? 11px : 13px;
-                                            font-weight: channel.is_category ? 800 : 600;
+                                            color: touch_area.has_hover ? #ffffff : (channel.id == root.active_channel_id ? #ffffff : #dbdee1);
+                                            font-size: 13px;
+                                            font-weight: 600;
                                             horizontal-alignment: left;
                                             vertical-alignment: center;
                                             horizontal-stretch: 1;
@@ -1835,13 +1870,13 @@ export component AppWindow inherits Window {
                                         }
 
                                         // Voice user count badge
-                                        if !channel.is_category && channel.is_voice && channel.voice_count > 0 : VerticalLayout {
+                                        if channel.is_voice && channel.voice_count > 0 : VerticalLayout {
                                             alignment: center;
                                             Rectangle {
                                                 width: 22px;
                                                 height: 18px;
                                                 border-radius: 9px;
-                                                background: #23a55a;
+                                                background: touch_area.has_hover ? #1d4ed8 : #23a55a;
 
                                                 Text {
                                                     text: "\{channel.voice_count}";
@@ -1860,6 +1895,7 @@ export component AppWindow inherits Window {
                                             if channel.is_category {
                                                 root.toggle_category(channel.id);
                                             } else {
+                                                root.active_channel_id = channel.id;
                                                 root.select_channel(channel.id);
                                             }
                                         }

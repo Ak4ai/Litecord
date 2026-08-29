@@ -1021,9 +1021,11 @@ async fn fetch_and_populate_channels(
                 *active_channel_id.lock().unwrap() = ch_id.clone();
                 if load_messages_for_channel(http, app_weak.clone(), &ch_id).await {
                     let app_w2 = app_weak.clone();
+                    let ch_id_val = ch_id.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w2.upgrade() {
                             ui.set_active_channel_name(format!("# {}", ch_name).into());
+                            ui.set_active_channel_id(ch_id_val.into());
                         }
                     });
                     loaded_readable = true;
@@ -1037,6 +1039,7 @@ async fn fetch_and_populate_channels(
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w_none.upgrade() {
                         ui.set_active_channel_name("Nenhum canal de texto acessível".into());
+                        ui.set_active_channel_id("".into());
                         let empty_msgs = vec![ChatMessage {
                             id: "".into(),
                             author: "Litecord System".into(),
@@ -4115,6 +4118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_messages(model.into());
             } else {
                 ui.set_active_channel_name(format!("# {}", ch_name).into());
+                ui.set_active_channel_id(ch_id.clone().into());
 
                 let http_opt = http_client_chan_select.lock().unwrap().as_ref().cloned();
                 let app_w = app_weak_chan_select.clone();
