@@ -236,14 +236,6 @@ pub fn get_voice_channel_participant_count(channel_id: &str) -> i32 {
         }
     }
 
-    if let Ok(parts_map) = get_active_voice_participants_store().lock() {
-        for (&ssrc, &uid) in parts_map.iter() {
-            if ssrc != 999999 && uid != 999999 && uid > 0 {
-                set.insert(uid);
-            }
-        }
-    }
-
     set.len() as i32
 }
 

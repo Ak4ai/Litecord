@@ -3360,8 +3360,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_is_screen_sharing(false);
             ui.set_local_preview_fps("".into());
             ui.set_has_active_stream(false);
-            ui.set_popped_out_stream_uid("".into());
             gateway::clear_voice_participants();
+            let my_uid = gateway::get_my_user_id();
+            if my_uid > 0 {
+                if let Ok(mut gvs) = gateway::get_guild_voice_states_store().lock() {
+                    gvs.remove(&my_uid);
+                }
+            }
 
             let gid = active_guild_leave.lock().unwrap().clone();
 
@@ -4073,6 +4078,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cid_num = ch_id.parse::<u64>().unwrap_or(0);
                 let my_uid = gateway::get_my_user_id();
                 let my_uname = gateway::get_my_username();
+                if my_uid > 0 {
+                    if let Ok(mut gvs) = gateway::get_guild_voice_states_store().lock() {
+                        gvs.insert(my_uid, ch_id.clone());
+                    }
+                }
                 sm_chan_select.set_context(cid_num, my_uid, &my_uname);
                 sm_chan_select.announce_presence();
 
