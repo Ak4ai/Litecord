@@ -1684,48 +1684,52 @@ export component AppWindow inherits Window {
                 width: 72px;
                 background: #1e1f22;
 
-                VerticalBox {
-                    padding: 8px;
+                VerticalLayout {
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    padding-left: 0px;
+                    padding-right: 0px;
                     spacing: 0px;
 
                     Rectangle {
                         vertical-stretch: 1;
 
-                        ScrollView {
-                            height: 100%;
-                            width: 100%;
-
-                            VerticalBox {
+                        Flickable {
+                            VerticalLayout {
                                 padding: 0px;
                                 spacing: 10px;
                                 alignment: start;
 
-                                for guild in root.guilds: Rectangle {
-                                    height: 48px;
-                                    width: 48px;
-                                    background: #313338;
-                                    border-radius: 24px;
-                                    clip: true;
-
-                                    if guild.has_image: Image {
-                                        source: guild.icon_image;
-                                        width: 48px;
+                                for guild in root.guilds: HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
                                         height: 48px;
-                                        image-fit: cover;
-                                    }
+                                        width: 48px;
+                                        background: #313338;
+                                        border-radius: 24px;
+                                        clip: true;
 
-                                    if !guild.has_image: Text {
-                                        text: guild.icon;
-                                        color: #ffffff;
-                                        font-size: 14px;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
+                                        if guild.has_image: Image {
+                                            source: guild.icon_image;
+                                            width: 48px;
+                                            height: 48px;
+                                            image-fit: cover;
+                                        }
 
-                                    TouchArea {
-                                        clicked => { root.select_guild(guild.id); }
+                                        if !guild.has_image: Text {
+                                            text: guild.icon;
+                                            color: #ffffff;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.select_guild(guild.id); }
+                                        }
                                     }
                                 }
                             }
@@ -1753,11 +1757,8 @@ export component AppWindow inherits Window {
                     Rectangle {
                         vertical-stretch: 1;
 
-                        ScrollView {
-                            height: 100%;
-                            width: 100%;
-
-                            VerticalBox {
+                        Flickable {
+                            VerticalLayout {
                                 padding: 0px;
                                 spacing: 4px;
                                 alignment: start;
@@ -1984,14 +1985,47 @@ export component AppWindow inherits Window {
 
                             VerticalLayout {
                                 alignment: center;
-                                Button {
-                                    icon: @image-url("../assets/monitor.svg");
-                                    text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
-                                    clicked => {
-                                        if root.is_screen_sharing {
-                                            root.toggle_screen_share();
-                                        } else {
-                                            root.open_stream_modal();
+                                
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_share_ta.pressed ? (root.is_screen_sharing ? #a8282c : #27282b) : (btn_share_ta.has-hover ? (root.is_screen_sharing ? #c83236 : #3f4147) : (root.is_screen_sharing ? #da373c : #313338));
+                                    animate background { duration: 120ms; }
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/monitor.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: #ffffff;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
+                                            color: #ffffff;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    btn_share_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if root.is_screen_sharing {
+                                                root.toggle_screen_share();
+                                            } else {
+                                                root.open_stream_modal();
+                                            }
                                         }
                                     }
                                 }
@@ -1999,19 +2033,89 @@ export component AppWindow inherits Window {
 
                             VerticalLayout {
                                 alignment: center;
-                                Button {
-                                    icon: @image-url("../assets/message-square.svg");
-                                    text: root.tr_view_text_chat;
-                                    clicked => { root.toggle_voice_focus(); }
+                                
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_chat_ta.pressed ? #27282b : (btn_chat_ta.has-hover ? #3f4147 : #313338);
+                                    animate background { duration: 120ms; }
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/message-square.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: #ffffff;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.tr_view_text_chat;
+                                            color: #ffffff;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    btn_chat_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.toggle_voice_focus();
+                                        }
+                                    }
                                 }
                             }
 
                             VerticalLayout {
                                 alignment: center;
-                                Button {
-                                    icon: @image-url("../assets/log-out.svg");
-                                    text: root.tr_leave_call;
-                                    clicked => { root.leave_voice(); }
+                                
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_leave_ta.pressed ? #a8282c : (btn_leave_ta.has-hover ? #da373c : #313338);
+                                    animate background { duration: 120ms; }
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/log-out.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: #ffffff;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.tr_leave_call;
+                                            color: #ffffff;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    btn_leave_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.leave_voice();
+                                        }
+                                    }
                                 }
                             }
                         }
