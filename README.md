@@ -31,8 +31,8 @@
 - 🏆 **Zero In-Game FPS Drops & Micro-Stutters**: Reclaims CPU threads eaten by Chromium/Electron, improving 1% low framerates in competitive titles (*CS2, Valorant, Warzone, Apex Legends, Fortnite, League of Legends*).
 - 📺 **Full HD 1080p 60 FPS Screen Sharing**: Direct hardware framebuffer capture (DXGI / Direct3D11) with WASAPI loopback audio and sub-20ms glass-to-glass latency.
 - 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 (`[ - ] P:2 [ + ]`) so critical tactical callouts automatically duck background chatter and music bots during clutch moments.
-- 🪟 **Detached Video & Stream Popouts**: Pop out live screen shares and video streams into a dedicated floating Picture-in-Picture (PiP) window with an always-on-top pin.
-- 📱 **QR Code Mobile Login**: Log in instantly by scanning a QR code with the official Discord mobile app—no manual token extraction.
+- 🪟 **Detached Video & Stream Popouts (PiP)**: Pop out live screen shares and video streams into a dedicated floating Picture-in-Picture window down to 180px with an always-on-top pin, responsive controls hierarchy, and click-through ghost mode.
+- 📱 **QR Code Mobile Login & Encrypted Vaults**: Log in instantly by scanning a QR code with the official Discord mobile app—no manual token extraction. Encrypted at rest via Linux hardware-bound vault (`0700`/`0600`) and Windows DPAPI.
 - ⌨️ **Smart Slash Commands Autocomplete**: Real-time suggestion indexing for `/play`, `/skip`, and server bot commands with keyboard navigation (Up/Down + Enter) and interactive parameter chips.
 - 🖼️ **On-Demand Ephemeral Image Attachments**: Minecraft-style pixel-art placeholders (~500 bytes) with dynamic proportional height and zero-residue temp downloads.
 - 🎨 **Unified Emoji System (Twemoji + Discord CDN)**: Zero missing tofu squares (`□`). Full support for Discord custom animated/static emojis and Unicode emojis across chat, embeds, and bot buttons.
@@ -122,9 +122,11 @@ Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N 
   - **Delta >= 5**: Volume ducked to protection floor (**5% - 10%**).
 - **Independent Volume & Mute**: Per-user volume sliders (0% - 200%) and instant mute buttons, saved automatically across sessions.
 
-### 📱 3. QR Code Remote Auth & Windows DPAPI Security
+### 📱 3. QR Code Remote Auth & Encrypted Token Vaults (Linux + Windows)
 - **Instant QR Code Login**: Scan the on-screen QR code with your Discord Mobile App (Settings -> Scan QR Code) to log in instantly.
-- **Windows DPAPI Encryption at Rest**: Discord tokens stored locally in `.litecord_token` are encrypted with Windows DPAPI (`CryptProtectData`), making them unreadable to other user accounts, malware, or background scripts.
+- **Linux Hardware-Bound AES-256-GCM Vault (`~/.config/litecord/session.vault`)**: Follows the XDG Base Directory specification with strict Unix permissions (`0700` directory, `0600` file). Credentials are encrypted at rest with AES-256-GCM using keys derived from `/etc/machine-id` and UID, preventing token exfiltration across machines.
+- **Windows DPAPI Encryption (`%APPDATA%/Litecord/session.vault`)**: Locally stored tokens are protected via Windows DPAPI (`CryptProtectData`), bound to the local user account.
+- **Strict Zero-Token Logging & Atomic Cleanup**: Tokens are never printed in logs or console output and are atomically purged upon logout.
 - **Direct Discord Connections Only**: No intermediary proxies, third-party relays, or tracking servers. All requests go directly to `discord.com` endpoints.
 - **Shell Injection Shield**: Hyperlinks are strictly validated against an `http://` / `https://` whitelist and dispatched via native OS APIs (`ShellExecuteW` / `xdg-open`)—never through shell interpreters (`cmd.exe`).
 
@@ -160,11 +162,12 @@ Security, privacy, and account integrity are core engineering pillars of Litecor
 
 | Security Domain | Implementation & Technology | Protection Level |
 | :--- | :--- | :--- |
-| **P2P Video & Screen Sharing** | **AES-256-GCM (12-byte Nonce + 16-byte Poly1305 Tag)** | 🛡️ **Military-Grade E2EE**. Unreadable to network sniffers on LAN/WAN. |
+| **P2P Video & Screen Sharing** | **AES-256-GCM (Derived with `voice_secret_key`)** | 🛡️ **Military-Grade E2EE**. Unreadable to network sniffers or outside users. |
 | **Loopback System Audio** | **AES-256-GCM Encrypted PCM Frames** | 🛡️ **Military-Grade E2EE**. Game sound & mic are confidential. |
-| **Anonymous P2P Signaling** | **SHA-256 Hashed MQTT Topics + AES-256-GCM** | 🛡️ **Zero IP/Identity Leakage**. No plain channel/user IDs emitted. |
+| **Anonymous P2P Signaling** | **Authenticated SHA-256 Hashed MQTT Topics** | 🛡️ **Zero IP/Identity Leakage**. External observers cannot identify rooms. |
 | **Discord Voice Gateway** | **Official DAVE Protocol (MLS RFC 9420) + Opus PLC** | 🛡️ **Discord Certified E2EE Voice**. Direct SFU connection. |
-| **Token Storage at Rest** | **Windows DPAPI (`CryptProtectData`)** | 🛡️ **Hardware/User Bound**. Unreadable to other users or external scripts. |
+| **Token Storage at Rest (Linux)** | **AES-256-GCM Hardware-Bound (`~/.config/litecord/`)** | 🛡️ **Machine/User Bound (0700/0600)**. Key tied to `/etc/machine-id` + UID. |
+| **Token Storage at Rest (Windows)** | **Windows DPAPI (`CryptProtectData`)** | 🛡️ **OS Vault Protected**. Bound to local Windows user session. |
 | **Chat & UI Rendering** | **Native Slint Engine (No WebViews, No DOM, No JS)** | 🛡️ **100% Immune to XSS and HTML Injections**. |
 | **Hyperlinks & Browser Open** | **Strict `http/https` Whitelist + `ShellExecuteW`** | 🛡️ **Zero Shell Injection / RCE Risk**. Rejects unsafe protocols. |
 | **Image & Attachment Cache** | **Strict Filename Regex Sanitization** | 🛡️ **Zero Path Traversal**. Confined to ephemeral `%TEMP%`. |
@@ -188,9 +191,9 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Release (v0.3.0)** | `Litecord-v0.3.0-windows-x64.zip` | Standalone executable (`litecord.exe`). Unpack and run anywhere. |
-| **🪟 Windows Setup** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🐧 Linux Standalone** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA and System Tray support. |
+| **🪟 Windows Setup (v0.3.8)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (v0.3.8)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux Standalone (v0.3.8)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ---
 
