@@ -270,11 +270,21 @@ fn start_mic_capture(
 
     info!("Capturando microfone: {}Hz, {} canal(is), formato={:?}", sample_rate, channels, config.sample_format());
 
+    let stream_config: cpal::StreamConfig = {
+        let mut sc: cpal::StreamConfig = config.clone().into();
+        #[cfg(target_os = "linux")]
+        {
+            let desired_frames = ((sample_rate as f32 * 0.02).round() as u32).max(480);
+            sc.buffer_size = cpal::BufferSize::Fixed(desired_frames);
+        }
+        sc
+    };
+
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&pcm_queue);
             target_dev.build_input_stream(
-                &config.into(),
+                &stream_config,
                 move |data: &[f32], _: &_| {
                     let num_channels = channels.max(1);
                     let frames = data.len() / num_channels;
@@ -323,7 +333,7 @@ fn start_mic_capture(
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&pcm_queue);
             target_dev.build_input_stream(
-                &config.into(),
+                &stream_config,
                 move |data: &[i16], _: &_| {
                     let num_channels = channels.max(1);
                     let frames = data.len() / num_channels;
@@ -372,7 +382,7 @@ fn start_mic_capture(
         cpal::SampleFormat::I32 => {
             let q_arc = Arc::clone(&pcm_queue);
             target_dev.build_input_stream(
-                &config.into(),
+                &stream_config,
                 move |data: &[i32], _: &_| {
                     let num_channels = channels.max(1);
                     let frames = data.len() / num_channels;
@@ -1523,6 +1533,8 @@ impl log::Log for AppLogger {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _tokio_guard = tokio::runtime::Handle::current().enter();
+
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -4365,6 +4377,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("[DeepSleep] Memória RAM liberada via K32EmptyWorkingSet!");
                 }
             }
+            #[cfg(target_os = "linux")]
+            {
+                trim_memory_if_linux();
+                info!("[DeepSleep] Memória RAM liberada via malloc_trim no Linux!");
+            }
         });
     });
 
@@ -4385,6 +4402,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
         std::process::exit(0);
+    });
+
+    #[cfg(target_os = "linux")]
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            trim_memory_if_linux();
+        }
     });
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
@@ -4895,6 +4921,20 @@ fn delete_secure_token() {
     let _ = std::fs::remove_file(primary_path);
     let _ = std::fs::remove_file(fallback_path);
 }
+
+#[cfg(target_os = "linux")]
+pub fn trim_memory_if_linux() {
+    unsafe {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+pub fn trim_memory_if_linux() {}
 
 fn load_secure_token() -> Option<String> {
     let (primary_path, fallback_path) = get_secure_token_paths();

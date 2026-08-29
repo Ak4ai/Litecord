@@ -64,7 +64,7 @@ windows-capture = "2.0.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 libc = "0.2"
 
 [build-dependencies]
