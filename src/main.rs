@@ -966,20 +966,10 @@ async fn fetch_and_populate_channels(
                 g_data.channels = channels_data.clone();
             }
 
-            let ui_channels: Vec<ChannelItem> = channels_data.iter().map(|ch| {
-                let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
-                if ch.is_voice {
-                    info!("📊 Canal de Voz {} ('{}'): vcount = {}", ch.id, ch.name, vcount);
-                }
-                ChannelItem {
-                    id: ch.id.clone().into(),
-                    name: ch.name.clone().into(),
-                    is_voice: ch.is_voice,
-                    voice_count: vcount,
-                    is_category: ch.is_category,
-                    has_parent: ch.parent_id.is_some(),
-                }
-            }).collect();
+            let ui_channels = {
+                let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                build_ui_channels(&channels_data, &cats_guard)
+            };
 
             let app_w = app_weak.clone();
             let ui_channels_clone = ui_channels.clone();
@@ -3089,17 +3079,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     last_gid = gid;
                     last_fingerprint = current_fingerprint;
 
-                    let ui_channels: Vec<ChannelItem> = chans.iter().map(|ch| {
-                        let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
-                        ChannelItem {
-                            id: ch.id.clone().into(),
-                            name: ch.name.clone().into(),
-                            is_voice: ch.is_voice,
-                            voice_count: vcount,
-                            is_category: ch.is_category,
-                            has_parent: ch.parent_id.is_some(),
-                        }
-                    }).collect();
+                    let ui_channels = {
+                        let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                        build_ui_channels(&chans, &cats_guard)
+                    };
 
                     let app_w = app_weak_ch_badges.clone();
                     let _ = slint::invoke_from_event_loop(move || {
@@ -4025,6 +4008,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let selected_input_voice = Arc::clone(&selected_input);
     let active_mic_stream_voice = Arc::clone(&active_mic_stream);
     let level_tx_voice = level_tx.clone();
+    // Toggle Channel Category Collapsed/Expanded State Callback
+    let app_weak_toggle_cat = app_weak.clone();
+    let guilds_map_toggle_cat = Arc::clone(&guilds_map);
+    let active_guild_toggle_cat = Arc::clone(&active_guild_id);
+
+    app.on_toggle_category(move |cat_id_str: SharedString| {
+        let cat_id = cat_id_str.to_string();
+        info!("Alternando estado da categoria de canais: {}", cat_id);
+        let cats_store = get_collapsed_categories();
+        {
+            let mut cats_guard = cats_store.lock().unwrap();
+            if cats_guard.contains(&cat_id) {
+                cats_guard.remove(&cat_id);
+            } else {
+                cats_guard.insert(cat_id);
+            }
+        }
+
+        let gid = active_guild_toggle_cat.lock().unwrap().clone();
+        if let Ok(map) = guilds_map_toggle_cat.lock() {
+            if let Some(g_data) = map.get(&gid) {
+                let cats_guard = cats_store.lock().unwrap().clone();
+                let ui_channels = build_ui_channels(&g_data.channels, &cats_guard);
+                let app_w = app_weak_toggle_cat.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w.upgrade() {
+                        let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
+                        ui.set_channels(model.into());
+                    }
+                });
+            }
+        }
+    });
+
     let sm_chan_select = Arc::clone(&screen_manager);
 
     app.on_select_channel(move |channel_id: SharedString| {
@@ -4727,17 +4744,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         if let Some(chans) = channels_opt {
-                            let ui_channels: Vec<ChannelItem> = chans.iter().map(|ch| {
-                                let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
-                                ChannelItem {
-                                    id: ch.id.clone().into(),
-                                    name: ch.name.clone().into(),
-                                    is_voice: ch.is_voice,
-                                    voice_count: vcount,
-                                    is_category: ch.is_category,
-                                    has_parent: ch.parent_id.is_some(),
-                                }
-                            }).collect();
+                            let ui_channels = {
+                                let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                                build_ui_channels(&chans, &cats_guard)
+                            };
 
                             let app_w = app_weak_inner.clone();
                             let _ = slint::invoke_from_event_loop(move || {
@@ -5038,6 +5048,49 @@ pub fn trim_memory_if_linux() {
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub fn trim_memory_if_linux() {}
+
+pub static COLLAPSED_CATEGORIES: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<String>>>> = std::sync::OnceLock::new();
+pub fn get_collapsed_categories() -> Arc<Mutex<std::collections::HashSet<String>>> {
+    COLLAPSED_CATEGORIES.get_or_init(|| Arc::new(Mutex::new(std::collections::HashSet::new()))).clone()
+}
+
+fn build_ui_channels(
+    channels_data: &[ChannelData],
+    collapsed_cats: &std::collections::HashSet<String>,
+) -> Vec<ChannelItem> {
+    let mut ui_channels: Vec<ChannelItem> = Vec::new();
+    for ch in channels_data {
+        if ch.is_category {
+            let is_collapsed = collapsed_cats.contains(&ch.id);
+            ui_channels.push(ChannelItem {
+                id: ch.id.clone().into(),
+                name: ch.name.clone().into(),
+                is_voice: false,
+                voice_count: 0,
+                is_category: true,
+                has_parent: false,
+                is_collapsed,
+            });
+        } else {
+            if let Some(ref pid) = ch.parent_id {
+                if collapsed_cats.contains(pid) {
+                    continue;
+                }
+            }
+            let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
+            ui_channels.push(ChannelItem {
+                id: ch.id.clone().into(),
+                name: ch.name.clone().into(),
+                is_voice: ch.is_voice,
+                voice_count: vcount,
+                is_category: false,
+                has_parent: ch.parent_id.is_some(),
+                is_collapsed: false,
+            });
+        }
+    }
+    ui_channels
+}
 
 fn load_secure_token() -> Option<String> {
     let (primary_path, fallback_path) = get_secure_token_paths();

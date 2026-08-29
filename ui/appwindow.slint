@@ -109,6 +109,7 @@ struct ChannelItem {
     voice_count: int,
     is_category: bool,
     has_parent: bool,
+    is_collapsed: bool,
 }
 
 struct GuildItem {
@@ -1077,6 +1078,7 @@ export component AppWindow inherits Window {
     callback login(string /* token */);
     callback send_message(string /* content */);
     callback select_channel(string /* channel_id */);
+    callback toggle_category(string /* category_id */);
     callback select_guild(string /* guild_id */);
     callback toggle_mute();
     callback toggle_deafen();
@@ -1767,83 +1769,98 @@ export component AppWindow inherits Window {
                                 alignment: start;
 
                                 for channel in root.channels: Rectangle {
-                                    height: channel.is_category ? 26px : 34px;
-                                    background: channel.is_category ? transparent : (channel_touch.has_hover ? #35373c : #2b2d31);
-                                    border-radius: 6px;
+                                    if channel.is_category : Rectangle {
+                                        height: 28px;
+                                        background: transparent;
 
-                                    if channel.is_category : HorizontalLayout {
-                                        padding-left: 4px;
-                                        padding-right: 8px;
-                                        spacing: 5px;
-                                        alignment: center;
-
-                                        Text {
-                                            text: "v";
-                                            color: #949ba4;
-                                            font-size: 10px;
-                                            font-weight: 800;
-                                            vertical-alignment: center;
-                                        }
-
-                                        Text {
-                                            text: channel.name;
-                                            color: #949ba4;
-                                            font-size: 11px;
-                                            font-weight: 800;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                            overflow: elide;
-                                        }
-                                    }
-
-                                    if !channel.is_category : HorizontalBox {
-                                        padding-left: channel.has_parent ? 14px : 8px;
-                                        padding-right: 8px;
-                                        spacing: 6px;
-
-                                        if channel.is_voice : Image {
-                                            source: @image-url("../assets/speaker.svg");
-                                            width: 14px;
-                                            height: 14px;
-                                            colorize: #23a55a;
-                                        }
-                                        if !channel.is_voice : Text {
-                                            text: "#";
-                                            color: #80848e;
-                                            font-size: 16px;
-                                            font-weight: 700;
-                                            vertical-alignment: center;
-                                        }
-
-                                        Text {
-                                            text: channel.name;
-                                            color: #dbdee1;
-                                            font-size: 13px;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                            overflow: elide;
-                                        }
-
-                                        if channel.is_voice && channel.voice_count > 0 : Rectangle {
-                                            width: 22px;
-                                            height: 18px;
-                                            border-radius: 9px;
-                                            background: #23a55a;
+                                        HorizontalLayout {
+                                            padding-left: 2px;
+                                            padding-right: 6px;
+                                            spacing: 6px;
+                                            alignment: center;
 
                                             Text {
-                                                text: "\{channel.voice_count}";
-                                                color: #ffffff;
-                                                font-size: 10px;
-                                                font-weight: 700;
-                                                horizontal-alignment: center;
+                                                text: channel.is_collapsed ? "▸" : "▾";
+                                                color: category_touch.has_hover ? #f2f3f5 : #949ba4;
+                                                font-size: 11px;
+                                                font-weight: 800;
                                                 vertical-alignment: center;
+                                                animate color { duration: 150ms; }
                                             }
+
+                                            Text {
+                                                text: channel.name;
+                                                color: category_touch.has_hover ? #f2f3f5 : #949ba4;
+                                                font-size: 11px;
+                                                font-weight: 800;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                                overflow: elide;
+                                                animate color { duration: 150ms; }
+                                            }
+                                        }
+
+                                        category_touch := TouchArea {
+                                            clicked => { root.toggle_category(channel.id); }
                                         }
                                     }
 
-                                    channel_touch := TouchArea {
-                                        enabled: !channel.is_category;
-                                        clicked => { root.select_channel(channel.id); }
+                                    if !channel.is_category : Rectangle {
+                                        height: 34px;
+                                        background: channel_touch.has_hover ? #35373c : transparent;
+                                        border-radius: 6px;
+
+                                        HorizontalBox {
+                                            padding-left: channel.has_parent ? 16px : 8px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+
+                                            if channel.is_voice : Image {
+                                                source: @image-url("../assets/speaker.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: #23a55a;
+                                            }
+                                            if !channel.is_voice : Text {
+                                                text: "#";
+                                                color: channel_touch.has_hover ? #dbdee1 : #80848e;
+                                                font-size: 15px;
+                                                font-weight: 700;
+                                                vertical-alignment: center;
+                                                animate color { duration: 150ms; }
+                                            }
+
+                                            Text {
+                                                text: channel.name;
+                                                color: channel_touch.has_hover ? #f2f3f5 : #949ba4;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                                overflow: elide;
+                                                animate color { duration: 150ms; }
+                                            }
+
+                                            if channel.is_voice && channel.voice_count > 0 : Rectangle {
+                                                width: 22px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: #23a55a;
+
+                                                Text {
+                                                    text: "\{channel.voice_count}";
+                                                    color: #ffffff;
+                                                    font-size: 10px;
+                                                    font-weight: 700;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        channel_touch := TouchArea {
+                                            clicked => { root.select_channel(channel.id); }
+                                        }
                                     }
                                 }
                             }
