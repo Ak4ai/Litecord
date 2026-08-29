@@ -1777,35 +1777,48 @@ export component AppWindow inherits Window {
                                         padding-left: channel.is_category ? 4px : (channel.has_parent ? 18px : 8px);
                                         padding-right: 8px;
                                         spacing: 6px;
-                                        alignment: center;
 
                                         // Category icon: chevron
-                                        if channel.is_category : Text {
-                                            text: channel.is_collapsed ? "▸" : "▾";
-                                            color: touch_area.has_hover ? #f2f3f5 : #949ba4;
-                                            font-size: 11px;
-                                            font-weight: 800;
-                                            vertical-alignment: center;
-                                            animate color { duration: 150ms; }
+                                        if channel.is_category : VerticalLayout {
+                                            alignment: center;
+                                            width: 12px;
+                                            Text {
+                                                text: channel.is_collapsed ? "▸" : "▾";
+                                                color: touch_area.has_hover ? #f2f3f5 : #949ba4;
+                                                font-size: 11px;
+                                                font-weight: 800;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                animate color { duration: 150ms; }
+                                            }
                                         }
 
                                         // Voice channel icon: speaker
-                                        if !channel.is_category && channel.is_voice : Image {
-                                            source: @image-url("../assets/speaker.svg");
+                                        if !channel.is_category && channel.is_voice : VerticalLayout {
+                                            alignment: center;
                                             width: 14px;
-                                            height: 14px;
-                                            colorize: #23a55a;
-                                            vertical-alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/speaker.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: #23a55a;
+                                                image-fit: contain;
+                                            }
                                         }
 
                                         // Text channel icon: '#'
-                                        if !channel.is_category && !channel.is_voice : Text {
-                                            text: "#";
-                                            color: touch_area.has_hover ? #dbdee1 : #80848e;
-                                            font-size: 15px;
-                                            font-weight: 700;
-                                            vertical-alignment: center;
-                                            animate color { duration: 150ms; }
+                                        if !channel.is_category && !channel.is_voice : VerticalLayout {
+                                            alignment: center;
+                                            width: 14px;
+                                            Text {
+                                                text: "#";
+                                                color: touch_area.has_hover ? #dbdee1 : #80848e;
+                                                font-size: 16px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                animate color { duration: 150ms; }
+                                            }
                                         }
 
                                         // Channel or Category Name
@@ -1814,6 +1827,7 @@ export component AppWindow inherits Window {
                                             color: channel.is_category ? (touch_area.has_hover ? #f2f3f5 : #949ba4) : (touch_area.has_hover ? #f2f3f5 : #dbdee1);
                                             font-size: channel.is_category ? 11px : 13px;
                                             font-weight: channel.is_category ? 800 : 600;
+                                            horizontal-alignment: left;
                                             vertical-alignment: center;
                                             horizontal-stretch: 1;
                                             overflow: elide;
@@ -1821,19 +1835,22 @@ export component AppWindow inherits Window {
                                         }
 
                                         // Voice user count badge
-                                        if !channel.is_category && channel.is_voice && channel.voice_count > 0 : Rectangle {
-                                            width: 22px;
-                                            height: 18px;
-                                            border-radius: 9px;
-                                            background: #23a55a;
+                                        if !channel.is_category && channel.is_voice && channel.voice_count > 0 : VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 22px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: #23a55a;
 
-                                            Text {
-                                                text: "\{channel.voice_count}";
-                                                color: #ffffff;
-                                                font-size: 10px;
-                                                font-weight: 700;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
+                                                Text {
+                                                    text: "\{channel.voice_count}";
+                                                    color: #ffffff;
+                                                    font-size: 10px;
+                                                    font-weight: 700;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
                                             }
                                         }
                                     }
