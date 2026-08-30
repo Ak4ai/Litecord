@@ -353,12 +353,12 @@ component ChatMessagesView inherits Rectangle {
                             width: 20px;
                             height: 20px;
                             background: transparent;
-                            Text {
-                                text: is-collapsed ? "▼" : "▲";
-                                color: #949ba4;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            Image {
+                                source: is-collapsed ? @image-url("../assets/chevron-down.svg") : @image-url("../assets/chevron-up.svg");
+                                width: 12px;
+                                height: 12px;
+                                colorize: #949ba4;
+                                image-fit: contain;
                             }
                             TouchArea {
                                 mouse-cursor: pointer;
@@ -1807,14 +1807,13 @@ export component AppWindow inherits Window {
                                             VerticalLayout {
                                                 alignment: center;
                                                 width: 14px;
-                                                Text {
-                                                    text: channel.is_collapsed ? "▸" : "▾";
-                                                    color: touch_area.has_hover ? #f2f3f5 : #949ba4;
-                                                    font-size: 14px;
-                                                    font-weight: 800;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                    animate color { duration: 120ms; }
+                                                Image {
+                                                    source: channel.is_collapsed ? @image-url("../assets/chevron-right.svg") : @image-url("../assets/chevron-down.svg");
+                                                    width: 11px;
+                                                    height: 11px;
+                                                    colorize: touch_area.has_hover ? #f2f3f5 : #949ba4;
+                                                    image-fit: contain;
+                                                    animate colorize { duration: 120ms; }
                                                 }
                                             }
 

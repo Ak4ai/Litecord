@@ -5,6 +5,19 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.9] - 2026-08-29
+
+### 🎨 UI & Design Fixes
+- **Unified Vector SVG Collapse Chevrons (`chevron-down.svg`, `chevron-right.svg`, `chevron-up.svg`)**:
+  - Replaced system Unicode arrows (`▸` / `▾` / `▼`) with crisp SVG vector icons for categories and message links.
+  - Fixes missing font glyph boxes (`□`) on Windows systems and provides smooth color transitions across all platforms.
+- **Fixed Chat Header Channel Title Duplication**:
+  - Sanitized active channel name formatting to prevent duplicate hashtag prefixing (`## channel` -> `# channel`).
+
+### 📦 Windows Installer & Updater
+- **Automated Restart & Installer Relaunch**:
+  - Removed `skipifsilent` flag in Inno Setup (`installer.iss`), ensuring the installer launches `litecord.exe` immediately after installation and in-app updates.
+
 ---
 
 ## [v0.3.8] - 2026-08-29

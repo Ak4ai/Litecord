@@ -190,9 +190,9 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (v0.3.8)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (v0.3.8)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux Standalone (v0.3.8)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (v0.3.9)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (v0.3.9)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux Standalone (v0.3.9)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ---
 

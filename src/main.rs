@@ -1025,7 +1025,8 @@ async fn fetch_and_populate_channels(
                     let ch_id_val = ch_id.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w2.upgrade() {
-                            ui.set_active_channel_name(format!("# {}", ch_name).into());
+                            let clean_name = ch_name.trim_start_matches('#').trim();
+                            ui.set_active_channel_name(clean_name.into());
                             ui.set_active_channel_id(ch_id_val.into());
                         }
                     });
@@ -4134,7 +4135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                 ui.set_messages(model.into());
             } else {
-                ui.set_active_channel_name(format!("# {}", ch_name).into());
+                let clean_name = ch_name.trim_start_matches('#').trim();
+                ui.set_active_channel_name(clean_name.into());
                 ui.set_active_channel_id(ch_id.clone().into());
 
                 let http_opt = http_client_chan_select.lock().unwrap().as_ref().cloned();

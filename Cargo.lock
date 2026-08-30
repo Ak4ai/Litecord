@@ -4273,7 +4273,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "litecord"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "aes-gcm",
  "ashpd",

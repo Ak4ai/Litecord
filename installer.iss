@@ -1,6 +1,6 @@
 ; Inno Setup Script for Litecord Windows Installer
 #define MyAppName "Litecord"
-#define MyAppVersion "0.3.8"
+#define MyAppVersion "0.3.9"
 #define MyAppPublisher "Litecord Project"
 #define MyAppURL "https://github.com/Ak4ai/Litecord"
 #define MyAppExeName "litecord.exe"
@@ -49,4 +49,4 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app_icon.ico"; Tasks: startupicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
