@@ -49,6 +49,41 @@ pub fn save_ignored_version(tag: &str) {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetailedVersionInfo {
+    pub status: VersionComparisonStatus,
+    pub local_version: String,
+    pub local_hash: String,
+    pub is_dirty: bool,
+    pub remote_version: String,
+    pub remote_tag: String,
+    pub release_name: String,
+    pub release_body: String,
+    pub download_url: String,
+    pub formatted_status: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VersionComparisonStatus {
+    UpToDate,        // Atualizado
+    Outdated,        // Desatualizado
+    AheadOfRelease,  // Dev / À frente da release pública
+    Modified,        // Modificado localmente (dirty)
+}
+
+/// Returns the formatted local version string (e.g. "v0.3.8 (0a21d14)" or "v0.3.8 (0a21d14-modified)")
+pub fn get_local_version_string() -> String {
+    let base_ver = env!("CARGO_PKG_VERSION");
+    let git_hash = env!("LITECORD_GIT_HASH");
+    let is_dirty = env!("LITECORD_GIT_DIRTY") == "true";
+
+    if is_dirty {
+        format!("v{} ({}-modified)", base_ver, git_hash)
+    } else {
+        format!("v{} ({})", base_ver, git_hash)
+    }
+}
+
 /// Compares version string a with b (e.g., "0.2.2" > "0.2.1")
 pub fn is_newer_version(remote_ver: &str, current_ver: &str) -> bool {
     let parse_ver = |v: &str| -> Vec<u64> {
@@ -76,19 +111,32 @@ pub fn is_newer_version(remote_ver: &str, current_ver: &str) -> bool {
 
 /// Checks GitHub API for the latest release (respecting ignored versions)
 pub async fn check_for_updates() -> Option<ReleaseInfo> {
-    check_for_updates_internal(true).await.ok().flatten()
+    let det = check_version_status_detailed(true).await.ok()?;
+    if det.status == VersionComparisonStatus::Outdated {
+        Some(ReleaseInfo {
+            tag_name: det.remote_tag,
+            version: det.remote_version,
+            download_url: det.download_url,
+            release_name: det.release_name,
+            release_body: det.release_body,
+        })
+    } else {
+        None
+    }
 }
 
-/// Manually checks GitHub API for the latest release (ignoring the skip list)
-pub async fn check_for_updates_manual() -> Result<Option<ReleaseInfo>, String> {
-    check_for_updates_internal(false).await
+/// Manually checks GitHub API for the latest release and returns complete comparison status
+pub async fn check_for_updates_manual() -> Result<DetailedVersionInfo, String> {
+    check_version_status_detailed(false).await
 }
 
-async fn check_for_updates_internal(respect_ignored: bool) -> Result<Option<ReleaseInfo>, String> {
-    let current_version = env!("CARGO_PKG_VERSION");
+pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<DetailedVersionInfo, String> {
+    let local_version = env!("CARGO_PKG_VERSION").to_string();
+    let local_hash = env!("LITECORD_GIT_HASH").to_string();
+    let is_dirty = env!("LITECORD_GIT_DIRTY") == "true";
+
     let url = format!("https://api.github.com/repos/{}/{}/releases/latest", REPO_OWNER, REPO_NAME);
-
-    info!("🔍 Verificando se há novas versões do Litecord no GitHub (Atual: v{})...", current_version);
+    info!("🔍 Comparando versão local ({}) com a última release do GitHub...", get_local_version_string());
 
     let client = reqwest::Client::builder()
         .user_agent("Litecord-App-Updater")
@@ -100,31 +148,15 @@ async fn check_for_updates_internal(respect_ignored: bool) -> Result<Option<Rele
         .map_err(|e| format!("Falha de conexão com o GitHub: {:?}", e))?;
 
     if !resp.status().is_success() {
-        return Err(format!("API do GitHub retornou status {}", resp.status()));
+        return Err(format!("API do GitHub retornou status HTTP {}", resp.status()));
     }
 
     let json: serde_json::Value = resp.json().await
         .map_err(|e| format!("Erro ao decodificar JSON do GitHub: {:?}", e))?;
 
-    let tag_name = match json["tag_name"].as_str() {
-        Some(t) => t.to_string(),
-        None => return Err("Formato de release inválido no GitHub.".to_string()),
-    };
-    let clean_ver = tag_name.trim_start_matches('v').to_string();
+    let tag_name = json["tag_name"].as_str().unwrap_or("v0.0.0").to_string();
+    let remote_version = tag_name.trim_start_matches('v').to_string();
 
-    if respect_ignored && is_version_ignored(&tag_name) {
-        info!("Versão remota {} está marcada como ignorada pelo usuário.", tag_name);
-        return Ok(None);
-    }
-
-    if !is_newer_version(&clean_ver, current_version) {
-        info!("O Litecord já está na versão mais recente (v{}).", current_version);
-        return Ok(None);
-    }
-
-    info!("🚀 NOVA VERSÃO ENCONTRADA: {} (Atual: v{})!", tag_name, current_version);
-
-    // Target asset selection based on OS
     let target_asset_name = if cfg!(target_os = "windows") {
         "Litecord-Setup-x64.exe"
     } else {
@@ -145,7 +177,6 @@ async fn check_for_updates_internal(respect_ignored: bool) -> Result<Option<Rele
         }
     }
 
-    // Fallback URL if asset not matched directly
     if download_url.is_empty() {
         download_url = format!(
             "https://github.com/{}/{}/releases/download/{}/{}",
@@ -153,13 +184,55 @@ async fn check_for_updates_internal(respect_ignored: bool) -> Result<Option<Rele
         );
     }
 
-    Ok(Some(ReleaseInfo {
-        tag_name: tag_name.clone(),
-        version: clean_ver,
-        download_url,
+    if respect_ignored && is_version_ignored(&tag_name) {
+        info!("Versão remota {} está marcada como ignorada pelo usuário.", tag_name);
+    }
+
+    let (status, formatted_status) = if is_newer_version(&remote_version, &local_version) {
+        (
+            VersionComparisonStatus::Outdated,
+            format!("⚠️ Desatualizado (v{} disponível no GitHub)", remote_version),
+        )
+    } else if is_newer_version(&local_version, &remote_version) {
+        if is_dirty {
+            (
+                VersionComparisonStatus::Modified,
+                format!("🚀 Dev / Modificado ({}-modified • release v{})", local_hash, remote_version),
+            )
+        } else {
+            (
+                VersionComparisonStatus::AheadOfRelease,
+                format!("🚀 Atualizado / Dev ({} • à frente da release v{})", local_hash, remote_version),
+            )
+        }
+    } else {
+        if is_dirty {
+            (
+                VersionComparisonStatus::Modified,
+                format!("📝 Modificado ({}-modified • base v{})", local_hash, remote_version),
+            )
+        } else {
+            (
+                VersionComparisonStatus::UpToDate,
+                format!("✅ Atualizado (v{} • {})", local_version, local_hash),
+            )
+        }
+    };
+
+    info!("📊 Status de Versionamento: {}", formatted_status);
+
+    Ok(DetailedVersionInfo {
+        status,
+        local_version,
+        local_hash,
+        is_dirty,
+        remote_version,
+        remote_tag: tag_name.clone(),
         release_name: json["name"].as_str().unwrap_or(&tag_name).to_string(),
         release_body: json["body"].as_str().unwrap_or("").to_string(),
-    }))
+        download_url,
+        formatted_status,
+    })
 }
 
 /// Downloads the release file and launches the updater/installer

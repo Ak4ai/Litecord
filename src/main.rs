@@ -1707,7 +1707,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let saved_audio_cfg = gateway::load_persisted_audio_config();
     app.set_vad_threshold(saved_audio_cfg.vad_threshold);
-    app.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
+    app.set_app_version(updater::get_local_version_string().into());
     let app_weak = app.as_weak();
 
     let popout_window = PopoutStreamWindow::new()?;
@@ -3470,7 +3470,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ui) = app_w.upgrade() {
             ui.set_is_checking_update(true);
-            ui.set_update_check_feedback("Verificando atualizações no GitHub...".into());
+            ui.set_update_check_feedback("Comparando versão local com o GitHub...".into());
         }
 
         tokio::spawn(async move {
@@ -3481,15 +3481,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ui) = app_w_inner.upgrade() {
                     ui.set_is_checking_update(false);
                     match res {
-                        Ok(Some(rel)) => {
-                            *get_pending_update_store().lock().unwrap() = Some(rel.clone());
-                            ui.set_update_check_feedback(format!("Nova versão disponível: v{}", rel.version).into());
-                            ui.set_update_version(format!("v{}", rel.version).into());
-                            ui.set_update_release_name(rel.release_name.into());
-                            ui.set_show_update_dialog(true);
-                        }
-                        Ok(None) => {
-                            ui.set_update_check_feedback(format!("✅ Você já está na versão mais recente (v{})!", env!("CARGO_PKG_VERSION")).into());
+                        Ok(info) => {
+                            ui.set_update_check_feedback(info.formatted_status.clone().into());
+                            if info.status == updater::VersionComparisonStatus::Outdated {
+                                let rel = updater::ReleaseInfo {
+                                    tag_name: info.remote_tag,
+                                    version: info.remote_version.clone(),
+                                    download_url: info.download_url,
+                                    release_name: info.release_name.clone(),
+                                    release_body: info.release_body,
+                                };
+                                *get_pending_update_store().lock().unwrap() = Some(rel);
+                                ui.set_update_version(format!("v{}", info.remote_version).into());
+                                ui.set_update_release_name(info.release_name.into());
+                                ui.set_show_update_dialog(true);
+                            }
                         }
                         Err(e) => {
                             ui.set_update_check_feedback(format!("⚠️ {}", e).into());
