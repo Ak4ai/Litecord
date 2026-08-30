@@ -1351,7 +1351,7 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     alignment: center;
                     HorizontalLayout {
-                        spacing: 6px;
+                        spacing: 8px;
 
                         VerticalLayout {
                             alignment: center;
@@ -1373,18 +1373,17 @@ export component AppWindow inherits Window {
                                 font-size: 13px;
                             }
                         }
-                    }
-                }
 
-                Rectangle { horizontal-stretch: 1; }
-
-                VerticalLayout {
-                    alignment: center;
-                    Text {
-                        text: root.connection_status;
-                        color: #949ba4;
-                        font-size: 11px;
-                        vertical-alignment: center;
+                        // Versioning string aligned right next to LITECORD
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: root.app_version;
+                                color: #949ba4;
+                                font-weight: 600;
+                                font-size: 11px;
+                            }
+                        }
                     }
                 }
 
@@ -2081,6 +2080,16 @@ export component AppWindow inherits Window {
                                     color: #ffffff;
                                     font-size: 15px;
                                     font-weight: 800;
+                                }
+                            }
+
+                            // Vertical Separator next to voice channel name
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 1px;
+                                    height: 16px;
+                                    background: #3f4147;
                                 }
                             }
 
