@@ -931,9 +931,9 @@ dependencies = [
 
 [[package]]
 name = "cameras"
-version = "0.1.5"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "064f9947bb80aa9e45faf34e97e557c95bfd5c7ca3030257d844856651ad9c67"
+checksum = "f81e835566369442e92ecc2b7896b79bdbf417873ddc467b8b072adecba9d0e5"
 dependencies = [
  "block2 0.6.2",
  "bytes",
