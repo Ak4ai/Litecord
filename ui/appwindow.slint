@@ -1751,7 +1751,6 @@ export component AppWindow inherits Window {
                 width: 230px;
                 background: #2b2d31;
                 border-top-left-radius: 8px;
-                border-bottom-left-radius: 8px;
                 clip: true;
 
                 VerticalBox {
@@ -1816,11 +1815,11 @@ export component AppWindow inherits Window {
 
                                             VerticalLayout {
                                                 alignment: center;
-                                                width: 12px;
+                                                width: 14px;
                                                 Text {
                                                     text: channel.is_collapsed ? "▸" : "▾";
                                                     color: touch_area.has_hover ? #f2f3f5 : #949ba4;
-                                                    font-size: 11px;
+                                                    font-size: 14px;
                                                     font-weight: 800;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
@@ -2229,6 +2228,8 @@ export component AppWindow inherits Window {
                     if root.is_voice_connecting: Rectangle {
                         vertical-stretch: 1;
                         background: #1e1f22;
+                        border-top-left-radius: 8px;
+                        clip: true;
 
                         VerticalLayout {
                             alignment: center;
@@ -2290,6 +2291,8 @@ export component AppWindow inherits Window {
                     if !root.is_voice_connecting: voice_stage_container := Rectangle {
                         vertical-stretch: 1;
                         background: #313338;
+                        border-top-left-radius: 8px;
+                        clip: true;
 
                         VerticalBox {
                             padding: 12px;
