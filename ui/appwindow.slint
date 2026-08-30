@@ -1388,14 +1388,6 @@ export component AppWindow inherits Window {
                 }
 
                 Rectangle { horizontal-stretch: 1; }
-
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
-                        icon: @image-url("../assets/settings.svg");
-                        clicked => { root.open_settings(); }
-                    }
-                }
             }
 
             // Custom Window Control Buttons (Minimize, Maximize, Close)
@@ -2057,6 +2049,15 @@ export component AppWindow inherits Window {
                         height: 44px;
                         background: #2b2d31;
 
+                        // Left vertical divider line separating channel sidebar from voice header bar
+                        Rectangle {
+                            x: 0px;
+                            y: 8px;
+                            width: 1px;
+                            height: parent.height - 16px;
+                            background: #3f4147;
+                        }
+
                         HorizontalLayout {
                             padding-left: 16px;
                             padding-right: 16px;
@@ -2080,16 +2081,6 @@ export component AppWindow inherits Window {
                                     color: #ffffff;
                                     font-size: 15px;
                                     font-weight: 800;
-                                }
-                            }
-
-                            // Vertical Separator next to voice channel name
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 1px;
-                                    height: 16px;
-                                    background: #3f4147;
                                 }
                             }
 
