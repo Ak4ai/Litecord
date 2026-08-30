@@ -4307,7 +4307,7 @@ dependencies = [
  "winit",
  "winres",
  "x11rb",
- "zune-jpeg 0.4.21",
+ "zune-jpeg 0.5.15",
 ]
 
 [[package]]
