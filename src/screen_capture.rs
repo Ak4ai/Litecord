@@ -938,15 +938,48 @@ impl ScreenCaptureManager {
                     total_blt_us += blt_us;
                     total_pix_us += pix_us;
 
-                    // Decouple UI local preview to ~20 FPS to prevent DWM Compositor VSync contention
+                    // Decouple UI local preview with fast downsampler (480w) to eliminate UI thread lag and memory overhead
                     if last_local_preview.elapsed() >= Duration::from_millis(50) {
-                        if camera_index.is_some() || cfg!(windows) {
-                            let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(cur_w, cur_h);
+                        if (camera_index.is_some() || cfg!(windows)) && cur_w > 0 && cur_h > 0 {
+                            let prev_w = 480u32.min(cur_w);
+                            let prev_h = (((prev_w as f32 / cur_w as f32) * (cur_h as f32)).round() as u32).max(1);
+
+                            let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(prev_w, prev_h);
                             let slice = pixel_buffer.make_mut_slice();
-                            let bgra_chunks = bgra_slice.chunks_exact(4);
-                            for (bgra, pixel) in bgra_chunks.zip(slice.iter_mut()) {
-                                *pixel = Rgba8Pixel::new(bgra[2], bgra[1], bgra[0], 255);
+
+                            let x_step = ((cur_w as u64) << 16) / (prev_w as u64);
+                            let y_step = ((cur_h as u64) << 16) / (prev_h as u64);
+
+                            let src_u32: &[u32] = unsafe {
+                                std::slice::from_raw_parts(bgra_slice.as_ptr() as *const u32, (cur_w * cur_h) as usize)
+                            };
+
+                            let mut src_y_accum = 0u64;
+                            for dy in 0..prev_h {
+                                let sy = ((src_y_accum >> 16) as usize).min((cur_h as usize).saturating_sub(1));
+                                let src_row_start = sy * (cur_w as usize);
+                                let src_row_end = (src_row_start + (cur_w as usize)).min(src_u32.len());
+                                if src_row_start >= src_u32.len() {
+                                    break;
+                                }
+                                let src_row = &src_u32[src_row_start..src_row_end];
+                                let dst_row_start = (dy * prev_w) as usize;
+
+                                let mut src_x_accum = 0u64;
+                                for dx in 0..(prev_w as usize) {
+                                    let sx = ((src_x_accum >> 16) as usize).min(src_row.len().saturating_sub(1));
+                                    if sx < src_row.len() && dst_row_start + dx < slice.len() {
+                                        let bgra_val = src_row[sx];
+                                        let b = (bgra_val & 0xFF) as u8;
+                                        let g = ((bgra_val >> 8) & 0xFF) as u8;
+                                        let r = ((bgra_val >> 16) & 0xFF) as u8;
+                                        slice[dst_row_start + dx] = Rgba8Pixel::new(r, g, b, 255);
+                                    }
+                                    src_x_accum += x_step;
+                                }
+                                src_y_accum += y_step;
                             }
+
                             buffer.publish(pixel_buffer.clone());
                             on_local_tx(pixel_buffer);
                         }
@@ -2343,25 +2376,27 @@ fn fit_bgra_to_canvas(
         return;
     }
 
+    let total_pixels = (canvas_w as usize) * (canvas_h as usize);
+    let total_bytes = total_pixels * 4;
+    if out_bgra.len() < total_bytes {
+        return;
+    }
+
     // Calcula o stride real por linha da textura (GPU D3D11 Texture2D pitch)
     let src_stride_bytes = if src_h > 0 && src_bgra.len() >= (src_h as usize) {
         src_bgra.len() / (src_h as usize)
     } else {
         (src_w as usize) * 4
     };
-    let src_stride_u32 = src_stride_bytes / 4;
 
     // Fast direct copy if dimensions match (even with GPU row pitch padding)
     if src_w == canvas_w && src_h == canvas_h {
         let row_bytes = (canvas_w as usize) * 4;
-        if src_stride_bytes == row_bytes {
-            let total = row_bytes * (canvas_h as usize);
-            if src_bgra.len() >= total && out_bgra.len() >= total {
-                out_bgra[..total].copy_from_slice(&src_bgra[..total]);
-                return;
-            }
+        if src_stride_bytes == row_bytes && src_bgra.len() >= total_bytes {
+            out_bgra[..total_bytes].copy_from_slice(&src_bgra[..total_bytes]);
+            return;
         }
-        for y in 0..canvas_h as usize {
+        for y in 0..(canvas_h as usize) {
             let src_off = y * src_stride_bytes;
             let dst_off = y * row_bytes;
             if src_off + row_bytes <= src_bgra.len() && dst_off + row_bytes <= out_bgra.len() {
@@ -2371,7 +2406,6 @@ fn fit_bgra_to_canvas(
         return;
     }
 
-    let total_pixels = (canvas_w * canvas_h) as usize;
     let canvas_u32: &mut [u32] = unsafe {
         std::slice::from_raw_parts_mut(out_bgra.as_mut_ptr() as *mut u32, total_pixels)
     };
@@ -2381,13 +2415,26 @@ fn fit_bgra_to_canvas(
     let scale_h = canvas_h as f32 / src_h as f32;
     let scale = scale_w.min(scale_h);
 
-    let dest_w = ((src_w as f32 * scale).round() as u32).clamp(2, canvas_w) & !1;
-    let dest_h = ((src_h as f32 * scale).round() as u32).clamp(2, canvas_h) & !1;
+    let mut dest_w = ((src_w as f32 * scale).round() as u32).clamp(2, canvas_w) & !1;
+    let mut dest_h = ((src_h as f32 * scale).round() as u32).clamp(2, canvas_h) & !1;
     let dest_x = ((canvas_w.saturating_sub(dest_w)) / 2) & !1;
     let dest_y = ((canvas_h.saturating_sub(dest_h)) / 2) & !1;
 
+    // Bounds safety clamp: ensure dest_x + dest_w <= canvas_w and dest_y + dest_h <= canvas_h
+    if dest_x + dest_w > canvas_w {
+        dest_w = canvas_w.saturating_sub(dest_x) & !1;
+    }
+    if dest_y + dest_h > canvas_h {
+        dest_h = canvas_h.saturating_sub(dest_y) & !1;
+    }
+
+    if dest_w == 0 || dest_h == 0 {
+        return;
+    }
+
     let x_step = ((src_w as u64) << 16) / (dest_w as u64);
     let y_step = ((src_h as u64) << 16) / (dest_h as u64);
+    let src_stride_u32 = src_stride_bytes / 4;
 
     let src_u32: &[u32] = unsafe {
         std::slice::from_raw_parts(src_bgra.as_ptr() as *const u32, src_bgra.len() / 4)
@@ -2395,21 +2442,31 @@ fn fit_bgra_to_canvas(
 
     let mut src_y_accum = 0u64;
     for dy in 0..dest_h {
-        let sy = ((src_y_accum >> 16) as usize).min((src_h as usize) - 1);
+        let sy = ((src_y_accum >> 16) as usize).min((src_h as usize).saturating_sub(1));
         let src_row_start = sy * src_stride_u32;
-        let src_row_end = (src_row_start + (src_w as usize)).min(src_u32.len());
         if src_row_start >= src_u32.len() {
             break;
         }
+        let src_row_end = (src_row_start + (src_w as usize)).min(src_u32.len());
         let src_row = &src_u32[src_row_start..src_row_end];
 
-        let dst_row_start = ((dest_y + dy) * canvas_w + dest_x) as usize;
-        let dst_row = &mut canvas_u32[dst_row_start..dst_row_start + dest_w as usize];
+        let dst_y_idx = (dest_y + dy) as usize;
+        if dst_y_idx >= (canvas_h as usize) {
+            break;
+        }
+        let dst_row_start = dst_y_idx * (canvas_w as usize) + (dest_x as usize);
+        let dst_row_end = (dst_row_start + (dest_w as usize)).min(total_pixels);
+        if dst_row_start >= total_pixels || dst_row_start >= dst_row_end {
+            break;
+        }
+        let dst_row = &mut canvas_u32[dst_row_start..dst_row_end];
 
         let mut src_x_accum = 0u64;
-        for dx in 0..dest_w {
+        for dx in 0..dst_row.len() {
             let sx = ((src_x_accum >> 16) as usize).min(src_row.len().saturating_sub(1));
-            dst_row[dx as usize] = src_row[sx];
+            if sx < src_row.len() {
+                dst_row[dx] = src_row[sx];
+            }
             src_x_accum += x_step;
         }
         src_y_accum += y_step;
