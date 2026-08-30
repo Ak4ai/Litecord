@@ -3688,6 +3688,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_has_qr_code(false);
                             ui.set_qr_scanned_user("".into());
+                            ui.set_login_alert_message("".into());
                             ui.set_connection_status("Conectando via QR Code...".into());
                         }
                     });
@@ -3712,15 +3713,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_has_qr_code(false);
                             ui.set_qr_scanned_user("".into());
+                            ui.set_login_alert_message("Sessão do QR Code expirou ou foi cancelada no celular. Clique em Gerar QR para tentar novamente.".into());
+                            ui.set_login_alert_is_error(false);
                         }
                     });
                 }
                 RemoteAuthEvent::Error(err) => {
                     warn!("⚠️ Erro na sessão de QR Auth: {}", err);
                     let app_w = app_weak_qr.clone();
+                    let err_clone = err.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_has_qr_code(false);
+                            if err_clone.contains("captcha-required") || err_clone.contains("captcha") {
+                                ui.set_login_alert_message("O Discord exigiu verificação por Captcha para o QR Code. Por favor, cole seu Token ao lado para conectar imediatamente.".into());
+                                ui.set_login_alert_is_error(true);
+                            } else {
+                                ui.set_login_alert_message(format!("Falha no QR Code: {}", err_clone).into());
+                                ui.set_login_alert_is_error(true);
+                            }
                         }
                     });
                 }
@@ -4052,6 +4063,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.set_is_logged_in(true);
                             ui.set_user_tag(display_tag_clone.into());
                             ui.set_connection_status("Conectado com sucesso!".into());
+                            ui.set_login_alert_message("".into());
+                            ui.set_titlebar_error("".into());
                         }
                     });
 
@@ -4079,6 +4092,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_connection_status(format!("❌ {}", err_clone).into());
+                            ui.set_login_alert_message(format!("Token recusado pelo Discord: {}", err_clone).into());
+                            ui.set_login_alert_is_error(true);
                         }
                     });
                 }
@@ -4823,17 +4838,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             ui.set_is_logged_in(true);
                             ui.set_user_tag(user_tag.into());
-                            if let Ok(tok) = last_token_inner.lock() {
-                                save_secure_token(tok.as_str());
-                            }
+                            ui.set_titlebar_error("".into());
+                            ui.set_login_alert_message("".into());
                         }
                     });
                 }
                 GatewayEvent::Disconnected { reason } => {
+                    let reason_clone = reason.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
-                            ui.set_is_logged_in(false);
-                            ui.set_connection_status(format!("❌ Desconectado: {}", reason).into());
+                            let clean_reason = if reason_clone.contains("10054") || reason_clone.contains("ConnectionReset") || reason_clone.contains("reset by peer") {
+                                "Conexão reiniciada".to_string()
+                            } else if reason_clone.contains("timeout") || reason_clone.contains("TimedOut") {
+                                "Sem internet / Timeout".to_string()
+                            } else {
+                                format!("Desconectado ({})", reason_clone)
+                            };
+                            ui.set_titlebar_error(clean_reason.into());
                         }
                     });
                 }
@@ -5708,6 +5729,8 @@ async fn try_login_with_candidates(
                         ui.set_is_logged_in(true);
                         ui.set_user_tag(display_tag_clone.into());
                         ui.set_connection_status("Conectado com sucesso!".into());
+                        ui.set_login_alert_message("".into());
+                        ui.set_titlebar_error("".into());
                     }
                 });
 

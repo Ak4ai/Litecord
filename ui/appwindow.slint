@@ -1283,6 +1283,9 @@ export component AppWindow inherits Window {
     in-out property <[VoiceParticipant]> voice_participants: [];
     in-out property <bool> show_user_menu: false;
     in-out property <[AccountItem]> saved_accounts: [];
+    in-out property <string> login_alert_message: "";
+    in-out property <bool> login_alert_is_error: true;
+    in-out property <string> titlebar_error: "";
 
     // Voice & Audio Settings Properties
     in-out property <bool> show_settings_modal: false;
@@ -1396,6 +1399,26 @@ export component AppWindow inherits Window {
                                 font-size: 11px;
                             }
                         }
+
+                        // Discretely show active connection/system error when logged in
+                        if root.titlebar_error != "" && root.is_logged_in: VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "-";
+                                    color: #f23f43;
+                                    font-weight: 700;
+                                    font-size: 11px;
+                                }
+                                Text {
+                                    text: root.titlebar_error;
+                                    color: #f23f43;
+                                    font-weight: 600;
+                                    font-size: 11px;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1493,17 +1516,53 @@ export component AppWindow inherits Window {
 
             VerticalLayout {
                 alignment: center;
+                spacing: 12px;
 
                 HorizontalLayout {
                     alignment: center;
 
-                    Rectangle {
+                    VerticalLayout {
+                        spacing: 10px;
                         width: 720px;
-                        height: 380px;
-                        background: #2b2d31;
-                        border-radius: 12px;
-                        border-width: 1px;
-                        border-color: #383a40;
+
+                        // Alert / Status Banner on Login Screen
+                        if root.login_alert_message != "": Rectangle {
+                            height: 38px;
+                            background: root.login_alert_is_error ? #da373c22 : #5865f222;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: root.login_alert_is_error ? #da373c88 : #5865f288;
+                            clip: true;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+                                alignment: center;
+
+                                Text {
+                                    text: root.login_alert_is_error ? "⚠️" : "ℹ️";
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.login_alert_message;
+                                    color: root.login_alert_is_error ? #f23f43 : #dbdee1;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 380px;
+                            background: #2b2d31;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: #383a40;
 
                         HorizontalLayout {
                             padding: 32px;
@@ -1685,6 +1744,7 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
 
         if root.is_logged_in: HorizontalBox {
             padding: 0px;
