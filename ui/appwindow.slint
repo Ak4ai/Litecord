@@ -2046,7 +2046,7 @@ export component AppWindow inherits Window {
 
             // 3. Main Content View (Text Chat OR Voice Room View)
             Rectangle {
-                background: #313338;
+                background: (root.is_voice_focused && root.is_in_voice) ? #2b2d31 : #313338;
                 horizontal-stretch: 1;
 
                 if root.is_voice_focused && root.is_in_voice: VerticalBox {
@@ -2290,7 +2290,7 @@ export component AppWindow inherits Window {
                     // Voice Room Participants Dynamic Stage Grid
                     if !root.is_voice_connecting: voice_stage_container := Rectangle {
                         vertical-stretch: 1;
-                        background: #313338;
+                        background: #1e1f22;
                         border-top-left-radius: 8px;
                         clip: true;
 
