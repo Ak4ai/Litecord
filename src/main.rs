@@ -3742,8 +3742,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_qr_logout = Arc::clone(&active_qr_session);
 
     app.on_logout(move || {
-        info!("Usuário solicitou Logout da conta...");
-        // 1. Remove saved token file so auto-login is cancelled
+        info!("Usuário solicitou Logout completo de todas as contas...");
+        // 1. Remove saved vault file so all saved tokens are wiped
         delete_secure_token();
 
         // 2. Disconnect voice session if active
@@ -3788,6 +3788,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_saved_accounts(slint::ModelRc::new(slint::VecModel::from(vec![])));
             ui.set_has_qr_code(false);
             ui.set_qr_scanned_user("".into());
         }
@@ -3798,6 +3799,191 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let session = remote_auth::RemoteAuthSession::start(qr_tx_logout.clone());
         *active_qr_logout.lock().unwrap() = Some(session);
+    });
+
+    // Switch Account Callback from UI
+    let app_weak_sw = app_weak.clone();
+    let http_client_sw = Arc::clone(&http_client);
+    let last_token_sw = Arc::clone(&last_token);
+    let guilds_map_sw = Arc::clone(&guilds_map);
+    let active_guild_sw = Arc::clone(&active_guild_id);
+    let active_channel_sw = Arc::clone(&active_channel_id);
+    let cmd_tx_sw = Arc::clone(&cmd_tx_store);
+    let active_mic_sw = Arc::clone(&active_mic_stream);
+    let active_loopback_sw = Arc::clone(&active_loopback_stream);
+    let active_qr_sw = Arc::clone(&active_qr_session);
+    let event_tx_sw = event_tx.clone();
+
+    app.on_switch_account(move |account_id: SharedString| {
+        let acc_id_str = account_id.to_string();
+        info!("🔄 Alternando para a conta com identificador {}...", acc_id_str);
+
+        let mut vault = load_account_vault();
+        let mut target_token = String::new();
+        let mut found = false;
+        for a in &mut vault.accounts {
+            if a.user_id == acc_id_str || a.token == acc_id_str {
+                a.is_active = true;
+                target_token = a.token.clone();
+                found = true;
+            } else {
+                a.is_active = false;
+            }
+        }
+        if !found {
+            warn!("Conta {} não encontrada no cofre.", acc_id_str);
+            return;
+        }
+        save_account_vault(&vault);
+        sync_ui_saved_accounts(&app_weak_sw, &vault);
+
+        // Disconnect voice session if active
+        gateway::clear_voice_participants();
+        gateway::CURRENT_VOICE_SESSION_ID.store(0, std::sync::atomic::Ordering::SeqCst);
+        gateway::set_testing_mic(false);
+
+        // Send disconnect command if gateway is active
+        let gid = active_guild_sw.lock().unwrap().clone();
+        if let Some(cmd_tx) = cmd_tx_sw.lock().unwrap().as_ref() {
+            let _ = cmd_tx.try_send(GatewayCommand::UpdateVoiceState {
+                guild_id: gid,
+                channel_id: None,
+                self_mute: false,
+                self_deaf: false,
+            });
+        }
+
+        // Cancel QR session if active
+        if let Some(old) = active_qr_sw.lock().unwrap().take() {
+            old.cancel();
+        }
+
+        // Reset backend states
+        *cmd_tx_sw.lock().unwrap() = None;
+        *http_client_sw.lock().unwrap() = None;
+        *last_token_sw.lock().unwrap() = target_token.clone();
+        *guilds_map_sw.lock().unwrap() = std::collections::HashMap::new();
+        *active_guild_sw.lock().unwrap() = String::new();
+        *active_channel_sw.lock().unwrap() = String::new();
+        *active_mic_sw.lock().unwrap() = None;
+        *active_loopback_sw.lock().unwrap() = None;
+        if let Ok(mut q) = gateway::get_mic_loopback_queue().lock() {
+            q.clear();
+        }
+
+        if let Some(ui) = app_weak_sw.upgrade() {
+            ui.set_is_logged_in(false);
+            ui.set_connection_status("Alternando conta e conectando ao Discord...".into());
+            ui.set_is_in_voice(false);
+            ui.set_current_voice_channel("".into());
+            ui.set_show_user_menu(false);
+            ui.set_show_settings_modal(false);
+            ui.set_is_testing_mic(false);
+            ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+        }
+
+        let app_w = app_weak_sw.clone();
+        let http_c = Arc::clone(&http_client_sw);
+        let last_t = Arc::clone(&last_token_sw);
+        let g_map = Arc::clone(&guilds_map_sw);
+        let a_gid = Arc::clone(&active_guild_sw);
+        let a_cid = Arc::clone(&active_channel_sw);
+        let c_tx = Arc::clone(&cmd_tx_sw);
+        let ev_tx = event_tx_sw.clone();
+
+        tokio::spawn(async move {
+            try_login_with_candidates(
+                vec![target_token],
+                app_w,
+                http_c,
+                last_t,
+                g_map,
+                a_gid,
+                a_cid,
+                c_tx,
+                ev_tx,
+            ).await;
+        });
+    });
+
+    // Add New Account Callback from UI
+    let app_weak_add = app_weak.clone();
+    let http_client_add = Arc::clone(&http_client);
+    let last_token_add = Arc::clone(&last_token);
+    let guilds_map_add = Arc::clone(&guilds_map);
+    let active_guild_add = Arc::clone(&active_guild_id);
+    let active_channel_add = Arc::clone(&active_channel_id);
+    let cmd_tx_add = Arc::clone(&cmd_tx_store);
+    let active_mic_add = Arc::clone(&active_mic_stream);
+    let active_loopback_add = Arc::clone(&active_loopback_stream);
+    let qr_tx_add = qr_tx.clone();
+    let active_qr_add = Arc::clone(&active_qr_session);
+
+    app.on_add_new_account(move || {
+        info!("➕ Usuário solicitou adicionar nova conta...");
+        // Disconnect voice session if active
+        gateway::clear_voice_participants();
+        gateway::CURRENT_VOICE_SESSION_ID.store(0, std::sync::atomic::Ordering::SeqCst);
+        gateway::set_testing_mic(false);
+
+        // Send disconnect command if gateway is active
+        let gid = active_guild_add.lock().unwrap().clone();
+        if let Some(cmd_tx) = cmd_tx_add.lock().unwrap().as_ref() {
+            let _ = cmd_tx.try_send(GatewayCommand::UpdateVoiceState {
+                guild_id: gid,
+                channel_id: None,
+                self_mute: false,
+                self_deaf: false,
+            });
+        }
+
+        // Reset backend states in-memory (vault remains intact with existing accounts)
+        *cmd_tx_add.lock().unwrap() = None;
+        *http_client_add.lock().unwrap() = None;
+        *last_token_add.lock().unwrap() = String::new();
+        *guilds_map_add.lock().unwrap() = std::collections::HashMap::new();
+        *active_guild_add.lock().unwrap() = String::new();
+        *active_channel_add.lock().unwrap() = String::new();
+        *active_mic_add.lock().unwrap() = None;
+        *active_loopback_add.lock().unwrap() = None;
+        if let Ok(mut q) = gateway::get_mic_loopback_queue().lock() {
+            q.clear();
+        }
+
+        // Update Slint UI to login state
+        if let Some(ui) = app_weak_add.upgrade() {
+            ui.set_is_logged_in(false);
+            ui.set_user_tag("Não conectado".into());
+            ui.set_connection_status("Conecte a nova conta escaneando o QR Code ou inserindo o Token.".into());
+            ui.set_is_in_voice(false);
+            ui.set_current_voice_channel("".into());
+            ui.set_show_user_menu(false);
+            ui.set_show_settings_modal(false);
+            ui.set_is_testing_mic(false);
+            ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_has_qr_code(false);
+            ui.set_qr_scanned_user("".into());
+        }
+
+        // Start fresh QR Code session for fast login
+        if let Some(old) = active_qr_add.lock().unwrap().take() {
+            old.cancel();
+        }
+        let session = remote_auth::RemoteAuthSession::start(qr_tx_add.clone());
+        *active_qr_add.lock().unwrap() = Some(session);
+    });
+
+    // Remove Single Account Callback from UI
+    let app_weak_rem = app_weak.clone();
+    app.on_remove_account(move |account_id: SharedString| {
+        let acc_id_str = account_id.to_string();
+        info!("🗑️ Removendo conta {} do cofre...", acc_id_str);
+        let vault = remove_single_account(&acc_id_str);
+        sync_ui_saved_accounts(&app_weak_rem, &vault);
     });
 
     // Login Callback from UI
@@ -3838,15 +4024,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match http.get_current_user().await {
                 Ok(user_info) => {
                     let username = user_info["username"].as_str().unwrap_or("User");
-                    info!("Token VÁLIDO! Usuário autenticado: {}", username);
-                    save_secure_token(&token_str);
+                    let user_id = user_info["id"].as_str().unwrap_or("");
+                    let global_name = user_info["global_name"].as_str().unwrap_or(username);
+                    let tag = if let Some(discrim) = user_info["discriminator"].as_str() {
+                        if discrim != "0" {
+                            format!("{}#{}", username, discrim)
+                        } else {
+                            format!("@{}", username)
+                        }
+                    } else {
+                        format!("@{}", username)
+                    };
+                    let display_tag = if !global_name.is_empty() && global_name != username {
+                        format!("{} ({})", global_name, tag)
+                    } else {
+                        tag.clone()
+                    };
+                    info!("Token VÁLIDO! Usuário autenticado: {} ({})", username, user_id);
+
+                    let vault = save_or_update_account(&token_str, user_id, global_name, &tag);
+                    sync_ui_saved_accounts(&app_weak_inner, &vault);
 
                     let app_w = app_weak_inner.clone();
-                    let username_clone = username.to_string();
+                    let display_tag_clone = display_tag.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_is_logged_in(true);
-                            ui.set_connection_status(format!("Conectado como {}!", username_clone).into());
+                            ui.set_user_tag(display_tag_clone.into());
+                            ui.set_connection_status("Conectado com sucesso!".into());
                         }
                     });
 
@@ -3960,7 +4165,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_qr_startup = Arc::clone(&active_qr_session);
 
     tokio::spawn(async move {
-        // Only auto-connect if user explicitly saved their token previously
+        let vault = load_account_vault();
+        sync_ui_saved_accounts(&app_weak_startup, &vault);
         let saved_opt = load_secure_token();
 
         if let Some(saved) = saved_opt {
@@ -5041,32 +5247,120 @@ fn linux_vault_unprotect(data: &[u8]) -> Option<Vec<u8>> {
     cipher.decrypt(nonce, ciphertext).ok()
 }
 
-fn save_secure_token(token_str: &str) {
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct SavedAccount {
+    pub token: String,
+    pub user_id: String,
+    pub username: String,
+    pub tag: String,
+    pub avatar_initials: String,
+    pub is_active: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct AccountVault {
+    pub accounts: Vec<SavedAccount>,
+}
+
+pub fn load_account_vault() -> AccountVault {
     let (primary_path, fallback_path) = get_secure_token_paths();
+    let raw = match std::fs::read_to_string(&primary_path).or_else(|_| std::fs::read_to_string(&fallback_path)) {
+        Ok(s) => s,
+        Err(_) => return AccountVault::default(),
+    };
+    let trimmed = raw.trim();
+
+    let decrypted_str: Option<String> = {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(rest) = trimmed.strip_prefix("DPAPI:") {
+                if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
+                    if let Some(decrypted_bytes) = dpapi_unprotect(&encrypted_bytes) {
+                        String::from_utf8(decrypted_bytes).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Some(rest) = trimmed.strip_prefix("LNX_VAULT:") {
+                if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
+                    if let Some(decrypted_bytes) = linux_vault_unprotect(&encrypted_bytes) {
+                        String::from_utf8(decrypted_bytes).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+
+    let content = decrypted_str.unwrap_or_else(|| trimmed.to_string());
+    if content.is_empty() {
+        return AccountVault::default();
+    }
+
+    if let Ok(vault) = serde_json::from_str::<AccountVault>(&content) {
+        return vault;
+    }
+
+    let clean = content.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
+    if is_valid_token_chars(&clean) {
+        AccountVault {
+            accounts: vec![SavedAccount {
+                token: clean,
+                user_id: String::new(),
+                username: "Conta 1".to_string(),
+                tag: "Conta 1".to_string(),
+                avatar_initials: "C".to_string(),
+                is_active: true,
+            }],
+        }
+    } else {
+        AccountVault::default()
+    }
+}
+
+pub fn save_account_vault(vault: &AccountVault) {
+    let (primary_path, fallback_path) = get_secure_token_paths();
+    let json_str = match serde_json::to_string(vault) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
 
     #[cfg(target_os = "windows")]
     {
-        if let Some(encrypted) = dpapi_protect(token_str.as_bytes()) {
+        if let Some(encrypted) = dpapi_protect(json_str.as_bytes()) {
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
             let payload = format!("DPAPI:{}", b64);
             let _ = std::fs::write(&primary_path, &payload);
             let _ = std::fs::write(&fallback_path, &payload);
         } else {
-            let _ = std::fs::write(&primary_path, token_str);
-            let _ = std::fs::write(&fallback_path, token_str);
+            let _ = std::fs::write(&primary_path, &json_str);
+            let _ = std::fs::write(&fallback_path, &json_str);
         }
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        if let Some(encrypted) = linux_vault_protect(token_str.as_bytes()) {
+        if let Some(encrypted) = linux_vault_protect(json_str.as_bytes()) {
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
             let payload = format!("LNX_VAULT:{}", b64);
             let _ = std::fs::write(&primary_path, &payload);
             let _ = std::fs::write(&fallback_path, &payload);
         } else {
-            let _ = std::fs::write(&primary_path, token_str);
-            let _ = std::fs::write(&fallback_path, token_str);
+            let _ = std::fs::write(&primary_path, &json_str);
+            let _ = std::fs::write(&fallback_path, &json_str);
         }
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&primary_path, std::fs::Permissions::from_mode(0o600));
@@ -5074,10 +5368,76 @@ fn save_secure_token(token_str: &str) {
     }
 }
 
-fn delete_secure_token() {
+pub fn save_or_update_account(token_str: &str, user_id: &str, username: &str, tag: &str) -> AccountVault {
+    let mut vault = load_account_vault();
+    for acc in &mut vault.accounts {
+        acc.is_active = false;
+    }
+
+    let initials = if !username.is_empty() {
+        username.chars().take(2).collect::<String>().to_uppercase()
+    } else if !tag.is_empty() {
+        tag.chars().take(2).collect::<String>().to_uppercase()
+    } else {
+        "U".to_string()
+    };
+
+    if let Some(existing) = vault.accounts.iter_mut().find(|a| (!user_id.is_empty() && a.user_id == user_id) || a.token == token_str) {
+        existing.token = token_str.to_string();
+        if !user_id.is_empty() { existing.user_id = user_id.to_string(); }
+        if !username.is_empty() { existing.username = username.to_string(); }
+        if !tag.is_empty() { existing.tag = tag.to_string(); }
+        existing.avatar_initials = initials;
+        existing.is_active = true;
+    } else {
+        vault.accounts.push(SavedAccount {
+            token: token_str.to_string(),
+            user_id: user_id.to_string(),
+            username: username.to_string(),
+            tag: tag.to_string(),
+            avatar_initials: initials,
+            is_active: true,
+        });
+    }
+
+    save_account_vault(&vault);
+    vault
+}
+
+pub fn remove_single_account(user_id_or_token: &str) -> AccountVault {
+    let mut vault = load_account_vault();
+    vault.accounts.retain(|a| a.user_id != user_id_or_token && a.token != user_id_or_token);
+    save_account_vault(&vault);
+    vault
+}
+
+pub fn delete_secure_token() {
     let (primary_path, fallback_path) = get_secure_token_paths();
     let _ = std::fs::remove_file(primary_path);
     let _ = std::fs::remove_file(fallback_path);
+}
+
+pub fn sync_ui_saved_accounts(app_weak: &slint::Weak<AppWindow>, vault: &AccountVault) {
+    let app_w = app_weak.clone();
+    let accounts = vault.accounts.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_w.upgrade() {
+            let model: Vec<AccountItem> = accounts.iter().map(|acc| {
+                AccountItem {
+                    id: if !acc.user_id.is_empty() { acc.user_id.clone().into() } else { acc.token.clone().into() },
+                    username: acc.username.clone().into(),
+                    tag: acc.tag.clone().into(),
+                    avatar_initials: acc.avatar_initials.clone().into(),
+                    is_active: acc.is_active,
+                }
+            }).collect();
+            ui.set_saved_accounts(slint::ModelRc::new(slint::VecModel::from(model)));
+        }
+    });
+}
+
+fn save_secure_token(token_str: &str) {
+    save_or_update_account(token_str, "", "", "");
 }
 
 #[cfg(target_os = "linux")]
@@ -5143,44 +5503,11 @@ fn build_ui_channels(
 }
 
 fn load_secure_token() -> Option<String> {
-    let (primary_path, fallback_path) = get_secure_token_paths();
-    let raw = std::fs::read_to_string(&primary_path)
-        .or_else(|_| std::fs::read_to_string(&fallback_path))
-        .ok()?;
-    let trimmed = raw.trim();
-
-    #[cfg(target_os = "windows")]
-    if let Some(rest) = trimmed.strip_prefix("DPAPI:") {
-        if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
-            if let Some(decrypted_bytes) = dpapi_unprotect(&encrypted_bytes) {
-                if let Ok(tok) = String::from_utf8(decrypted_bytes) {
-                    let clean = tok.trim().to_string();
-                    if !clean.is_empty() {
-                        return Some(clean);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    if let Some(rest) = trimmed.strip_prefix("LNX_VAULT:") {
-        if let Ok(encrypted_bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest) {
-            if let Some(decrypted_bytes) = linux_vault_unprotect(&encrypted_bytes) {
-                if let Ok(tok) = String::from_utf8(decrypted_bytes) {
-                    let clean = tok.trim().to_string();
-                    if !clean.is_empty() {
-                        return Some(clean);
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback to plain string if legacy unencrypted format
-    let clean = trimmed.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
-    if !clean.is_empty() {
-        Some(clean)
+    let vault = load_account_vault();
+    if let Some(acc) = vault.accounts.iter().find(|a| a.is_active) {
+        Some(acc.token.clone())
+    } else if let Some(first) = vault.accounts.first() {
+        Some(first.token.clone())
     } else {
         None
     }
@@ -5350,18 +5677,37 @@ async fn try_login_with_candidates(
         match http.get_current_user().await {
             Ok(user_info) => {
                 let username = user_info["username"].as_str().unwrap_or("User");
-                info!("Token VÁLIDO ENCONTRADO! Conectado como {}", username);
+                let user_id = user_info["id"].as_str().unwrap_or("");
+                let global_name = user_info["global_name"].as_str().unwrap_or(username);
+                let tag = if let Some(discrim) = user_info["discriminator"].as_str() {
+                    if discrim != "0" {
+                        format!("{}#{}", username, discrim)
+                    } else {
+                        format!("@{}", username)
+                    }
+                } else {
+                    format!("@{}", username)
+                };
+                let display_tag = if !global_name.is_empty() && global_name != username {
+                    format!("{} ({})", global_name, tag)
+                } else {
+                    tag.clone()
+                };
+                info!("Token VÁLIDO ENCONTRADO! Conectado como {} ({})", username, user_id);
 
-                save_secure_token(&token_str);
+                let vault = save_or_update_account(&token_str, user_id, global_name, &tag);
+                sync_ui_saved_accounts(&app_weak, &vault);
+
                 *last_token.lock().unwrap() = token_str.clone();
                 *http_client.lock().unwrap() = Some(http.clone());
 
                 let app_w = app_weak.clone();
-                let username_clone = username.to_string();
+                let display_tag_clone = display_tag.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w.upgrade() {
                         ui.set_is_logged_in(true);
-                        ui.set_connection_status(format!("Conectado como {}!", username_clone).into());
+                        ui.set_user_tag(display_tag_clone.into());
+                        ui.set_connection_status("Conectado com sucesso!".into());
                     }
                 });
 

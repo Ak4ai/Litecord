@@ -168,6 +168,14 @@ export struct CameraSourceItem {
     name: string,
 }
 
+export struct AccountItem {
+    id: string,
+    username: string,
+    tag: string,
+    avatar_initials: string,
+    is_active: bool,
+}
+
 component ChatMessagesView inherits Rectangle {
     in-out property <[ChatMessage]> messages;
     in-out property <bool> has_more_older_messages: false;
@@ -1099,6 +1107,9 @@ export component AppWindow inherits Window {
     callback set_vad_threshold(float /* threshold */);
     callback toggle_test_mic();
     callback logout();
+    callback switch_account(string /* account_id */);
+    callback add_new_account();
+    callback remove_account(string /* account_id */);
     callback change_language(string /* "auto", "en", "pt" */);
     callback refresh_qr_code();
     callback drag_resize(string /* "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right" */);
@@ -1271,6 +1282,7 @@ export component AppWindow inherits Window {
     in-out property <bool> is_voice_focused: false;
     in-out property <[VoiceParticipant]> voice_participants: [];
     in-out property <bool> show_user_menu: false;
+    in-out property <[AccountItem]> saved_accounts: [];
 
     // Voice & Audio Settings Properties
     in-out property <bool> show_settings_modal: false;
@@ -5285,7 +5297,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Small Centered Logout Confirmation Modal
+    // Multi-Account / Switch Account & Logout Modal
     if root.show_user_menu: Rectangle {
         background: #00000088;
         width: 100%;
@@ -5301,14 +5313,13 @@ export component AppWindow inherits Window {
                 alignment: center;
 
                 Rectangle {
-                    width: 280px;
-                    height: 135px;
+                    width: 350px;
                     background: #2b2d31;
-                    border-radius: 10px;
+                    border-radius: 12px;
                     border-width: 1px;
                     border-color: #383a40;
-                    drop-shadow-blur: 16px;
-                    drop-shadow-color: #00000088;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: #000000aa;
 
                     TouchArea {
                         clicked => {}
@@ -5318,52 +5329,222 @@ export component AppWindow inherits Window {
                         padding: 16px;
                         spacing: 12px;
 
-                        Text {
-                            text: root.tr_logout_title;
-                            color: #f2f3f5;
-                            font-size: 15px;
-                            font-weight: 700;
-                            horizontal-alignment: center;
+                        // Header
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: "Gerenciar Contas";
+                                color: #f2f3f5;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                width: 24px;
+                                height: 24px;
+                                border-radius: 12px;
+                                background: close_menu_touch.has-hover ? #3b3e45 : transparent;
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/x.svg");
+                                            width: 12px;
+                                            height: 12px;
+                                            colorize: #dbdee1;
+                                        }
+                                    }
+                                }
+                                close_menu_touch := TouchArea {
+                                    clicked => { root.show_user_menu = false; }
+                                }
+                            }
                         }
 
                         Text {
-                            text: root.tr_logout_confirm_prefix + root.user_tag + "?";
-                            color: #b5bac1;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            overflow: elide;
+                            text: "Troque rapidamente de conta ou adicione uma segunda conta salva.";
+                            color: #949ba4;
+                            font-size: 11px;
+                            wrap: word-wrap;
                         }
 
+                        // List of Saved Accounts
+                        VerticalBox {
+                            padding: 0px;
+                            spacing: 6px;
+
+                            for acc in root.saved_accounts: Rectangle {
+                                height: 50px;
+                                background: acc.is_active ? #1e1f22 : (acc_touch.has-hover ? #35373c : #232428);
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: acc.is_active ? #5865f2 : #383a40;
+
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    padding-top: 6px;
+                                    padding-bottom: 6px;
+                                    spacing: 10px;
+
+                                    // Avatar circle with initials
+                                    Rectangle {
+                                        width: 34px;
+                                        height: 34px;
+                                        border-radius: 17px;
+                                        background: acc.is_active ? #5865f2 : #4e5058;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: acc.avatar_initials != "" ? acc.avatar_initials : "@";
+                                                color: #ffffff;
+                                                font-size: 13px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Username & Tag
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        horizontal-stretch: 1;
+                                        Text {
+                                            text: acc.username != "" ? acc.username : acc.tag;
+                                            color: #f2f3f5;
+                                            font-size: 12px;
+                                            font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: acc.tag;
+                                            color: #949ba4;
+                                            font-size: 10px;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    // Action / Status
+                                    if acc.is_active: HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 4px;
+                                        Text {
+                                            text: "● Conectada";
+                                            color: #23a55a;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    if !acc.is_active: HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 6px;
+
+                                        // Switch button
+                                        Rectangle {
+                                            width: 60px;
+                                            height: 26px;
+                                            background: sw_btn.has-hover ? #4752c4 : #5865f2;
+                                            border-radius: 4px;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: "Entrar";
+                                                    color: #ffffff;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            sw_btn := TouchArea {
+                                                clicked => {
+                                                    root.show_user_menu = false;
+                                                    root.switch_account(acc.id);
+                                                }
+                                            }
+                                        }
+
+                                        // Remove single account trash button
+                                        Rectangle {
+                                            width: 24px;
+                                            height: 26px;
+                                            background: del_btn.has-hover ? #da373c33 : transparent;
+                                            border-radius: 4px;
+                                            VerticalLayout {
+                                                alignment: center;
+                                                HorizontalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/x.svg");
+                                                        width: 10px;
+                                                        height: 10px;
+                                                        colorize: del_btn.has-hover ? #f23f43 : #949ba4;
+                                                    }
+                                                }
+                                            }
+                                            del_btn := TouchArea {
+                                                clicked => {
+                                                    root.remove_account(acc.id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                acc_touch := TouchArea {
+                                    clicked => {
+                                        if !acc.is_active {
+                                            root.show_user_menu = false;
+                                            root.switch_account(acc.id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Add new account button
+                        Rectangle {
+                            height: 36px;
+                            background: add_acc_touch.has-hover ? #3b3e45 : #313338;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #383a40;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                Text {
+                                    text: "+ Adicionar Outra Conta";
+                                    color: #5865f2;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            add_acc_touch := TouchArea {
+                                clicked => {
+                                    root.show_user_menu = false;
+                                    root.add_new_account();
+                                }
+                            }
+                        }
+
+                        // Separator
+                        Rectangle {
+                            height: 1px;
+                            background: #383a40;
+                        }
+
+                        // Bottom Actions
                         HorizontalBox {
                             spacing: 8px;
                             padding: 0px;
 
-                            // Voltar Button
-                            Rectangle {
-                                height: 32px;
-                                horizontal-stretch: 1;
-                                background: back_touch.has-hover ? #3b3e45 : #35373c;
-                                border-radius: 6px;
-
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: root.tr_cancel;
-                                        color: #dbdee1;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                back_touch := TouchArea {
-                                    clicked => {
-                                        root.show_user_menu = false;
-                                    }
-                                }
-                            }
-
-                            // Sair Button (Danger Red / Logout)
+                            // Sair de Todas as Contas Button (Danger Red / Logout)
                             Rectangle {
                                 height: 32px;
                                 horizontal-stretch: 1;
@@ -5386,7 +5567,7 @@ export component AppWindow inherits Window {
                                     }
 
                                     Text {
-                                        text: root.tr_confirm_logout;
+                                        text: "Sair de Todas as Contas";
                                         color: #ffffff;
                                         font-size: 12px;
                                         font-weight: 600;

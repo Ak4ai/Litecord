@@ -5,7 +5,17 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.3.9] - 2026-08-29
+## [v0.3.9] - 2026-08-30
+
+### 👥 Multi-Account Vault & Instant Account Switching
+- **Encrypted Multi-Account Vault (`AccountVault`)**:
+  - Securely stores multiple Discord accounts simultaneously in `%APPDATA%/Litecord/session.vault` (Windows DPAPI) and `~/.config/litecord/session.vault` (Linux AES-256-GCM).
+  - Preserves user metadata (User ID, Global Name, Username, Tag, Avatar Initials, and Active state).
+- **Interactive Account Switcher Modal**:
+  - Clicking the user profile bar in the bottom-left now opens the **Gerenciar Contas (Account Manager)** modal.
+  - Lists all saved accounts with instantaneous 1-click **"Entrar" (Switch)** without re-scanning QR codes or re-authenticating.
+  - Includes **"➕ Adicionar Outra Conta"** to easily authenticate and register secondary accounts into the vault.
+  - Includes single-account removal trash buttons and **"Sair de Todas as Contas"** to wipe all credentials on full logout.
 
 ### 🛡️ End-to-End Encryption (E2EE) & Security
 - **X25519 ECDH + AES-256-GCM P2P Cryptography**:
