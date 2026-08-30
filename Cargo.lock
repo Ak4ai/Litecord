@@ -4313,6 +4313,7 @@ dependencies = [
  "winit",
  "winres",
  "x11rb 0.14.0",
+ "x25519-dalek",
  "zune-jpeg 0.4.21",
 ]
 

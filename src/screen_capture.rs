@@ -1017,9 +1017,10 @@ impl ScreenCaptureManager {
                         let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
 
                         // Send directly to active peers (or fallback to LAN broadcast if no peers found yet)
-                        let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(4);
-                        target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 50005));
-                        let mut has_remote_peers = false;
+                        let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
+                        for port in 50005..=50007 {
+                            target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
+                        }
                         if let Ok(mut peers) = peers_store.lock() {
                             let now = Instant::now();
                             peers.retain(|_, (addr, seen)| {
@@ -1032,15 +1033,12 @@ impl ScreenCaptureManager {
                             for (&_, &(addr, _)) in peers.iter() {
                                 if !target_addrs.contains(&addr) {
                                     target_addrs.push(addr);
-                                    has_remote_peers = true;
                                 }
                             }
                         }
-                        if !has_remote_peers {
-                            for bcast in &bcast_targets {
-                                if !target_addrs.contains(bcast) {
-                                    target_addrs.push(*bcast);
-                                }
+                        for bcast in &bcast_targets {
+                            if !target_addrs.contains(bcast) {
+                                target_addrs.push(*bcast);
                             }
                         }
 
@@ -1545,12 +1543,13 @@ impl ScreenCaptureManager {
                                     if current_cid == 0 {
                                         current_cid = crate::gateway::get_my_voice_channel_id();
                                     }
-                                    if current_cid == 0 || (pkt_cid != 0 && pkt_cid != current_cid) {
+                                    if current_cid != 0 && pkt_cid != 0 && pkt_cid != current_cid {
                                         continue;
                                     }
                                     if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
                                         continue;
                                     }
+                                    last_stream_activity.insert(pkt_uid, Instant::now());
                                     if len >= 37 {
                                         let seq = u32::from_be_bytes(recv_buf[25..29].try_into().unwrap());
                                         let pts_ms = u32::from_be_bytes(recv_buf[29..33].try_into().unwrap());
@@ -1599,7 +1598,8 @@ impl ScreenCaptureManager {
                                             }
                                             user_frames.remove(&seq);
 
-                                            let sec_key = get_voice_encryption_key(current_cid);
+                                            let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
+                                            let sec_key = get_voice_encryption_key(effective_cid);
                                             let final_frame = decrypt_signaling_payload(&sec_key, &complete_frame).unwrap_or(complete_frame);
 
                                             let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
@@ -1635,12 +1635,13 @@ impl ScreenCaptureManager {
                                     if current_cid == 0 {
                                         current_cid = crate::gateway::get_my_voice_channel_id();
                                     }
-                                    if current_cid == 0 || (pkt_cid != 0 && pkt_cid != current_cid) {
+                                    if current_cid != 0 && pkt_cid != 0 && pkt_cid != current_cid {
                                         continue;
                                     }
                                     if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
                                         continue;
                                     }
+                                    last_stream_activity.insert(pkt_uid, Instant::now());
                                     if len >= 39 {
                                         let seq = u32::from_be_bytes(recv_buf[25..29].try_into().unwrap());
                                         let pts_ms = u32::from_be_bytes(recv_buf[29..33].try_into().unwrap());
@@ -1687,7 +1688,8 @@ impl ScreenCaptureManager {
                                             }
                                             user_frames.remove(&seq);
 
-                                            let sec_key = get_voice_encryption_key(current_cid);
+                                            let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
+                                            let sec_key = get_voice_encryption_key(effective_cid);
                                             let final_frame = decrypt_signaling_payload(&sec_key, &complete_frame).unwrap_or(complete_frame);
 
                                             let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
@@ -1796,7 +1798,8 @@ impl ScreenCaptureManager {
                                         if vol > 0.001 {
                                             let sample_count = u16::from_be_bytes(recv_buf[38..40].try_into().unwrap()) as usize;
                                             let enc_pcm_bytes = &recv_buf[40..len];
-                                            let sec_key = get_voice_encryption_key(current_cid);
+                                            let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
+                                            let sec_key = get_voice_encryption_key(effective_cid);
                                             let raw_pcm = decrypt_signaling_payload(&sec_key, enc_pcm_bytes).unwrap_or_else(|| enc_pcm_bytes.to_vec());
                                             let expected_bytes = sample_count * 2;
                                             if raw_pcm.len() >= expected_bytes && sample_count > 0 {
@@ -1826,11 +1829,11 @@ impl ScreenCaptureManager {
                     }
                 }
 
-                    // Check stream timeouts (> 800ms sem quadros)
+                    // Check stream timeouts (> 3000ms sem quadros)
                     let now = Instant::now();
                     let mut expired = Vec::new();
                     for (&uid, &last_act) in last_stream_activity.iter() {
-                        if now.duration_since(last_act) > Duration::from_millis(800) {
+                        if now.duration_since(last_act) > Duration::from_millis(3000) {
                             expired.push(uid);
                         }
                     }
@@ -1933,15 +1936,65 @@ use aes_gcm::{
 };
 use sha2::{Sha256, Digest};
 use rand::RngCore;
+use x25519_dalek::{PublicKey, StaticSecret};
+
+static LOCAL_ECDH_SECRET: Mutex<Option<StaticSecret>> = Mutex::new(None);
+static LOCAL_ECDH_PUBLIC: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+static PEER_ECDH_KEYS: Mutex<Option<HashMap<u64, [u8; 32]>>> = Mutex::new(None);
+
+/// Obtém ou gera o par de chaves X25519 efêmero na RAM para esta sessão
+pub fn get_or_create_local_ecdh_keypair() -> [u8; 32] {
+    let mut pub_lock = LOCAL_ECDH_PUBLIC.lock().unwrap();
+    if let Some(pub_bytes) = *pub_lock {
+        return pub_bytes;
+    }
+    let secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let public = PublicKey::from(&secret);
+    let pub_bytes = *public.as_bytes();
+    *LOCAL_ECDH_SECRET.lock().unwrap() = Some(secret);
+    *pub_lock = Some(pub_bytes);
+    pub_bytes
+}
+
+/// Deriva a chave simétrica AES-256-GCM exclusiva via multiplicação escalar X25519 ECDH
+pub fn compute_peer_shared_key(peer_uid: u64, peer_pub_bytes: &[u8; 32], fallback_cid: u64) -> [u8; 32] {
+    let secret_lock = LOCAL_ECDH_SECRET.lock().unwrap();
+    if let Some(ref local_secret) = *secret_lock {
+        let peer_public = PublicKey::from(*peer_pub_bytes);
+        let shared_secret = local_secret.diffie_hellman(&peer_public);
+        let mut hasher = Sha256::new();
+        hasher.update(b"litecord_x25519_ecdh_aes256_gcm_salt_v1_2026");
+        hasher.update(shared_secret.as_bytes());
+        hasher.update(&peer_uid.to_be_bytes());
+        let res = hasher.finalize();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&res);
+        
+        let mut keys_guard = PEER_ECDH_KEYS.lock().unwrap();
+        let map = keys_guard.get_or_insert_with(HashMap::new);
+        map.insert(peer_uid, key);
+        return key;
+    }
+    get_voice_encryption_key(fallback_cid)
+}
+
+/// Retorna a chave negociada via ECDH para o peer ou fallback para a chave do canal
+pub fn get_peer_encryption_key(peer_uid: u64, fallback_cid: u64) -> [u8; 32] {
+    if peer_uid != 0 {
+        if let Some(ref map) = *PEER_ECDH_KEYS.lock().unwrap() {
+            if let Some(&key) = map.get(&peer_uid) {
+                return key;
+            }
+        }
+    }
+    get_voice_encryption_key(fallback_cid)
+}
 
 /// Deriva uma chave AES de 32 bytes exclusiva e sincronizada para todos os participantes do canal de voz
 fn get_voice_encryption_key(cid: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"litecord_e2ee_voice_p2p_channel_salt_v3_2026");
     hasher.update(&cid.to_be_bytes());
-    if let Some(secret) = crate::gateway::get_voice_secret_key() {
-        hasher.update(&secret);
-    }
     let res = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&res);
@@ -2006,6 +2059,25 @@ fn parse_and_handle_mqtt_messages(
             let pkt_inst = val["inst"].as_u64().unwrap_or(0) as u32;
 
             if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 {
+                // Negociação X25519 ECDH: computa a chave de sessão compartilhada exclusiva do peer
+                if let Some(pub_hex) = val["ecdh_pub"].as_str() {
+                    if pub_hex.len() == 64 {
+                        let mut pub_bytes = [0u8; 32];
+                        let mut valid = true;
+                        for i in 0..32 {
+                            if let Ok(byte_val) = u8::from_str_radix(&pub_hex[i * 2..i * 2 + 2], 16) {
+                                pub_bytes[i] = byte_val;
+                            } else {
+                                valid = false;
+                                break;
+                            }
+                        }
+                        if valid {
+                            compute_peer_shared_key(pkt_uid, &pub_bytes, current_cid);
+                        }
+                    }
+                }
+
                 let mut addrs_to_punch = Vec::new();
 
                 // 1. LAN IPs
@@ -2183,6 +2255,9 @@ pub fn start_global_signaling(
                         let wan_addr = resolve_public_stun_address().map(|a| SocketAddr::new(a.ip(), my_rx_port));
                         let lan_addrs = get_local_lan_addresses(my_rx_port);
 
+                        let my_ecdh_pub = get_or_create_local_ecdh_keypair();
+                        let ecdh_hex: String = my_ecdh_pub.iter().map(|b| format!("{:02x}", b)).collect();
+
                         let uname = my_username.lock().unwrap().clone();
                         let payload = serde_json::json!({
                             "op": "presence",
@@ -2190,6 +2265,7 @@ pub fn start_global_signaling(
                             "uid": my_uid,
                             "inst": my_inst,
                             "uname": uname,
+                            "ecdh_pub": ecdh_hex,
                             "streaming": cur_tx,
                             "rx_port": my_rx_port,
                             "lan_ips": lan_addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
@@ -4379,22 +4455,20 @@ pub fn start_audio_loopback_tx(
                     pkt.extend_from_slice(&sample_count.to_be_bytes());
                     pkt.extend_from_slice(&encrypted_pcm);
 
-                    let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(4);
-                    target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 50005));
-                    let mut has_remote = false;
+                    let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
+                    for port in 50005..=50007 {
+                        target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
+                    }
                     if let Ok(peers) = peers_store.lock() {
                         for (&_, &(addr, _)) in peers.iter() {
                             if !target_addrs.contains(&addr) {
                                 target_addrs.push(addr);
-                                has_remote = true;
                             }
                         }
                     }
-                    if !has_remote {
-                        for target in &bcast_targets {
-                            if !target_addrs.contains(target) {
-                                target_addrs.push(*target);
-                            }
+                    for target in &bcast_targets {
+                        if !target_addrs.contains(target) {
+                            target_addrs.push(*target);
                         }
                     }
                     for target in &target_addrs {

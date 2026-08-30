@@ -1655,7 +1655,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     attachment_cache::cleanup_temp_attachments();
     let _ = std::fs::remove_file("panic_log.txt");
 
-    let log_file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("litecord_app.log").ok();
+    let log_file = std::fs::OpenOptions::new().create(true).write(true).append(true).open("litecord_app.log").ok();
     let logger = AppLogger { file: Mutex::new(log_file) };
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
@@ -2313,6 +2313,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_active_stream_user(uname.into());
                                 ui.set_tr_stream_quality(quality.into());
                                 ui.set_remote_stream_frame(frame.clone());
+
+                                let cur_model = ui.get_voice_participants();
+                                for i in 0..cur_model.row_count() {
+                                    if let Some(mut p) = cur_model.row_data(i) {
+                                        if p.user_id == uid_str.as_str() {
+                                            if !p.is_streaming {
+                                                p.is_streaming = true;
+                                                cur_model.set_row_data(i, p);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             if should_update_pop {
                                 if let Some(pop) = pop_w2.upgrade() {
@@ -2338,7 +2350,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let hidden_streams_inner = Arc::clone(&hidden_streams_rx_cb);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w2.upgrade() {
-                        if !is_streaming {
+                        if is_streaming {
+                            let cur_model = ui.get_voice_participants();
+                            for i in 0..cur_model.row_count() {
+                                if let Some(mut p) = cur_model.row_data(i) {
+                                    if p.user_id == uid_str.as_str() {
+                                        p.is_streaming = true;
+                                        cur_model.set_row_data(i, p);
+                                    }
+                                }
+                            }
+                        } else {
                             hidden_streams_inner.lock().unwrap().remove(uid_str.as_str());
                             let cur_act_id = ui.get_active_stream_user_id().to_string();
                             if cur_act_id == uid_str || cur_act_id.is_empty() || uid == 0 {

@@ -2308,7 +2308,7 @@ export component AppWindow inherits Window {
                                 for p in root.voice_participants: Rectangle {
                                     property <bool> is_streaming_attached: (p.is_self && root.is_screen_sharing)
                                         ? (!p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self")
-                                        : (root.has_active_stream && p.is_streaming && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
+                                        : (root.has_active_stream && (p.is_streaming || root.active_stream_user_id == p.user_id || root.active_stream_user_id == "") && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
                                     property <bool> is_this_stream_focused: (root.focused_stream_uid == p.user_id || (p.is_self && (root.focused_stream_uid == "self" || root.focused_stream_uid == p.user_id)));
 
                                     height: is_streaming_attached
