@@ -1,0 +1,33 @@
+name: "🚀 Feature Request"
+description: Suggest a new feature, gamer optimization, or enhancement for Litecord
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We are always looking for ways to make Litecord lighter, faster, and more feature-rich for gamers and power users!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of the problem or limitation you are facing.
+      placeholder: "I'm always frustrated when..."
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the Solution You'd Like
+      description: A clear description of how you envision the feature working.
+    validations:
+      required: true
+  - type: textarea
+    id: gaming_context
+    attributes:
+      label: Gaming / Esports Context (Optional)
+      description: How does this improve in-game performance, FPS, or competitive teamwork?
+      placeholder: "This would help during competitive matches by..."
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Additional Context / Mockups / Alternatives
+      description: Any alternative solutions or screenshots you've considered.

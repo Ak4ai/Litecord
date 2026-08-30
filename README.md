@@ -5,18 +5,17 @@
 
 [![Website](https://img.shields.io/badge/Website-ak4ai.github.io%2FLitecord-5865F2.svg?style=flat-square&logo=googlechrome&logoColor=white)](https://ak4ai.github.io/Litecord/)
 [![GitHub Release](https://img.shields.io/github/v/release/Ak4ai/Litecord?style=flat-square&color=blueviolet)](https://github.com/Ak4ai/Litecord/releases)
+[![CI Verification](https://github.com/Ak4ai/Litecord/actions/workflows/ci.yml/badge.svg)](https://github.com/Ak4ai/Litecord/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Language-Rust_2021-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![GUI](https://img.shields.io/badge/GUI-Slint_1.9-blue.svg?style=flat-square)](https://slint.dev/)
-[![Audio](https://img.shields.io/badge/Audio-CPAL_%7C_Opus_%7C_DAVE_E2EE-green.svg?style=flat-square)](https://github.com/RustAudio/cpal)
-[![Security](https://img.shields.io/badge/Security-AES--256--GCM_%7C_Windows_DPAPI_%7C_DAVE_E2EE-blueviolet.svg?style=flat-square)]()
-[![Gamer-Optimized](https://img.shields.io/badge/Performance-Zero_FPS_Drop-success.svg?style=flat-square)]()
+[![Security](https://img.shields.io/badge/Security-AES--256--GCM_%7C_Windows_DPAPI_%7C_DAVE_E2EE-blueviolet.svg?style=flat-square)](SECURITY.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
   <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>&lt; 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
 </p>
 
-[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](#-cybersecurity-privacy--account-safety) • [🛠️ Build from Source](#-building-from-source)
+[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [🇧🇷 Versão em Português](README_PT.md) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](SECURITY.md) • [🛠️ Build from Source](#-building-from-source)
 
 <br/>
 
@@ -239,8 +238,16 @@ The optimized executable will be located at `target/release/litecord.exe` (Windo
 
 ```text
 Litecord/
-├── .github/workflows/
-│   └── build.yml
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── feature_request.yml
+│   │   └── config.yml
+│   ├── workflows/
+│   │   ├── build.yml
+│   │   └── ci.yml
+│   ├── dependabot.yml
+│   └── pull_request_template.md
 ├── assets/
 │   ├── app_icon.ico
 │   ├── app_icon.png
@@ -260,10 +267,13 @@ Litecord/
 │   └── appwindow.slint
 ├── build.rs
 ├── Cargo.toml
+├── CHANGELOG.md
+├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
-├── index.html
-├── installer.iss
-└── README.md
+├── LICENSE
+├── README.md
+├── README_PT.md
+└── SECURITY.md
 ```
 
 ### 🧩 Module Breakdown

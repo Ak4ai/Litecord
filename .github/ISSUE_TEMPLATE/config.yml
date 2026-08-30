@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🌐 Official Website
+    url: https://ak4ai.github.io/Litecord/
+    about: Visit the official Litecord landing page and documentation.
+  - name: 💬 Discord Community
+    url: https://discord.gg/
+    about: Join our community to chat, get help, or share feedback.
+  - name: 🔒 Security Vulnerabilities
+    url: https://github.com/Ak4ai/Litecord/security/advisories/new
+    about: Report security vulnerabilities privately.

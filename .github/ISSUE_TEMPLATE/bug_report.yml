@@ -1,0 +1,59 @@
+name: "🐛 Bug Report"
+description: File a bug report or crash issue for Litecord
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Litecord better! Please provide as much detail as possible.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What OS are you running Litecord on?
+      options:
+        - Windows 11 (x64)
+        - Windows 10 (x64)
+        - Linux (Arch / Manjaro / Fedora / Ubuntu / Debian / Flatpak)
+        - Other (specify in description)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Litecord Version / Commit
+      description: The version and commit hash shown in the top bar or settings (e.g. `v0.3.8 (00aca39)`)
+      placeholder: "v0.3.8 (00aca39)"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+      placeholder: "When I join a voice channel and..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce the issue?
+      value: |
+        1. Open Litecord
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen instead?
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Console Output
+      description: Relevant log snippets from `litecord_app.log` or terminal output. (Never include tokens!)
+      render: shell
