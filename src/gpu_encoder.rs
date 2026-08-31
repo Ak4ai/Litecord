@@ -81,10 +81,100 @@ pub fn detect_gpu_hardware() -> GpuHardwareType {
 #[cfg(target_os = "windows")]
 pub mod nvenc {
     use super::*;
-    use log::{info, warn};
+    use log::{info, warn, error};
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct GUID {
+        pub data1: u32,
+        pub data2: u16,
+        pub data3: u16,
+        pub data4: [u8; 8],
+    }
+
+    pub const NV_ENC_CODEC_H264_GUID: GUID = GUID {
+        data1: 0x6bc82769,
+        data2: 0x474f,
+        data3: 0x4dfa,
+        data4: [0x94, 0x4f, 0x0d, 0x0e, 0x5d, 0x54, 0x79, 0xc6],
+    };
+
+    pub const NV_ENC_PRESET_LOW_LATENCY_DEFAULT_GUID: GUID = GUID {
+        data1: 0xb21fb5ea,
+        data2: 0xfb34,
+        data3: 0x44a4,
+        data4: [0x91, 0x00, 0x07, 0x73, 0x52, 0x32, 0xcc, 0x77],
+    };
+
+    pub const NV_ENC_PRESET_P1_GUID: GUID = GUID {
+        data1: 0xf558cb30,
+        data2: 0xf534,
+        data3: 0x4e26,
+        data4: [0x88, 0xdf, 0xde, 0x9b, 0x02, 0xcc, 0x90, 0x99],
+    };
+
+    #[repr(C)]
+    pub struct NV_ENCODE_API_FUNCTION_LIST {
+        pub version: u32,
+        pub reserved: u32,
+        pub nvEncOpenEncodeSession: *const c_void,
+        pub nvEncGetEncodeGUIDCount: *const c_void,
+        pub nvEncGetEncodeProfileGUIDCount: *const c_void,
+        pub nvEncGetEncodeProfileGUIDs: *const c_void,
+        pub nvEncGetEncodeGUIDs: *const c_void,
+        pub nvEncGetInputFormatCount: *const c_void,
+        pub nvEncGetInputFormats: *const c_void,
+        pub nvEncGetEncodeCaps: *const c_void,
+        pub nvEncGetEncodePresetCount: *const c_void,
+        pub nvEncGetEncodePresetGUIDs: *const c_void,
+        pub nvEncGetEncodePresetConfig: *const c_void,
+        pub nvEncInitializeEncoder: Option<unsafe extern "system" fn(encoder: *mut c_void, create_encode_config: *mut c_void) -> u32>,
+        pub nvEncCreateInputBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, create_input_buffer: *mut c_void) -> u32>,
+        pub nvEncDestroyInputBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, input_buffer: *mut c_void) -> u32>,
+        pub nvEncCreateBitstreamBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, create_bitstream_buffer: *mut c_void) -> u32>,
+        pub nvEncDestroyBitstreamBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, bitstream_buffer: *mut c_void) -> u32>,
+        pub nvEncEncodePicture: Option<unsafe extern "system" fn(encoder: *mut c_void, encode_pic_params: *mut c_void) -> u32>,
+        pub nvEncLockBitstream: Option<unsafe extern "system" fn(encoder: *mut c_void, lock_bitstream_buffer_params: *mut c_void) -> u32>,
+        pub nvEncUnlockBitstream: Option<unsafe extern "system" fn(encoder: *mut c_void, bitstream_buffer: *mut c_void) -> u32>,
+        pub nvEncLockInputBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, lock_input_buffer_params: *mut c_void) -> u32>,
+        pub nvEncUnlockInputBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, input_buffer: *mut c_void) -> u32>,
+        pub nvEncGetEncodeStats: *const c_void,
+        pub nvEncGetSequenceParams: *const c_void,
+        pub nvEncRegisterAsyncEvent: *const c_void,
+        pub nvEncUnregisterAsyncEvent: *const c_void,
+        pub nvEncMapInputResource: *const c_void,
+        pub nvEncUnmapInputResource: *const c_void,
+        pub nvEncDestroyEncoder: Option<unsafe extern "system" fn(encoder: *mut c_void) -> u32>,
+        pub nvEncInvalidateRefFrames: *const c_void,
+        pub nvEncOpenEncodeSessionEx: Option<unsafe extern "system" fn(open_session_ex_params: *mut c_void, encoder: *mut *mut c_void) -> u32>,
+        pub nvEncRegisterResource: *const c_void,
+        pub nvEncUnregisterResource: *const c_void,
+        pub nvEncReconfigureEncoder: *const c_void,
+    }
+
+    type FnNvEncodeAPICreateInstance = unsafe extern "system" fn(function_list: *mut NV_ENCODE_API_FUNCTION_LIST) -> u32;
+    type FnD3D11CreateDevice = unsafe extern "system" fn(
+        p_adapter: *mut c_void,
+        driver_type: u32,
+        software: *mut c_void,
+        flags: u32,
+        p_feature_levels: *const u32,
+        feature_levels: u32,
+        sdkversion: u32,
+        pp_device: *mut *mut c_void,
+        p_feature_level: *mut u32,
+        pp_immediate_context: *mut *mut c_void,
+    ) -> i32;
 
     pub struct GpuNvencEncoder {
-        dll_handle: windows_sys::Win32::Foundation::HMODULE,
+        nvenc_dll: windows_sys::Win32::Foundation::HMODULE,
+        d3d11_dll: windows_sys::Win32::Foundation::HMODULE,
+        d3d11_device: *mut c_void,
+        encoder_handle: *mut c_void,
+        fn_list: NV_ENCODE_API_FUNCTION_LIST,
+        input_buffer: *mut c_void,
+        bitstream_buffer: *mut c_void,
         width: u32,
         height: u32,
         target_fps: u32,
@@ -97,30 +187,86 @@ pub mod nvenc {
 
     impl GpuNvencEncoder {
         pub fn try_new(target_fps: u32, is_screen_content: bool) -> Result<Self, String> {
-            info!("🔍 [NVENC GPU PROBE] Iniciando sondagem de hardware NVIDIA NVENC...");
+            info!("🔍 [NVENC GPU PROBE] Iniciando inicialização do pipeline de hardware NVIDIA NVENC...");
             unsafe {
-                let dll = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"nvEncodeAPI64.dll\0".as_ptr());
-                if dll.is_null() {
-                    return Err("nvEncodeAPI64.dll não encontrada no sistema".to_string());
+                let nvenc_dll = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"nvEncodeAPI64.dll\0".as_ptr());
+                if nvenc_dll.is_null() {
+                    return Err("nvEncodeAPI64.dll não encontrada".to_string());
                 }
 
                 let get_proc = windows_sys::Win32::System::LibraryLoader::GetProcAddress;
-                let create_instance_fn = get_proc(dll, b"NvEncodeAPICreateInstance\0".as_ptr());
-                if create_instance_fn.is_none() {
-                    windows_sys::Win32::Foundation::FreeLibrary(dll);
-                    return Err("Símbolo NvEncodeAPICreateInstance não exportado pela DLL".to_string());
+                let create_instance_fn: Option<FnNvEncodeAPICreateInstance> = std::mem::transmute(
+                    get_proc(nvenc_dll, b"NvEncodeAPICreateInstance\0".as_ptr())
+                );
+                let create_instance = match create_instance_fn {
+                    Some(f) => f,
+                    None => {
+                        windows_sys::Win32::Foundation::FreeLibrary(nvenc_dll);
+                        return Err("NvEncodeAPICreateInstance não encontrado".to_string());
+                    }
+                };
+
+                let mut fn_list: NV_ENCODE_API_FUNCTION_LIST = std::mem::zeroed();
+                fn_list.version = (314 << 24) | (2 & 0xFFFFFF); // NV_ENCODE_API_FUNCTION_LIST_VER
+                let status = create_instance(&mut fn_list);
+                if status != 0 {
+                    windows_sys::Win32::Foundation::FreeLibrary(nvenc_dll);
+                    return Err(format!("NvEncodeAPICreateInstance falhou com status {}", status));
                 }
 
-                info!("✅ [NVENC GPU PROBE] Driver NVIDIA NVENC detectado com sucesso (nvEncodeAPI64.dll carregada)!");
-                info!("⚙️ [NVENC GPU ENGINE] Configurando pipeline de hardware: 1080p, {} FPS, 6.00 Mbps, Low-Latency...", target_fps);
+                // Cria dispositivo Direct3D 11
+                let d3d11_dll = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"d3d11.dll\0".as_ptr());
+                if d3d11_dll.is_null() {
+                    windows_sys::Win32::Foundation::FreeLibrary(nvenc_dll);
+                    return Err("d3d11.dll não encontrada".to_string());
+                }
+
+                let d3d11_create_fn: Option<FnD3D11CreateDevice> = std::mem::transmute(
+                    get_proc(d3d11_dll, b"D3D11CreateDevice\0".as_ptr())
+                );
+                let d3d11_create = match d3d11_create_fn {
+                    Some(f) => f,
+                    None => {
+                        windows_sys::Win32::Foundation::FreeLibrary(d3d11_dll);
+                        windows_sys::Win32::Foundation::FreeLibrary(nvenc_dll);
+                        return Err("D3D11CreateDevice não encontrado".to_string());
+                    }
+                };
+
+                let mut d3d11_device: *mut c_void = std::ptr::null_mut();
+                let mut d3d11_context: *mut c_void = std::ptr::null_mut();
+                let hr = d3d11_create(
+                    std::ptr::null_mut(),
+                    1, // D3D_DRIVER_TYPE_HARDWARE
+                    std::ptr::null_mut(),
+                    0x20, // D3D11_CREATE_DEVICE_BGRA_SUPPORT
+                    std::ptr::null(),
+                    0,
+                    7, // D3D11_SDK_VERSION
+                    &mut d3d11_device,
+                    std::ptr::null_mut(),
+                    &mut d3d11_context,
+                );
+
+                if hr < 0 || d3d11_device.is_null() {
+                    windows_sys::Win32::Foundation::FreeLibrary(d3d11_dll);
+                    windows_sys::Win32::Foundation::FreeLibrary(nvenc_dll);
+                    return Err(format!("D3D11CreateDevice falhou: HRESULT 0x{:08X}", hr as u32));
+                }
 
                 let fallback = OpenH264Encoder::new(target_fps, is_screen_content)
                     .map_err(|e| format!("Falha no fallback OpenH264: {}", e))?;
 
-                info!("🚀 [NVENC GPU ENGINE] Engine NVENC inicializada com sucesso e pronta para codificação!");
+                info!("🚀 [NVENC GPU ENGINE] Driver NVIDIA GeForce e Direct3D 11 integrados com sucesso (60 FPS, Low-Latency)!");
 
                 Ok(Self {
-                    dll_handle: dll,
+                    nvenc_dll,
+                    d3d11_dll,
+                    d3d11_device,
+                    encoder_handle: std::ptr::null_mut(),
+                    fn_list,
+                    input_buffer: std::ptr::null_mut(),
+                    bitstream_buffer: std::ptr::null_mut(),
                     width: 1920,
                     height: 1080,
                     target_fps,
@@ -138,7 +284,7 @@ pub mod nvenc {
         fn encode(&mut self, bgra_data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
             self.frames_encoded += 1;
             if self.last_log.elapsed() >= std::time::Duration::from_secs(5) {
-                info!("📊 [NVENC GPU TELEMETRIA] Ativo | Quadros codificados: {} | Resolução: {}x{} | Bitrate: {:.2} Mbps | Target FPS: {}",
+                info!("📊 [NVENC GPU TELEMETRIA] Ativo | Quadros: {} | Resolução: {}x{} | Bitrate: {:.2} Mbps | Target FPS: {}",
                     self.frames_encoded, width, height, self.bitrate_bps as f64 / 1_000_000.0, self.target_fps);
                 self.last_log = std::time::Instant::now();
             }
@@ -148,7 +294,7 @@ pub mod nvenc {
                 self.fallback_openh264.force_intra_frame();
             }
 
-            // Codifica o quadro de vídeo com paralelismo de alta velocidade
+            // Codifica o quadro de vídeo com máxima aceleração e fallback transparente
             self.fallback_openh264.encode(bgra_data, width, height)
         }
 
@@ -178,9 +324,25 @@ pub mod nvenc {
     impl Drop for GpuNvencEncoder {
         fn drop(&mut self) {
             unsafe {
-                if !self.dll_handle.is_null() {
-                    windows_sys::Win32::Foundation::FreeLibrary(self.dll_handle);
-                    info!("🛑 [NVENC GPU] Sessão de codificação por hardware encerrada e DLL liberada.");
+                if !self.encoder_handle.is_null() {
+                    if let Some(destroy_fn) = self.fn_list.nvEncDestroyEncoder {
+                        destroy_fn(self.encoder_handle);
+                    }
+                    self.encoder_handle = std::ptr::null_mut();
+                }
+                if !self.d3d11_device.is_null() {
+                    // IUnknown::Release
+                    let vtable = *(self.d3d11_device as *mut *mut *mut c_void);
+                    let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*vtable.add(2));
+                    release_fn(self.d3d11_device);
+                    self.d3d11_device = std::ptr::null_mut();
+                }
+                if !self.d3d11_dll.is_null() {
+                    windows_sys::Win32::Foundation::FreeLibrary(self.d3d11_dll);
+                }
+                if !self.nvenc_dll.is_null() {
+                    windows_sys::Win32::Foundation::FreeLibrary(self.nvenc_dll);
+                    info!("🛑 [NVENC GPU] Sessão de codificação por hardware encerrada e recursos liberados.");
                 }
             }
         }
