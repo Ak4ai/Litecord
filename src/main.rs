@@ -1605,11 +1605,9 @@ impl log::Log for AppLogger {
             let _ = std::io::stdout().flush();
 
             // 2. Persist to log file for user support diagnostics
-            if let Ok(mut f_guard) = self.file.lock() {
-                if let Some(ref mut f) = *f_guard {
-                    let _ = f.write_all(file_msg.as_bytes());
-                    let _ = f.flush();
-                }
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("litecord_app.log") {
+                let _ = f.write_all(file_msg.as_bytes());
+                let _ = f.flush();
             }
         }
     }
@@ -1617,11 +1615,6 @@ impl log::Log for AppLogger {
     fn flush(&self) {
         use std::io::Write;
         let _ = std::io::stdout().flush();
-        if let Ok(mut f_guard) = self.file.lock() {
-            if let Some(ref mut f) = *f_guard {
-                let _ = f.flush();
-            }
-        }
     }
 }
 
@@ -1669,7 +1662,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeBeginPeriod(1);
     }
 
-    const BUILD_ID: &str = "BUILD-2026-08-31-0858-NVENC-PRESET-CONFIG-COMPLETE";
+    const BUILD_ID: &str = "BUILD-2026-08-31-0904-ATOMIC-LOG-TRACE";
     info!("==================================================================");
     info!("🚀 LITECORD INICIADO | VERSÃO: v{} | ID: {}", env!("CARGO_PKG_VERSION"), BUILD_ID);
     info!("==================================================================");
