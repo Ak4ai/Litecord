@@ -892,7 +892,9 @@ pub mod wmf {
         pub last_read_pos: u64,
         pub gpu_name: String,
         pub needs_keyframe: bool,
-        pub nv12_buffer: Vec<u8>,
+        pub in_buffer: IMFMediaBuffer,
+        pub in_sample: IMFSample,
+        pub read_buf: Vec<u8>,
     }
 
     unsafe impl Send for WmfGpuEncoder {}
@@ -963,6 +965,7 @@ pub mod wmf {
                 writer_attributes.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &device_manager)?;
                 writer_attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
                 writer_attributes.SetUINT32(&MF_LOW_LATENCY, 1)?;
+                writer_attributes.SetUINT32(&MF_SINK_WRITER_DISABLE_THROTTLING, 1)?;
 
                 let byte_stream: IMFByteStream = MFCreateTempFile(MF_ACCESSMODE_READWRITE, MF_OPENMODE_DELETE_IF_EXIST, MF_FILEFLAGS_NONE)?;
                 let sink_writer = MFCreateSinkWriterFromURL(w!(".mp4"), &byte_stream, &writer_attributes)?;
@@ -1002,6 +1005,12 @@ pub mod wmf {
                 sink_writer.SetInputMediaType(stream_index, &in_media_type, None)?;
                 sink_writer.BeginWriting()?;
 
+                // Pré-aloca IMFMediaBuffer e IMFSample persistentes para Zero-Heap allocations em 60 FPS
+                let bgra_len = (initial_width * initial_height * 4) as u32;
+                let in_buffer = MFCreateMemoryBuffer(bgra_len)?;
+                let in_sample = MFCreateSample()?;
+                in_sample.AddBuffer(&in_buffer)?;
+
                 info!("🚀 [WMF GPU ENGINE] Encoder de hardware H.264 pronto na GPU '{}' (Zero-CPU Direct ARGB -> {}p {} FPS, {:.1} Mbps)!",
                     selected_gpu_name, initial_height, target_fps, initial_bitrate as f64 / 1_000_000.0);
 
@@ -1017,7 +1026,9 @@ pub mod wmf {
                     last_read_pos: 0,
                     gpu_name: selected_gpu_name,
                     needs_keyframe: true,
-                    nv12_buffer: Vec::new(),
+                    in_buffer,
+                    in_sample,
+                    read_buf: Vec::with_capacity(512 * 1024),
                 })
             }
         }
@@ -1031,42 +1042,42 @@ pub mod wmf {
             }
 
             unsafe {
-                // Entrada direta ARGB/BGRA na GPU (Zero CPU Color Conversion)
-                let in_buffer = MFCreateMemoryBuffer(bgra_len as u32).ok()?;
+                // Entrada direta ARGB/BGRA na GPU (Zero CPU Color Conversion & Zero Heap Allocations)
                 let mut p_buf_data: *mut u8 = std::ptr::null_mut();
                 let mut max_len = 0u32;
                 let mut cur_len = 0u32;
-                in_buffer.Lock(&mut p_buf_data, Some(&mut max_len), Some(&mut cur_len)).ok()?;
-                std::ptr::copy_nonoverlapping(bgra_data.as_ptr(), p_buf_data, bgra_len);
-                let _ = in_buffer.Unlock();
-                let _ = in_buffer.SetCurrentLength(bgra_len as u32);
+                self.in_buffer.Lock(&mut p_buf_data, Some(&mut max_len), Some(&mut cur_len)).ok()?;
+                std::ptr::copy_nonoverlapping(bgra_data.as_ptr(), p_buf_data, bgra_len.min(max_len as usize));
+                let _ = self.in_buffer.Unlock();
+                let _ = self.in_buffer.SetCurrentLength(bgra_len as u32);
 
-                let in_sample = MFCreateSample().ok()?;
-                let _ = in_sample.AddBuffer(&in_buffer);
                 let sample_duration = (10_000_000 / self.target_fps.max(1)) as i64;
                 let sample_time = (self.frame_count as i64) * sample_duration;
-                let _ = in_sample.SetSampleTime(sample_time);
-                let _ = in_sample.SetSampleDuration(sample_duration);
+                let _ = self.in_sample.SetSampleTime(sample_time);
+                let _ = self.in_sample.SetSampleDuration(sample_duration);
 
                 if self.needs_keyframe {
-                    let _ = in_sample.SetUINT32(&MFSampleExtension_CleanPoint, 1);
+                    let _ = self.in_sample.SetUINT32(&MFSampleExtension_CleanPoint, 1);
                     self.needs_keyframe = false;
+                } else {
+                    let _ = self.in_sample.SetUINT32(&MFSampleExtension_CleanPoint, 0);
                 }
 
                 self.frame_count += 1;
 
-                if self.sink_writer.WriteSample(self.stream_index, &in_sample).is_ok() {
+                if self.sink_writer.WriteSample(self.stream_index, &self.in_sample).is_ok() {
                     let cur_len = self.byte_stream.GetLength().unwrap_or(0);
                     if cur_len > self.last_read_pos {
-                        let to_read = (cur_len - self.last_read_pos) as u32;
-                        let mut buf = vec![0u8; to_read as usize];
+                        let to_read = (cur_len - self.last_read_pos) as usize;
+                        if self.read_buf.len() < to_read {
+                            self.read_buf.resize(to_read, 0);
+                        }
                         let mut read_bytes = 0u32;
                         let _ = self.byte_stream.SetCurrentPosition(self.last_read_pos);
-                        let _ = self.byte_stream.Read(&mut buf, &mut read_bytes);
+                        let _ = self.byte_stream.Read(&mut self.read_buf[..to_read], &mut read_bytes);
                         self.last_read_pos = cur_len;
                         if read_bytes > 0 {
-                            buf.truncate(read_bytes as usize);
-                            return Some(buf);
+                            return Some(self.read_buf[..read_bytes as usize].to_vec());
                         }
                     }
                 }
@@ -1104,31 +1115,30 @@ pub mod wmf {
 pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
     info!("🔍 [VIDEO CODEC FACTORY] Avaliando melhor engine de codificação para o sistema...");
 
-    info!("🎯 [VIDEO CODEC FACTORY] Inicializando OpenH264 SIMD AVX2 (Engine Ultraleve de 0 COM Threads)...");
+    #[cfg(target_os = "windows")]
+    {
+        info!("🎯 [VIDEO CODEC FACTORY] Inicializando Direct3D 11 + Windows Media Foundation GPU Engine (Zero-Allocation Optimized)...");
+        match wmf::WmfGpuEncoder::try_new(target_fps, is_screen_content) {
+            Ok(enc) => {
+                info!("🚀 [VIDEO CODEC FACTORY] Direct3D 11 + WMF GPU Engine ativado com sucesso como encoder primário (Hardware: {})!", enc.gpu_name);
+                return Box::new(enc);
+            }
+            Err(e) => {
+                warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando fallback de segurança...", e);
+            }
+        }
+    }
+
+    info!("🎯 [VIDEO CODEC FACTORY] Inicializando OpenH264 SIMD AVX2 (Universal CPU Engine)...");
     match OpenH264Encoder::new(target_fps, is_screen_content) {
         Ok(enc) => {
             info!("🚀 [VIDEO CODEC FACTORY] Encoder {} ativado com sucesso ({} threads, {:.1} Mbps)!",
                 enc.name(), enc.num_threads, enc.get_bitrate_bps() as f64 / 1_000_000.0);
-            return Box::new(enc);
+            Box::new(enc)
         }
         Err(e) => {
-            warn!("⚠️ [VIDEO CODEC FACTORY] OpenH264 indisponível ({}), tentando WMF GPU...", e);
+            warn!("⚠️ [VIDEO CODEC FACTORY] Falha ao inicializar OpenH264: {}. Tentando modo básico...", e);
+            Box::new(OpenH264Encoder::new(target_fps, false).expect("Falha crítica no encoder H.264"))
         }
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        info!("🎯 [VIDEO CODEC FACTORY] Inicializando Direct3D 11 + Windows Media Foundation GPU Engine...");
-        match wmf::WmfGpuEncoder::try_new(target_fps, is_screen_content) {
-            Ok(enc) => {
-                info!("🚀 [VIDEO CODEC FACTORY] Direct3D 11 + WMF GPU Engine ativado como fallback (Hardware: {})!", enc.gpu_name);
-                return Box::new(enc);
-            }
-            Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando modo básico...", e);
-            }
-        }
-    }
-
-    Box::new(OpenH264Encoder::new(target_fps, false).expect("Falha crítica no encoder H.264"))
 }
