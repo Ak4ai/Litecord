@@ -407,9 +407,135 @@ pub mod nvenc {
         fn encode(&mut self, bgra_data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
             self.frames_encoded += 1;
             if self.last_log.elapsed() >= std::time::Duration::from_secs(5) {
-                info!("📊 [NVENC GPU TELEMETRIA] Ativo | Quadros: {} | Resolução: {}x{} | Bitrate: {:.2} Mbps | Target FPS: {}",
+                info!("📊 [NVENC GPU TELEMETRIA] Hardware Ativo | Quadros: {} | Resolução: {}x{} | Bitrate: {:.2} Mbps | Target FPS: {}",
                     self.frames_encoded, width, height, self.bitrate_bps as f64 / 1_000_000.0, self.target_fps);
                 self.last_log = std::time::Instant::now();
+            }
+
+            // Se o hardware NVENC estiver alocado com sucesso na VRAM:
+            if !self.encoder_handle.is_null() && !self.input_buffer.is_null() && !self.bitstream_buffer.is_null() {
+                unsafe {
+                    #[repr(C)]
+                    struct NvEncLockInputBufferParams {
+                        version: u32,
+                        do_not_wait: u32,
+                        sync_mode: u32,
+                        input_buffer: *mut c_void,
+                        buffer_data_ptr: *mut c_void,
+                        pitch: u32,
+                        reserved1: [u32; 58],
+                        reserved2: [*mut c_void; 64],
+                    }
+
+                    #[repr(C)]
+                    struct NvEncPicParamsStruct {
+                        version: u32,
+                        input_width: u32,
+                        input_height: u32,
+                        input_pitch: u32,
+                        encode_pic_flags: u32,
+                        frame_idx: u32,
+                        input_time_stamp: u64,
+                        input_duration: u64,
+                        input_buffer: *mut c_void,
+                        output_bitstream: *mut c_void,
+                        completion_event: *mut c_void,
+                        buffer_format: u32,
+                        picture_struct: u32,
+                        picture_type: u32,
+                        reserved: [u32; 240],
+                        reserved_ptrs: [*mut c_void; 64],
+                    }
+
+                    #[repr(C)]
+                    struct NvEncLockBitstreamParams {
+                        version: u32,
+                        do_not_wait: u32,
+                        ltr_frame: u32,
+                        reserved: u32,
+                        output_bitstream: *mut c_void,
+                        slice_offsets: *mut u32,
+                        frame_idx: u32,
+                        hw_encode_status: u32,
+                        num_slices: u32,
+                        bitstream_size_in_bytes: u32,
+                        output_time_stamp: u64,
+                        output_duration: u64,
+                        bitstream_buffer_ptr: *mut c_void,
+                        picture_type: u32,
+                        picture_struct: u32,
+                        frame_avg_qp: u32,
+                        frame_satd: u32,
+                        ltr_frame_idx: u32,
+                        ltr_frame_bitmap: u32,
+                        reserved1: [u32; 236],
+                        reserved2: [*mut c_void; 64],
+                    }
+
+                    let is_keyframe = self.needs_keyframe;
+                    self.needs_keyframe = false;
+
+                    let mut lock_in: NvEncLockInputBufferParams = std::mem::zeroed();
+                    lock_in.version = (314 << 24) | 1;
+                    lock_in.input_buffer = self.input_buffer;
+
+                    if let (Some(lock_in_fn), Some(unlock_in_fn), Some(encode_pic_fn), Some(lock_bs_fn), Some(unlock_bs_fn)) = (
+                        self.fn_list.nvEncLockInputBuffer,
+                        self.fn_list.nvEncUnlockInputBuffer,
+                        self.fn_list.nvEncEncodePicture,
+                        self.fn_list.nvEncLockBitstream,
+                        self.fn_list.nvEncUnlockBitstream,
+                    ) {
+                        let lock_status = lock_in_fn(self.encoder_handle, &mut lock_in as *mut _ as *mut c_void);
+                        if lock_status == 0 && !lock_in.buffer_data_ptr.is_null() {
+                            let dst_pitch = lock_in.pitch as usize;
+                            let src_pitch = (width as usize) * 4;
+                            let copy_h = (height as usize).min(1080);
+                            let copy_w_bytes = src_pitch.min(dst_pitch);
+
+                            let dst_slice = std::slice::from_raw_parts_mut(lock_in.buffer_data_ptr as *mut u8, dst_pitch * copy_h);
+                            for row in 0..copy_h {
+                                let src_offset = row * src_pitch;
+                                let dst_offset = row * dst_pitch;
+                                if src_offset + copy_w_bytes <= bgra_data.len() && dst_offset + copy_w_bytes <= dst_slice.len() {
+                                    dst_slice[dst_offset..dst_offset + copy_w_bytes].copy_from_slice(&bgra_data[src_offset..src_offset + copy_w_bytes]);
+                                }
+                            }
+
+                            unlock_in_fn(self.encoder_handle, self.input_buffer);
+
+                            let mut pic_params: NvEncPicParamsStruct = std::mem::zeroed();
+                            pic_params.version = (314 << 24) | 4;
+                            pic_params.input_width = width;
+                            pic_params.input_height = height;
+                            pic_params.input_pitch = lock_in.pitch;
+                            pic_params.input_buffer = self.input_buffer;
+                            pic_params.output_bitstream = self.bitstream_buffer;
+                            pic_params.buffer_format = 0x01000000; // ARGB
+                            pic_params.picture_struct = 1; // FRAME
+                            if is_keyframe {
+                                pic_params.encode_pic_flags = 0x1 | 0x2; // FORCEIDR | OUTPUT_SPSPPS
+                            }
+
+                            let enc_status = encode_pic_fn(self.encoder_handle, &mut pic_params as *mut _ as *mut c_void);
+                            if enc_status == 0 {
+                                let mut lock_bs: NvEncLockBitstreamParams = std::mem::zeroed();
+                                lock_bs.version = (314 << 24) | 1;
+                                lock_bs.output_bitstream = self.bitstream_buffer;
+
+                                let bs_status = lock_bs_fn(self.encoder_handle, &mut lock_bs as *mut _ as *mut c_void);
+                                if bs_status == 0 && lock_bs.bitstream_size_in_bytes > 0 && !lock_bs.bitstream_buffer_ptr.is_null() {
+                                    let bs_slice = std::slice::from_raw_parts(lock_bs.bitstream_buffer_ptr as *const u8, lock_bs.bitstream_size_in_bytes as usize);
+                                    let packet_bytes = bs_slice.to_vec();
+                                    unlock_bs_fn(self.encoder_handle, self.bitstream_buffer);
+                                    return Some(packet_bytes);
+                                } else {
+                                    unlock_bs_fn(self.encoder_handle, self.bitstream_buffer);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if self.needs_keyframe {
@@ -417,7 +543,7 @@ pub mod nvenc {
                 self.fallback_openh264.force_intra_frame();
             }
 
-            // Codifica o quadro de vídeo com máxima aceleração e fallback transparente
+            // Fallback transparente e instantâneo
             self.fallback_openh264.encode(bgra_data, width, height)
         }
 
