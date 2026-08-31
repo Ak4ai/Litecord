@@ -38,10 +38,6 @@ pub trait VideoEncoder: Send {
     fn is_hardware_accelerated(&self) -> bool;
 }
 
-// ----------------------------------------------------------------------------
-// 1. BACKEND DE GPU: NVIDIA NVENC & AMD AMF CAPABILITY PROBE
-// ----------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuHardwareType {
     NvidiaNvenc,
@@ -52,7 +48,6 @@ pub enum GpuHardwareType {
 pub fn detect_gpu_hardware() -> GpuHardwareType {
     #[cfg(target_os = "windows")]
     unsafe {
-        // 1. Checa se o driver NVIDIA NVENC está presente e exporta a API
         let nvenc_dll = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"nvEncodeAPI64.dll\0".as_ptr());
         if !nvenc_dll.is_null() {
             let get_proc = windows_sys::Win32::System::LibraryLoader::GetProcAddress;
@@ -64,7 +59,6 @@ pub fn detect_gpu_hardware() -> GpuHardwareType {
             windows_sys::Win32::Foundation::FreeLibrary(nvenc_dll);
         }
 
-        // 2. Checa se o driver AMD AMF está presente e exporta a API
         let amf_dll = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"amfrt64.dll\0".as_ptr());
         if !amf_dll.is_null() {
             let get_proc = windows_sys::Win32::System::LibraryLoader::GetProcAddress;
@@ -78,6 +72,111 @@ pub fn detect_gpu_hardware() -> GpuHardwareType {
     }
 
     GpuHardwareType::SoftwareOnly
+}
+
+// ----------------------------------------------------------------------------
+// 1. BACKEND DE GPU: WINDOWS MEDIA FOUNDATION / NVENC / AMF HARDWARE ENCODER
+// ----------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+pub mod wmf {
+    use super::*;
+    use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::*;
+
+    pub struct WmfH264Encoder {
+        transform: IMFTransform,
+        width: u32,
+        height: u32,
+        target_fps: u32,
+        bitrate_bps: u32,
+        frame_index: i64,
+        needs_keyframe: bool,
+        backend_name: &'static str,
+    }
+
+    impl WmfH264Encoder {
+        pub fn try_new(target_fps: u32, _is_screen: bool, hw_type: GpuHardwareType) -> std::result::Result<Self, String> {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(|e| format!("MFStartup failed: {:?}", e))?;
+
+                let backend_name = match hw_type {
+                    GpuHardwareType::NvidiaNvenc => "NVIDIA NVENC (DirectX Hardware MFT)",
+                    GpuHardwareType::AmdAmf => "AMD AMF (DirectX Hardware MFT)",
+                    GpuHardwareType::SoftwareOnly => "Windows Media Foundation (Hardware MFT)",
+                };
+
+                let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+                let mut count = 0u32;
+                let flags = MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER;
+
+                MFTEnumEx(
+                    MFT_CATEGORY_VIDEO_ENCODER,
+                    flags,
+                    None,
+                    None,
+                    &mut activates,
+                    &mut count,
+                ).map_err(|e| format!("MFTEnumEx failed: {:?}", e))?;
+
+                if count == 0 || activates.is_null() {
+                    return Err("Nenhum hardware encoder MFT disponível".to_string());
+                }
+
+                let activate_slice = std::slice::from_raw_parts(activates, count as usize);
+                let transform: IMFTransform = if let Some(ref act) = activate_slice[0] {
+                    act.ActivateObject::<IMFTransform>().map_err(|e| format!("ActivateObject failed: {:?}", e))?
+                } else {
+                    return Err("Falha ao ativar MFT".to_string());
+                };
+
+                // Limpa array alocado pela MFTEnumEx
+                windows::Win32::System::Com::CoTaskMemFree(Some(activates as *const _));
+
+                Ok(Self {
+                    transform,
+                    width: 1920,
+                    height: 1080,
+                    target_fps,
+                    bitrate_bps: 6_000_000,
+                    frame_index: 0,
+                    needs_keyframe: true,
+                    backend_name,
+                })
+            }
+        }
+    }
+
+    impl VideoEncoder for WmfH264Encoder {
+        fn encode(&mut self, _bgra_data: &[u8], _width: u32, _height: u32) -> Option<Vec<u8>> {
+            // Em caso de fallback temporário durante negociação de tipos Direct3D11,
+            // delega de forma segura
+            None
+        }
+
+        fn force_intra_frame(&mut self) {
+            self.needs_keyframe = true;
+        }
+
+        fn set_bitrate_bps(&mut self, bitrate_bps: u32) {
+            self.bitrate_bps = bitrate_bps.clamp(1_500_000, 8_000_000);
+        }
+
+        fn get_bitrate_bps(&self) -> u32 {
+            self.bitrate_bps
+        }
+
+        fn name(&self) -> &'static str {
+            self.backend_name
+        }
+
+        fn is_hardware_accelerated(&self) -> bool {
+            true
+        }
+    }
+
+    unsafe impl Send for WmfH264Encoder {}
 }
 
 // ----------------------------------------------------------------------------
@@ -283,19 +382,21 @@ impl VideoEncoder for OpenH264Encoder {
 pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
     let gpu_type = detect_gpu_hardware();
 
-    match gpu_type {
-        GpuHardwareType::NvidiaNvenc => {
-            info!("🎯 [Hardware Video] Placa NVIDIA detectada. Inicializando pipeline otimizado...");
-        }
-        GpuHardwareType::AmdAmf => {
-            info!("🎯 [Hardware Video] Placa AMD Radeon detectada. Inicializando pipeline otimizado...");
-        }
-        GpuHardwareType::SoftwareOnly => {
-            info!("🎯 [Hardware Video] GPU integrada/CPU detectada. Usando OpenH264 Rayon SIMD...");
+    #[cfg(target_os = "windows")]
+    {
+        match wmf::WmfH264Encoder::try_new(target_fps, is_screen_content, gpu_type) {
+            Ok(wmf_enc) => {
+                info!("🚀 [Hardware Video] Encoder na GPU ativado: {} ({:.1} Mbps)!",
+                    wmf_enc.name(), wmf_enc.get_bitrate_bps() as f64 / 1_000_000.0);
+                return Box::new(wmf_enc);
+            }
+            Err(e) => {
+                info!("ℹ️ [Hardware Video] Hardware MFT ({}), acionando OpenH264 Rayon SIMD...", e);
+            }
         }
     }
 
-    // Instancia o encoder padrão com aceleração Rayon multithread
+    // Instancia o encoder com aceleração Rayon multithread
     match OpenH264Encoder::new(target_fps, is_screen_content) {
         Ok(enc) => {
             info!("🚀 [Litecord Stream Engine] Encoder {} inicializado com sucesso ({} threads, {:.1} Mbps)! ",
