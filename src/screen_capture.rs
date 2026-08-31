@@ -721,7 +721,10 @@ impl ScreenCaptureManager {
                                                 }
                                             }
 
-                                            // dup.acquire_next_frame(20) já sincroniza no VSync da GPU; screen-capture-tx fará o pacing CFR final.
+                                            let el = t_start.elapsed();
+                                            if el < frame_interval {
+                                                std::thread::sleep(frame_interval - el);
+                                            }
                                         }
                                     }
 
@@ -941,10 +944,6 @@ impl ScreenCaptureManager {
                         next_tick = now + frame_target_interval;
                     }
 
-                    // Economia inteligente de CPU quando a tela está completamente estática (keepalive a 5 FPS)
-                    if new_frames_count == 0 && last_frame_sent.elapsed() < Duration::from_millis(200) {
-                        continue;
-                    }
 
                     let (bgra_slice, cur_w, cur_h, blt_us, pix_us) = match latest_cached_frame {
                         Some(ref f) => (f.0.as_slice(), f.1, f.2, f.3, f.4),
