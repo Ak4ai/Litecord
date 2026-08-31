@@ -1467,9 +1467,11 @@ impl ScreenCaptureManager {
                         }
                     }
 
+                    let mut packets_drained = 0;
                     for _ in 0..128 {
                         match socket.recv_from(&mut recv_buf) {
                             Ok((len, src_addr)) => {
+                                packets_drained += 1;
                                 // 1. STUN Binding Success Response (0x01, 0x01 with Magic Cookie 0x2112A442)
                                 if len >= 20 && recv_buf[0] == 0x01 && recv_buf[1] == 0x01 && &recv_buf[4..8] == &[0x21, 0x12, 0xa4, 0x42] {
                                     let mut i = 20;
@@ -1980,7 +1982,11 @@ impl ScreenCaptureManager {
                     }
                 }
 
-                    // Check stream timeouts (> 1500ms sem quadros)
+                if packets_drained == 0 {
+                    std::thread::sleep(Duration::from_millis(4));
+                }
+
+                // Check stream timeouts (> 1500ms sem quadros)
                     let now = Instant::now();
                     let mut expired = Vec::new();
                     for (&uid, &last_act) in last_stream_activity.iter() {
@@ -2480,7 +2486,7 @@ pub fn start_global_signaling(
                             break;
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                            // continue
+                            std::thread::sleep(Duration::from_millis(50));
                         }
                         Err(_) => {
                             break;
