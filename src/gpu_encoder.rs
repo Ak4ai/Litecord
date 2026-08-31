@@ -866,29 +866,300 @@ impl VideoEncoder for OpenH264Encoder {
 }
 
 // ----------------------------------------------------------------------------
-// 3. FÁBRICA AUTOMÁTICA DE ENCODER (AUTO SELECT & FALLBACK)
+// 3. BACKEND DE GPU UNIVERSAL: WINDOWS MEDIA FOUNDATION + DIRECT3D 11
 // ----------------------------------------------------------------------------
 
-pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
-    let gpu_type = detect_gpu_hardware();
+#[cfg(target_os = "windows")]
+pub mod wmf {
+    use super::*;
+    use log::{info, warn};
+    use windows::core::*;
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Direct3D11::*;
+    use windows::Win32::Graphics::Dxgi::*;
+    use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::*;
 
-    info!("🔍 [VIDEO CODEC FACTORY] Avaliando melhor engine de codificação para o sistema...");
+    pub struct WmfGpuEncoder {
+        sink_writer: IMFSinkWriter,
+        byte_stream: IMFByteStream,
+        stream_index: u32,
+        pub current_width: u32,
+        pub current_height: u32,
+        pub target_fps: u32,
+        pub bitrate_bps: u32,
+        pub frame_count: u64,
+        pub last_read_pos: u64,
+        pub gpu_name: String,
+        pub needs_keyframe: bool,
+        pub nv12_buffer: Vec<u8>,
+    }
 
-    #[cfg(target_os = "windows")]
-    if gpu_type == GpuHardwareType::NvidiaNvenc {
-        info!("🎯 [VIDEO CODEC FACTORY] Placa NVIDIA GeForce/RTX detectada! Inicializando NVENC Hardware Engine...");
-        match nvenc::GpuNvencEncoder::try_new(target_fps, is_screen_content) {
-            Ok(enc) => {
-                info!("🚀 [VIDEO CODEC FACTORY] NVENC ativado com sucesso como encoder primário (Hardware Accelerated)!");
-                return Box::new(enc);
-            }
-            Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] NVENC indisponível ({}), acionando fallback de segurança...", e);
+    unsafe impl Send for WmfGpuEncoder {}
+
+    impl WmfGpuEncoder {
+        pub fn try_new(target_fps: u32, is_screen_content: bool) -> Result<Self> {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)?;
+
+                let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+                let mut selected_adapter: Option<IDXGIAdapter1> = None;
+                let mut selected_gpu_name = String::from("GPU Padrão");
+                let mut best_vram: usize = 0;
+
+                let mut adapter_index = 0u32;
+                while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
+                    if let Ok(desc) = adapter.GetDesc1() {
+                        let name = String::from_utf16_lossy(&desc.Description)
+                            .trim_matches('\0')
+                            .trim()
+                            .to_string();
+                        let vram_mb = desc.DedicatedVideoMemory / (1024 * 1024);
+                        let is_software = (desc.Flags & 2) != 0;
+
+                        if !is_software && (desc.VendorId == 0x10DE || desc.VendorId == 0x1002 || vram_mb > best_vram) {
+                            selected_adapter = Some(adapter);
+                            selected_gpu_name = name;
+                            best_vram = vram_mb;
+                        }
+                    }
+                    adapter_index += 1;
+                }
+
+                info!("🎮 [WMF GPU ENGINE] Selecionada GPU para codificação por hardware: '{}' ({} MB VRAM)", selected_gpu_name, best_vram);
+
+                let mut d3d11_device: Option<ID3D11Device> = None;
+                let mut d3d11_context: Option<ID3D11DeviceContext> = None;
+                let mut feature_level = D3D_FEATURE_LEVEL_11_0;
+
+                let adapter_ref = selected_adapter.as_ref();
+                let driver_type = if adapter_ref.is_some() { D3D_DRIVER_TYPE_UNKNOWN } else { D3D_DRIVER_TYPE_HARDWARE };
+
+                D3D11CreateDevice(
+                    adapter_ref.map(|a| a as &IDXGIAdapter),
+                    driver_type,
+                    None,
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut d3d11_device),
+                    Some(&mut feature_level),
+                    Some(&mut d3d11_context),
+                )?;
+
+                let d3d11_device = d3d11_device.ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
+
+                let mut reset_token = 0u32;
+                let mut device_manager: Option<IMFDXGIDeviceManager> = None;
+                MFCreateDXGIDeviceManager(&mut reset_token, &mut device_manager)?;
+                let device_manager = device_manager.ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
+                device_manager.ResetDevice(&d3d11_device, reset_token)?;
+
+                let mut writer_attributes: Option<IMFAttributes> = None;
+                MFCreateAttributes(&mut writer_attributes, 4)?;
+                let writer_attributes = writer_attributes.ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
+
+                writer_attributes.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &device_manager)?;
+                writer_attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
+                writer_attributes.SetUINT32(&MF_LOW_LATENCY, 1)?;
+
+                let byte_stream: IMFByteStream = MFCreateTempFile(MF_ACCESSMODE_READWRITE, MF_OPENMODE_DELETE_IF_EXIST, MF_FILEFLAGS_NONE)?;
+                let sink_writer = MFCreateSinkWriterFromURL(w!(".mp4"), &byte_stream, &writer_attributes)?;
+
+                let initial_width = 1920u32;
+                let initial_height = 1080u32;
+                let initial_bitrate = if is_screen_content { 4_000_000 } else { 3_500_000 };
+
+                fn set_size(attrs: &IMFAttributes, key: &windows::core::GUID, w: u32, h: u32) -> Result<()> {
+                    unsafe { attrs.SetUINT64(key, ((w as u64) << 32) | (h as u64)) }
+                }
+
+                fn set_ratio(attrs: &IMFAttributes, key: &windows::core::GUID, num: u32, den: u32) -> Result<()> {
+                    unsafe { attrs.SetUINT64(key, ((num as u64) << 32) | (den as u64)) }
+                }
+
+                let out_media_type = MFCreateMediaType()?;
+                out_media_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+                out_media_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+                out_media_type.SetUINT32(&MF_MT_AVG_BITRATE, initial_bitrate)?;
+                set_size(&out_media_type.cast()?, &MF_MT_FRAME_SIZE, initial_width, initial_height)?;
+                set_ratio(&out_media_type.cast()?, &MF_MT_FRAME_RATE, target_fps, 1)?;
+                set_ratio(&out_media_type.cast()?, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1)?;
+                out_media_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
+                out_media_type.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main.0 as u32)?;
+
+                let stream_index = sink_writer.AddStream(&out_media_type)?;
+
+                let in_media_type = MFCreateMediaType()?;
+                in_media_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+                in_media_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+                set_size(&in_media_type.cast()?, &MF_MT_FRAME_SIZE, initial_width, initial_height)?;
+                set_ratio(&in_media_type.cast()?, &MF_MT_FRAME_RATE, target_fps, 1)?;
+                set_ratio(&in_media_type.cast()?, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1)?;
+                in_media_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
+
+                sink_writer.SetInputMediaType(stream_index, &in_media_type, None)?;
+                sink_writer.BeginWriting()?;
+
+                info!("🚀 [WMF GPU ENGINE] Encoder de hardware H.264 pronto na GPU '{}' ({}p {} FPS, {:.1} Mbps)!",
+                    selected_gpu_name, initial_height, target_fps, initial_bitrate as f64 / 1_000_000.0);
+
+                let nv12_size = (initial_width * initial_height + (initial_width * initial_height / 2)) as usize;
+
+                Ok(Self {
+                    sink_writer,
+                    byte_stream,
+                    stream_index,
+                    current_width: initial_width,
+                    current_height: initial_height,
+                    target_fps,
+                    bitrate_bps: initial_bitrate,
+                    frame_count: 0,
+                    last_read_pos: 0,
+                    gpu_name: selected_gpu_name,
+                    needs_keyframe: true,
+                    nv12_buffer: vec![0u8; nv12_size],
+                })
             }
         }
     }
 
-    info!("🎯 [VIDEO CODEC FACTORY] Inicializando OpenH264 SIMD Rayon (Universal Fast Engine)...");
+    impl VideoEncoder for WmfGpuEncoder {
+        fn encode(&mut self, bgra_data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+            let expected_nv12_len = (width * height + (width * height / 2)) as usize;
+            if self.nv12_buffer.len() != expected_nv12_len {
+                self.nv12_buffer.resize(expected_nv12_len, 0);
+            }
+
+            let y_plane_size = (width * height) as usize;
+            let w = width as usize;
+            let h = height as usize;
+
+            let (y_plane, uv_plane) = self.nv12_buffer.split_at_mut(y_plane_size);
+
+            y_plane.par_chunks_exact_mut(w).enumerate().for_each(|(row, y_row)| {
+                let bgra_row = &bgra_data[row * w * 4..(row + 1) * w * 4];
+                for (i, chunk) in bgra_row.chunks_exact(4).enumerate() {
+                    let b = chunk[0] as i32;
+                    let g = chunk[1] as i32;
+                    let r = chunk[2] as i32;
+                    y_row[i] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
+                }
+            });
+
+            uv_plane.par_chunks_exact_mut(w).enumerate().for_each(|(uv_row_idx, uv_row)| {
+                let row = uv_row_idx * 2;
+                if row + 1 < h {
+                    let bgra_row0 = &bgra_data[row * w * 4..(row + 1) * w * 4];
+                    let bgra_row1 = &bgra_data[(row + 1) * w * 4..(row + 2) * w * 4];
+                    for col in (0..w).step_by(2) {
+                        let p00 = &bgra_row0[col * 4..col * 4 + 4];
+                        let p01 = &bgra_row0[(col + 1) * 4..(col + 1) * 4 + 4];
+                        let p10 = &bgra_row1[col * 4..col * 4 + 4];
+                        let p11 = &bgra_row1[(col + 1) * 4..(col + 1) * 4 + 4];
+
+                        let r_avg = (p00[2] as i32 + p01[2] as i32 + p10[2] as i32 + p11[2] as i32) >> 2;
+                        let g_avg = (p00[1] as i32 + p01[1] as i32 + p10[1] as i32 + p11[1] as i32) >> 2;
+                        let b_avg = (p00[0] as i32 + p01[0] as i32 + p10[0] as i32 + p11[0] as i32) >> 2;
+
+                        let u = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
+                        let v = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
+
+                        uv_row[col] = u;
+                        uv_row[col + 1] = v;
+                    }
+                }
+            });
+
+            unsafe {
+                let in_buffer = MFCreateMemoryBuffer(expected_nv12_len as u32).ok()?;
+                let mut p_buf_data: *mut u8 = std::ptr::null_mut();
+                let mut max_len = 0u32;
+                let mut cur_len = 0u32;
+                in_buffer.Lock(&mut p_buf_data, Some(&mut max_len), Some(&mut cur_len)).ok()?;
+                std::ptr::copy_nonoverlapping(self.nv12_buffer.as_ptr(), p_buf_data, expected_nv12_len);
+                let _ = in_buffer.Unlock();
+                let _ = in_buffer.SetCurrentLength(expected_nv12_len as u32);
+
+                let in_sample = MFCreateSample().ok()?;
+                let _ = in_sample.AddBuffer(&in_buffer);
+                let sample_duration = (10_000_000 / self.target_fps.max(1)) as i64;
+                let sample_time = (self.frame_count as i64) * sample_duration;
+                let _ = in_sample.SetSampleTime(sample_time);
+                let _ = in_sample.SetSampleDuration(sample_duration);
+
+                if self.needs_keyframe {
+                    let _ = in_sample.SetUINT32(&MFSampleExtension_CleanPoint, 1);
+                    self.needs_keyframe = false;
+                }
+
+                self.frame_count += 1;
+
+                if self.sink_writer.WriteSample(self.stream_index, &in_sample).is_ok() {
+                    let cur_len = self.byte_stream.GetLength().unwrap_or(0);
+                    if cur_len > self.last_read_pos {
+                        let to_read = (cur_len - self.last_read_pos) as u32;
+                        let mut buf = vec![0u8; to_read as usize];
+                        let mut read_bytes = 0u32;
+                        let _ = self.byte_stream.SetCurrentPosition(self.last_read_pos);
+                        let _ = self.byte_stream.Read(&mut buf, &mut read_bytes);
+                        self.last_read_pos = cur_len;
+                        if read_bytes > 0 {
+                            buf.truncate(read_bytes as usize);
+                            return Some(buf);
+                        }
+                    }
+                }
+            }
+
+            None
+        }
+
+        fn force_intra_frame(&mut self) {
+            self.needs_keyframe = true;
+        }
+
+        fn set_bitrate_bps(&mut self, bitrate_bps: u32) {
+            self.bitrate_bps = bitrate_bps.clamp(1_500_000, 8_000_000);
+        }
+
+        fn get_bitrate_bps(&self) -> u32 {
+            self.bitrate_bps
+        }
+
+        fn name(&self) -> &'static str {
+            "Direct3D 11 / Windows Media Foundation (Universal GPU Hardware Acceleration)"
+        }
+
+        fn is_hardware_accelerated(&self) -> bool {
+            true
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 4. FÁBRICA AUTOMÁTICA DE ENCODER (AUTO SELECT & FALLBACK)
+// ----------------------------------------------------------------------------
+
+pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
+    info!("🔍 [VIDEO CODEC FACTORY] Avaliando melhor engine de codificação para o sistema...");
+
+    #[cfg(target_os = "windows")]
+    {
+        info!("🎯 [VIDEO CODEC FACTORY] Inicializando Direct3D 11 + Windows Media Foundation GPU Engine (Universal)...");
+        match wmf::WmfGpuEncoder::try_new(target_fps, is_screen_content) {
+            Ok(enc) => {
+                info!("🚀 [VIDEO CODEC FACTORY] Direct3D 11 + WMF GPU Engine ativado com sucesso como encoder primário (Hardware: {})!", enc.gpu_name);
+                return Box::new(enc);
+            }
+            Err(e) => {
+                warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando fallback de segurança...", e);
+            }
+        }
+    }
+
+    info!("🎯 [VIDEO CODEC FACTORY] Inicializando OpenH264 SIMD Rayon (Universal Fast CPU Engine)...");
     match OpenH264Encoder::new(target_fps, is_screen_content) {
         Ok(enc) => {
             info!("🚀 [VIDEO CODEC FACTORY] Encoder {} inicializado com sucesso ({} threads, {:.1} Mbps)!",
