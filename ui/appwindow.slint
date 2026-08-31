@@ -1540,10 +1540,14 @@ export component AppWindow inherits Window {
                                 spacing: 8px;
                                 alignment: center;
 
-                                Text {
-                                    text: root.login_alert_is_error ? "⚠️" : "ℹ️";
-                                    font-size: 13px;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: root.login_alert_is_error ? @image-url("../assets/alert-triangle.svg") : @image-url("../assets/info.svg");
+                                        width: 14px;
+                                        height: 14px;
+                                        colorize: root.login_alert_is_error ? #f23f43 : #5865f2;
+                                    }
                                 }
 
                                 Text {
@@ -5435,130 +5439,154 @@ export component AppWindow inherits Window {
                             spacing: 6px;
 
                             for acc in root.saved_accounts: Rectangle {
-                                height: 50px;
-                                background: acc.is_active ? #1e1f22 : (acc_touch.has-hover ? #35373c : #232428);
+                                height: 54px;
+                                background: acc.is_active ? #1e1f22 : (card_info_touch.has-hover ? #35373c : #232428);
                                 border-radius: 8px;
                                 border-width: 1px;
                                 border-color: acc.is_active ? #5865f2 : #383a40;
 
-                                HorizontalBox {
+                                HorizontalLayout {
                                     padding-left: 10px;
                                     padding-right: 10px;
-                                    padding-top: 6px;
-                                    padding-bottom: 6px;
                                     spacing: 10px;
 
-                                    // Avatar circle with initials
-                                    Rectangle {
-                                        width: 34px;
-                                        height: 34px;
-                                        border-radius: 17px;
-                                        background: acc.is_active ? #5865f2 : #4e5058;
+                                    // Left Clickable Area (Avatar + Names)
+                                    HorizontalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 10px;
+
+                                        // Avatar circle with initials (centered vertically)
                                         VerticalLayout {
                                             alignment: center;
-                                            Text {
-                                                text: acc.avatar_initials != "" ? acc.avatar_initials : "@";
-                                                color: #ffffff;
-                                                font-size: 13px;
-                                                font-weight: 700;
-                                                horizontal-alignment: center;
-                                            }
-                                        }
-                                    }
-
-                                    // Username & Tag
-                                    VerticalLayout {
-                                        alignment: center;
-                                        spacing: 2px;
-                                        horizontal-stretch: 1;
-                                        Text {
-                                            text: acc.username != "" ? acc.username : acc.tag;
-                                            color: #f2f3f5;
-                                            font-size: 12px;
-                                            font-weight: 700;
-                                            overflow: elide;
-                                        }
-                                        Text {
-                                            text: acc.tag;
-                                            color: #949ba4;
-                                            font-size: 10px;
-                                            overflow: elide;
-                                        }
-                                    }
-
-                                    // Action / Status
-                                    if acc.is_active: HorizontalLayout {
-                                        alignment: center;
-                                        spacing: 4px;
-                                        Text {
-                                            text: "● Conectada";
-                                            color: #23a55a;
-                                            font-size: 11px;
-                                            font-weight: 700;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    if !acc.is_active: HorizontalLayout {
-                                        alignment: center;
-                                        spacing: 6px;
-
-                                        // Switch button
-                                        Rectangle {
-                                            width: 60px;
-                                            height: 26px;
-                                            background: sw_btn.has-hover ? #4752c4 : #5865f2;
-                                            border-radius: 4px;
-                                            HorizontalLayout {
-                                                alignment: center;
-                                                Text {
-                                                    text: "Entrar";
-                                                    color: #ffffff;
-                                                    font-size: 11px;
-                                                    font-weight: 600;
-                                                    vertical-alignment: center;
+                                            Rectangle {
+                                                width: 34px;
+                                                height: 34px;
+                                                border-radius: 17px;
+                                                background: acc.is_active ? #5865f2 : #4e5058;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Text {
+                                                        text: acc.avatar_initials != "" ? acc.avatar_initials : "@";
+                                                        color: #ffffff;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
                                                 }
                                             }
-                                            sw_btn := TouchArea {
-                                                clicked => {
+                                        }
+
+                                        // Username & Tag (centered vertically)
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+                                            horizontal-stretch: 1;
+                                            Text {
+                                                text: acc.username != "" ? acc.username : acc.tag;
+                                                color: #f2f3f5;
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: acc.tag;
+                                                color: #949ba4;
+                                                font-size: 10px;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        card_info_touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                if !acc.is_active {
                                                     root.show_user_menu = false;
                                                     root.switch_account(acc.id);
                                                 }
                                             }
                                         }
+                                    }
 
-                                        // Remove single account trash button
-                                        Rectangle {
-                                            width: 24px;
-                                            height: 26px;
-                                            background: del_btn.has-hover ? #da373c33 : transparent;
-                                            border-radius: 4px;
-                                            VerticalLayout {
-                                                alignment: center;
-                                                HorizontalLayout {
-                                                    alignment: center;
-                                                    Image {
-                                                        source: @image-url("../assets/x.svg");
-                                                        width: 10px;
-                                                        height: 10px;
-                                                        colorize: del_btn.has-hover ? #f23f43 : #949ba4;
-                                                    }
-                                                }
-                                            }
-                                            del_btn := TouchArea {
-                                                clicked => {
-                                                    root.remove_account(acc.id);
-                                                }
+                                    // Right Action / Status Area (centered vertically)
+                                    if acc.is_active: VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+                                            Text {
+                                                text: "● Conectada";
+                                                color: #23a55a;
+                                                font-size: 11px;
+                                                font-weight: 700;
+                                                vertical-alignment: center;
                                             }
                                         }
                                     }
-                                }
 
-                                acc_touch := TouchArea {
-                                    clicked => {
-                                        if !acc.is_active {
-                                            root.show_user_menu = false;
-                                            root.switch_account(acc.id);
+                                    if !acc.is_active: VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 6px;
+
+                                            // Switch button (centered vertically)
+                                            Rectangle {
+                                                width: 62px;
+                                                height: 28px;
+                                                background: sw_btn.has-hover ? #4752c4 : #5865f2;
+                                                border-radius: 4px;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Text {
+                                                        text: "Entrar";
+                                                        color: #ffffff;
+                                                        font-size: 11px;
+                                                        font-weight: 600;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+
+                                                sw_btn := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.show_user_menu = false;
+                                                        root.switch_account(acc.id);
+                                                    }
+                                                }
+                                            }
+
+                                            // Remove single account trash button (centered vertically)
+                                            Rectangle {
+                                                width: 28px;
+                                                height: 28px;
+                                                background: del_btn.has-hover ? #da373c33 : transparent;
+                                                border-radius: 4px;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    HorizontalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/x.svg");
+                                                            width: 12px;
+                                                            height: 12px;
+                                                            colorize: del_btn.has-hover ? #f23f43 : #949ba4;
+                                                        }
+                                                    }
+                                                }
+
+                                                del_btn := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.remove_account(acc.id);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -6071,6 +6099,7 @@ export component AppWindow inherits Window {
                                             root.stream_source_tab = "screens";
                                             root.stream_selected_source_index = 0;
                                             root.stream_selected_window_id = "";
+                                            root.stream_include_audio = true;
                                         }
                                     }
                                 }
@@ -6112,6 +6141,7 @@ export component AppWindow inherits Window {
                                         clicked => {
                                             root.stream_source_tab = "windows";
                                             root.stream_selected_source_index = 0;
+                                            root.stream_include_audio = true;
                                             if root.available_windows.length > 0 {
                                                 root.stream_selected_window_id = root.available_windows[0].id;
                                             }

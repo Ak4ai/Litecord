@@ -59,6 +59,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_Media",
     "Win32_System_LibraryLoader",
+    "Win32_System_Com",
 ] }
 windows-capture = "2.0.1"
 

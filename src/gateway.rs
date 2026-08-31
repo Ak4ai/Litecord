@@ -3253,7 +3253,12 @@ pub async fn connect_voice_gateway(
                                                                                 inactive_ticks.insert(ssrc, 0);
                                                                             }
 
-                                                                            if started_ssrcs.contains(&ssrc) {
+                                                                            if ssrc >= 0x8000_0000 {
+                                                                                if !q.is_empty() {
+                                                                                    started_ssrcs.insert(ssrc);
+                                                                                    ready_ssrcs.push(ssrc);
+                                                                                }
+                                                                            } else if started_ssrcs.contains(&ssrc) {
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
@@ -3279,16 +3284,22 @@ pub async fn connect_voice_gateway(
                                                                         let active_spk_map = active_spk_store.lock().ok();
                                                                         if let Ok(spk_map) = ssrc_to_userid_f32.lock() {
                                                                             for &ssrc in &ready_ssrcs {
-                                                                                let uid_num = spk_map.get(&ssrc)
-                                                                                    .or_else(|| active_spk_map.as_ref().and_then(|m| m.get(&ssrc)))
-                                                                                    .copied()
-                                                                                    .unwrap_or(ssrc as u64);
+                                                                                let (is_muted, user_vol, user_prio) = if ssrc >= 0x8000_0000 {
+                                                                                    (false, 1.0f32, 0i32)
+                                                                                } else {
+                                                                                    let uid_num = spk_map.get(&ssrc)
+                                                                                        .or_else(|| active_spk_map.as_ref().and_then(|m| m.get(&ssrc)))
+                                                                                        .copied()
+                                                                                        .unwrap_or(ssrc as u64);
 
-                                                                                let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
-                                                                                let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
-                                                                                let is_muted = is_muted_uid || is_muted_ssrc;
-                                                                                let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
-                                                                                let user_prio = prio_uid.max(prio_ssrc);
+                                                                                    let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
+                                                                                    let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
+                                                                                    let is_muted = is_muted_uid || is_muted_ssrc;
+                                                                                    let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
+                                                                                    let user_prio = prio_uid.max(prio_ssrc);
+                                                                                    (is_muted, user_vol, user_prio)
+                                                                                };
+
                                                                                 if !is_muted {
                                                                                     if user_prio > max_active_priority {
                                                                                         max_active_priority = user_prio;
@@ -3404,7 +3415,12 @@ pub async fn connect_voice_gateway(
                                                                                 inactive_ticks.insert(ssrc, 0);
                                                                             }
 
-                                                                            if started_ssrcs.contains(&ssrc) {
+                                                                            if ssrc >= 0x8000_0000 {
+                                                                                if !q.is_empty() {
+                                                                                    started_ssrcs.insert(ssrc);
+                                                                                    ready_ssrcs.push(ssrc);
+                                                                                }
+                                                                            } else if started_ssrcs.contains(&ssrc) {
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
@@ -3430,16 +3446,22 @@ pub async fn connect_voice_gateway(
                                                                         let active_spk_map_i16 = active_spk_store_i16.lock().ok();
                                                                         if let Ok(spk_map) = ssrc_to_userid_i16.lock() {
                                                                             for &ssrc in &ready_ssrcs {
-                                                                                let uid_num = spk_map.get(&ssrc)
-                                                                                    .or_else(|| active_spk_map_i16.as_ref().and_then(|m| m.get(&ssrc)))
-                                                                                    .copied()
-                                                                                    .unwrap_or(ssrc as u64);
+                                                                                let (is_muted, user_vol, user_prio) = if ssrc >= 0x8000_0000 {
+                                                                                    (false, 1.0f32, 0i32)
+                                                                                } else {
+                                                                                    let uid_num = spk_map.get(&ssrc)
+                                                                                        .or_else(|| active_spk_map_i16.as_ref().and_then(|m| m.get(&ssrc)))
+                                                                                        .copied()
+                                                                                        .unwrap_or(ssrc as u64);
 
-                                                                                let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
-                                                                                let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
-                                                                                let is_muted = is_muted_uid || is_muted_ssrc;
-                                                                                let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
-                                                                                let user_prio = prio_uid.max(prio_ssrc);
+                                                                                    let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
+                                                                                    let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
+                                                                                    let is_muted = is_muted_uid || is_muted_ssrc;
+                                                                                    let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
+                                                                                    let user_prio = prio_uid.max(prio_ssrc);
+                                                                                    (is_muted, user_vol, user_prio)
+                                                                                };
+
                                                                                 if !is_muted {
                                                                                     if user_prio > max_active_priority_i16 {
                                                                                         max_active_priority_i16 = user_prio;

@@ -97,9 +97,9 @@ pub struct OpenH264Encoder {
 impl OpenH264Encoder {
     pub fn new(target_fps: u32, is_screen_content: bool) -> Result<Self, String> {
         let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get() as u16)
-            .unwrap_or(8)
-            .clamp(2, 16);
+            .map(|n| (n.get() as u16 / 2).max(1))
+            .unwrap_or(4)
+            .clamp(2, 4);
 
         let usage = if is_screen_content {
             openh264::encoder::UsageType::ScreenContentRealTime
@@ -231,8 +231,9 @@ impl VideoEncoder for OpenH264Encoder {
     }
 
     fn set_bitrate_bps(&mut self, bitrate_bps: u32) {
-        let clamped = bitrate_bps.clamp(2_000_000, 10_000_000);
-        if (self.current_bitrate_bps as i32 - clamped as i32).abs() >= 500_000 && self.last_reconfig.elapsed() >= std::time::Duration::from_millis(3000) {
+        let clamped = bitrate_bps.clamp(1_500_000, 6_000_000);
+        // Só reconfigura o encoder se houver queda drástica de banda (> 1.5 Mbps) e com intervalo mínimo de 15 segundos
+        if (self.current_bitrate_bps as i32 - clamped as i32).abs() >= 1_500_000 && self.last_reconfig.elapsed() >= std::time::Duration::from_millis(15000) {
             info!("🎛️ [ABR Engine] Ajustando taxa de bits do encoder de {:.2} Mbps para {:.2} Mbps",
                 self.current_bitrate_bps as f64 / 1_000_000.0,
                 clamped as f64 / 1_000_000.0

@@ -278,6 +278,7 @@ impl ScreenCaptureManager {
             peers.insert(uid, (addr, Instant::now()));
             info!("🌐 Peer remoto P2P registrado: User ID {} -> {}", uid, addr);
         }
+        request_intra_keyframe();
         let current_cid = self.channel_id.load(Ordering::Relaxed);
         let my_uid = self.my_user_id.load(Ordering::Relaxed);
         let my_instance_id = get_process_instance_id();
@@ -346,29 +347,36 @@ impl ScreenCaptureManager {
             if uid == 0 {
                 uid = crate::gateway::get_my_user_id();
             }
+            let socket_opt = get_shared_p2p_socket();
+            let temp_sock;
+            let sock_ref = if let Some(ref s) = socket_opt {
+                s.as_ref()
+            } else if let Ok(s) = UdpSocket::bind("0.0.0.0:0") {
+                temp_sock = s;
+                &temp_sock
+            } else {
+                return;
+            };
+
             let bcast_targets = get_broadcast_addresses();
+            let inst = get_process_instance_id();
+            let mut stop_pkt = Vec::with_capacity(25);
+            stop_pkt.extend_from_slice(MAGIC);
+            stop_pkt.extend_from_slice(&inst.to_be_bytes());
+            stop_pkt.push(OP_STOP);
+            stop_pkt.extend_from_slice(&cid.to_be_bytes());
+            stop_pkt.extend_from_slice(&uid.to_be_bytes());
 
-            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-                let _ = socket.set_broadcast(true);
-                let inst = get_process_instance_id();
-                let mut stop_pkt = Vec::with_capacity(25);
-                stop_pkt.extend_from_slice(MAGIC);
-                stop_pkt.extend_from_slice(&inst.to_be_bytes());
-                stop_pkt.push(OP_STOP);
-                stop_pkt.extend_from_slice(&cid.to_be_bytes());
-                stop_pkt.extend_from_slice(&uid.to_be_bytes());
-
-                for _ in 0..5 {
-                    for target in &bcast_targets {
-                        let _ = socket.send_to(&stop_pkt, target);
-                    }
-                    if let Ok(peers) = self.known_peers.lock() {
-                        for (&_, &(addr, _)) in peers.iter() {
-                            let _ = socket.send_to(&stop_pkt, addr);
-                        }
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+            for _ in 0..5 {
+                for target in &bcast_targets {
+                    let _ = sock_ref.send_to(&stop_pkt, target);
                 }
+                if let Ok(peers) = self.known_peers.lock() {
+                    for (&_, &(addr, _)) in peers.iter() {
+                        let _ = sock_ref.send_to(&stop_pkt, addr);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }
@@ -1018,9 +1026,7 @@ impl ScreenCaptureManager {
 
                         // Send directly to active peers (or fallback to LAN broadcast if no peers found yet)
                         let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
-                        for port in 50005..=50007 {
-                            target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
-                        }
+                        let mut has_remote_peers = false;
                         if let Ok(mut peers) = peers_store.lock() {
                             let now = Instant::now();
                             peers.retain(|_, (addr, seen)| {
@@ -1030,15 +1036,18 @@ impl ScreenCaptureManager {
                                 };
                                 is_private || now.duration_since(*seen) < Duration::from_secs(60)
                             });
-                            for (&_, &(addr, _)) in peers.iter() {
+                            for (&_p_key, &(addr, _)) in peers.iter() {
                                 if !target_addrs.contains(&addr) {
                                     target_addrs.push(addr);
+                                    has_remote_peers = true;
                                 }
                             }
                         }
-                        for bcast in &bcast_targets {
-                            if !target_addrs.contains(bcast) {
-                                target_addrs.push(*bcast);
+                        if !has_remote_peers {
+                            for bcast in &bcast_targets {
+                                if !target_addrs.contains(bcast) {
+                                    target_addrs.push(*bcast);
+                                }
                             }
                         }
 
@@ -1082,10 +1091,12 @@ impl ScreenCaptureManager {
                                 let _ = socket.send_to(&pkt, target);
                             }
 
-                            // Micro-pace multi-chunk bursts using CPU spin loop (12µs, zero OS sleep) to prevent Wi-Fi FIFO drops
+                            // Sunshine-grade Nano-Pacing: Micro-space chunk bursts (~1.5ms total spread)
+                            // to eliminate Wi-Fi bufferbloat without delaying the 16.6ms 60 FPS deadline
                             if total_chunks > 1 {
+                                let pace_us = (2_000u64 / (total_chunks as u64)).clamp(30, 80);
                                 let spin_start = Instant::now();
-                                while spin_start.elapsed() < Duration::from_micros(12) {
+                                while spin_start.elapsed().as_micros() < pace_us as u128 {
                                     std::hint::spin_loop();
                                 }
                             }
@@ -1175,7 +1186,7 @@ impl ScreenCaptureManager {
             frame_data: Vec<u8>,
         }
 
-        let (tx_decode, rx_decode) = std::sync::mpsc::sync_channel::<QueuedVideoFrame>(8);
+        let (tx_decode, rx_decode) = std::sync::mpsc::sync_channel::<QueuedVideoFrame>(120);
 
         let is_running_decoder = Arc::clone(&self.is_receiver_running);
         let channel_id_decoder = Arc::clone(&self.channel_id);
@@ -1185,7 +1196,7 @@ impl ScreenCaptureManager {
         std::thread::Builder::new()
             .name("video-decoder-worker".to_string())
             .spawn(move || {
-                info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada!");
+                info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada com buffer elástico de 120 quadros!");
                 let mut h264_decoders: HashMap<u64, openh264::decoder::Decoder> = HashMap::new();
                 let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
                 let mut rx_frame_count: HashMap<u64, u64> = HashMap::new();
@@ -1317,6 +1328,7 @@ impl ScreenCaptureManager {
                 if let Ok(mut lock) = SHARED_P2P_SOCKET.lock() {
                     *lock = Some(Arc::clone(&socket));
                 }
+                ensure_stream_audio_playback_started();
                 let mut recv_buf = vec![0u8; 65535];
                 struct InFlightFrame {
                     total_chunks: u16,
@@ -1433,6 +1445,41 @@ impl ScreenCaptureManager {
                     for _ in 0..128 {
                         match socket.recv_from(&mut recv_buf) {
                             Ok((len, src_addr)) => {
+                                // 1. STUN Binding Success Response (0x01, 0x01 with Magic Cookie 0x2112A442)
+                                if len >= 20 && recv_buf[0] == 0x01 && recv_buf[1] == 0x01 && &recv_buf[4..8] == &[0x21, 0x12, 0xa4, 0x42] {
+                                    let mut i = 20;
+                                    while i + 4 <= len {
+                                        let attr_type = u16::from_be_bytes([recv_buf[i], recv_buf[i + 1]]);
+                                        let attr_len = u16::from_be_bytes([recv_buf[i + 2], recv_buf[i + 3]]) as usize;
+                                        if i + 4 + attr_len > len { break; }
+                                        if (attr_type == 0x0020 || attr_type == 0x0001) && attr_len >= 8 {
+                                            let port = if attr_type == 0x0020 {
+                                                u16::from_be_bytes([recv_buf[i + 6], recv_buf[i + 7]]) ^ 0x2112
+                                            } else {
+                                                u16::from_be_bytes([recv_buf[i + 6], recv_buf[i + 7]])
+                                            };
+                                            let ip = if attr_type == 0x0020 {
+                                                std::net::Ipv4Addr::new(
+                                                    recv_buf[i + 8] ^ 0x21,
+                                                    recv_buf[i + 9] ^ 0x12,
+                                                    recv_buf[i + 10] ^ 0xa4,
+                                                    recv_buf[i + 11] ^ 0x42,
+                                                )
+                                            } else {
+                                                std::net::Ipv4Addr::new(recv_buf[i + 8], recv_buf[i + 9], recv_buf[i + 10], recv_buf[i + 11])
+                                            };
+                                            let public_stun_addr = SocketAddr::new(std::net::IpAddr::V4(ip), port);
+                                            if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+                                                *guard = Some((public_stun_addr, Instant::now()));
+                                            }
+                                            info!("🌐 [NAT TRAVERSAL] Porta pública mapeada com sucesso no socket P2P: {}", public_stun_addr);
+                                            break;
+                                        }
+                                        i += 4 + ((attr_len + 3) & !3);
+                                    }
+                                    continue;
+                                }
+
                                 if len < 25 || &recv_buf[0..4] != MAGIC {
                                     continue;
                                 }
@@ -1444,6 +1491,10 @@ impl ScreenCaptureManager {
                                 let op = recv_buf[8];
                                 let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
                                 let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
+
+                                if op == OP_AUDIO_FRAME {
+                                    info!("🔥 [RECEIVER PROBE] OP_AUDIO_FRAME recebido! len={}, src={}, cid={}, uid={}, inst={}", len, src_addr, pkt_cid, pkt_uid, pkt_inst);
+                                }
 
                             match op {
                                 OP_ANNOUNCE => {
@@ -1501,7 +1552,7 @@ impl ScreenCaptureManager {
                                             }
                                         }
 
-                                        if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
+                                        if pkt_inst == my_instance_id {
                                             continue;
                                         }
                                         if is_streaming {
@@ -1530,13 +1581,14 @@ impl ScreenCaptureManager {
                                         };
 
                                         let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
+                                        let peer_key = (pkt_uid as u64) ^ ((pkt_inst as u64) << 32);
                                         if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                            peers.insert(peer_key, (src_addr, Instant::now()));
                                             if explicit_addr != src_addr {
-                                                peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                                peers.insert(peer_key.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
                                             }
                                         }
-                                        log::debug!("📡 Heartbeat P2P recebido do peer {} ({})", pkt_uid, src_addr);
+                                        info!("📡 [P2P HEARTBEAT RECEBIDO] Peer UID={} conectado em {}", pkt_uid, src_addr);
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
@@ -1546,7 +1598,7 @@ impl ScreenCaptureManager {
                                     if current_cid != 0 && pkt_cid != 0 && pkt_cid != current_cid {
                                         continue;
                                     }
-                                    if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
+                                    if pkt_inst == my_instance_id {
                                         continue;
                                     }
                                     last_stream_activity.insert(pkt_uid, Instant::now());
@@ -1558,6 +1610,10 @@ impl ScreenCaptureManager {
                                         let chunk_data = recv_buf[37..len].to_vec();
 
                                         let user_frames = in_flight.entry(pkt_uid).or_insert_with(HashMap::new);
+                                        if user_frames.len() > 30 {
+                                            let now = Instant::now();
+                                            user_frames.retain(|_, f| now.duration_since(f.first_seen) < Duration::from_millis(500));
+                                        }
                                         let frame_entry = user_frames.entry(seq).or_insert_with(|| InFlightFrame {
                                             total_chunks: total,
                                             total_len: 0,
@@ -1598,34 +1654,47 @@ impl ScreenCaptureManager {
                                             }
                                             user_frames.remove(&seq);
 
-                                            let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
-                                            let sec_key = get_voice_encryption_key(effective_cid);
-                                            let final_frame = decrypt_signaling_payload(&sec_key, &complete_frame).unwrap_or(complete_frame);
+                                            let final_frame_opt = if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) || (complete_frame.len() >= 2 && complete_frame[0] == 0xFF && complete_frame[1] == 0xD8) {
+                                                Some(complete_frame)
+                                            } else {
+                                                let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
+                                                let sec_key = get_voice_encryption_key(effective_cid);
+                                                decrypt_signaling_payload(&sec_key, &complete_frame)
+                                            };
 
-                                            let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
-                                            let is_newer = seq > last_seq || (last_seq.wrapping_sub(seq) > 0x8000_0000);
+                                            if let Some(valid_frame) = final_frame_opt {
+                                                let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
+                                                let is_newer = seq > last_seq || (last_seq.wrapping_sub(seq) > 0x8000_0000);
 
-                                            if is_newer || last_rendered_seq.get(&pkt_uid).is_none() {
-                                                last_rendered_seq.insert(pkt_uid, seq);
+                                                if is_newer || last_rendered_seq.get(&pkt_uid).is_none() {
+                                                    last_rendered_seq.insert(pkt_uid, seq);
 
-                                                let qos = qos_windows.entry(pkt_uid).or_default();
-                                                qos.frames_received += 1;
-                                                last_stream_activity.insert(pkt_uid, Instant::now());
+                                                    let prev_state = active_streaming_users.insert(pkt_uid, true);
+                                                    if prev_state != Some(true) {
+                                                        info!("📡 [AUTO-ATIVAÇÃO STREAM] Usuário {} iniciou transmissão de tela (quadro recebido)!", pkt_uid);
+                                                        on_state(pkt_uid, true);
+                                                    }
 
-                                                let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
-                                                let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(60);
+                                                    let qos = qos_windows.entry(pkt_uid).or_default();
+                                                    qos.frames_received += 1;
+                                                    last_stream_activity.insert(pkt_uid, Instant::now());
 
-                                                let q_item = QueuedVideoFrame {
-                                                    peer_uid: pkt_uid,
-                                                    peer_name: uname,
-                                                    peer_fps: fps_val,
-                                                    seq,
-                                                    pts_ms,
-                                                    frame_data: final_frame,
-                                                };
+                                                    let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
+                                                    let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(60);
 
-                                                if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
-                                                    log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia, descartando frame {} para manter latência ultra-baixa em tempo real", seq);
+                                                    let q_item = QueuedVideoFrame {
+                                                        peer_uid: pkt_uid,
+                                                        peer_name: uname,
+                                                        peer_fps: fps_val,
+                                                        seq,
+                                                        pts_ms,
+                                                        frame_data: valid_frame,
+                                                    };
+
+                                                    if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
+                                                        log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia (>120 quadros), solicitando Keyframe para ressincronização imediata");
+                                                        request_intra_keyframe();
+                                                    }
                                                 }
                                             }
                                         }
@@ -1638,7 +1707,7 @@ impl ScreenCaptureManager {
                                     if current_cid != 0 && pkt_cid != 0 && pkt_cid != current_cid {
                                         continue;
                                     }
-                                    if is_tx_running.load(Ordering::Relaxed) && pkt_uid == my_uid {
+                                    if pkt_inst == my_instance_id {
                                         continue;
                                     }
                                     last_stream_activity.insert(pkt_uid, Instant::now());
@@ -1732,24 +1801,13 @@ impl ScreenCaptureManager {
                                         if target_peer == my_uid || target_peer == 0 {
                                             let loss_permille = u16::from_be_bytes(recv_buf[33..35].try_into().unwrap());
                                             let current_bps = REQUESTED_BITRATE_BPS.load(Ordering::Relaxed);
-                                            if loss_permille > 50 {
-                                                // Congestion / Loss > 5%: Multiplicative Decrease (-15% to relieve queue buffers)
-                                                let new_bps = ((current_bps as f64) * 0.85).round() as u32;
-                                                let clamped = new_bps.clamp(2_000_000, 10_000_000);
-                                                if (current_bps as i32 - clamped as i32).abs() >= 400_000 {
+                                            if loss_permille > 80 {
+                                                // Congestion / Loss > 8%: Multiplicative Decrease (-20% to relieve queue buffers)
+                                                let new_bps = ((current_bps as f64) * 0.80).round() as u32;
+                                                let clamped = new_bps.clamp(1_500_000, 6_000_000);
+                                                if (current_bps as i32 - clamped as i32).abs() >= 1_000_000 {
                                                     info!("📉 [DYNAMIC ABR] Perda de {:.1}% reportada pelo receptor. Reduzindo bitrate: {:.2} Mbps -> {:.2} Mbps",
                                                         (loss_permille as f64) / 10.0,
-                                                        (current_bps as f64) / 1_000_000.0,
-                                                        (clamped as f64) / 1_000_000.0
-                                                    );
-                                                    REQUESTED_BITRATE_BPS.store(clamped, Ordering::Relaxed);
-                                                }
-                                            } else if loss_permille == 0 && current_bps < 8_500_000 {
-                                                // Stable link / 0% Loss: Additive Increase (+250 kbps probing)
-                                                let new_bps = current_bps.saturating_add(250_000);
-                                                let clamped = new_bps.clamp(2_000_000, 8_500_000);
-                                                if (clamped as i32 - current_bps as i32) >= 200_000 {
-                                                    info!("📈 [DYNAMIC ABR] Conexão 100% estável (0% perda). Elevando bitrate: {:.2} Mbps -> {:.2} Mbps",
                                                         (current_bps as f64) / 1_000_000.0,
                                                         (clamped as f64) / 1_000_000.0
                                                     );
@@ -1762,7 +1820,7 @@ impl ScreenCaptureManager {
                                 OP_STOP => {
                                     if len >= 25 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
-                                        if !is_tx_running.load(Ordering::Relaxed) || pkt_uid != my_uid {
+                                        if pkt_inst != my_instance_id {
                                             info!("📡 Usuário {} encerrou a transmissão de tela.", pkt_uid);
                                             active_streaming_users.insert(pkt_uid, false);
                                             in_flight.remove(&pkt_uid);
@@ -1777,43 +1835,111 @@ impl ScreenCaptureManager {
                                 }
                                 OP_AUDIO_FRAME => {
                                     if len >= 40 {
-                                        // 1. If we are not connected to any voice room, do not play stream audio
-                                        if current_cid == 0 {
+                                        if pkt_inst == my_instance_id {
                                             continue;
                                         }
-                                        // 2. If packet is from a different voice room, ignore
-                                        if pkt_cid != 0 && pkt_cid != current_cid {
-                                            continue;
+                                        let sample_rate = u32::from_be_bytes(recv_buf[34..38].try_into().unwrap_or([0, 0, 0xbb, 0x80]));
+                                        let sample_count = u16::from_be_bytes(recv_buf[38..40].try_into().unwrap()) as usize;
+                                        let pcm_payload = &recv_buf[40..len];
+
+                                        let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
+                                        let sec_key = get_voice_encryption_key(effective_cid);
+
+                                        let raw_pcm = if pcm_payload.len() == sample_count * 2 {
+                                            pcm_payload.to_vec()
+                                        } else if let Some(decrypted) = decrypt_signaling_payload(&sec_key, pcm_payload) {
+                                            decrypted
+                                        } else {
+                                            let zero_key = get_voice_encryption_key(0);
+                                            decrypt_signaling_payload(&zero_key, pcm_payload).unwrap_or_else(|| pcm_payload.to_vec())
+                                        };
+
+                                        let samples_i16: Vec<i16> = (0..sample_count)
+                                            .filter_map(|i| {
+                                                if i * 2 + 1 < raw_pcm.len() {
+                                                    Some(i16::from_le_bytes([raw_pcm[i * 2], raw_pcm[i * 2 + 1]]))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+
+                                        let mut peak_rx: i16 = 0;
+                                        for &s in &samples_i16 {
+                                            let abs = s.saturating_abs();
+                                            if abs > peak_rx { peak_rx = abs; }
                                         }
-                                        // 3. If this instance is actively transmitting screen/audio, do not play back stream audio to avoid acoustic feedback
-                                        if is_tx_running.load(Ordering::Relaxed) {
-                                            continue;
+
+                                        static RX_AUDIO_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+                                        let c = RX_AUDIO_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+                                        if c < 10 || c % 50 == 0 {
+                                            info!("🔊 [STREAM AUDIO RX] Pkt #{} de UID={} | Amostras={} @ {}Hz | Peak Amplitude: {}/32767 | Vol={:.2}", c, pkt_uid, sample_count, sample_rate, peak_rx, get_stream_volume(pkt_uid));
                                         }
-                                        ensure_stream_audio_playback_started();
 
                                         let pts_ms = u32::from_be_bytes(recv_buf[29..33].try_into().unwrap());
                                         update_audio_clock_pts(pts_ms);
-
                                         let vol = get_stream_volume(pkt_uid);
-                                        if vol > 0.001 {
-                                            let sample_count = u16::from_be_bytes(recv_buf[38..40].try_into().unwrap()) as usize;
-                                            let enc_pcm_bytes = &recv_buf[40..len];
-                                            let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
-                                            let sec_key = get_voice_encryption_key(effective_cid);
-                                            let raw_pcm = decrypt_signaling_payload(&sec_key, enc_pcm_bytes).unwrap_or_else(|| enc_pcm_bytes.to_vec());
-                                            let expected_bytes = sample_count * 2;
-                                            if raw_pcm.len() >= expected_bytes && sample_count > 0 {
+                                        if vol > 0.001 && !samples_i16.is_empty() {
+                                            let is_voice_active = crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 || crate::gateway::get_my_voice_channel_id() != 0;
+
+                                            if is_voice_active {
+                                                // 1. Direct feed EXCLUSIVELY to Voice Gateway Master Speaker Mixer (SSRC 0x8000_5354)
+                                                let stream_ssrc: u32 = 0x8000_5354;
+                                                if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
+                                                    let q = queues.entry(stream_ssrc).or_insert_with(|| VecDeque::with_capacity(48000));
+                                                    if q.len() > 9600 {
+                                                        let excess = q.len() - 4800;
+                                                        q.drain(0..excess);
+                                                    }
+                                                    if sample_rate == 48000 || sample_rate == 0 {
+                                                        for s in &samples_i16 {
+                                                            let f = (*s as f32 / 32768.0) * vol;
+                                                            q.push_back((f, f));
+                                                        }
+                                                    } else {
+                                                        let ratio = 48000.0 / (sample_rate as f32);
+                                                        let out_count = ((samples_i16.len() as f32) * ratio).round() as usize;
+                                                        for j in 0..out_count {
+                                                            let src_idx = (j as f32) / ratio;
+                                                            let i0 = (src_idx.floor() as usize).min(samples_i16.len() - 1);
+                                                            let i1 = (i0 + 1).min(samples_i16.len() - 1);
+                                                            let frac = src_idx - (i0 as f32);
+                                                            let s = (samples_i16[i0] as f32) * (1.0 - frac) + (samples_i16[i1] as f32) * frac;
+                                                            let f = (s / 32768.0) * vol;
+                                                            q.push_back((f, f));
+                                                        }
+                                                    }
+                                                }
+                                                // Clear standalone queue so it never contains leftover echoes
+                                                if let Ok(mut q_guard) = get_stream_audio_queue().lock() {
+                                                    if !q_guard.is_empty() {
+                                                        q_guard.clear();
+                                                    }
+                                                }
+                                            } else {
+                                                // 2. Direct feed to Standalone Stream Audio Queue ONLY when not in a voice call
                                                 let queue = get_stream_audio_queue();
                                                 let mut q_guard = queue.lock().unwrap();
-                                                // Limit queue size to 100ms (4800 samples) to eliminate lag & stutter
                                                 if q_guard.len() > 4800 {
                                                     let excess = q_guard.len() - 2400;
                                                     q_guard.drain(0..excess);
                                                 }
-                                                for i in 0..sample_count {
-                                                    let s_i16 = i16::from_le_bytes([raw_pcm[i*2], raw_pcm[i*2 + 1]]);
-                                                    let s_f32 = (s_i16 as f32 / 32768.0) * vol;
-                                                    q_guard.push_back(s_f32);
+
+                                                if sample_rate == 48000 || sample_rate == 0 {
+                                                    for s in &samples_i16 {
+                                                        q_guard.push_back((*s as f32 / 32768.0) * vol);
+                                                    }
+                                                } else {
+                                                    let ratio = 48000.0 / (sample_rate as f32);
+                                                    let out_count = ((samples_i16.len() as f32) * ratio).round() as usize;
+                                                    for j in 0..out_count {
+                                                        let src_idx = (j as f32) / ratio;
+                                                        let i0 = (src_idx.floor() as usize).min(samples_i16.len() - 1);
+                                                        let i1 = (i0 + 1).min(samples_i16.len() - 1);
+                                                        let frac = src_idx - (i0 as f32);
+                                                        let s = (samples_i16[i0] as f32) * (1.0 - frac) + (samples_i16[i1] as f32) * frac;
+                                                        q_guard.push_back((s / 32768.0) * vol);
+                                                    }
                                                 }
                                             }
                                         }
@@ -1829,11 +1955,11 @@ impl ScreenCaptureManager {
                     }
                 }
 
-                    // Check stream timeouts (> 3000ms sem quadros)
+                    // Check stream timeouts (> 1500ms sem quadros)
                     let now = Instant::now();
                     let mut expired = Vec::new();
                     for (&uid, &last_act) in last_stream_activity.iter() {
-                        if now.duration_since(last_act) > Duration::from_millis(3000) {
+                        if now.duration_since(last_act) > Duration::from_millis(1500) {
                             expired.push(uid);
                         }
                     }
@@ -1843,6 +1969,10 @@ impl ScreenCaptureManager {
                             info!("📡 Stream do usuário {} expirou por inatividade.", uid);
                             last_rendered_seq.remove(&uid);
                             in_flight.remove(&uid);
+                            let stream_ssrc: u32 = ((uid as u32) ^ 0x5354524D) | 0x8000_0000;
+                            if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
+                                queues.remove(&stream_ssrc);
+                            }
                             if let Ok(mut frames) = get_active_stream_frames().lock() {
                                 frames.remove(&uid);
                             }
@@ -1935,7 +2065,6 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use sha2::{Sha256, Digest};
-use rand::RngCore;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 static LOCAL_ECDH_SECRET: Mutex<Option<StaticSecret>> = Mutex::new(None);
@@ -2011,12 +2140,17 @@ fn get_anonymous_signaling_topic(cid: u64, key: &[u8; 32]) -> String {
     format!("litecord/sig/{}", &hash[..24])
 }
 
-/// Criptografa o payload usando AES-256-GCM com Nonce aleatório de 12 bytes
+static ENCRYPT_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Criptografa o payload usando AES-256-GCM com Nonce determinístico de 12 bytes ultrarrápido (0ns overhead)
 fn encrypt_signaling_payload(key_bytes: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
     let key = Key::<Aes256Gcm>::from_slice(key_bytes);
     let cipher = Aes256Gcm::new(key);
     let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let inst = get_process_instance_id();
+    let ctr = ENCRYPT_NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    nonce_bytes[0..4].copy_from_slice(&inst.to_be_bytes());
+    nonce_bytes[4..12].copy_from_slice(&ctr.to_be_bytes());
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     match cipher.encrypt(nonce, plaintext) {
@@ -2059,6 +2193,8 @@ fn parse_and_handle_mqtt_messages(
             let pkt_inst = val["inst"].as_u64().unwrap_or(0) as u32;
 
             if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 {
+                info!("📡 [MQTT PRESENÇA RECEBIDA] De UID={} (inst={}) | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, val["wan_ip"], val["lan_ips"]);
+
                 // Negociação X25519 ECDH: computa a chave de sessão compartilhada exclusiva do peer
                 if let Some(pub_hex) = val["ecdh_pub"].as_str() {
                     if pub_hex.len() == 64 {
@@ -2080,22 +2216,22 @@ fn parse_and_handle_mqtt_messages(
 
                 let mut addrs_to_punch = Vec::new();
 
-                // 1. LAN IPs
+                // 1. WAN IP (Public Internet)
+                if let Some(wan_str) = val["wan_ip"].as_str() {
+                    if let Ok(addr) = wan_str.parse::<SocketAddr>() {
+                        addrs_to_punch.push(addr);
+                    }
+                }
+
+                // 2. LAN / Tailscale IPs
                 if let Some(lan_arr) = val["lan_ips"].as_array() {
                     for item in lan_arr {
                         if let Some(s) = item.as_str() {
                             if let Ok(addr) = s.parse::<SocketAddr>() {
-                                addrs_to_punch.push(addr);
+                                if !addrs_to_punch.contains(&addr) {
+                                    addrs_to_punch.push(addr);
+                                }
                             }
-                        }
-                    }
-                }
-
-                // 2. WAN IP
-                if let Some(wan_str) = val["wan_ip"].as_str() {
-                    if let Ok(addr) = wan_str.parse::<SocketAddr>() {
-                        if !addrs_to_punch.contains(&addr) {
-                            addrs_to_punch.push(addr);
                         }
                     }
                 }
@@ -2103,12 +2239,12 @@ fn parse_and_handle_mqtt_messages(
                 if !addrs_to_punch.is_empty() {
                     if let Ok(mut peers) = peers_store.lock() {
                         for (i, &addr) in addrs_to_punch.iter().enumerate() {
-                            let key = if i == 0 { pkt_uid } else { pkt_uid.wrapping_add((i as u64) << 32) };
+                            let key = ((pkt_uid as u64) ^ ((pkt_inst as u64) << 32)).wrapping_add(i as u64);
                             peers.insert(key, (addr, Instant::now()));
                         }
                     }
 
-                    // Send UDP Hole Punch packet immediately through shared socket
+                    // Send UDP Hole Punch burst immediately through shared socket
                     if let Some(socket) = get_shared_p2p_socket() {
                         let mut punch_pkt = Vec::with_capacity(32);
                         punch_pkt.extend_from_slice(MAGIC);
@@ -2121,8 +2257,10 @@ fn parse_and_handle_mqtt_messages(
                         punch_pkt.push(0);
                         punch_pkt.extend_from_slice(&get_my_rx_port().to_be_bytes());
 
-                        for target in addrs_to_punch {
-                            let _ = socket.send_to(&punch_pkt, target);
+                        for &target in &addrs_to_punch {
+                            for _ in 0..3 {
+                                let _ = socket.send_to(&punch_pkt, target);
+                            }
                         }
                     }
                 }
@@ -2133,6 +2271,7 @@ fn parse_and_handle_mqtt_messages(
     let mut pos = 0;
     while pos < buf.len() {
         if (buf[pos] & 0xF0) == 0x30 { // MQTT PUBLISH
+            let qos = (buf[pos] & 0x06) >> 1;
             pos += 1;
             if pos >= buf.len() { break; }
             let mut rem_len: usize = (buf[pos] & 0x7F) as usize;
@@ -2148,7 +2287,7 @@ fn parse_and_handle_mqtt_messages(
 
             if frame_body.len() >= 2 {
                 let topic_len = u16::from_be_bytes([frame_body[0], frame_body[1]]) as usize;
-                let payload_offset = 2 + topic_len;
+                let payload_offset = if qos > 0 { 2 + topic_len + 2 } else { 2 + topic_len };
                 if frame_body.len() >= payload_offset {
                     let payload = &frame_body[payload_offset..];
                     if let Some(decrypted) = decrypt_signaling_payload(&key, payload) {
@@ -2179,7 +2318,7 @@ pub fn start_global_signaling(
         .name("global-p2p-signaling".to_string())
         .spawn(move || {
             let my_inst = get_process_instance_id();
-            let brokers = ["broker.emqx.io:1883", "test.mosquitto.org:1883"];
+            let brokers = ["broker.emqx.io:1883"];
             let mut broker_idx = 0;
 
             loop {
@@ -2202,22 +2341,46 @@ pub fn start_global_signaling(
                 broker_idx = broker_idx.wrapping_add(1);
 
                 use std::io::{Read, Write};
-                let mut stream = match std::net::TcpStream::connect_timeout(&match broker.to_socket_addrs() {
-                    Ok(mut addrs) => match addrs.next() {
-                        Some(a) => a,
-                        None => { std::thread::sleep(Duration::from_secs(1)); continue; }
-                    },
-                    Err(_) => { std::thread::sleep(Duration::from_secs(1)); continue; }
-                }, Duration::from_secs(4)) {
-                    Ok(s) => s,
+                let broker_addrs: Vec<SocketAddr> = match broker.to_socket_addrs() {
+                    Ok(addrs) => {
+                        let mut v: Vec<SocketAddr> = addrs.filter(|a| a.is_ipv4()).collect();
+                        if v.is_empty() {
+                            if let Ok(addrs2) = broker.to_socket_addrs() {
+                                v = addrs2.collect();
+                            }
+                        }
+                        v
+                    }
                     Err(e) => {
-                        warn!("⚠️ Falha ao conectar ao broker de sinalização P2P {}: {:?}. Tentando próximo...", broker, e);
-                        std::thread::sleep(Duration::from_secs(2));
+                        warn!("⚠️ Falha na resolução DNS do broker {}: {:?}", broker, e);
+                        std::thread::sleep(Duration::from_secs(1));
                         continue;
                     }
                 };
 
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                let mut stream_opt = None;
+                for &addr in &broker_addrs {
+                    info!("📡 [MQTT] Conectando ao broker de sinalização em {}...", addr);
+                    match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
+                        Ok(s) => {
+                            stream_opt = Some(s);
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Falha ao conectar em {}: {:?}", addr, e);
+                        }
+                    }
+                }
+
+                let mut stream = match stream_opt {
+                    Some(s) => s,
+                    None => {
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                };
+
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let client_id = format!("litecord_{}_{}", &topic[13..], my_inst);
                 let conn_pkt = build_mqtt_connect_pkt(&client_id);
                 if stream.write_all(&conn_pkt).is_err() {
@@ -2226,6 +2389,7 @@ pub fn start_global_signaling(
 
                 let mut connack = [0u8; 4];
                 if stream.read_exact(&mut connack).is_err() || connack[0] != 0x20 || connack[3] != 0x00 {
+                    warn!("⚠️ Falha no handshake MQTT CONNACK com {}", broker);
                     continue;
                 }
 
@@ -2234,6 +2398,7 @@ pub fn start_global_signaling(
                     continue;
                 }
 
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
                 info!("🛡️ Conectado à rede de sinalização P2P criptografada E2EE (AES-256-GCM) para a sala!");
 
                 let mut last_pub = Instant::now() - Duration::from_secs(10);
@@ -2252,7 +2417,7 @@ pub fn start_global_signaling(
                         last_tx_state = cur_tx;
 
                         let my_rx_port = get_my_rx_port();
-                        let wan_addr = resolve_public_stun_address().map(|a| SocketAddr::new(a.ip(), my_rx_port));
+                        let wan_addr = resolve_public_stun_address();
                         let lan_addrs = get_local_lan_addresses(my_rx_port);
 
                         let my_ecdh_pub = get_or_create_local_ecdh_keypair();
@@ -2275,6 +2440,7 @@ pub fn start_global_signaling(
                         let current_key = get_voice_encryption_key(cid);
                         if let Some(enc_payload) = encrypt_signaling_payload(&current_key, payload.to_string().as_bytes()) {
                             let pub_pkt = build_mqtt_publish_pkt(&topic, &enc_payload);
+                            info!("📡 [MQTT ENVIANDO PRESENÇA] WAN={:?} | LAN={:?}", wan_addr, lan_addrs);
                             if stream.write_all(&pub_pkt).is_err() {
                                 break;
                             }
@@ -2315,66 +2481,46 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
         }
     }
 
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
-    
-    let stun_servers = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
-        "stun2.l.google.com:19302",
-        "stun.cloudflare.com:3478",
-    ];
+    if let Some(socket) = get_shared_p2p_socket() {
+        let direct_stun_ips = [
+            "142.250.187.127:19302", // Google STUN IPv4
+            "64.233.186.127:19302",  // Google STUN 1 IPv4
+            "74.125.250.127:19302",  // Google STUN 2 IPv4
+            "162.159.192.1:3478",    // Cloudflare STUN IPv4
+        ];
 
-    let stun_req: [u8; 20] = [
-        0x00, 0x01, // Binding Request
-        0x00, 0x00, // Length
-        0x21, 0x12, 0xa4, 0x42, // Magic Cookie
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-    ];
+        let stun_servers = [
+            "stun.l.google.com:19302",
+            "stun1.l.google.com:19302",
+            "stun2.l.google.com:19302",
+            "stun.cloudflare.com:3478",
+        ];
 
-    for s_host in stun_servers {
-        if let Ok(mut addrs) = s_host.to_socket_addrs() {
-            if let Some(stun_server) = addrs.next() {
-                if socket.send_to(&stun_req, stun_server).is_ok() {
-                    let mut buf = [0u8; 256];
-                    if let Ok((amt, _)) = socket.recv_from(&mut buf) {
-                        if amt >= 32 && buf[0] == 0x01 && buf[1] == 0x01 {
-                            let mut i = 20;
-                            while i + 4 <= amt {
-                                let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
-                                let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
-                                if i + 4 + attr_len > amt {
-                                    break;
-                                }
-                                let res_addr = if attr_type == 0x0020 && attr_len >= 8 { // XOR-MAPPED-ADDRESS
-                                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112;
-                                    let ip = std::net::Ipv4Addr::new(
-                                        buf[i + 8] ^ 0x21,
-                                        buf[i + 9] ^ 0x12,
-                                        buf[i + 10] ^ 0xa4,
-                                        buf[i + 11] ^ 0x42,
-                                    );
-                                    Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
-                                } else if attr_type == 0x0001 && attr_len >= 8 { // MAPPED-ADDRESS
-                                    let port = u16::from_be_bytes([buf[i + 6], buf[i + 7]]);
-                                    let ip = std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11]);
-                                    Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
-                                } else {
-                                    None
-                                };
+        let stun_req: [u8; 20] = [
+            0x00, 0x01, // Binding Request
+            0x00, 0x00, // Length
+            0x21, 0x12, 0xa4, 0x42, // Magic Cookie
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        ];
 
-                                if let Some(addr) = res_addr {
-                                    if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
-                                        *guard = Some((addr, Instant::now()));
-                                    }
-                                    return Some(addr);
-                                }
-                                i += 4 + ((attr_len + 3) & !3);
-                            }
-                        }
-                    }
+        for &ip_str in &direct_stun_ips {
+            if let Ok(addr) = ip_str.parse::<SocketAddr>() {
+                let _ = socket.send_to(&stun_req, addr);
+            }
+        }
+
+        for s_host in stun_servers {
+            if let Ok(addrs) = s_host.to_socket_addrs() {
+                for stun_server in addrs.filter(|a| a.is_ipv4()) {
+                    let _ = socket.send_to(&stun_req, stun_server);
                 }
             }
+        }
+    }
+
+    if let Ok(guard) = CACHED_STUN_ADDR.lock() {
+        if let Some((addr, _)) = *guard {
+            return Some(addr);
         }
     }
 
@@ -4217,83 +4363,163 @@ pub fn ensure_stream_audio_playback_started() {
         std::thread::Builder::new()
             .name("stream-audio-playback".to_string())
             .spawn(|| {
+                #[cfg(windows)]
+                unsafe {
+                    windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null_mut(), windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
+                    windows_sys::Win32::Media::timeBeginPeriod(1);
+                }
+
                 let host = cpal::default_host();
-                let device = match host.default_output_device() {
-                    Some(d) => d,
-                    None => return,
-                };
-                let config = match device.default_output_config() {
-                    Ok(c) => c,
-                    Err(_) => return,
-                };
-                let channels = config.channels() as usize;
                 let queue = get_stream_audio_queue();
 
-                let last_err_time = Arc::new(Mutex::new(Option::<Instant>::None));
-                let last_err_c = Arc::clone(&last_err_time);
-                let err_fn = move |err| {
-                    if let Ok(mut guard) = last_err_c.lock() {
-                        if guard.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
-                            *guard = Some(Instant::now());
-                            warn!("Erro no playback de áudio do stream: {}", err);
+                info!("🔊 [STREAM PLAYBACK] Inicializando subsistema de saída de áudio para stream...");
+
+                loop {
+                    if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 {
+                        // Voice Gateway Master Output Engine is actively running and mixing stream audio
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                let selected_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
+                    guard.clone()
+                } else {
+                    String::new()
+                };
+
+                let mut devices_to_try: Vec<cpal::Device> = Vec::new();
+                if !selected_dev_name.is_empty() {
+                    if let Ok(devs) = host.output_devices() {
+                        for d in devs {
+                            if d.name().map_or(false, |n| n == selected_dev_name) {
+                                devices_to_try.push(d);
+                                break;
+                            }
                         }
                     }
-                };
-
-                let stream_res = match config.sample_format() {
-                    cpal::SampleFormat::F32 => {
-                        let q = Arc::clone(&queue);
-                        device.build_output_stream(
-                            &config.into(),
-                            move |data: &mut [f32], _| {
-                                let mut queue_guard = q.lock().unwrap();
-                                let q_len = queue_guard.len();
-                                if q_len > 4800 {
-                                    let excess = q_len - 2400;
-                                    queue_guard.drain(0..excess);
-                                }
-                                for chunk in data.chunks_mut(channels) {
-                                    let sample = queue_guard.pop_front().unwrap_or(0.0);
-                                    for channel_sample in chunk.iter_mut() {
-                                        *channel_sample = sample;
-                                    }
-                                }
-                            },
-                            err_fn,
-                            None,
-                        )
+                }
+                if let Some(def) = host.default_output_device() {
+                    if !devices_to_try.iter().any(|d| d.name().ok() == def.name().ok()) {
+                        devices_to_try.push(def);
                     }
-                    cpal::SampleFormat::I16 => {
-                        let q = Arc::clone(&queue);
-                        device.build_output_stream(
-                            &config.into(),
-                            move |data: &mut [i16], _| {
-                                let mut queue_guard = q.lock().unwrap();
-                                let q_len = queue_guard.len();
-                                if q_len > 4800 {
-                                    let excess = q_len - 2400;
-                                    queue_guard.drain(0..excess);
-                                }
-                                for chunk in data.chunks_mut(channels) {
-                                    let sample_f = queue_guard.pop_front().unwrap_or(0.0);
-                                    let sample_i = (sample_f.clamp(-1.0, 1.0) * 32767.0) as i16;
-                                    for channel_sample in chunk.iter_mut() {
-                                        *channel_sample = sample_i;
-                                    }
-                                }
-                            },
-                            err_fn,
-                            None,
-                        )
+                }
+                if let Ok(devs) = host.output_devices() {
+                    for d in devs {
+                        let name = d.name().unwrap_or_default();
+                        if name.contains("Steam") || name.contains("Virtual") || name.contains("Null") {
+                            continue;
+                        }
+                        if !devices_to_try.iter().any(|existing| existing.name().ok() == d.name().ok()) {
+                            devices_to_try.push(d);
+                        }
                     }
-                    _ => return,
-                };
+                }
 
-                if let Ok(stream) = stream_res {
-                    let _ = stream.play();
-                    info!("🔊 Saída de áudio da transmissão inicializada.");
-                    loop {
-                        std::thread::sleep(Duration::from_secs(3600));
+                if devices_to_try.is_empty() {
+                    warn!("⚠️ [STREAM PLAYBACK] Nenhum dispositivo de saída encontrado!");
+                    std::thread::sleep(Duration::from_secs(3));
+                    continue;
+                }
+
+                    let mut active_stream = None;
+
+                    for dev in devices_to_try {
+                        let dev_name = dev.name().unwrap_or_else(|_| "Dispositivo Desconhecido".to_string());
+                        let config = match dev.default_output_config() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("⚠️ [STREAM PLAYBACK] Falha ao obter default_output_config de '{}': {:?}", dev_name, e);
+                                continue;
+                            }
+                        };
+                        let channels = config.channels() as usize;
+                        let sample_rate = config.sample_rate().0;
+
+                        let last_err_time = Arc::new(Mutex::new(Option::<Instant>::None));
+                        let last_err_c = Arc::clone(&last_err_time);
+                        let dev_name_err = dev_name.clone();
+                        let err_fn = move |err| {
+                            if let Ok(mut guard) = last_err_c.lock() {
+                                if guard.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+                                    *guard = Some(Instant::now());
+                                    warn!("Erro no playback de áudio do stream ({}): {}", dev_name_err, err);
+                                }
+                            }
+                        };
+
+                        let sample_format = config.sample_format();
+                        let stream_res = match sample_format {
+                            cpal::SampleFormat::F32 => {
+                                let q = Arc::clone(&queue);
+                                dev.build_output_stream(
+                                    &config.into(),
+                                    move |data: &mut [f32], _| {
+                                        if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 || crate::gateway::get_my_voice_channel_id() != 0 {
+                                            data.fill(0.0);
+                                            return;
+                                        }
+                                        let mut queue_guard = q.lock().unwrap();
+                                        let q_len = queue_guard.len();
+                                        if q_len > 4800 {
+                                            let excess = q_len - 2400;
+                                            queue_guard.drain(0..excess);
+                                        }
+                                        for chunk in data.chunks_mut(channels) {
+                                            let sample = queue_guard.pop_front().unwrap_or(0.0);
+                                            for channel_sample in chunk.iter_mut() {
+                                                *channel_sample = sample;
+                                            }
+                                        }
+                                    },
+                                    err_fn,
+                                    None,
+                                )
+                            }
+                            cpal::SampleFormat::I16 => {
+                                let q = Arc::clone(&queue);
+                                dev.build_output_stream(
+                                    &config.into(),
+                                    move |data: &mut [i16], _| {
+                                        if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 || crate::gateway::get_my_voice_channel_id() != 0 {
+                                            data.fill(0);
+                                            return;
+                                        }
+                                        let mut queue_guard = q.lock().unwrap();
+                                        let q_len = queue_guard.len();
+                                        if q_len > 4800 {
+                                            let excess = q_len - 2400;
+                                            queue_guard.drain(0..excess);
+                                        }
+                                        for chunk in data.chunks_mut(channels) {
+                                            let sample_f = queue_guard.pop_front().unwrap_or(0.0);
+                                            let sample_i = (sample_f.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                            for channel_sample in chunk.iter_mut() {
+                                                *channel_sample = sample_i;
+                                            }
+                                        }
+                                    },
+                                    err_fn,
+                                    None,
+                                )
+                            }
+                            _ => continue,
+                        };
+
+                        if let Ok(stream) = stream_res {
+                            if stream.play().is_ok() {
+                                info!("🔊 [STREAM PLAYBACK] Saída de áudio ATIVA no dispositivo '{}' ({}Hz, {} canais, formato={:?})!", dev_name, sample_rate, channels, sample_format);
+                                active_stream = Some(stream);
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(_stream) = active_stream {
+                        loop {
+                            std::thread::sleep(Duration::from_secs(3600));
+                        }
+                    } else {
+                        warn!("⚠️ [STREAM PLAYBACK] Falha ao iniciar playback em todos os dispositivos. Tentando novamente em 3 segundos...");
+                        std::thread::sleep(Duration::from_secs(3));
                     }
                 }
             })
@@ -4310,107 +4536,158 @@ pub fn start_audio_loopback_tx(
     std::thread::Builder::new()
         .name("audio-loopback-tx".to_string())
         .spawn(move || {
+            #[cfg(windows)]
+            unsafe {
+                windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null_mut(), windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
+                windows_sys::Win32::Media::timeBeginPeriod(1);
+            }
+
+            info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (WASAPI Loopback)...");
             let host = cpal::default_host();
-            let device = match host.default_output_device() {
-                Some(d) => d,
-                None => {
-                    warn!("⚠️ Dispositivo de áudio de saída padrão não encontrado para loopback");
-                    return;
-                }
+
+            let selected_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
+                guard.clone()
+            } else {
+                String::new()
             };
 
-            let config_res = device.default_output_config();
-            if let Err(e) = config_res {
-                warn!("⚠️ Falha ao obter configuração de áudio loopback: {:?}", e);
+            let devices_to_try: Vec<cpal::Device> = {
+                let mut list = Vec::new();
+                if !selected_dev_name.is_empty() {
+                    if let Ok(devs) = host.output_devices() {
+                        for d in devs {
+                            if d.name().map_or(false, |n| n == selected_dev_name) {
+                                list.push(d);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(def) = host.default_output_device() {
+                    if !list.iter().any(|existing| existing.name().ok() == def.name().ok()) {
+                        list.push(def);
+                    }
+                }
+                if let Ok(devs) = host.output_devices() {
+                    for d in devs {
+                        let name = d.name().unwrap_or_default();
+                        if name.contains("Steam") || name.contains("Virtual") || name.contains("Null") {
+                            continue;
+                        }
+                        if !list.iter().any(|existing| existing.name().ok() == d.name().ok()) {
+                            list.push(d);
+                        }
+                    }
+                }
+                list
+            };
+
+            if devices_to_try.is_empty() {
+                warn!("⚠️ [LOOPBACK TX] Nenhum dispositivo de áudio de saída encontrado para loopback!");
                 return;
             }
-            let config = config_res.unwrap();
-            let sample_rate = config.sample_rate().0;
-            let channels = config.channels() as usize;
-
-            let socket = get_shared_p2p_socket().unwrap_or_else(|| {
-                let s = UdpSocket::bind("0.0.0.0:0").unwrap();
-                let _ = s.set_broadcast(true);
-                Arc::new(s)
-            });
 
             let bcast_targets = get_broadcast_addresses();
             let mut seq: u32 = 0;
             let pcm_buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(4800)));
             let pcm_buffer_cb = Arc::clone(&pcm_buffer);
 
-            let target_chunk_samples = ((sample_rate as usize) * 20) / 1000; // 20ms of audio
+            let mut active_stream = None;
+            let mut active_sample_rate: u32 = 48000;
+            let mut target_chunk_samples: usize = 960;
 
-            let err_fn = |err| {
-                warn!("Erro na captura de áudio loopback: {}", err);
-            };
+            for dev in devices_to_try {
+                let dev_name = dev.name().unwrap_or_else(|_| "Dispositivo Desconhecido".to_string());
+                let config_res = dev.default_output_config();
+                let config = match config_res {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("⚠️ [LOOPBACK TX] Falha ao obter configuração para '{}': {:?}", dev_name, e);
+                        continue;
+                    }
+                };
+                let sample_rate = config.sample_rate().0;
+                let channels = config.channels() as usize;
 
-            let stream_res = match config.sample_format() {
-                cpal::SampleFormat::F32 => {
-                    let pcm_buf = Arc::clone(&pcm_buffer_cb);
-                    device.build_input_stream(
-                        &config.into(),
-                        move |data: &[f32], _| {
-                            let mut buf = pcm_buf.lock().unwrap();
-                            if channels == 1 {
-                                for &s in data {
-                                    let sample_i16 = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-                                    buf.push(sample_i16);
+                let pcm_buf = Arc::clone(&pcm_buffer_cb);
+                let dev_name_err = dev_name.clone();
+                let err_fn = move |err| {
+                    warn!("Erro na captura de áudio loopback ({}): {}", dev_name_err, err);
+                };
+
+                let stream_res = match config.sample_format() {
+                    cpal::SampleFormat::F32 => {
+                        dev.build_input_stream(
+                            &config.into(),
+                            move |data: &[f32], _| {
+                                let mut buf = pcm_buf.lock().unwrap();
+                                if channels == 1 {
+                                    for &s in data {
+                                        let sample_i16 = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                        buf.push(sample_i16);
+                                    }
+                                } else if channels >= 2 {
+                                    for chunk in data.chunks_exact(channels) {
+                                        let mono_f = (chunk[0] + chunk[1]) * 0.5;
+                                        let sample_i16 = (mono_f.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                        buf.push(sample_i16);
+                                    }
                                 }
-                            } else if channels >= 2 {
-                                for chunk in data.chunks_exact(channels) {
-                                    let mono_f = (chunk[0] + chunk[1]) * 0.5;
-                                    let sample_i16 = (mono_f.clamp(-1.0, 1.0) * 32767.0) as i16;
-                                    buf.push(sample_i16);
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    cpal::SampleFormat::I16 => {
+                        dev.build_input_stream(
+                            &config.into(),
+                            move |data: &[i16], _| {
+                                let mut buf = pcm_buf.lock().unwrap();
+                                if channels == 1 {
+                                    buf.extend_from_slice(data);
+                                } else if channels >= 2 {
+                                    for chunk in data.chunks_exact(channels) {
+                                        let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
+                                        buf.push(mono);
+                                    }
                                 }
-                            }
-                        },
-                        err_fn,
-                        None,
-                    )
-                }
-                cpal::SampleFormat::I16 => {
-                    let pcm_buf = Arc::clone(&pcm_buffer_cb);
-                    device.build_input_stream(
-                        &config.into(),
-                        move |data: &[i16], _| {
-                            let mut buf = pcm_buf.lock().unwrap();
-                            if channels == 1 {
-                                buf.extend_from_slice(data);
-                            } else if channels >= 2 {
-                                for chunk in data.chunks_exact(channels) {
-                                    let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
-                                    buf.push(mono);
-                                }
-                            }
-                        },
-                        err_fn,
-                        None,
-                    )
-                }
-                _ => {
-                    warn!("Formato de áudio não suportado para loopback");
-                    return;
-                }
-            };
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    _ => {
+                        warn!("Formato de áudio não suportado para '{}'", dev_name);
+                        continue;
+                    }
+                };
 
-            let stream = match stream_res {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("⚠️ Falha ao inicializar stream de captura de áudio loopback: {:?}", e);
-                    return;
+                if let Ok(stream) = stream_res {
+                    if stream.play().is_ok() {
+                        active_sample_rate = sample_rate;
+                        target_chunk_samples = ((sample_rate as usize) * 10) / 1000; // 10ms chunks (480 samples @ 48kHz = 960 bytes, < 1350 MTU)
+                        info!("🔊 [LOOPBACK TX] Captura de áudio ATIVA no dispositivo '{}' ({}Hz, {} canais, chunk={} amostras/10ms)!", dev_name, sample_rate, channels, target_chunk_samples);
+                        active_stream = Some(stream);
+                        break;
+                    }
                 }
-            };
+            }
 
-            if let Err(e) = stream.play() {
-                warn!("⚠️ Falha ao iniciar gravação do áudio loopback: {:?}", e);
+            if active_stream.is_none() {
+                warn!("⚠️ [LOOPBACK TX] Falha ao ativar stream de áudio em todos os dispositivos disponíveis!");
                 return;
             }
 
-            info!("🔊 Captura de áudio da transmissão iniciada ({}Hz mono)...", sample_rate);
+            let socket = get_shared_p2p_socket().unwrap_or_else(|| {
+                let s = UdpSocket::bind("0.0.0.0:0").unwrap();
+                let _ = s.set_broadcast(true);
+                let _ = s.set_nonblocking(true);
+                Arc::new(s)
+            });
 
+            let mut pkts_sent_count: u64 = 0;
             while is_running.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(15));
+                std::thread::sleep(Duration::from_millis(8));
 
                 let chunks_to_send: Vec<Vec<i16>> = {
                     let mut buf = pcm_buffer.lock().unwrap();
@@ -4427,22 +4704,26 @@ pub fn start_audio_loopback_tx(
                     res
                 };
 
-                let cid = channel_id.load(Ordering::Relaxed);
-                let uid = my_user_id.load(Ordering::Relaxed);
+                let mut cid = channel_id.load(Ordering::Relaxed);
+                if cid == 0 {
+                    cid = crate::gateway::get_my_voice_channel_id();
+                }
+                let mut uid = my_user_id.load(Ordering::Relaxed);
+                if uid == 0 {
+                    uid = crate::gateway::get_my_user_id();
+                }
                 let inst = get_process_instance_id();
-                let sec_key = get_voice_encryption_key(cid);
+                let _sec_key = get_voice_encryption_key(cid);
 
                 for chunk in chunks_to_send {
                     seq = seq.wrapping_add(1);
                     let pts_ms = get_tx_pts_ms();
                     let sample_count = chunk.len() as u16;
                     let mut raw_pcm = Vec::with_capacity(chunk.len() * 2);
-                    for s in chunk {
+                    for &s in &chunk {
                         raw_pcm.extend_from_slice(&s.to_le_bytes());
                     }
-                    let encrypted_pcm = encrypt_signaling_payload(&sec_key, &raw_pcm).unwrap_or(raw_pcm);
-
-                    let mut pkt = Vec::with_capacity(36 + encrypted_pcm.len());
+                    let mut pkt = Vec::with_capacity(36 + raw_pcm.len());
                     pkt.extend_from_slice(MAGIC);
                     pkt.extend_from_slice(&inst.to_be_bytes());
                     pkt.push(OP_AUDIO_FRAME);
@@ -4451,34 +4732,46 @@ pub fn start_audio_loopback_tx(
                     pkt.extend_from_slice(&seq.to_be_bytes());
                     pkt.extend_from_slice(&pts_ms.to_be_bytes());
                     pkt.push(1); // 1 channel
-                    pkt.extend_from_slice(&sample_rate.to_be_bytes());
+                    pkt.extend_from_slice(&active_sample_rate.to_be_bytes());
                     pkt.extend_from_slice(&sample_count.to_be_bytes());
-                    pkt.extend_from_slice(&encrypted_pcm);
+                    pkt.extend_from_slice(&raw_pcm);
 
                     let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
-                    for port in 50005..=50007 {
-                        target_addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
-                    }
+                    let mut has_remote_peers = false;
                     if let Ok(peers) = peers_store.lock() {
-                        for (&_, &(addr, _)) in peers.iter() {
+                        for (&_p_key, &(addr, _)) in peers.iter() {
                             if !target_addrs.contains(&addr) {
                                 target_addrs.push(addr);
+                                has_remote_peers = true;
                             }
                         }
                     }
-                    for target in &bcast_targets {
-                        if !target_addrs.contains(target) {
-                            target_addrs.push(*target);
+                    if !has_remote_peers {
+                        for target in &bcast_targets {
+                            if !target_addrs.contains(target) {
+                                target_addrs.push(*target);
+                            }
                         }
                     }
                     for target in &target_addrs {
                         let _ = socket.send_to(&pkt, target);
                     }
+
+                    let mut peak_tx: i16 = 0;
+                    for &s in &chunk {
+                        let abs = s.saturating_abs();
+                        if abs > peak_tx { peak_tx = abs; }
+                    }
+
+                    pkts_sent_count += 1;
+                    if pkts_sent_count % 50 == 1 {
+                        info!("📡 [LOOPBACK TX] Pkt #{} enviado ({} amostras @ {}Hz | Peak Amplitude: {}/32767) para {:?}", pkts_sent_count, target_chunk_samples, active_sample_rate, peak_tx, target_addrs);
+                    }
                 }
             }
 
-            drop(stream);
-            info!("🔊 Captura de áudio da transmissão finalizada.");
+            drop(active_stream);
+            info!("🔊 [LOOPBACK TX] Captura de áudio da transmissão finalizada.");
         })
         .expect("Falha ao iniciar thread de captura de áudio da transmissão");
 }
