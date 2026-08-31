@@ -993,7 +993,7 @@ pub mod wmf {
 
                 let in_media_type = MFCreateMediaType()?;
                 in_media_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-                in_media_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+                in_media_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_ARGB32)?;
                 set_size(&in_media_type.cast()?, &MF_MT_FRAME_SIZE, initial_width, initial_height)?;
                 set_ratio(&in_media_type.cast()?, &MF_MT_FRAME_RATE, target_fps, 1)?;
                 set_ratio(&in_media_type.cast()?, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1)?;
@@ -1002,10 +1002,8 @@ pub mod wmf {
                 sink_writer.SetInputMediaType(stream_index, &in_media_type, None)?;
                 sink_writer.BeginWriting()?;
 
-                info!("🚀 [WMF GPU ENGINE] Encoder de hardware H.264 pronto na GPU '{}' ({}p {} FPS, {:.1} Mbps)!",
+                info!("🚀 [WMF GPU ENGINE] Encoder de hardware H.264 pronto na GPU '{}' (Zero-CPU Direct ARGB -> {}p {} FPS, {:.1} Mbps)!",
                     selected_gpu_name, initial_height, target_fps, initial_bitrate as f64 / 1_000_000.0);
-
-                let nv12_size = (initial_width * initial_height + (initial_width * initial_height / 2)) as usize;
 
                 Ok(Self {
                     sink_writer,
@@ -1019,7 +1017,7 @@ pub mod wmf {
                     last_read_pos: 0,
                     gpu_name: selected_gpu_name,
                     needs_keyframe: true,
-                    nv12_buffer: vec![0u8; nv12_size],
+                    nv12_buffer: Vec::new(),
                 })
             }
         }
@@ -1027,72 +1025,21 @@ pub mod wmf {
 
     impl VideoEncoder for WmfGpuEncoder {
         fn encode(&mut self, bgra_data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
-            let expected_nv12_len = (width * height + (width * height / 2)) as usize;
-            if self.nv12_buffer.len() != expected_nv12_len {
-                self.nv12_buffer.resize(expected_nv12_len, 0);
-            }
-
-            let y_plane_size = (width * height) as usize;
-            let w = width as usize;
-            let h = height as usize;
-
-            let (y_plane, uv_plane) = self.nv12_buffer.split_at_mut(y_plane_size);
-
-            for row in 0..h {
-                let bgra_row = &bgra_data[row * w * 4..(row + 1) * w * 4];
-                let y_row = &mut y_plane[row * w..(row + 1) * w];
-                for (i, chunk) in bgra_row.chunks_exact(4).enumerate() {
-                    let b = chunk[0] as i32;
-                    let g = chunk[1] as i32;
-                    let r = chunk[2] as i32;
-                    y_row[i] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
-                }
-            }
-
-            for row in (0..h).step_by(2) {
-                let bgra_row0 = &bgra_data[row * w * 4..(row + 1) * w * 4];
-                let bgra_row1 = &bgra_data[(row + 1) * w * 4..(row + 2) * w * 4];
-                let uv_row = &mut uv_plane[(row / 2) * w..(row / 2 + 1) * w];
-
-                for col in (0..w).step_by(2) {
-                    let col4 = col * 4;
-                    let p00_b = bgra_row0[col4] as i32;
-                    let p00_g = bgra_row0[col4 + 1] as i32;
-                    let p00_r = bgra_row0[col4 + 2] as i32;
-
-                    let p01_b = bgra_row0[col4 + 4] as i32;
-                    let p01_g = bgra_row0[col4 + 5] as i32;
-                    let p01_r = bgra_row0[col4 + 6] as i32;
-
-                    let p10_b = bgra_row1[col4] as i32;
-                    let p10_g = bgra_row1[col4 + 1] as i32;
-                    let p10_r = bgra_row1[col4 + 2] as i32;
-
-                    let p11_b = bgra_row1[col4 + 4] as i32;
-                    let p11_g = bgra_row1[col4 + 5] as i32;
-                    let p11_r = bgra_row1[col4 + 6] as i32;
-
-                    let r_avg = (p00_r + p01_r + p10_r + p11_r) >> 2;
-                    let g_avg = (p00_g + p01_g + p10_g + p11_g) >> 2;
-                    let b_avg = (p00_b + p01_b + p10_b + p11_b) >> 2;
-
-                    let u = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128) as u8;
-                    let v = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128) as u8;
-
-                    uv_row[col] = u;
-                    uv_row[col + 1] = v;
-                }
+            let bgra_len = (width * height * 4) as usize;
+            if bgra_data.len() < bgra_len {
+                return None;
             }
 
             unsafe {
-                let in_buffer = MFCreateMemoryBuffer(expected_nv12_len as u32).ok()?;
+                // Entrada direta ARGB/BGRA na GPU (Zero CPU Color Conversion)
+                let in_buffer = MFCreateMemoryBuffer(bgra_len as u32).ok()?;
                 let mut p_buf_data: *mut u8 = std::ptr::null_mut();
                 let mut max_len = 0u32;
                 let mut cur_len = 0u32;
                 in_buffer.Lock(&mut p_buf_data, Some(&mut max_len), Some(&mut cur_len)).ok()?;
-                std::ptr::copy_nonoverlapping(self.nv12_buffer.as_ptr(), p_buf_data, expected_nv12_len);
+                std::ptr::copy_nonoverlapping(bgra_data.as_ptr(), p_buf_data, bgra_len);
                 let _ = in_buffer.Unlock();
-                let _ = in_buffer.SetCurrentLength(expected_nv12_len as u32);
+                let _ = in_buffer.SetCurrentLength(bgra_len as u32);
 
                 let in_sample = MFCreateSample().ok()?;
                 let _ = in_sample.AddBuffer(&in_buffer);

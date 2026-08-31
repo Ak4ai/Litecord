@@ -844,6 +844,10 @@ impl ScreenCaptureManager {
                 let mut tx_frame_count = 0u64;
                 let mut last_tx_stats = std::time::Instant::now();
                 let mut total_encode_us = 0u128;
+                let mut total_preview_us = 0u128;
+                let mut total_crypt_us = 0u128;
+                let mut total_fec_us = 0u128;
+                let mut total_net_us = 0u128;
                 let mut total_blt_us = 0u128;
                 let mut total_pix_us = 0u128;
                 let mut last_local_preview = Instant::now() - Duration::from_secs(1);
@@ -951,6 +955,7 @@ impl ScreenCaptureManager {
                     total_blt_us += blt_us;
                     total_pix_us += pix_us;
 
+                    let t_preview_start = Instant::now();
                     // Decouple UI local preview with fast downsampler (480w) to eliminate UI thread lag and memory overhead
                     if last_local_preview.elapsed() >= Duration::from_millis(100) {
                         if (camera_index.is_some() || cfg!(windows)) && cur_w > 0 && cur_h > 0 {
@@ -998,6 +1003,8 @@ impl ScreenCaptureManager {
                         }
                         last_local_preview = Instant::now();
                     }
+                    let t_preview_us = t_preview_start.elapsed().as_micros();
+                    total_preview_us += t_preview_us;
 
                     let enc_start = Instant::now();
                     let frame_bytes_opt = if let Some(ref mut enc) = h264_encoder {
@@ -1023,8 +1030,12 @@ impl ScreenCaptureManager {
                     total_encode_us += enc_dur;
 
                     if let Some(raw_frame_bytes) = frame_bytes_opt {
+                        let t_crypt_start = Instant::now();
                         let sec_key = get_voice_encryption_key(cid);
                         let frame_bytes = encrypt_signaling_payload(&sec_key, &raw_frame_bytes).unwrap_or(raw_frame_bytes);
+                        let t_crypt_us = t_crypt_start.elapsed().as_micros();
+                        total_crypt_us += t_crypt_us;
+
                         frame_seq = frame_seq.wrapping_add(1);
                         let total_len = frame_bytes.len();
                         let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
@@ -1056,6 +1067,7 @@ impl ScreenCaptureManager {
                             }
                         }
 
+                        let t_fec_start = Instant::now();
                         // Compute Sunshine-grade Forward Error Correction (FEC) XOR parity
                         let fec_parity = if total_chunks > 1 {
                             let mut p = vec![0u8; CHUNK_SIZE];
@@ -1071,8 +1083,11 @@ impl ScreenCaptureManager {
                         } else {
                             None
                         };
+                        let t_fec_us = t_fec_start.elapsed().as_micros();
+                        total_fec_us += t_fec_us;
 
                         let pts_ms = get_tx_pts_ms();
+                        let t_net_start = Instant::now();
 
                         for chunk_idx in 0..total_chunks {
                             let start = (chunk_idx as usize) * CHUNK_SIZE;
@@ -1095,16 +1110,6 @@ impl ScreenCaptureManager {
                             for target in &target_addrs {
                                 let _ = socket.send_to(&pkt, target);
                             }
-
-                            // Sunshine-grade Nano-Pacing: Micro-space chunk bursts (~1.5ms total spread)
-                            // to eliminate Wi-Fi bufferbloat without delaying the 16.6ms 60 FPS deadline
-                            if total_chunks > 1 {
-                                let pace_us = (2_000u64 / (total_chunks as u64)).clamp(30, 80);
-                                let spin_start = Instant::now();
-                                while spin_start.elapsed().as_micros() < pace_us as u128 {
-                                    std::hint::spin_loop();
-                                }
-                            }
                         }
 
                         // Emit FEC Parity packet for zero-latency recovery of Wi-Fi single-packet drops
@@ -1126,6 +1131,9 @@ impl ScreenCaptureManager {
                                 let _ = socket.send_to(&fec_pkt, target);
                             }
                         }
+                        let t_net_us = t_net_start.elapsed().as_micros();
+                        total_net_us += t_net_us;
+
                         last_frame_sent = Instant::now();
                     }
 
@@ -1136,12 +1144,23 @@ impl ScreenCaptureManager {
                         CURRENT_TX_FPS.store((fps * 10.0).round() as u32, Ordering::Relaxed);
                         let n = tx_frame_count.max(1) as f64;
                         let avg_enc_ms = (total_encode_us as f64) / n / 1000.0;
+                        let avg_preview_ms = (total_preview_us as f64) / n / 1000.0;
+                        let avg_crypt_ms = (total_crypt_us as f64) / n / 1000.0;
+                        let avg_fec_ms = (total_fec_us as f64) / n / 1000.0;
+                        let avg_net_ms = (total_net_us as f64) / n / 1000.0;
                         let avg_blt_ms = (total_blt_us as f64) / n / 1000.0;
                         let avg_pix_ms = (total_pix_us as f64) / n / 1000.0;
                         let cur_mbps = (REQUESTED_BITRATE_BPS.load(Ordering::Relaxed) as f64) / 1_000_000.0;
-                        info!("📊 [STREAM TELEMETRIA TX] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | Encode: {:.2}ms | Captura: {:.2}ms/{:.2}ms", fps, target_fps, cur_mbps, avg_enc_ms, avg_blt_ms, avg_pix_ms);
+
+                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | GPU Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms",
+                            fps, target_fps, cur_mbps, avg_enc_ms, avg_preview_ms, avg_crypt_ms, avg_fec_ms, avg_net_ms);
+
                         tx_frame_count = 0;
                         total_encode_us = 0;
+                        total_preview_us = 0;
+                        total_crypt_us = 0;
+                        total_fec_us = 0;
+                        total_net_us = 0;
                         total_blt_us = 0;
                         total_pix_us = 0;
                         last_tx_stats = Instant::now();
