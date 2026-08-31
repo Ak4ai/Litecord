@@ -265,7 +265,58 @@ pub mod nvenc {
                     reserved2: [*mut c_void; 64],
                 }
 
+                #[repr(C)]
+                struct NvEncInitializeParams {
+                    version: u32,
+                    encode_guid: GUID,
+                    preset_guid: GUID,
+                    encode_width: u32,
+                    encode_height: u32,
+                    dar_width: u32,
+                    dar_height: u32,
+                    frame_rate_num: u32,
+                    frame_rate_den: u32,
+                    enable_ptd: u32,
+                    report_slice_offsets: u32,
+                    enable_sub_frame_write: u32,
+                    enable_external_reorder_buffer: u32,
+                    max_encode_width: u32,
+                    max_encode_height: u32,
+                    encode_config: *mut c_void,
+                    reserved: [u32; 240],
+                    reserved_ptrs: [*mut c_void; 64],
+                }
+
+                #[repr(C)]
+                struct NvEncCreateInputBufferParams {
+                    version: u32,
+                    width: u32,
+                    height: u32,
+                    memory_heap: u32,
+                    buffer_format: u32,
+                    reserved: u32,
+                    input_buffer: *mut c_void,
+                    p_sys_mem_buffer: *mut c_void,
+                    reserved1: [u32; 57],
+                    reserved2: [*mut c_void; 64],
+                }
+
+                #[repr(C)]
+                struct NvEncCreateBitstreamBufferParams {
+                    version: u32,
+                    size: u32,
+                    memory_heap: u32,
+                    reserved: u32,
+                    bitstream_buffer: *mut c_void,
+                    bitstream_buffer_ptr: *mut c_void,
+                    reserved1: [u32; 58],
+                    reserved2: [*mut c_void; 64],
+                }
+
                 let mut encoder_handle: *mut c_void = std::ptr::null_mut();
+                let mut input_buffer: *mut c_void = std::ptr::null_mut();
+                let mut bitstream_buffer: *mut c_void = std::ptr::null_mut();
+
                 if let Some(open_session_fn) = fn_list.nvEncOpenEncodeSessionEx {
                     let mut open_params: NvEncOpenEncodeSessionExParams = std::mem::zeroed();
                     open_params.version = (314 << 24) | 1;
@@ -276,6 +327,51 @@ pub mod nvenc {
                     let status = open_session_fn(&mut open_params as *mut _ as *mut c_void, &mut encoder_handle);
                     if status == 0 && !encoder_handle.is_null() {
                         info!("🚀 [NVENC GPU ENGINE] Sessão de hardware na GPU NVIDIA aberta com sucesso! Handle: {:p}", encoder_handle);
+
+                        // Inicializa encoder no silício
+                        if let Some(init_fn) = fn_list.nvEncInitializeEncoder {
+                            let mut init_params: NvEncInitializeParams = std::mem::zeroed();
+                            init_params.version = (314 << 24) | 5;
+                            init_params.encode_guid = NV_ENC_CODEC_H264_GUID;
+                            init_params.preset_guid = NV_ENC_PRESET_P1_GUID;
+                            init_params.encode_width = 1920;
+                            init_params.encode_height = 1080;
+                            init_params.dar_width = 1920;
+                            init_params.dar_height = 1080;
+                            init_params.frame_rate_num = target_fps;
+                            init_params.frame_rate_den = 1;
+                            init_params.enable_ptd = 1;
+
+                            let init_status = init_fn(encoder_handle, &mut init_params as *mut _ as *mut c_void);
+                            info!("⚙️ [NVENC GPU ENGINE] Inicialização do hardware codec status: {}", init_status);
+
+                            if init_status == 0 {
+                                // Cria buffers de entrada e saída de bitstream
+                                if let Some(create_in_fn) = fn_list.nvEncCreateInputBuffer {
+                                    let mut in_params: NvEncCreateInputBufferParams = std::mem::zeroed();
+                                    in_params.version = (314 << 24) | 1;
+                                    in_params.width = 1920;
+                                    in_params.height = 1080;
+                                    in_params.buffer_format = 0x01000000; // ARGB
+                                    let in_status = create_in_fn(encoder_handle, &mut in_params as *mut _ as *mut c_void);
+                                    if in_status == 0 {
+                                        input_buffer = in_params.input_buffer;
+                                        info!("📦 [NVENC GPU ENGINE] Input Buffer de hardware alocado na VRAM: {:p}", input_buffer);
+                                    }
+                                }
+
+                                if let Some(create_bs_fn) = fn_list.nvEncCreateBitstreamBuffer {
+                                    let mut bs_params: NvEncCreateBitstreamBufferParams = std::mem::zeroed();
+                                    bs_params.version = (314 << 24) | 1;
+                                    bs_params.size = 2 * 1024 * 1024;
+                                    let bs_status = create_bs_fn(encoder_handle, &mut bs_params as *mut _ as *mut c_void);
+                                    if bs_status == 0 {
+                                        bitstream_buffer = bs_params.bitstream_buffer;
+                                        info!("📦 [NVENC GPU ENGINE] Bitstream Buffer de hardware alocado na VRAM: {:p}", bitstream_buffer);
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         info!("ℹ️ [NVENC GPU ENGINE] Sessão de hardware status {} (Direct3D 11 pipeline pronto)", status);
                     }
@@ -292,8 +388,8 @@ pub mod nvenc {
                     d3d11_device,
                     encoder_handle,
                     fn_list,
-                    input_buffer: std::ptr::null_mut(),
-                    bitstream_buffer: std::ptr::null_mut(),
+                    input_buffer,
+                    bitstream_buffer,
                     width: 1920,
                     height: 1080,
                     target_fps,
