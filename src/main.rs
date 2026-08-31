@@ -1669,7 +1669,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeBeginPeriod(1);
     }
 
-    const BUILD_ID: &str = "BUILD-2026-08-31-0040-GPU-WMF-OPT";
+    const BUILD_ID: &str = "BUILD-2026-08-31-0048-FIXED-60FPS";
     info!("==================================================================");
     info!("🚀 LITECORD INICIADO | VERSÃO: v{} | ID: {}", env!("CARGO_PKG_VERSION"), BUILD_ID);
     info!("==================================================================");

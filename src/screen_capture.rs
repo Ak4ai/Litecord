@@ -894,13 +894,11 @@ impl ScreenCaptureManager {
                         last_announce = Instant::now();
                     }
 
-                    let mut has_new_frame = false;
                     // Drena quadros novos da GPU para sempre ter o frame mais atualizado
                     while let Ok(new_frame) = rx_frame.try_recv() {
                         if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
                             let _ = tx_recycle.try_send(old_buf);
                         }
-                        has_new_frame = true;
                     }
 
                     // Se nenhum quadro chegou ainda, aguarda até 20ms ou usa fallback GDI imediato (vital para notebooks com GPUs híbridas)
@@ -908,7 +906,6 @@ impl ScreenCaptureManager {
                         match rx_frame.recv_timeout(Duration::from_millis(20)) {
                             Ok(first_frame) => {
                                 latest_cached_frame = Some(first_frame);
-                                has_new_frame = true;
                             }
                             Err(_) => {
                                 #[cfg(windows)]
@@ -916,7 +913,6 @@ impl ScreenCaptureManager {
                                     let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
                                     if let Some((blt, pix)) = capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf) {
                                         latest_cached_frame = Some((cur_buf, target_w, target_h, blt, pix));
-                                        has_new_frame = true;
                                     } else {
                                         continue;
                                     }
@@ -941,12 +937,6 @@ impl ScreenCaptureManager {
                     next_tick += frame_target_interval;
                     if now > next_tick + frame_target_interval * 2 {
                         next_tick = now + frame_target_interval;
-                    }
-
-                    let keyframe_needed = KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(1000);
-                    let should_encode = has_new_frame || keyframe_needed || last_frame_sent.elapsed() >= Duration::from_millis(500);
-                    if !should_encode {
-                        continue;
                     }
 
                     let (bgra_slice, cur_w, cur_h, blt_us, pix_us) = match latest_cached_frame {
@@ -1011,7 +1001,7 @@ impl ScreenCaptureManager {
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
                         }
-                        if keyframe_needed {
+                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(1000) {
                             last_idr = Instant::now();
                             enc.force_intra_frame();
                         }
