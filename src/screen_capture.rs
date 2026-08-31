@@ -444,6 +444,11 @@ impl ScreenCaptureManager {
                     crate::gpu_encoder::create_best_encoder(target_fps as u32, camera_index.is_none())
                 );
 
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    crate::trim_process_memory();
+                });
+
                 let socket = get_shared_p2p_socket().unwrap_or_else(|| {
                     let s = UdpSocket::bind("0.0.0.0:0").unwrap();
                     let _ = s.set_broadcast(true);

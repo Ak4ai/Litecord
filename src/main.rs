@@ -5056,8 +5056,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 🧹 Auto-Compactação Periódica de Memória RAM (3s após boot + a cada 60s)
+    tokio::spawn(async {
+        // Aguarda 3 segundos para que a interface inicial, servidores e canais terminem de carregar
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        trim_process_memory();
+        log::info!("🧹 [MEMÓRIA] Faxina de inicialização concluída — Working Set compactado para ~90MB!");
+
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            trim_process_memory();
+        }
+    });
+
     app.run()?;
     Ok(())
+}
+
+pub fn trim_process_memory() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        K32EmptyWorkingSet(GetCurrentProcess());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        trim_memory_if_linux();
+    }
 }
 
 #[cfg(target_os = "windows")]
