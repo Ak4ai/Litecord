@@ -959,7 +959,7 @@ impl ScreenCaptureManager {
 
                     let t_preview_start = Instant::now();
                     // Decouple UI local preview with fast downsampler (480w) to eliminate UI thread lag and memory overhead
-                    if last_local_preview.elapsed() >= Duration::from_millis(100) {
+                    if last_local_preview.elapsed() >= Duration::from_millis(250) {
                         if (camera_index.is_some() || cfg!(windows)) && cur_w > 0 && cur_h > 0 {
                             let prev_w = 480u32.min(cur_w);
                             let prev_h = (((prev_w as f32 / cur_w as f32) * (cur_h as f32)).round() as u32).max(1);
@@ -1014,7 +1014,7 @@ impl ScreenCaptureManager {
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
                         }
-                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(1000) {
+                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(5000) {
                             last_idr = Instant::now();
                             enc.force_intra_frame();
                         }
