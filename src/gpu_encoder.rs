@@ -175,6 +175,7 @@ pub mod nvenc {
         fn_list: NV_ENCODE_API_FUNCTION_LIST,
         input_buffer: *mut c_void,
         bitstream_buffer: *mut c_void,
+        matched_ver: u32,
         width: u32,
         height: u32,
         target_fps: u32,
@@ -316,17 +317,55 @@ pub mod nvenc {
                 let mut encoder_handle: *mut c_void = std::ptr::null_mut();
                 let mut input_buffer: *mut c_void = std::ptr::null_mut();
                 let mut bitstream_buffer: *mut c_void = std::ptr::null_mut();
+                let mut matched_ver = 0u32;
 
                 if let Some(open_session_fn) = fn_list.nvEncOpenEncodeSessionEx {
-                    let mut open_params: NvEncOpenEncodeSessionExParams = std::mem::zeroed();
-                    open_params.version = (314 << 24) | 1;
-                    open_params.device_type = 1; // NV_ENC_DEVICE_TYPE_DIRECTX
-                    open_params.device = d3d11_device;
-                    open_params.api_version = (12 << 4) | 0;
+                    let candidate_versions: &[(u32, u32)] = &[
+                        (12 | (1 << 31), (12 << 4)),
+                        (11 | (1 << 31), (11 << 4)),
+                        (12 | (1 << 31), 12),
+                        (11 | (1 << 31), 11),
+                        (0x8000000C, (12 << 4)),
+                        (0x8000000B, (11 << 4)),
+                        (0x8C000001, (12 << 4)),
+                        (0x8B000001, (11 << 4)),
+                        (0x0C000001, (12 << 4)),
+                        (0x0B000001, (11 << 4)),
+                        (1 | (12 << 24), (12 << 4)),
+                        (1 | (11 << 24), (11 << 4)),
+                        ((12 << 4) | (1 << 31), (12 << 4)),
+                        ((11 << 4) | (1 << 31), (11 << 4)),
+                        ((12 << 4) | 1, (12 << 4)),
+                        ((11 << 4) | 1, (11 << 4)),
+                        (1, (12 << 4)),
+                        (1, 12),
+                        ((314 << 24) | 1, (12 << 4) | 0),
+                    ];
 
-                    let status = open_session_fn(&mut open_params as *mut _ as *mut c_void, &mut encoder_handle);
-                    if status == 0 && !encoder_handle.is_null() {
-                        info!("🚀 [NVENC GPU ENGINE] Sessão de hardware na GPU NVIDIA aberta com sucesso! Handle: {:p}", encoder_handle);
+                    let mut matched_api = 0u32;
+                    let mut session_opened = false;
+                    for &(ver, api_ver) in candidate_versions {
+                        let mut open_params: NvEncOpenEncodeSessionExParams = std::mem::zeroed();
+                        open_params.version = ver;
+                        open_params.device_type = 1; // NV_ENC_DEVICE_TYPE_DIRECTX
+                        open_params.device = d3d11_device;
+                        open_params.api_version = api_ver;
+
+                        let status = open_session_fn(&mut open_params as *mut _ as *mut c_void, &mut encoder_handle);
+                        if status == 0 && !encoder_handle.is_null() {
+                            info!("🚀 [NVENC GPU ENGINE] Sessão de hardware na GPU NVIDIA aberta com sucesso! Versão: (0x{:08X}, 0x{:08X}) Handle: {:p}", ver, api_ver, encoder_handle);
+                            session_opened = true;
+                            matched_ver = ver;
+                            matched_api = api_ver;
+                            break;
+                        }
+                    }
+
+                    if !session_opened {
+                        warn!("⚠️ [NVENC GPU ENGINE] Nenhuma versão do NVENC SDK casou com o driver.");
+                    }
+
+                    if session_opened && !encoder_handle.is_null() {
 
                         #[repr(C)]
                         struct NvEncConfig {
@@ -350,8 +389,8 @@ pub mod nvenc {
                         }
 
                         let mut preset_config: NvEncPresetConfig = std::mem::zeroed();
-                        preset_config.version = (314 << 24) | 1;
-                        preset_config.preset_cfg.version = (314 << 24) | (8 << 0) | (1 << 31);
+                        preset_config.version = (matched_ver & !0xFF) | 1;
+                        preset_config.preset_cfg.version = (matched_ver & !0xFF) | 8 | (1 << 31);
 
                         if let Some(get_preset_fn) = fn_list.nvEncGetEncodePresetConfig {
                             let p_status = get_preset_fn(encoder_handle, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P1_GUID, &mut preset_config as *mut _ as *mut c_void);
@@ -361,7 +400,7 @@ pub mod nvenc {
                         // Inicializa encoder no silício
                         if let Some(init_fn) = fn_list.nvEncInitializeEncoder {
                             let mut init_params: NvEncInitializeParams = std::mem::zeroed();
-                            init_params.version = (314 << 24) | 5;
+                            init_params.version = (matched_ver & !0xFF) | 5;
                             init_params.encode_guid = NV_ENC_CODEC_H264_GUID;
                             init_params.preset_guid = NV_ENC_PRESET_P1_GUID;
                             init_params.encode_width = 1920;
@@ -380,7 +419,7 @@ pub mod nvenc {
                                 // Cria buffers de entrada e saída de bitstream
                                 if let Some(create_in_fn) = fn_list.nvEncCreateInputBuffer {
                                     let mut in_params: NvEncCreateInputBufferParams = std::mem::zeroed();
-                                    in_params.version = (314 << 24) | 1;
+                                    in_params.version = (matched_ver & !0xFF) | 1;
                                     in_params.width = 1920;
                                     in_params.height = 1080;
                                     in_params.buffer_format = 0x01000000; // ARGB
@@ -395,7 +434,7 @@ pub mod nvenc {
 
                                 if let Some(create_bs_fn) = fn_list.nvEncCreateBitstreamBuffer {
                                     let mut bs_params: NvEncCreateBitstreamBufferParams = std::mem::zeroed();
-                                    bs_params.version = (314 << 24) | 1;
+                                    bs_params.version = (matched_ver & !0xFF) | 1;
                                     bs_params.size = 2 * 1024 * 1024;
                                     let bs_status = create_bs_fn(encoder_handle, &mut bs_params as *mut _ as *mut c_void);
                                     if bs_status == 0 {
@@ -427,6 +466,7 @@ pub mod nvenc {
                     fn_list,
                     input_buffer,
                     bitstream_buffer,
+                    matched_ver,
                     width: 1920,
                     height: 1080,
                     target_fps,
@@ -513,7 +553,7 @@ pub mod nvenc {
                     self.needs_keyframe = false;
 
                     let mut lock_in: NvEncLockInputBufferParams = std::mem::zeroed();
-                    lock_in.version = (314 << 24) | 1;
+                    lock_in.version = (self.matched_ver & !0xFF) | 1;
                     lock_in.input_buffer = self.input_buffer;
 
                     if let (Some(lock_in_fn), Some(unlock_in_fn), Some(encode_pic_fn), Some(lock_bs_fn), Some(unlock_bs_fn)) = (
@@ -542,7 +582,7 @@ pub mod nvenc {
                             unlock_in_fn(self.encoder_handle, self.input_buffer);
 
                             let mut pic_params: NvEncPicParamsStruct = std::mem::zeroed();
-                            pic_params.version = (314 << 24) | 4;
+                            pic_params.version = (self.matched_ver & !0xFF) | 4;
                             pic_params.input_width = width;
                             pic_params.input_height = height;
                             pic_params.input_pitch = lock_in.pitch;
@@ -557,7 +597,7 @@ pub mod nvenc {
                             let enc_status = encode_pic_fn(self.encoder_handle, &mut pic_params as *mut _ as *mut c_void);
                             if enc_status == 0 {
                                 let mut lock_bs: NvEncLockBitstreamParams = std::mem::zeroed();
-                                lock_bs.version = (314 << 24) | 1;
+                                lock_bs.version = (self.matched_ver & !0xFF) | 1;
                                 lock_bs.output_bitstream = self.bitstream_buffer;
 
                                 let bs_status = lock_bs_fn(self.encoder_handle, &mut lock_bs as *mut _ as *mut c_void);
