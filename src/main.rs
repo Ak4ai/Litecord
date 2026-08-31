@@ -1662,7 +1662,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeBeginPeriod(1);
     }
 
-    const BUILD_ID: &str = "BUILD-2026-08-31-0913-NVENC-VERSION-PROBE-CASCADED";
+    const BUILD_ID: &str = "BUILD-2026-08-31-0918-NVENC-DEVICE-TYPE-FIXED";
     info!("==================================================================");
     info!("🚀 LITECORD INICIADO | VERSÃO: v{} | ID: {}", env!("CARGO_PKG_VERSION"), BUILD_ID);
     info!("==================================================================");

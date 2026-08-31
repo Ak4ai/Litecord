@@ -320,38 +320,42 @@ pub mod nvenc {
                 let mut matched_ver = 0u32;
 
                 if let Some(open_session_fn) = fn_list.nvEncOpenEncodeSessionEx {
-                    let candidate_versions: &[(u32, u32)] = &[
-                        (12 | (1 << 31), (12 << 4)),
-                        (11 | (1 << 31), (11 << 4)),
-                        (12 | (1 << 31), 12),
-                        (11 | (1 << 31), 11),
-                        (0x8000000C, (12 << 4)),
-                        (0x8000000B, (11 << 4)),
-                        (0x8C000001, (12 << 4)),
-                        (0x8B000001, (11 << 4)),
-                        (0x0C000001, (12 << 4)),
-                        (0x0B000001, (11 << 4)),
-                        (1 | (12 << 24), (12 << 4)),
-                        (1 | (11 << 24), (11 << 4)),
-                        ((12 << 4) | (1 << 31), (12 << 4)),
-                        ((11 << 4) | (1 << 31), (11 << 4)),
-                        ((12 << 4) | 1, (12 << 4)),
-                        ((11 << 4) | 1, (11 << 4)),
-                        (1, (12 << 4)),
-                        (1, 12),
-                        ((314 << 24) | 1, (12 << 4) | 0),
+                    let candidate_versions: &[(u32, u32, u32)] = &[
+                        // (struct_ver, api_ver, device_type)
+                        (12 | (1 << 31), (12 << 4), 0),
+                        (11 | (1 << 31), (11 << 4), 0),
+                        (0x8000000C, (12 << 4), 0),
+                        (0x8000000B, (11 << 4), 0),
+                        (0x8C000001, (12 << 4), 0),
+                        (0x8B000001, (11 << 4), 0),
+                        (0x0C000001, (12 << 4), 0),
+                        (0x0B000001, (11 << 4), 0),
+                        (1 | (12 << 24), (12 << 4), 0),
+                        (1 | (11 << 24), (11 << 4), 0),
+                        ((12 << 4) | (1 << 31), (12 << 4), 0),
+                        ((11 << 4) | (1 << 31), (11 << 4), 0),
+                        ((12 << 4) | 1, (12 << 4), 0),
+                        ((11 << 4) | 1, (11 << 4), 0),
+                        (12 | (1 << 31), 12, 0),
+                        (11 | (1 << 31), 11, 0),
+                        (1, (12 << 4), 0),
+                        (1, 12, 0),
+                        ((314 << 24) | 1, (12 << 4) | 0, 0),
+                        (12 | (1 << 31), (12 << 4), 1),
+                        ((314 << 24) | 1, (12 << 4) | 0, 1),
                     ];
 
                     let mut matched_api = 0u32;
                     let mut session_opened = false;
-                    for &(ver, api_ver) in candidate_versions {
+                    for &(ver, api_ver, dev_type) in candidate_versions {
                         let mut open_params: NvEncOpenEncodeSessionExParams = std::mem::zeroed();
                         open_params.version = ver;
-                        open_params.device_type = 1; // NV_ENC_DEVICE_TYPE_DIRECTX
+                        open_params.device_type = dev_type; // 0 = NV_ENC_DEVICE_TYPE_DIRECTX
                         open_params.device = d3d11_device;
                         open_params.api_version = api_ver;
 
                         let status = open_session_fn(&mut open_params as *mut _ as *mut c_void, &mut encoder_handle);
+                        info!("🔍 [NVENC PROBE] Testando (ver=0x{:08X}, api=0x{:08X}, dev={}) -> status {}", ver, api_ver, dev_type, status);
                         if status == 0 && !encoder_handle.is_null() {
                             info!("🚀 [NVENC GPU ENGINE] Sessão de hardware na GPU NVIDIA aberta com sucesso! Versão: (0x{:08X}, 0x{:08X}) Handle: {:p}", ver, api_ver, encoder_handle);
                             session_opened = true;
