@@ -128,7 +128,7 @@ pub mod nvenc {
         pub nvEncGetEncodeCaps: *const c_void,
         pub nvEncGetEncodePresetCount: *const c_void,
         pub nvEncGetEncodePresetGUIDs: *const c_void,
-        pub nvEncGetEncodePresetConfig: *const c_void,
+        pub nvEncGetEncodePresetConfig: Option<unsafe extern "system" fn(encoder: *mut c_void, encode_guid: GUID, preset_guid: GUID, preset_config: *mut c_void) -> u32>,
         pub nvEncInitializeEncoder: Option<unsafe extern "system" fn(encoder: *mut c_void, create_encode_config: *mut c_void) -> u32>,
         pub nvEncCreateInputBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, create_input_buffer: *mut c_void) -> u32>,
         pub nvEncDestroyInputBuffer: Option<unsafe extern "system" fn(encoder: *mut c_void, input_buffer: *mut c_void) -> u32>,
@@ -328,6 +328,36 @@ pub mod nvenc {
                     if status == 0 && !encoder_handle.is_null() {
                         info!("🚀 [NVENC GPU ENGINE] Sessão de hardware na GPU NVIDIA aberta com sucesso! Handle: {:p}", encoder_handle);
 
+                        #[repr(C)]
+                        struct NvEncConfig {
+                            version: u32,
+                            profile_guid: GUID,
+                            gop_length: u32,
+                            frame_interval_p: i32,
+                            mono_chrome_encoding: u32,
+                            frame_field_mode: u32,
+                            mv_precision: u32,
+                            reserved: [u32; 240],
+                            reserved_ptrs: [*mut c_void; 64],
+                        }
+
+                        #[repr(C)]
+                        struct NvEncPresetConfig {
+                            version: u32,
+                            preset_cfg: NvEncConfig,
+                            reserved: [u32; 240],
+                            reserved_ptrs: [*mut c_void; 64],
+                        }
+
+                        let mut preset_config: NvEncPresetConfig = std::mem::zeroed();
+                        preset_config.version = (314 << 24) | 1;
+                        preset_config.preset_cfg.version = (314 << 24) | (8 << 0) | (1 << 31);
+
+                        if let Some(get_preset_fn) = fn_list.nvEncGetEncodePresetConfig {
+                            let p_status = get_preset_fn(encoder_handle, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P1_GUID, &mut preset_config as *mut _ as *mut c_void);
+                            info!("⚙️ [NVENC GPU ENGINE] Preset Config status: {}", p_status);
+                        }
+
                         // Inicializa encoder no silício
                         if let Some(init_fn) = fn_list.nvEncInitializeEncoder {
                             let mut init_params: NvEncInitializeParams = std::mem::zeroed();
@@ -341,6 +371,7 @@ pub mod nvenc {
                             init_params.frame_rate_num = target_fps;
                             init_params.frame_rate_den = 1;
                             init_params.enable_ptd = 1;
+                            init_params.encode_config = &mut preset_config.preset_cfg as *mut _ as *mut c_void;
 
                             let init_status = init_fn(encoder_handle, &mut init_params as *mut _ as *mut c_void);
                             info!("⚙️ [NVENC GPU ENGINE] Inicialização do hardware codec status: {}", init_status);
@@ -357,6 +388,8 @@ pub mod nvenc {
                                     if in_status == 0 {
                                         input_buffer = in_params.input_buffer;
                                         info!("📦 [NVENC GPU ENGINE] Input Buffer de hardware alocado na VRAM: {:p}", input_buffer);
+                                    } else {
+                                        warn!("⚠️ [NVENC GPU ENGINE] Falha ao criar input buffer status: {}", in_status);
                                     }
                                 }
 
@@ -368,8 +401,12 @@ pub mod nvenc {
                                     if bs_status == 0 {
                                         bitstream_buffer = bs_params.bitstream_buffer;
                                         info!("📦 [NVENC GPU ENGINE] Bitstream Buffer de hardware alocado na VRAM: {:p}", bitstream_buffer);
+                                    } else {
+                                        warn!("⚠️ [NVENC GPU ENGINE] Falha ao criar bitstream buffer status: {}", bs_status);
                                     }
                                 }
+                            } else {
+                                warn!("⚠️ [NVENC GPU ENGINE] Falha ao inicializar encoder status: {}", init_status);
                             }
                         }
                     } else {
