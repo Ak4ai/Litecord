@@ -923,16 +923,11 @@ impl ScreenCaptureManager {
                         }
                     }
 
-                    // Pacer CFR de 60.0 FPS rígido (Relógio de precisão sem drift de encode para 60 FPS cravados)
+                    // Pacer CFR de 60.0 FPS de precisão (Sem busy spinloop para 0% CPU overhead)
                     let now = Instant::now();
                     if now < next_tick {
                         let sleep_dur = (next_tick - now).min(frame_target_interval);
-                        if sleep_dur > Duration::from_millis(1) {
-                            std::thread::sleep(sleep_dur - Duration::from_millis(1));
-                        }
-                        while Instant::now() < next_tick {
-                            std::hint::spin_loop();
-                        }
+                        std::thread::sleep(sleep_dur);
                     }
                     next_tick += frame_target_interval;
                     if now > next_tick + frame_target_interval * 2 {
