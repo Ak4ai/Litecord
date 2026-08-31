@@ -254,6 +254,33 @@ pub mod nvenc {
                     return Err(format!("D3D11CreateDevice falhou: HRESULT 0x{:08X}", hr as u32));
                 }
 
+                #[repr(C)]
+                struct NvEncOpenEncodeSessionExParams {
+                    version: u32,
+                    device_type: u32,
+                    device: *mut c_void,
+                    reserved: *mut c_void,
+                    api_version: u32,
+                    reserved1: [u32; 253],
+                    reserved2: [*mut c_void; 64],
+                }
+
+                let mut encoder_handle: *mut c_void = std::ptr::null_mut();
+                if let Some(open_session_fn) = fn_list.nvEncOpenEncodeSessionEx {
+                    let mut open_params: NvEncOpenEncodeSessionExParams = std::mem::zeroed();
+                    open_params.version = (314 << 24) | 1;
+                    open_params.device_type = 1; // NV_ENC_DEVICE_TYPE_DIRECTX
+                    open_params.device = d3d11_device;
+                    open_params.api_version = (12 << 4) | 0;
+
+                    let status = open_session_fn(&mut open_params as *mut _ as *mut c_void, &mut encoder_handle);
+                    if status == 0 && !encoder_handle.is_null() {
+                        info!("🚀 [NVENC GPU ENGINE] Sessão de hardware na GPU NVIDIA aberta com sucesso! Handle: {:p}", encoder_handle);
+                    } else {
+                        info!("ℹ️ [NVENC GPU ENGINE] Sessão de hardware status {} (Direct3D 11 pipeline pronto)", status);
+                    }
+                }
+
                 let fallback = OpenH264Encoder::new(target_fps, is_screen_content)
                     .map_err(|e| format!("Falha no fallback OpenH264: {}", e))?;
 
@@ -263,7 +290,7 @@ pub mod nvenc {
                     nvenc_dll,
                     d3d11_dll,
                     d3d11_device,
-                    encoder_handle: std::ptr::null_mut(),
+                    encoder_handle,
                     fn_list,
                     input_buffer: std::ptr::null_mut(),
                     bitstream_buffer: std::ptr::null_mut(),
