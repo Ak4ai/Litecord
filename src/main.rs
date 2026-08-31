@@ -10,6 +10,7 @@ mod screen_capture;
 mod emoji_cache;
 mod attachment_cache;
 pub mod gpu_encoder;
+pub mod cpu_profiler;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
@@ -1652,6 +1653,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let logger = AppLogger { file: Mutex::new(log_file) };
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
+
+    cpu_profiler::start_thread_cpu_profiler();
+    cpu_profiler::set_current_thread_name("main-ui-thread");
 
     #[cfg(target_os = "windows")]
     unsafe {

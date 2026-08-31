@@ -438,6 +438,7 @@ impl ScreenCaptureManager {
                 unsafe {
                     windows_sys::Win32::Media::timeBeginPeriod(1);
                 }
+                crate::cpu_profiler::set_current_thread_name("screen-capture-tx");
 
                 let mut h264_encoder: Option<Box<dyn crate::gpu_encoder::VideoEncoder>> = Some(
                     crate::gpu_encoder::create_best_encoder(target_fps as u32, camera_index.is_none())
@@ -660,6 +661,7 @@ impl ScreenCaptureManager {
                             std::thread::Builder::new()
                                 .name("dxgi-duplication-thread".to_string())
                                 .spawn(move || {
+                                    crate::cpu_profiler::set_current_thread_name("dxgi-duplication-thread");
                                     info!("⚡ [SUNSHINE GPU ENGINE] Tentando DXGI Desktop Duplication Direto na GPU para {}...", mon_name);
                                     let mut dup_opt = DxgiDuplicationApi::new(monitor).ok();
                                     let dxgi_ok = dup_opt.is_some();
@@ -1221,6 +1223,7 @@ impl ScreenCaptureManager {
         std::thread::Builder::new()
             .name("video-decoder-worker".to_string())
             .spawn(move || {
+                crate::cpu_profiler::set_current_thread_name("video-decoder-worker");
                 info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada com buffer elástico de 120 quadros!");
                 let mut h264_decoders: HashMap<u64, openh264::decoder::Decoder> = HashMap::new();
                 let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
@@ -1300,6 +1303,7 @@ impl ScreenCaptureManager {
         std::thread::Builder::new()
             .name("screen-capture-rx".to_string())
             .spawn(move || {
+                crate::cpu_profiler::set_current_thread_name("screen-capture-rx");
                 let (socket, bound_port) = {
                     let mut bound = None;
                     for port in P2P_VIDEO_PORT..=(P2P_VIDEO_PORT + 10) {
@@ -2348,6 +2352,7 @@ pub fn start_global_signaling(
     std::thread::Builder::new()
         .name("global-p2p-signaling".to_string())
         .spawn(move || {
+            crate::cpu_profiler::set_current_thread_name("global-p2p-signaling");
             let my_inst = get_process_instance_id();
             let brokers = ["broker.emqx.io:1883"];
             let mut broker_idx = 0;
@@ -4572,6 +4577,7 @@ pub fn start_audio_loopback_tx(
                 windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null_mut(), windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
                 windows_sys::Win32::Media::timeBeginPeriod(1);
             }
+            crate::cpu_profiler::set_current_thread_name("audio-loopback-tx");
 
             info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (WASAPI Loopback)...");
             let host = cpal::default_host();
