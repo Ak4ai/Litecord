@@ -1619,9 +1619,18 @@ impl log::Log for AppLogger {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _tokio_guard = tokio::runtime::Handle::current().enter();
+
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .thread_name(|i| format!("rayon-worker-{}", i))
+        .start_handler(|i| {
+            #[cfg(target_os = "windows")]
+            crate::cpu_profiler::set_current_thread_name(&format!("rayon-worker-{}", i));
+        })
+        .build_global();
 
     #[cfg(target_os = "windows")]
     unsafe {

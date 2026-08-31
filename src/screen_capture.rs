@@ -2589,37 +2589,10 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
 }
 
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
-    let mut addrs = Vec::new();
-    
-    // 1. Broadcast to local port cluster (50005..=50007) on loopback & 255.255.255.255
-    for port in 50005..=50007 {
-        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
-        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
-    }
-
-    // 2. Query active adapter IPv4 subnet broadcast via routing table probe
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
-                let octets = local.ip().octets();
-                for port in 50005..=50007 {
-                    addrs.push(SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
-                        port,
-                    ));
-                }
-            }
-        }
-    }
-
-    // 3. Resolve STUN Public Internet Address for global P2P hole punching
-    if let Some(pub_addr) = resolve_public_stun_address() {
-        for port in 50005..=50007 {
-            addrs.push(SocketAddr::new(pub_addr.ip(), port));
-        }
-    }
-
-    addrs
+    vec![
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 50005),
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), 50005),
+    ]
 }
 
 fn fit_bgra_to_canvas(
