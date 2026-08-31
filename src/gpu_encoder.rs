@@ -1104,30 +1104,31 @@ pub mod wmf {
 pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
     info!("🔍 [VIDEO CODEC FACTORY] Avaliando melhor engine de codificação para o sistema...");
 
+    info!("🎯 [VIDEO CODEC FACTORY] Inicializando OpenH264 SIMD AVX2 (Engine Ultraleve de 0 COM Threads)...");
+    match OpenH264Encoder::new(target_fps, is_screen_content) {
+        Ok(enc) => {
+            info!("🚀 [VIDEO CODEC FACTORY] Encoder {} ativado com sucesso ({} threads, {:.1} Mbps)!",
+                enc.name(), enc.num_threads, enc.get_bitrate_bps() as f64 / 1_000_000.0);
+            return Box::new(enc);
+        }
+        Err(e) => {
+            warn!("⚠️ [VIDEO CODEC FACTORY] OpenH264 indisponível ({}), tentando WMF GPU...", e);
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
-        info!("🎯 [VIDEO CODEC FACTORY] Inicializando Direct3D 11 + Windows Media Foundation GPU Engine (Universal)...");
+        info!("🎯 [VIDEO CODEC FACTORY] Inicializando Direct3D 11 + Windows Media Foundation GPU Engine...");
         match wmf::WmfGpuEncoder::try_new(target_fps, is_screen_content) {
             Ok(enc) => {
-                info!("🚀 [VIDEO CODEC FACTORY] Direct3D 11 + WMF GPU Engine ativado com sucesso como encoder primário (Hardware: {})!", enc.gpu_name);
+                info!("🚀 [VIDEO CODEC FACTORY] Direct3D 11 + WMF GPU Engine ativado como fallback (Hardware: {})!", enc.gpu_name);
                 return Box::new(enc);
             }
             Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando fallback de segurança...", e);
+                warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando modo básico...", e);
             }
         }
     }
 
-    info!("🎯 [VIDEO CODEC FACTORY] Inicializando OpenH264 SIMD Rayon (Universal Fast CPU Engine)...");
-    match OpenH264Encoder::new(target_fps, is_screen_content) {
-        Ok(enc) => {
-            info!("🚀 [VIDEO CODEC FACTORY] Encoder {} inicializado com sucesso ({} threads, {:.1} Mbps)!",
-                enc.name(), enc.num_threads, enc.get_bitrate_bps() as f64 / 1_000_000.0);
-            Box::new(enc)
-        }
-        Err(e) => {
-            warn!("⚠️ [VIDEO CODEC FACTORY] Falha ao inicializar OpenH264: {}. Tentando modo básico...", e);
-            Box::new(OpenH264Encoder::new(target_fps, false).expect("Falha crítica no encoder H.264"))
-        }
-    }
+    Box::new(OpenH264Encoder::new(target_fps, false).expect("Falha crítica no encoder H.264"))
 }
