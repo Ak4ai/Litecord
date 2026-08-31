@@ -903,7 +903,7 @@ pub mod wmf {
         pub fn try_new(target_fps: u32, is_screen_content: bool) -> Result<Self> {
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-                MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)?;
+                MFStartup(MF_VERSION, MFSTARTUP_LITE)?;
 
                 let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
                 let mut selected_adapter: Option<IDXGIAdapter1> = None;
