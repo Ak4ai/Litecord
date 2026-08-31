@@ -54,6 +54,10 @@ path = "src/bin/test_nvenc.rs"
 name = "test_wmf"
 path = "src/bin/test_wmf.rs"
 
+[[bin]]
+name = "test_ffmpeg_nvenc"
+path = "src/bin/test_ffmpeg_nvenc.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Media_MediaFoundation",
