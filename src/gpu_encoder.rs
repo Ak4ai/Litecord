@@ -1038,39 +1038,51 @@ pub mod wmf {
 
             let (y_plane, uv_plane) = self.nv12_buffer.split_at_mut(y_plane_size);
 
-            y_plane.par_chunks_exact_mut(w).enumerate().for_each(|(row, y_row)| {
+            for row in 0..h {
                 let bgra_row = &bgra_data[row * w * 4..(row + 1) * w * 4];
+                let y_row = &mut y_plane[row * w..(row + 1) * w];
                 for (i, chunk) in bgra_row.chunks_exact(4).enumerate() {
                     let b = chunk[0] as i32;
                     let g = chunk[1] as i32;
                     let r = chunk[2] as i32;
-                    y_row[i] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(16, 235) as u8;
+                    y_row[i] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
                 }
-            });
+            }
 
-            uv_plane.par_chunks_exact_mut(w).enumerate().for_each(|(uv_row_idx, uv_row)| {
-                let row = uv_row_idx * 2;
-                if row + 1 < h {
-                    let bgra_row0 = &bgra_data[row * w * 4..(row + 1) * w * 4];
-                    let bgra_row1 = &bgra_data[(row + 1) * w * 4..(row + 2) * w * 4];
-                    for col in (0..w).step_by(2) {
-                        let p00 = &bgra_row0[col * 4..col * 4 + 4];
-                        let p01 = &bgra_row0[(col + 1) * 4..(col + 1) * 4 + 4];
-                        let p10 = &bgra_row1[col * 4..col * 4 + 4];
-                        let p11 = &bgra_row1[(col + 1) * 4..(col + 1) * 4 + 4];
+            for row in (0..h).step_by(2) {
+                let bgra_row0 = &bgra_data[row * w * 4..(row + 1) * w * 4];
+                let bgra_row1 = &bgra_data[(row + 1) * w * 4..(row + 2) * w * 4];
+                let uv_row = &mut uv_plane[(row / 2) * w..(row / 2 + 1) * w];
 
-                        let r_avg = (p00[2] as i32 + p01[2] as i32 + p10[2] as i32 + p11[2] as i32) >> 2;
-                        let g_avg = (p00[1] as i32 + p01[1] as i32 + p10[1] as i32 + p11[1] as i32) >> 2;
-                        let b_avg = (p00[0] as i32 + p01[0] as i32 + p10[0] as i32 + p11[0] as i32) >> 2;
+                for col in (0..w).step_by(2) {
+                    let col4 = col * 4;
+                    let p00_b = bgra_row0[col4] as i32;
+                    let p00_g = bgra_row0[col4 + 1] as i32;
+                    let p00_r = bgra_row0[col4 + 2] as i32;
 
-                        let u = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
-                        let v = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
+                    let p01_b = bgra_row0[col4 + 4] as i32;
+                    let p01_g = bgra_row0[col4 + 5] as i32;
+                    let p01_r = bgra_row0[col4 + 6] as i32;
 
-                        uv_row[col] = u;
-                        uv_row[col + 1] = v;
-                    }
+                    let p10_b = bgra_row1[col4] as i32;
+                    let p10_g = bgra_row1[col4 + 1] as i32;
+                    let p10_r = bgra_row1[col4 + 2] as i32;
+
+                    let p11_b = bgra_row1[col4 + 4] as i32;
+                    let p11_g = bgra_row1[col4 + 5] as i32;
+                    let p11_r = bgra_row1[col4 + 6] as i32;
+
+                    let r_avg = (p00_r + p01_r + p10_r + p11_r) >> 2;
+                    let g_avg = (p00_g + p01_g + p10_g + p11_g) >> 2;
+                    let b_avg = (p00_b + p01_b + p10_b + p11_b) >> 2;
+
+                    let u = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128) as u8;
+                    let v = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128) as u8;
+
+                    uv_row[col] = u;
+                    uv_row[col + 1] = v;
                 }
-            });
+            }
 
             unsafe {
                 let in_buffer = MFCreateMemoryBuffer(expected_nv12_len as u32).ok()?;

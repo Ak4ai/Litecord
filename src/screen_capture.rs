@@ -895,7 +895,9 @@ impl ScreenCaptureManager {
                     }
 
                     // Drena quadros novos da GPU para sempre ter o frame mais atualizado
+                    let mut new_frames_count = 0usize;
                     while let Ok(new_frame) = rx_frame.try_recv() {
+                        new_frames_count += 1;
                         if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
                             let _ = tx_recycle.try_send(old_buf);
                         }
@@ -905,6 +907,7 @@ impl ScreenCaptureManager {
                     if latest_cached_frame.is_none() {
                         match rx_frame.recv_timeout(Duration::from_millis(20)) {
                             Ok(first_frame) => {
+                                new_frames_count += 1;
                                 latest_cached_frame = Some(first_frame);
                             }
                             Err(_) => {
@@ -912,6 +915,7 @@ impl ScreenCaptureManager {
                                 {
                                     let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
                                     if let Some((blt, pix)) = capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf) {
+                                        new_frames_count += 1;
                                         latest_cached_frame = Some((cur_buf, target_w, target_h, blt, pix));
                                     } else {
                                         continue;
@@ -923,7 +927,7 @@ impl ScreenCaptureManager {
                         }
                     }
 
-                    // Pacer CFR de 60.0 FPS de precisão (Sem busy spinloop para 0% CPU overhead)
+                    // Pacer CFR de precisão (Sem busy spinloop para 0% CPU overhead)
                     let now = Instant::now();
                     if now < next_tick {
                         let sleep_dur = (next_tick - now).min(frame_target_interval);
@@ -932,6 +936,11 @@ impl ScreenCaptureManager {
                     next_tick += frame_target_interval;
                     if now > next_tick + frame_target_interval * 2 {
                         next_tick = now + frame_target_interval;
+                    }
+
+                    // Economia inteligente de CPU quando a tela está completamente estática
+                    if new_frames_count == 0 && last_frame_sent.elapsed() < Duration::from_millis(50) {
+                        continue;
                     }
 
                     let (bgra_slice, cur_w, cur_h, blt_us, pix_us) = match latest_cached_frame {
