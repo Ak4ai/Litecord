@@ -2376,24 +2376,39 @@ impl GatewayClient {
                         let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
                         let event_uid_str = event_uid.to_string();
                         if !my_uid.is_empty() && event_uid_str == my_uid {
+                            let event_gid = v["d"]["guild_id"].as_str().map(|s| s.to_string());
+                            let my_active_gid = self.voice_guild_id.lock().unwrap().clone();
+                            let my_active_cid = self.voice_channel_id.lock().unwrap().clone();
+
                             if let Some(sid) = v["d"]["session_id"].as_str() {
-                                info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}", sid, event_chan, v["d"]["guild_id"].as_str());
+                                info!("VOICE_STATE_UPDATE do meu usuário recebido! Session ID: {}, Channel: {:?}, Guild: {:?}, MyActiveGuild: {:?}", sid, event_chan, event_gid, my_active_gid);
                                 if let Some(cid) = event_chan {
                                     *self.voice_session_id.lock().unwrap() = Some(sid.to_string());
                                     *self.voice_channel_id.lock().unwrap() = Some(cid.to_string());
-                                    if let Some(gid) = v["d"]["guild_id"].as_str() {
-                                        *self.voice_guild_id.lock().unwrap() = Some(gid.to_string());
+                                    if let Some(ref gid) = event_gid {
+                                        *self.voice_guild_id.lock().unwrap() = Some(gid.clone());
                                     }
                                     self.try_trigger_voice_connect();
                                 } else {
-                                    // We left the voice channel or were displaced by another client
-                                    info!("🚪 [VOICE_STATE_UPDATE] Desconectado da sala de voz (deslocado ou saiu)");
-                                    *self.voice_session_id.lock().unwrap() = None;
-                                    *self.voice_token.lock().unwrap() = None;
-                                    *self.voice_endpoint.lock().unwrap() = None;
-                                    *self.voice_channel_id.lock().unwrap() = None;
-                                    clear_voice_participants();
-                                    let _ = self.event_tx.send(GatewayEvent::VoiceDisconnected).await;
+                                    let is_matching_guild = match (&my_active_gid, &event_gid) {
+                                        (Some(my_g), Some(ev_g)) => my_g == ev_g,
+                                        (None, None) => true,
+                                        _ => my_active_gid.is_none(),
+                                    };
+
+                                    if my_active_cid.is_some() && is_matching_guild {
+                                        info!("🚪 [VOICE_STATE_UPDATE] Desconectado da sala de voz da guild {:?}", my_active_gid);
+                                        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+                                        *self.voice_session_id.lock().unwrap() = None;
+                                        *self.voice_token.lock().unwrap() = None;
+                                        *self.voice_endpoint.lock().unwrap() = None;
+                                        *self.voice_channel_id.lock().unwrap() = None;
+                                        *self.voice_guild_id.lock().unwrap() = None;
+                                        clear_voice_participants();
+                                        let _ = self.event_tx.send(GatewayEvent::VoiceDisconnected).await;
+                                    } else {
+                                        info!("🛡️ [VOICE_STATE_UPDATE] Ignorando evento de desconexão de outra guild ({:?}) enquanto estamos em ({:?})", event_gid, my_active_gid);
+                                    }
                                 }
                             }
                         }
@@ -2605,40 +2620,58 @@ pub async fn connect_voice_gateway(
     let cid_num: u64 = channel_id.parse().unwrap_or(0);
     set_my_voice_channel_id(cid_num);
 
-    match connect_async(&voice_url).await {
-        Ok((ws_stream, _)) => {
-            info!("ConexÃ£o WebSocket com Voice Gateway estabelecida!");
-            let (write, mut read) = ws_stream.split();
-            let write_arc = Arc::new(Mutex::new(write));
+    let mut is_first_connect = true;
+    loop {
+        if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+            break;
+        }
 
-            let guild_id = guild_id.to_string();
-            let user_id = user_id.to_string();
-            let session_id = session_id.to_string();
-            let token = token.to_string();
-            let channel_id_str = channel_id.to_string();
-            let event_tx_vclose = event_tx.clone();
-            sync_voice_channel_participants(&channel_id_str);
-            let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
-            let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
-            let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+        if !is_first_connect {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+                break;
+            }
+            info!("🔄 [VOICE GATEWAY] Reconectando à Voice Gateway (sessão {})...", my_session_id);
+        }
+        is_first_connect = false;
 
-            // Create DAVE (Discord Audio/Video E2EE) session using the davey crate
-            let uid_num: u64 = user_id.parse().unwrap_or(0);
-            let cid_num: u64 = channel_id_str.parse().unwrap_or(0);
-            let dave_session: Arc<std::sync::Mutex<Option<DaveSession>>> = Arc::new(std::sync::Mutex::new(
-                DaveSession::new(NonZeroU16::new(1).unwrap(), uid_num, cid_num, None)
-                    .map_err(|e| { warn!("Falha ao criar DaveSession: {:?}", e); })
-                    .ok()
-            ));
-            let saved_external_sender: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+        match connect_async(&voice_url).await {
+            Ok((ws_stream, _)) => {
+                info!("Conexão WebSocket com Voice Gateway estabelecida!");
+                let (write, mut read) = ws_stream.split();
+                let write_arc = Arc::new(Mutex::new(write));
 
-            // Read loop: wait for Opcode 8 HELLO from Voice Gateway before sending Opcode 0 Identify!
-            while let Some(msg_result) = read.next().await {
-                match msg_result {
-                    Ok(Message::Text(text)) => {
-                        if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                            let op = val["op"].as_u64().unwrap_or(99);
-                            info!("Payload recebido da Voice Gateway: op={}", op);
+                let guild_id = guild_id.to_string();
+                let user_id = user_id.to_string();
+                let session_id = session_id.to_string();
+                let token = token.to_string();
+                let channel_id_str = channel_id.to_string();
+                let event_tx_vclose = event_tx.clone();
+                sync_voice_channel_participants(&channel_id_str);
+                let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
+                let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+                let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+
+                // Create DAVE (Discord Audio/Video E2EE) session using the davey crate
+                let uid_num: u64 = user_id.parse().unwrap_or(0);
+                let cid_num: u64 = channel_id_str.parse().unwrap_or(0);
+                let dave_session: Arc<std::sync::Mutex<Option<DaveSession>>> = Arc::new(std::sync::Mutex::new(
+                    DaveSession::new(NonZeroU16::new(1).unwrap(), uid_num, cid_num, None)
+                        .map_err(|e| { warn!("Falha ao criar DaveSession: {:?}", e); })
+                        .ok()
+                ));
+                let saved_external_sender: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+
+                // Read loop: wait for Opcode 8 HELLO from Voice Gateway before sending Opcode 0 Identify!
+                while let Some(msg_result) = read.next().await {
+                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+                        break;
+                    }
+                    match msg_result {
+                        Ok(Message::Text(text)) => {
+                            if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                                let op = val["op"].as_u64().unwrap_or(99);
+                                info!("Payload recebido da Voice Gateway: op={}", op);
 
                             match op {
                                 8 => {
@@ -4114,26 +4147,32 @@ pub async fn connect_voice_gateway(
                         }
                      }
                     Ok(Message::Close(frame)) => {
-                        info!("Voice Gateway encerrada normalmente ou deslocada: {:?}", frame);
-                        set_is_connected_to_voice(false);
-                        clear_voice_participants();
-                        let _ = event_tx_vclose.send(GatewayEvent::VoiceDisconnected).await;
+                        info!("Voice Gateway conexão fechada pelo servidor: {:?}", frame);
                         break;
                     }
                     Err(e) => {
-                        warn!("Encerrando leitura da Voice Gateway: {:?}", e);
-                        set_is_connected_to_voice(false);
-                        clear_voice_participants();
-                        let _ = event_tx_vclose.send(GatewayEvent::VoiceDisconnected).await;
+                        warn!("Aviso de leitura na Voice Gateway: {:?}", e);
                         break;
                     }
                     _ => {}
                 }
             }
+
+            set_is_connected_to_voice(false);
+            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+                info!("Sessão de voz {} finalizada pelo usuário.", my_session_id);
+                clear_voice_participants();
+                break;
+            }
+            warn!("⚠️ [VOICE GATEWAY] Conexão com Voice Gateway temporariamente perdida. Reconectando em 1.5s...");
         }
         Err(e) => {
-            error!("Falha ao conectar na Voice Gateway: {:?}", e);
-            set_is_connected_to_voice(false);
+            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+                break;
+            }
+            warn!("Falha ao conectar na Voice Gateway: {:?}. Tentando reconectar em 2s...", e);
+            tokio::time::sleep(Duration::from_millis(2000)).await;
         }
     }
+}
 }
