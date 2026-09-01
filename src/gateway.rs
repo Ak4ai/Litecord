@@ -1971,7 +1971,7 @@ impl GatewayClient {
                             let _ = tx.send(Message::Text(payload.to_string().into())).await;
                         }
 
-                        // 🛡️ Watchdog Anti-Estado Fantasma: Se em 4.5s não recebermos endpoint/token
+                        // 🛡️ Watchdog Anti-Estado Fantasma: Se em 4.5s ainda não estivermos conectados à voz
                         // (ex: queda/troca de rede onde o servidor do Discord ainda acha que o usuário está no canal),
                         // forçamos um reset OP 4 com channel_id: null seguido do canal desejado para destravar imediatamente!
                         if let Some(target_cid) = channel_id {
@@ -1981,8 +1981,7 @@ impl GatewayClient {
                                 tokio::time::sleep(Duration::from_millis(4500)).await;
                                 let is_still_pending = {
                                     let cur_cid = client_watchdog.voice_channel_id.lock().unwrap();
-                                    let cur_tok = client_watchdog.voice_token.lock().unwrap();
-                                    *cur_cid == Some(target_cid.clone()) && cur_tok.is_none()
+                                    *cur_cid == Some(target_cid.clone()) && !is_connected_to_voice()
                                 };
 
                                 if is_still_pending {
@@ -4116,12 +4115,14 @@ pub async fn connect_voice_gateway(
                      }
                     Ok(Message::Close(frame)) => {
                         info!("Voice Gateway encerrada normalmente ou deslocada: {:?}", frame);
+                        set_is_connected_to_voice(false);
                         clear_voice_participants();
                         let _ = event_tx_vclose.send(GatewayEvent::VoiceDisconnected).await;
                         break;
                     }
                     Err(e) => {
                         warn!("Encerrando leitura da Voice Gateway: {:?}", e);
+                        set_is_connected_to_voice(false);
                         clear_voice_participants();
                         let _ = event_tx_vclose.send(GatewayEvent::VoiceDisconnected).await;
                         break;
@@ -4132,6 +4133,7 @@ pub async fn connect_voice_gateway(
         }
         Err(e) => {
             error!("Falha ao conectar na Voice Gateway: {:?}", e);
+            set_is_connected_to_voice(false);
         }
     }
 }
