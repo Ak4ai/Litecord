@@ -2775,8 +2775,35 @@ fn get_cached_peer_sps_pps(peer_uid: u64) -> Option<Vec<u8>> {
     None
 }
 
+fn strip_aud(data: &[u8]) -> &[u8] {
+    if data.len() < 5 {
+        return data;
+    }
+    let (nal_type, header_len) = if data.starts_with(&[0, 0, 0, 1]) {
+        (data[4] & 0x1F, 4)
+    } else if data.starts_with(&[0, 0, 1]) {
+        (data[3] & 0x1F, 3)
+    } else {
+        return data;
+    };
+
+    if nal_type == 9 {
+        // Ignora AUD (NAL 9) e avança para o próximo NAL unit (SPS, PPS ou Slice)
+        if let Some(pos) = data[header_len + 1..].windows(3).position(|w| w == [0, 0, 1]) {
+            let next_sc = header_len + 1 + pos;
+            if next_sc > 0 && data[next_sc - 1] == 0 {
+                return &data[next_sc - 1..];
+            } else {
+                return &data[next_sc..];
+            }
+        }
+    }
+    data
+}
+
 /// Garante que o bitstream esteja rigorosamente no padrão Annex B (00 00 00 01)
-/// Convertendo automaticamente qualquer fluxo em AVCC/MP4 (prefixos de 4 bytes) proveniente de drivers WMF/AMD/Intel.
+/// Convertendo automaticamente qualquer fluxo em AVCC/MP4 (prefixos de 4 bytes) proveniente de drivers WMF/AMD/Intel
+/// e removendo NALs desnecessários como AUD (NAL 9) que causam dsBitstreamError no OpenH264.
 fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     if data.len() < 4 {
         return std::borrow::Cow::Borrowed(data);
@@ -2823,16 +2850,17 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 
     // Já está em Annex B legítimo?
     if data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1]) {
-        let has_sps = data.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
+        let clean = strip_aud(data);
+        let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if !has_sps {
             if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-                let mut with_header = Vec::with_capacity(cached_header.len() + data.len());
+                let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
                 with_header.extend_from_slice(&cached_header);
-                with_header.extend_from_slice(data);
+                with_header.extend_from_slice(clean);
                 return std::borrow::Cow::Owned(with_header);
             }
         }
-        return std::borrow::Cow::Borrowed(data);
+        return std::borrow::Cow::Borrowed(clean);
     }
 
     // Pular caixas de contêiner MP4 (ex: ftyp, moov, free, mdat) se existirem
@@ -2858,16 +2886,17 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
         return std::borrow::Cow::Borrowed(data);
     }
     if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
-        let has_sps = slice.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
+        let clean = strip_aud(slice);
+        let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if !has_sps {
             if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-                let mut with_header = Vec::with_capacity(cached_header.len() + slice.len());
+                let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
                 with_header.extend_from_slice(&cached_header);
-                with_header.extend_from_slice(slice);
+                with_header.extend_from_slice(clean);
                 return std::borrow::Cow::Owned(with_header);
             }
         }
-        return std::borrow::Cow::Borrowed(slice);
+        return std::borrow::Cow::Borrowed(clean);
     }
 
     // Converte AVCC (prefixos de tamanho de 4 bytes) para Annex B (00 00 00 01)
@@ -2887,16 +2916,17 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     if out.is_empty() {
         std::borrow::Cow::Borrowed(data)
     } else {
-        let has_sps = out.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
+        let clean = strip_aud(&out);
+        let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if !has_sps {
             if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-                let mut with_header = Vec::with_capacity(cached_header.len() + out.len());
+                let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
                 with_header.extend_from_slice(&cached_header);
-                with_header.extend_from_slice(&out);
+                with_header.extend_from_slice(clean);
                 return std::borrow::Cow::Owned(with_header);
             }
         }
-        std::borrow::Cow::Owned(out)
+        std::borrow::Cow::Owned(clean.to_vec())
     }
 }
 
