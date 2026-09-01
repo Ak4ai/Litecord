@@ -1246,6 +1246,7 @@ impl ScreenCaptureManager {
 
         let is_running_decoder = Arc::clone(&self.is_receiver_running);
         let channel_id_decoder = Arc::clone(&self.channel_id);
+        let my_user_id_decoder = Arc::clone(&self.my_user_id);
         let peers_store_decoder = Arc::clone(&self.known_peers);
 
         // Dedicated Video Decoder Worker Thread (Sunshine / Moonlight Architecture)
@@ -1301,12 +1302,14 @@ impl ScreenCaptureManager {
                                 if should_req_pli {
                                     last_pli_req.insert(peer_uid, Instant::now());
                                     let current_cid = channel_id_decoder.load(Ordering::Relaxed);
+                                    let my_uid = my_user_id_decoder.load(Ordering::Relaxed);
                                     let inst = get_process_instance_id();
-                                    let mut req_pkt = Vec::with_capacity(25);
+                                    let mut req_pkt = Vec::with_capacity(33);
                                     req_pkt.extend_from_slice(MAGIC);
                                     req_pkt.extend_from_slice(&inst.to_be_bytes());
                                     req_pkt.push(OP_KEYFRAME_REQ);
                                     req_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                                    req_pkt.extend_from_slice(&my_uid.to_be_bytes());
                                     req_pkt.extend_from_slice(&peer_uid.to_be_bytes());
                                     if let Ok(guard) = SHARED_P2P_SOCKET.lock() {
                                         if let Some(sock) = guard.as_ref() {
@@ -1909,8 +1912,16 @@ impl ScreenCaptureManager {
                                 }
                                 OP_KEYFRAME_REQ => {
                                     if is_tx_running.load(Ordering::Relaxed) {
-                                        info!("⚡ [KEYFRAME REQ RECEBIDO] Receptor solicitou IDR Keyframe imediato!");
-                                        KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                        let is_for_me = if len >= 33 {
+                                            let target_uid = u64::from_be_bytes(recv_buf[25..33].try_into().unwrap());
+                                            target_uid == my_uid || target_uid == 0
+                                        } else {
+                                            true
+                                        };
+                                        if is_for_me {
+                                            info!("⚡ [KEYFRAME REQ RECEBIDO] Receptor UID={} solicitou IDR Keyframe imediato!", pkt_uid);
+                                            KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                        }
                                     }
                                 }
                                 OP_QOS_FEEDBACK => {
