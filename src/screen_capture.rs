@@ -3118,13 +3118,10 @@ fn decode_video_frame(
             }
         }
         Ok(None) => {
-            log::debug!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {} (frame_len={} bytes, header={:02X?})",
-                peer_uid, frame_data.len(), &frame_data[..frame_data.len().min(8)]);
+            log::trace!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {}", peer_uid);
         }
         Err(e) => {
-            log::warn!("❌ [DECODER RX] Erro ao decodificar frame H.264 para peer {}: {:?} (len={} bytes, header={:02X?})",
-                peer_uid, e, frame_data.len(), &frame_data[..frame_data.len().min(8)]);
-            decoders.remove(&peer_uid);
+            log::debug!("⚠️ [DECODER RX] Frame descartado por falta de referência para peer {}: {:?} (solicitando IDR)", peer_uid, e);
         }
     }
     None
