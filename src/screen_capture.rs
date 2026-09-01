@@ -1562,7 +1562,12 @@ impl ScreenCaptureManager {
                                             }
                                         }
 
-                                        let peer_rx_port = if len >= 29 + name_len + 2 {
+                                        let is_private_ip = match src_addr.ip() {
+                                            std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),
+                                            std::net::IpAddr::V6(ipv6) => ipv6.is_loopback(),
+                                        };
+
+                                        let peer_rx_port = if is_private_ip && len >= 29 + name_len + 2 {
                                             u16::from_be_bytes(recv_buf[29 + name_len..31 + name_len].try_into().unwrap())
                                         } else {
                                             src_addr.port()
@@ -1572,7 +1577,7 @@ impl ScreenCaptureManager {
 
                                         if let Ok(mut peers) = peers_store.lock() {
                                             peers.insert(pkt_uid, (src_addr, Instant::now()));
-                                            if explicit_addr != src_addr {
+                                            if is_private_ip && explicit_addr != src_addr {
                                                 peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
                                             }
                                         }
@@ -1625,7 +1630,12 @@ impl ScreenCaptureManager {
                                             }
                                         }
 
-                                        let peer_port = if len >= 28 + name_len + 2 {
+                                        let is_private_ip = match src_addr.ip() {
+                                            std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),
+                                            std::net::IpAddr::V6(ipv6) => ipv6.is_loopback(),
+                                        };
+
+                                        let peer_port = if is_private_ip && len >= 28 + name_len + 2 {
                                             u16::from_be_bytes(recv_buf[28 + name_len..30 + name_len].try_into().unwrap())
                                         } else {
                                             src_addr.port()
@@ -1636,7 +1646,7 @@ impl ScreenCaptureManager {
                                         if let Ok(mut peers) = peers_store.lock() {
                                             let is_new = !peers.contains_key(&peer_key);
                                             peers.insert(peer_key, (src_addr, Instant::now()));
-                                            if explicit_addr != src_addr {
+                                            if is_private_ip && explicit_addr != src_addr {
                                                 peers.insert(peer_key.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
                                             }
                                             if is_new && is_tx_running.load(Ordering::Relaxed) {
