@@ -1873,6 +1873,7 @@ pub struct GatewayClient {
     voice_guild_id: Arc<std::sync::Mutex<Option<String>>>,
     voice_channel_id: Arc<std::sync::Mutex<Option<String>>>,
     voice_self_mute: Arc<std::sync::Mutex<bool>>,
+    ws_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<Message>>>>,
 }
 
 impl GatewayClient {
@@ -1899,6 +1900,7 @@ impl GatewayClient {
             voice_guild_id: Arc::new(std::sync::Mutex::new(None)),
             voice_channel_id: Arc::new(std::sync::Mutex::new(None)),
             voice_self_mute: Arc::new(std::sync::Mutex::new(false)),
+            ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -1930,197 +1932,229 @@ impl GatewayClient {
     }
 
     pub async fn start(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<GatewayCommand>) {
-        // Gateway v9 is required for User Account Tokens
-        let url = "wss://gateway.discord.gg/?v=9&encoding=json";
-        info!("Conectando à Gateway v9 do Discord...");
+        // Spawn GatewayCommand listener loop (permanece vivo entre reconexões do WebSocket)
+        let client_cmd = Arc::clone(&self);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
+                        *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
 
-        match connect_async(url).await {
-            Ok((ws_stream, _)) => {
-                info!("Conexão WebSocket estabelecida com sucesso!");
-                let (write, mut read) = ws_stream.split();
-                let write_arc = Arc::new(Mutex::new(write));
+                        // Incrementa session ID para cancelar tarefas antigas de áudio UDP
+                        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
 
-                // Spawn GatewayCommand listener loop (OP 4 Voice State Update, etc)
-                let write_cmd = Arc::clone(&write_arc);
-                let client_cmd = Arc::clone(&self);
-                tokio::spawn(async move {
-                    while let Some(cmd) = cmd_rx.recv().await {
-                        match cmd {
-                            GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
-                                let channel_changed = {
-                                    let cur_channel = client_cmd.voice_channel_id.lock().unwrap();
-                                    *cur_channel != channel_id
+                        // Reset de credenciais de voz para garantir handshake limpo
+                        *client_cmd.voice_token.lock().unwrap() = None;
+                        *client_cmd.voice_session_id.lock().unwrap() = None;
+                        *client_cmd.voice_endpoint.lock().unwrap() = None;
+                        *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
+                        *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
+
+                        let effective_gid_val = if guild_id.trim().is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::json!(guild_id)
+                        };
+
+                        let payload = serde_json::json!({
+                            "op": 4,
+                            "d": {
+                                "guild_id": effective_gid_val,
+                                "channel_id": channel_id,
+                                "self_mute": self_mute,
+                                "self_deaf": self_deaf
+                            }
+                        });
+
+                        info!("📡 Enviando OP 4 VoiceStateUpdate à Gateway: {}", payload);
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let _ = tx.send(Message::Text(payload.to_string().into())).await;
+                        }
+
+                        // 🛡️ Watchdog Anti-Estado Fantasma: Se em 4.5s não recebermos endpoint/token
+                        // (ex: queda/troca de rede onde o servidor do Discord ainda acha que o usuário está no canal),
+                        // forçamos um reset OP 4 com channel_id: null seguido do canal desejado para destravar imediatamente!
+                        if let Some(target_cid) = channel_id {
+                            let client_watchdog = Arc::clone(&client_cmd);
+                            let target_gid = guild_id.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(4500)).await;
+                                let is_still_pending = {
+                                    let cur_cid = client_watchdog.voice_channel_id.lock().unwrap();
+                                    let cur_tok = client_watchdog.voice_token.lock().unwrap();
+                                    *cur_cid == Some(target_cid.clone()) && cur_tok.is_none()
                                 };
 
-                                *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
-
-                                if channel_changed {
-                                    // Terminate any existing background UDP audio tasks
-                                    CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
-
-                                    // Reset voice token, session_id and endpoint buffers for clean new connection
-                                    *client_cmd.voice_token.lock().unwrap() = None;
-                                    *client_cmd.voice_session_id.lock().unwrap() = None;
-                                    *client_cmd.voice_endpoint.lock().unwrap() = None;
-                                    *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
-                                    *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
-                                }
-
-                                let effective_gid_val = if guild_id.trim().is_empty() {
-                                    serde_json::Value::Null
-                                } else {
-                                    serde_json::json!(guild_id)
-                                };
-
-                                let payload = serde_json::json!({
-                                    "op": 4,
-                                    "d": {
-                                        "guild_id": effective_gid_val,
-                                        "channel_id": channel_id,
-                                        "self_mute": self_mute,
-                                        "self_deaf": self_deaf
+                                if is_still_pending {
+                                    warn!("⚠️ [VOICE WATCHDOG] Detectado estado fantasma/timeout na Gateway! Forçando reset OP 4 para reconexão limpa...");
+                                    let effective_gid = if target_gid.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(target_gid) };
+                                    let reset_payload = serde_json::json!({
+                                        "op": 4,
+                                        "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": false, "self_deaf": false }
+                                    });
+                                    if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
+                                        let _ = tx.send(Message::Text(reset_payload.to_string().into())).await;
                                     }
-                                });
 
-                                 info!("Enviando OP 4 VoiceStateUpdate à Gateway: {}", payload);
-                                let mut w = write_cmd.lock().await;
-                                if let Err(e) = w.send(Message::Text(payload.to_string().into())).await {
-                                    warn!("Falha ao enviar Opcode 4 (VoiceStateUpdate): {:?}", e);
+                                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                                    let rejoin_payload = serde_json::json!({
+                                        "op": 4,
+                                        "d": { "guild_id": effective_gid, "channel_id": target_cid, "self_mute": false, "self_deaf": false }
+                                    });
+                                    if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
+                                        let _ = tx.send(Message::Text(rejoin_payload.to_string().into())).await;
+                                    }
                                 }
-                            }
-                            GatewayCommand::SubscribeGuild { .. } => {
-                                // Opcode 14 is not needed for user accounts; voice states and members are pre-loaded via GUILD_CREATE and READY_SUPPLEMENTAL
-                            }
+                            });
                         }
                     }
-                });
-
-                let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
-
-                // Read incoming Gateway messages loop
-                while let Some(msg_result) = read.next().await {
-                    match msg_result {
-                        Ok(Message::Text(text)) => {
-                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                                let op = value["op"].as_u64().unwrap_or(99);
-                                if let Some(s) = value["s"].as_i64() {
-                                    last_seq_arc.store(s, Ordering::Relaxed);
-                                }
-
-                                match op {
-                                    10 => {
-                                        // Opcode 10: HELLO
-                                        let heartbeat_interval = value["d"]["heartbeat_interval"]
-                                            .as_u64()
-                                            .unwrap_or(41250);
-
-                                        info!("Heartbeat interval recebido: {} ms", heartbeat_interval);
-
-                                        // Send initial Heartbeat (Opcode 1)
-                                        let last_s = last_seq_arc.load(Ordering::Relaxed);
-                                        let hb_initial = if last_s >= 0 {
-                                            serde_json::json!({ "op": 1, "d": last_s })
-                                        } else {
-                                            serde_json::json!({ "op": 1, "d": null })
-                                        };
-                                        {
-                                            let mut w = write_arc.lock().await;
-                                            let _ = w.send(Message::Text(hb_initial.to_string().into())).await;
-                                        }
-
-                                        // Send Identify Payload (Opcode 2) for Discord User Tokens
-                                        let identify = serde_json::json!({
-                                            "op": 2,
-                                            "d": {
-                                                "token": self.token,
-                                                "capabilities": 16381,
-                                                "properties": {
-                                                    "os": "Windows",
-                                                    "browser": "Chrome",
-                                                    "device": "",
-                                                    "system_locale": "pt-BR",
-                                                    "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-                                                    "browser_version": "127.0.0.0",
-                                                    "os_version": "10.0.19045",
-                                                    "referrer": "",
-                                                    "referring_domain": "",
-                                                    "referrer_current": "",
-                                                    "referring_domain_current": "",
-                                                    "release_channel": "stable",
-                                                    "client_build_number": 320000,
-                                                    "client_event_source": null
-                                                },
-                                                "presence": {
-                                                    "status": "online",
-                                                    "since": 0,
-                                                    "activities": [],
-                                                    "afk": false
-                                                },
-                                                "compress": false,
-                                                "client_state": {
-                                                    "guild_versions": {}
-                                                }
-                                            }
-                                        });
-
-                                        info!("Enviando payload IDENTIFY v9 para a Gateway...");
-                                        {
-                                            let mut w = write_arc.lock().await;
-                                            if let Err(e) = w.send(Message::Text(identify.to_string().into())).await {
-                                                error!("Erro ao enviar payload IDENTIFY: {:?}", e);
-                                                return;
-                                            }
-                                        }
-
-                                        // Spawn Heartbeat Loop
-                                        let write_hb = Arc::clone(&write_arc);
-                                        let last_seq_hb = Arc::clone(&last_seq_arc);
-                                        tokio::spawn(async move {
-                                            loop {
-                                                sleep(Duration::from_millis(heartbeat_interval)).await;
-                                                let last_s = last_seq_hb.load(Ordering::Relaxed);
-                                                let hb = if last_s >= 0 {
-                                                    serde_json::json!({ "op": 1, "d": last_s })
-                                                } else {
-                                                    serde_json::json!({ "op": 1, "d": null })
-                                                };
-                                                let mut w = write_hb.lock().await;
-                                                if let Err(e) = w.send(Message::Text(hb.to_string().into())).await {
-                                                    warn!("Falha ao enviar Heartbeat: {:?}", e);
-                                                    break;
-                                                }
-                                            }
-                                        });
-                                    }
-                                    _ => {
-                                        self.handle_event(&value).await;
-                                    }
-                                }
-                            }
-                        }
-                        Ok(Message::Close(close_frame)) => {
-                            warn!("Gateway fechou a conexão (Close Frame): {:?}", close_frame);
-                            let reason = match close_frame {
-                                Some(frame) => format!("Código {}: {}", frame.code, frame.reason),
-                                None => "Conexão encerrada pelo servidor".to_string(),
-                            };
-                            let _ = self.event_tx.send(GatewayEvent::Disconnected { reason }).await;
-                            break;
-                        }
-                        Err(e) => {
-                            error!("Erro de leitura no WebSocket: {:?}", e);
-                            break;
-                        }
-                        _ => {}
-                    }
+                    GatewayCommand::SubscribeGuild { .. } => {}
                 }
             }
-            Err(e) => {
-                error!("Falha ao conectar na Gateway do Discord: {:?}", e);
-                let _ = self.event_tx.send(GatewayEvent::Disconnected {
-                    reason: format!("Erro de conexão: {}", e)
-                }).await;
+        });
+
+        let url = "wss://gateway.discord.gg/?v=9&encoding=json";
+
+        // Loop Infinito de Auto-Reconexão da Gateway
+        loop {
+            info!("Conectando à Gateway v9 do Discord...");
+
+            match connect_async(url).await {
+                Ok((ws_stream, _)) => {
+                    info!("Conexão WebSocket estabelecida com sucesso!");
+                    let (mut write, mut read) = ws_stream.split();
+                    let (ws_out_tx, mut ws_out_rx) = mpsc::channel::<Message>(100);
+
+                    *self.ws_tx.lock().await = Some(ws_out_tx.clone());
+
+                    // Worker para envio ordenado de mensagens no WebSocket
+                    let writer_task = tokio::spawn(async move {
+                        while let Some(msg) = ws_out_rx.recv().await {
+                            if let Err(e) = write.send(msg).await {
+                                warn!("Falha ao enviar mensagem no WebSocket: {:?}", e);
+                                break;
+                            }
+                        }
+                    });
+
+                    let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
+                    let mut hb_task_handle: Option<tokio::task::JoinHandle<()>> = None;
+
+                    // Read incoming Gateway messages loop
+                    while let Some(msg_result) = read.next().await {
+                        match msg_result {
+                            Ok(Message::Text(text)) => {
+                                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                    let op = value["op"].as_u64().unwrap_or(99);
+                                    if let Some(s) = value["s"].as_i64() {
+                                        last_seq_arc.store(s, Ordering::Relaxed);
+                                    }
+
+                                    match op {
+                                        10 => {
+                                            // Opcode 10: HELLO
+                                            let heartbeat_interval = value["d"]["heartbeat_interval"]
+                                                .as_u64()
+                                                .unwrap_or(41250);
+
+                                            info!("Heartbeat interval recebido: {} ms", heartbeat_interval);
+
+                                            // Send initial Heartbeat (Opcode 1)
+                                            let last_s = last_seq_arc.load(Ordering::Relaxed);
+                                            let hb_initial = if last_s >= 0 {
+                                                serde_json::json!({ "op": 1, "d": last_s })
+                                            } else {
+                                                serde_json::json!({ "op": 1, "d": null })
+                                            };
+                                            let _ = ws_out_tx.send(Message::Text(hb_initial.to_string().into())).await;
+
+                                            // Send Identify Payload (Opcode 2) for Discord User Tokens
+                                            let identify = serde_json::json!({
+                                                "op": 2,
+                                                "d": {
+                                                    "token": self.token,
+                                                    "capabilities": 16381,
+                                                    "properties": {
+                                                        "os": "Windows",
+                                                        "browser": "Chrome",
+                                                        "device": "",
+                                                        "system_locale": "pt-BR",
+                                                        "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+                                                        "browser_version": "127.0.0.0",
+                                                        "os_version": "10.0.19045",
+                                                        "referrer": "",
+                                                        "referring_domain": "",
+                                                        "referrer_current": "",
+                                                        "referring_domain_current": "",
+                                                        "release_channel": "stable",
+                                                        "client_build_number": 320000,
+                                                        "client_event_source": null
+                                                    },
+                                                    "presence": {
+                                                        "status": "online",
+                                                        "since": 0,
+                                                        "activities": [],
+                                                        "afk": false
+                                                    },
+                                                    "compress": false,
+                                                    "client_state": {
+                                                        "guild_versions": {}
+                                                    }
+                                                }
+                                            });
+
+                                            info!("Enviando payload IDENTIFY v9 para a Gateway...");
+                                            let _ = ws_out_tx.send(Message::Text(identify.to_string().into())).await;
+
+                                            // Spawn Heartbeat Loop
+                                            let tx_hb = ws_out_tx.clone();
+                                            let last_seq_hb = Arc::clone(&last_seq_arc);
+                                            if let Some(h) = hb_task_handle.take() { h.abort(); }
+                                            hb_task_handle = Some(tokio::spawn(async move {
+                                                loop {
+                                                    sleep(Duration::from_millis(heartbeat_interval)).await;
+                                                    let last_s = last_seq_hb.load(Ordering::Relaxed);
+                                                    let hb = if last_s >= 0 {
+                                                        serde_json::json!({ "op": 1, "d": last_s })
+                                                    } else {
+                                                        serde_json::json!({ "op": 1, "d": null })
+                                                    };
+                                                    if let Err(_) = tx_hb.send(Message::Text(hb.to_string().into())).await {
+                                                        break;
+                                                    }
+                                                }
+                                            }));
+                                        }
+                                        _ => {
+                                            self.handle_event(&value).await;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Message::Close(close_frame)) => {
+                                warn!("Gateway fechou a conexão (Close Frame): {:?}", close_frame);
+                                break;
+                            }
+                            Err(e) => {
+                                error!("Erro de leitura no WebSocket: {:?}", e);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(h) = hb_task_handle { h.abort(); }
+                    writer_task.abort();
+                    *self.ws_tx.lock().await = None;
+                    warn!("⚠️ [GATEWAY] Conexão com o Discord perdida. Tentando reconectar automaticamente em 2s...");
+                }
+                Err(e) => {
+                    warn!("⚠️ [GATEWAY] Falha ao conectar na Gateway do Discord: {:?}. Tentando reconectar em 3s...", e);
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
             }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
 
