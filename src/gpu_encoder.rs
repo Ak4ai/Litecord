@@ -249,6 +249,10 @@ pub mod ffmpeg_nvenc {
                         .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
                 );
 
+                let initial_width = 1920u32;
+                let initial_height = 1080u32;
+                let initial_bitrate = 6_000_000u32;
+
                 let candidates = [
                     ("h264_nvenc", "NVIDIA NVENC"),
                     ("h264_amf", "AMD AMF"),
@@ -279,10 +283,6 @@ pub mod ffmpeg_nvenc {
                             0
                         }
                     };
-
-                    let initial_width = 1920u32;
-                    let initial_height = 1080u32;
-                    let initial_bitrate = 6_000_000u32;
 
                     let ctx_u8 = codec_ctx as *mut u8;
                     *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
