@@ -868,8 +868,20 @@ impl ScreenCaptureManager {
                 let mut latest_cached_frame: Option<(Vec<u8>, u32, u32, u128, u128)> = None;
 
                 while is_running.load(Ordering::Relaxed) {
-                    let cid = channel_id_atomic.load(Ordering::Relaxed);
-                    let uid = my_user_id_atomic.load(Ordering::Relaxed);
+                    let mut cid = channel_id_atomic.load(Ordering::Relaxed);
+                    if cid == 0 {
+                        cid = crate::gateway::get_my_voice_channel_id();
+                        if cid > 0 {
+                            channel_id_atomic.store(cid, Ordering::Relaxed);
+                        }
+                    }
+                    let mut uid = my_user_id_atomic.load(Ordering::Relaxed);
+                    if uid == 0 {
+                        uid = crate::gateway::get_my_user_id();
+                        if uid > 0 {
+                            my_user_id_atomic.store(uid, Ordering::Relaxed);
+                        }
+                    }
 
                     // Announce presence periodically
                     if last_announce.elapsed() > Duration::from_millis(1500) {
@@ -1691,7 +1703,12 @@ impl ScreenCaptureManager {
                                             } else {
                                                 let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
                                                 let sec_key = get_voice_encryption_key(effective_cid);
-                                                decrypt_signaling_payload(&sec_key, &complete_frame)
+                                                if let Some(decrypted) = decrypt_signaling_payload(&sec_key, &complete_frame) {
+                                                    Some(decrypted)
+                                                } else {
+                                                    let zero_key = get_voice_encryption_key(0);
+                                                    decrypt_signaling_payload(&zero_key, &complete_frame)
+                                                }
                                             };
 
                                             if let Some(valid_frame) = final_frame_opt {
@@ -1789,9 +1806,18 @@ impl ScreenCaptureManager {
                                             }
                                             user_frames.remove(&seq);
 
-                                            let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
-                                            let sec_key = get_voice_encryption_key(effective_cid);
-                                            let final_frame = decrypt_signaling_payload(&sec_key, &complete_frame).unwrap_or(complete_frame);
+                                            let final_frame = if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) || (complete_frame.len() >= 2 && complete_frame[0] == 0xFF && complete_frame[1] == 0xD8) {
+                                                complete_frame
+                                            } else {
+                                                let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
+                                                let sec_key = get_voice_encryption_key(effective_cid);
+                                                if let Some(decrypted) = decrypt_signaling_payload(&sec_key, &complete_frame) {
+                                                    decrypted
+                                                } else {
+                                                    let zero_key = get_voice_encryption_key(0);
+                                                    decrypt_signaling_payload(&zero_key, &complete_frame).unwrap_or(complete_frame)
+                                                }
+                                            };
 
                                             let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
                                             let is_newer = seq > last_seq || (last_seq.wrapping_sub(seq) > 0x8000_0000);
