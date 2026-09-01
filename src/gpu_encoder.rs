@@ -598,7 +598,7 @@ fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
                         }
                     } else if !self.header_cache.is_empty() {
                         let is_idr = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 5) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 5));
-                        if is_idr {
+                        if is_idr || self.needs_keyframe {
                             let mut combined = Vec::with_capacity(self.header_cache.len() + self.out_buffer.len());
                             combined.extend_from_slice(&self.header_cache);
                             combined.extend_from_slice(&self.out_buffer);
