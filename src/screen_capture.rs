@@ -2792,30 +2792,49 @@ fn get_cached_peer_sps_pps(peer_uid: u64) -> Option<Vec<u8>> {
     None
 }
 
-fn strip_aud(data: &[u8]) -> &[u8] {
+fn strip_aud<'a>(data: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
     if data.len() < 5 {
-        return data;
+        return std::borrow::Cow::Borrowed(data);
     }
-    let (nal_type, header_len) = if data.starts_with(&[0, 0, 0, 1]) {
-        (data[4] & 0x1F, 4)
-    } else if data.starts_with(&[0, 0, 1]) {
-        (data[3] & 0x1F, 3)
-    } else {
-        return data;
-    };
+    let has_aud = data.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 9) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 9));
+    if !has_aud {
+        return std::borrow::Cow::Borrowed(data);
+    }
 
-    if nal_type == 9 {
-        // Ignora AUD (NAL 9) e avança para o próximo NAL unit (SPS, PPS ou Slice)
-        if let Some(pos) = data[header_len + 1..].windows(3).position(|w| w == [0, 0, 1]) {
-            let next_sc = header_len + 1 + pos;
-            if next_sc > 0 && data[next_sc - 1] == 0 {
-                return &data[next_sc - 1..];
-            } else {
-                return &data[next_sc..];
+    let mut out = Vec::with_capacity(data.len());
+    let mut pos = 0;
+    while pos + 3 <= data.len() {
+        let is_sc4 = pos + 4 <= data.len() && data[pos..pos + 4] == [0, 0, 0, 1];
+        let is_sc3 = data[pos..pos + 3] == [0, 0, 1];
+        if is_sc4 || is_sc3 {
+            let sc_len = if is_sc4 { 4 } else { 3 };
+            if pos + sc_len >= data.len() { break; }
+            let nal_type = data[pos + sc_len] & 0x1F;
+
+            let mut next_pos = pos + sc_len + 1;
+            while next_pos + 3 <= data.len() {
+                if data[next_pos..next_pos + 3] == [0, 0, 1] || (next_pos + 4 <= data.len() && data[next_pos..next_pos + 4] == [0, 0, 0, 1]) {
+                    break;
+                }
+                next_pos += 1;
             }
+            if next_pos + 3 > data.len() {
+                next_pos = data.len();
+            }
+
+            if nal_type != 9 {
+                out.extend_from_slice(&data[pos..next_pos]);
+            }
+            pos = next_pos;
+        } else {
+            pos += 1;
         }
     }
-    data
+    if out.is_empty() {
+        std::borrow::Cow::Borrowed(data)
+    } else {
+        std::borrow::Cow::Owned(out)
+    }
 }
 
 /// Garante que o bitstream esteja rigorosamente no padrão Annex B (00 00 00 01)
@@ -2898,16 +2917,19 @@ fn extract_sps_pps_annex_b(data: &[u8]) -> Option<Vec<u8>> {
         let clean = strip_aud(data);
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if has_sps {
-            if let Some(sps_pps) = extract_sps_pps_annex_b(clean) {
+            if let Some(sps_pps) = extract_sps_pps_annex_b(clean.as_ref()) {
                 cache_peer_sps_pps(peer_uid, &sps_pps);
             }
         } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
             let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
             with_header.extend_from_slice(&cached_header);
-            with_header.extend_from_slice(clean);
+            with_header.extend_from_slice(clean.as_ref());
             return std::borrow::Cow::Owned(with_header);
         }
-        return std::borrow::Cow::Borrowed(clean);
+        return match clean {
+            std::borrow::Cow::Borrowed(b) => std::borrow::Cow::Borrowed(b),
+            std::borrow::Cow::Owned(o) => std::borrow::Cow::Owned(o),
+        };
     }
 
     // Pular caixas de contêiner MP4 (ex: ftyp, moov, free, mdat) se existirem

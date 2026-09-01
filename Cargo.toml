@@ -58,6 +58,10 @@ path = "src/bin/test_wmf.rs"
 name = "test_ffmpeg_nvenc"
 path = "src/bin/test_ffmpeg_nvenc.rs"
 
+[[bin]]
+name = "test_amd_amf_pipeline"
+path = "src/bin/test_amd_amf_pipeline.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Media_MediaFoundation",
