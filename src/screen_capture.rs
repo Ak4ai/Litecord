@@ -2942,26 +2942,6 @@ fn extract_sps_pps_annex_b(data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-    // Já está em Annex B legítimo?
-    if data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1]) {
-        let clean = strip_aud(data);
-        let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
-        if has_sps {
-            if let Some(sps_pps) = extract_sps_pps_annex_b(clean.as_ref()) {
-                cache_peer_sps_pps(peer_uid, &sps_pps);
-            }
-        } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-            let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
-            with_header.extend_from_slice(&cached_header);
-            with_header.extend_from_slice(clean.as_ref());
-            return std::borrow::Cow::Owned(with_header);
-        }
-        return match clean {
-            std::borrow::Cow::Borrowed(b) => std::borrow::Cow::Borrowed(b),
-            std::borrow::Cow::Owned(o) => std::borrow::Cow::Owned(o),
-        };
-    }
-
     // Pular caixas de contêiner MP4 (ex: ftyp, moov, free, mdat) se existirem
     let mut offset = 0;
     while offset + 8 <= data.len() {
