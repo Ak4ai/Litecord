@@ -387,6 +387,12 @@ fn run_live_rx_monitor() {
     let mut last_heartbeat = Instant::now() - Duration::from_secs(5);
     let mut last_pli_req = Instant::now() - Duration::from_secs(5);
     let mut active_tx_addr: Option<SocketAddr> = None;
+    let mut bytes_window = 0usize;
+    let mut bytes_total = 0usize;
+    let mut min_dec_ms = 999.0f64;
+    let mut max_dec_ms = 0.0f64;
+    let mut total_dec_ms = 0.0f64;
+    let stream_start_time = Instant::now();
 
     let mut recv_buf = [0u8; 4096];
     println!("⏳ Aguardando pacotes do Notebook AMD no canal 'fofocas'...\n");
@@ -411,14 +417,7 @@ fn run_live_rx_monitor() {
             ann.extend_from_slice(&local_port.to_be_bytes());
 
             for target in &targets {
-                match socket.send_to(&ann, target) {
-                    Ok(n) => {
-                        if hb_count <= 3 || hb_count % 10 == 0 {
-                            println!("📡 [TX ANNOUNCE #{}] Enviados {} bytes para {}", hb_count, n, target);
-                        }
-                    }
-                    Err(e) => eprintln!("❌ [TX ERRO] Falha ao enviar para {}: {:?}", target, e),
-                }
+                let _ = socket.send_to(&ann, target);
             }
             if let Some(direct) = active_tx_addr {
                 let _ = socket.send_to(&ann, direct);
@@ -431,17 +430,8 @@ fn run_live_rx_monitor() {
         match socket.recv_from(&mut recv_buf) {
             Ok((len, src)) => {
                 active_tx_addr = Some(src);
-                let magic_slice = if len >= 4 { &recv_buf[0..4] } else { &[0u8; 4][..] };
-                let op = if len >= 9 { recv_buf[8] } else { 0 };
-                let magic_str = std::str::from_utf8(magic_slice).unwrap_or("???");
-                if op == OP_VIDEO_CHUNK || op == 5 {
-                    // Log only every 60th packet to keep logs clean
-                    static PKT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                    let c = PKT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if c % 120 == 0 {
-                        println!("📦 [PROBE] len={}, op={}, magic='{}' ({:02X?})", len, op, magic_str, magic_slice);
-                    }
-                }
+                bytes_window += len;
+                bytes_total += len;
 
                 if len >= 37 && &recv_buf[0..4] == MAGIC && recv_buf[8] == OP_VIDEO_CHUNK {
                     let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
@@ -449,10 +439,6 @@ fn run_live_rx_monitor() {
                     let total_chunks = u16::from_be_bytes(recv_buf[33..35].try_into().unwrap());
                     let chunk_idx = u16::from_be_bytes(recv_buf[35..37].try_into().unwrap());
                     let chunk_data = recv_buf[37..len].to_vec();
-
-                    if chunk_idx == 0 || chunk_idx + 1 == total_chunks {
-                        println!("🎬 [CHUNK RX] seq={} | chunk={}/{} | {} bytes de UID={}", seq, chunk_idx + 1, total_chunks, len, pkt_uid);
-                    }
 
                     let entry = in_flight_frames.entry(seq).or_insert_with(|| (total_chunks, Instant::now(), HashMap::new()));
                     entry.2.insert(chunk_idx, chunk_data);
@@ -474,16 +460,16 @@ fn run_live_rx_monitor() {
                         };
 
                         let mut nals = Vec::new();
-                        let mut nal_offsets = Vec::new();
-                        for (i, w) in final_frame.windows(5).enumerate() {
+                        for w in final_frame.windows(5) {
                             if w[..4] == [0, 0, 0, 1] {
                                 nals.push(w[4] & 0x1F);
-                                nal_offsets.push((i, w[4] & 0x1F, w[4]));
                             }
                         }
-                        println!("🎬 [DECRYPTED FRAME #{}] len={} | NALs={:?} | Offsets={:02X?}", seq, final_frame.len(), nals, nal_offsets);
+
                         if nals.contains(&7) {
-                            println!("📦 [SPS/PPS FRAME DUMP #{}] Hex: {:02X?}", seq, &final_frame[..final_frame.len().min(80)]);
+                            println!("🎯 [RX PIPELINE] SPS/PPS capturado no Frame #{}! NALs={:?}", seq, nals);
+                        } else if seq % 300 == 0 {
+                            println!("🎬 [DECRYPTED FRAME #{}] len={} | NALs={:?}", seq, final_frame.len(), nals);
                         }
 
                         let is_restart = last_rendered_seq > 0 && seq < last_rendered_seq && (last_rendered_seq - seq) > 10;
@@ -500,13 +486,23 @@ fn run_live_rx_monitor() {
                                     let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
                                     frames_decoded_window += 1;
                                     frames_total += 1;
+                                    total_dec_ms += dec_ms;
+                                    if dec_ms < min_dec_ms { min_dec_ms = dec_ms; }
+                                    if dec_ms > max_dec_ms { max_dec_ms = dec_ms; }
 
-                                    if last_stats.elapsed() >= Duration::from_secs(1) {
+                                    if last_stats.elapsed() >= Duration::from_secs(2) {
                                         let elapsed_s = last_stats.elapsed().as_secs_f64();
+                                        let total_elapsed_s = stream_start_time.elapsed().as_secs_f64();
                                         let fps = (frames_decoded_window as f64) / elapsed_s;
-                                        println!("🎬 [RX MONITOR AO VIVO] {:.1} FPS | {}x{} | Decode: {:.2}ms | Total Frames: {} | Erros: {}",
-                                            fps, w, h, dec_ms, frames_total, error_count);
+                                        let avg_fps = (frames_total as f64) / total_elapsed_s.max(0.001);
+                                        let mbps = (bytes_window as f64 * 8.0) / (elapsed_s * 1_000_000.0);
+                                        let avg_dec = total_dec_ms / (frames_total as f64).max(1.0);
+                                        let success_pct = (frames_total as f64) / ((frames_total + error_count) as f64) * 100.0;
+
+                                        println!("🎬 [ESTRESSE AO VIVO] FPS: {:.1} (Média: {:.1}) | {}x{} | Bitrate: {:.2} Mbps | Decode: {:.2}ms (Min: {:.2}ms, Max: {:.2}ms, Média: {:.2}ms) | Quadros: {} | Sucesso: {:.2}% | Erros: {}",
+                                            fps, avg_fps, w, h, mbps, dec_ms, min_dec_ms, max_dec_ms, avg_dec, frames_total, success_pct, error_count);
                                         frames_decoded_window = 0;
+                                        bytes_window = 0;
                                         last_stats = Instant::now();
                                     }
                                 }
