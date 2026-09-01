@@ -62,6 +62,10 @@ path = "src/bin/test_ffmpeg_nvenc.rs"
 name = "test_amd_amf_pipeline"
 path = "src/bin/test_amd_amf_pipeline.rs"
 
+[[bin]]
+name = "test_amd_sender"
+path = "src/bin/test_amd_sender.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Media_MediaFoundation",
@@ -117,7 +121,7 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
-codegen-units = 1
-lto = "thin"
-strip = true
+codegen-units = 256
+lto = "off"
+strip = false
 

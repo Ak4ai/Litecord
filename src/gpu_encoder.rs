@@ -125,6 +125,7 @@ pub mod ffmpeg_nvenc {
         recv_packet_fn: FnAvcodecReceivePacket,
         packet_unref_fn: FnAvPacketUnref,
         flush_buffers_fn: Option<FnAvcodecFlushBuffers>,
+        opt_set_fn: FnAvOptSet,
         free_ctx_fn: FnAvcodecFreeContext,
         free_frame_fn: FnAvFrameFree,
         free_packet_fn: FnAvPacketFree,
@@ -317,12 +318,21 @@ pub mod ffmpeg_nvenc {
                         dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                     } else if name == "h264_amf" {
-                        dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"transcoding\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"profile\0".as_ptr() as *const c_char, b"constrained_baseline\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"level\0".as_ptr() as *const c_char, b"3.1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"coder\0".as_ptr() as *const c_char, b"cavlc\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"idr\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"local_header\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"cgop\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"flags\0".as_ptr() as *const c_char, b"+cgop\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"forced_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"intra_refresh_type\0".as_ptr() as *const c_char, b"none\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"header_spacing\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"max_b_frames\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
@@ -416,6 +426,12 @@ pub mod ffmpeg_nvenc {
                     return Err("Falha ao alocar AVPacket".to_string());
                 }
 
+                if chosen_name == "h264_amf" {
+                    opt_set_fn(chosen_ctx as *mut c_void, b"forced_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    opt_set_fn(chosen_ctx as *mut c_void, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    opt_set_fn(chosen_ctx as *mut c_void, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                }
+
                 info!("🎉 [FFMPEG GPU] Pipeline de Hardware {} ({}) INICIALIZADO COM SUCESSO!", chosen_desc, chosen_name);
 
                 Ok(Self {
@@ -428,6 +444,7 @@ pub mod ffmpeg_nvenc {
                     recv_packet_fn,
                     packet_unref_fn,
                     flush_buffers_fn,
+                    opt_set_fn,
                     free_ctx_fn,
                     free_frame_fn: frame_free_fn,
                     free_packet_fn: packet_free_fn,
@@ -522,17 +539,24 @@ pub mod ffmpeg_nvenc {
                     }
                 });
 
-                // PTS
-                *(frame_u8.add(136) as *mut i64) = (self.frame_count * 16666) as i64;
+                let pts_val = (self.frame_count * 16666) as i64;
+                *(frame_u8.add(132) as *mut i64) = pts_val; // FFmpeg 6/7 PTS
+                *(frame_u8.add(136) as *mut i64) = pts_val; // FFmpeg 5 PTS
                 self.frame_count += 1;
 
                 let is_key_req = self.needs_keyframe;
                 if is_key_req {
-                    *(frame_u8.add(120) as *mut i32) = 1; // key_frame = 1
-                    *(frame_u8.add(124) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
+                    *(frame_u8.add(116) as *mut i32) = 23; // NV12
+                    *(frame_u8.add(120) as *mut i32) = 1;  // FFmpeg 6/7 pict_type = AV_PICTURE_TYPE_I
+                    *(frame_u8.add(124) as *mut i32) = 1;  // FFmpeg 5 pict_type = AV_PICTURE_TYPE_I
+                    *(frame_u8.add(380) as *mut i32) |= 2; // FFmpeg 6/7 flags |= AV_FRAME_FLAG_KEY
+                    *(frame_u8.add(384) as *mut i32) |= 2; // FFmpeg 5 flags |= AV_FRAME_FLAG_KEY
                 } else {
-                    *(frame_u8.add(120) as *mut i32) = 0; // pict_type = AV_PICTURE_TYPE_NONE
+                    *(frame_u8.add(116) as *mut i32) = 23; // NV12
+                    *(frame_u8.add(120) as *mut i32) = 0;
                     *(frame_u8.add(124) as *mut i32) = 0;
+                    *(frame_u8.add(380) as *mut i32) &= !2;
+                    *(frame_u8.add(384) as *mut i32) &= !2;
                 }
 
                 // Enviar quadro para a GPU

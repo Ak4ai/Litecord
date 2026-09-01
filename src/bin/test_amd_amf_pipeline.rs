@@ -5,6 +5,30 @@ use std::time::Instant;
 use openh264::decoder::Decoder;
 use openh264::encoder::Encoder;
 use openh264::formats::{RgbSliceU8, YUVBuffer};
+use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Key, Nonce};
+use sha2::{Digest, Sha256};
+
+fn get_voice_encryption_key(cid: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"litecord_e2ee_voice_p2p_channel_salt_v3_2026");
+    hasher.update(&cid.to_be_bytes());
+    let res = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&res);
+    key
+}
+
+fn decrypt_signaling_payload(key_bytes: &[u8; 32], encrypted_data: &[u8]) -> Option<Vec<u8>> {
+    if encrypted_data.len() < 12 + 16 {
+        return None;
+    }
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&encrypted_data[..12]);
+    let ciphertext = &encrypted_data[12..];
+
+    cipher.decrypt(nonce, ciphertext).ok()
+}
 
 // --- ESTRUTURAS DO LITECORD REPLICADAS DO SCREEN_CAPTURE.RS ---
 
@@ -110,6 +134,7 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> Cow<'_, [u8]> {
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if has_sps {
             if let Some(sps_pps) = extract_sps_pps_annex_b(clean.as_ref()) {
+                println!("🎯 [RX PIPELINE] SPS/PPS capturado e cacheado do peer {}: {:02X?}", peer_uid, sps_pps);
                 cache_peer_sps_pps(peer_uid, &sps_pps);
             }
         } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
@@ -313,4 +338,227 @@ fn main() {
     println!("==================================================================");
     println!("🎉 TODOS OS 3 CENÁRIOS DA AMD FORAM VALIDADOS COM 100% DE SUCESSO!");
     println!("==================================================================");
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--live") {
+        run_live_rx_monitor();
+    }
+}
+
+fn run_live_rx_monitor() {
+    use std::net::{SocketAddr, UdpSocket};
+    use std::time::Duration;
+
+    println!("\n==================================================================");
+    println!("📡 LITECORD | MONITOR AO VIVO DE STREAMING DO NOTEBOOK AMD");
+    println!("==================================================================");
+
+    const MAGIC: &[u8; 4] = b"LTPV";
+    const OP_ANNOUNCE: u8 = 1;
+    const OP_VIDEO_CHUNK: u8 = 2;
+    const OP_HEARTBEAT: u8 = 4;
+    const OP_KEYFRAME_REQ: u8 = 6;
+
+    let my_uid = 398203126630580225u64;
+    let cid = 1310372456904654931u64;
+
+    let socket = match UdpSocket::bind("0.0.0.0:50006") {
+        Ok(s) => s,
+        Err(_) => match UdpSocket::bind("0.0.0.0:50005") {
+            Ok(s) => s,
+            Err(_) => UdpSocket::bind("0.0.0.0:0").expect("Falha ao abrir socket UDP"),
+        },
+    };
+    socket.set_nonblocking(true).unwrap();
+    let local_port = socket.local_addr().unwrap().port();
+    println!("✅ Socket RX ativo em 0.0.0.0:{}", local_port);
+
+    let targets: Vec<SocketAddr> = vec![
+        "100.120.251.124:50005".parse().unwrap(),
+    ];
+
+    let mut decoder = Decoder::new().expect("Falha ao criar OpenH264 Decoder");
+    let mut in_flight_frames: HashMap<u32, (u16, Instant, HashMap<u16, Vec<u8>>)> = HashMap::new();
+    let mut last_rendered_seq = 0u32;
+    let mut frames_decoded_window = 0u64;
+    let mut frames_total = 0u64;
+    let mut error_count = 0u64;
+    let mut last_stats = Instant::now();
+    let mut last_heartbeat = Instant::now() - Duration::from_secs(5);
+    let mut last_pli_req = Instant::now() - Duration::from_secs(5);
+    let mut active_tx_addr: Option<SocketAddr> = None;
+
+    let mut recv_buf = [0u8; 4096];
+    println!("⏳ Aguardando pacotes do Notebook AMD no canal 'fofocas'...\n");
+
+    let mut hb_count = 0u64;
+    loop {
+        if last_heartbeat.elapsed() >= Duration::from_millis(1000) {
+            last_heartbeat = Instant::now();
+            hb_count += 1;
+            let mut ann = Vec::with_capacity(36);
+            ann.extend_from_slice(MAGIC);
+            ann.extend_from_slice(&2466369941u32.to_be_bytes());
+            ann.push(OP_ANNOUNCE); // OP_ANNOUNCE (1) registra o receptor no transmissor
+            ann.extend_from_slice(&cid.to_be_bytes());
+            ann.extend_from_slice(&my_uid.to_be_bytes());
+            ann.push(0); // is_streaming = 0
+            ann.push(0); // reserved
+            ann.push(60); // fps = 60
+            let uname = b"ak4ai";
+            ann.push(uname.len() as u8);
+            ann.extend_from_slice(uname);
+            ann.extend_from_slice(&local_port.to_be_bytes());
+
+            for target in &targets {
+                match socket.send_to(&ann, target) {
+                    Ok(n) => {
+                        if hb_count <= 3 || hb_count % 10 == 0 {
+                            println!("📡 [TX ANNOUNCE #{}] Enviados {} bytes para {}", hb_count, n, target);
+                        }
+                    }
+                    Err(e) => eprintln!("❌ [TX ERRO] Falha ao enviar para {}: {:?}", target, e),
+                }
+            }
+            if let Some(direct) = active_tx_addr {
+                let _ = socket.send_to(&ann, direct);
+            }
+        }
+
+        let now = Instant::now();
+        in_flight_frames.retain(|_, (_, first_seen, _)| now.duration_since(*first_seen) < Duration::from_millis(500));
+
+        match socket.recv_from(&mut recv_buf) {
+            Ok((len, src)) => {
+                active_tx_addr = Some(src);
+                let magic_slice = if len >= 4 { &recv_buf[0..4] } else { &[0u8; 4][..] };
+                let op = if len >= 9 { recv_buf[8] } else { 0 };
+                let magic_str = std::str::from_utf8(magic_slice).unwrap_or("???");
+                if op == OP_VIDEO_CHUNK || op == 5 {
+                    // Log only every 60th packet to keep logs clean
+                    static PKT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let c = PKT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if c % 120 == 0 {
+                        println!("📦 [PROBE] len={}, op={}, magic='{}' ({:02X?})", len, op, magic_str, magic_slice);
+                    }
+                }
+
+                if len >= 37 && &recv_buf[0..4] == MAGIC && recv_buf[8] == OP_VIDEO_CHUNK {
+                    let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
+                    let seq = u32::from_be_bytes(recv_buf[25..29].try_into().unwrap());
+                    let total_chunks = u16::from_be_bytes(recv_buf[33..35].try_into().unwrap());
+                    let chunk_idx = u16::from_be_bytes(recv_buf[35..37].try_into().unwrap());
+                    let chunk_data = recv_buf[37..len].to_vec();
+
+                    if chunk_idx == 0 || chunk_idx + 1 == total_chunks {
+                        println!("🎬 [CHUNK RX] seq={} | chunk={}/{} | {} bytes de UID={}", seq, chunk_idx + 1, total_chunks, len, pkt_uid);
+                    }
+
+                    let entry = in_flight_frames.entry(seq).or_insert_with(|| (total_chunks, Instant::now(), HashMap::new()));
+                    entry.2.insert(chunk_idx, chunk_data);
+
+                    if entry.2.len() == (total_chunks as usize) {
+                        let mut complete_frame = Vec::new();
+                        for i in 0..total_chunks {
+                            if let Some(c) = entry.2.get(&i) {
+                                complete_frame.extend_from_slice(c);
+                            }
+                        }
+                        in_flight_frames.remove(&seq);
+
+                        let final_frame = if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) {
+                            complete_frame
+                        } else {
+                            let sec_key = get_voice_encryption_key(cid);
+                            decrypt_signaling_payload(&sec_key, &complete_frame).unwrap_or(complete_frame)
+                        };
+
+                        let mut nals = Vec::new();
+                        let mut nal_offsets = Vec::new();
+                        for (i, w) in final_frame.windows(5).enumerate() {
+                            if w[..4] == [0, 0, 0, 1] {
+                                nals.push(w[4] & 0x1F);
+                                nal_offsets.push((i, w[4] & 0x1F, w[4]));
+                            }
+                        }
+                        println!("🎬 [DECRYPTED FRAME #{}] len={} | NALs={:?} | Offsets={:02X?}", seq, final_frame.len(), nals, nal_offsets);
+                        if nals.contains(&7) {
+                            println!("📦 [SPS/PPS FRAME DUMP #{}] Hex: {:02X?}", seq, &final_frame[..final_frame.len().min(80)]);
+                        }
+
+                        let is_restart = last_rendered_seq > 0 && seq < last_rendered_seq && (last_rendered_seq - seq) > 10;
+                        let is_newer = seq > last_rendered_seq || is_restart || last_rendered_seq == 0;
+                        if is_newer {
+                            last_rendered_seq = seq;
+                            let clean_annex_b = ensure_annex_b(pkt_uid, &final_frame);
+                            let t_dec = Instant::now();
+
+                            match decoder.decode(&clean_annex_b) {
+                                Ok(Some(yuv)) => {
+                                    use openh264::formats::YUVSource;
+                                    let (w, h) = yuv.dimensions();
+                                    let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
+                                    frames_decoded_window += 1;
+                                    frames_total += 1;
+
+                                    if last_stats.elapsed() >= Duration::from_secs(1) {
+                                        let elapsed_s = last_stats.elapsed().as_secs_f64();
+                                        let fps = (frames_decoded_window as f64) / elapsed_s;
+                                        println!("🎬 [RX MONITOR AO VIVO] {:.1} FPS | {}x{} | Decode: {:.2}ms | Total Frames: {} | Erros: {}",
+                                            fps, w, h, dec_ms, frames_total, error_count);
+                                        frames_decoded_window = 0;
+                                        last_stats = Instant::now();
+                                    }
+                                }
+                                Ok(None) => {
+                                    println!("⏳ [RX MONITOR] Frame #{} (len={}) OpenH264 aguardando IDR Keyframe...", seq, clean_annex_b.len());
+                                    if last_pli_req.elapsed() >= Duration::from_millis(300) {
+                                        last_pli_req = Instant::now();
+                                        println!("🔄 [RX MONITOR] Solicitando Keyframe PLI imediato ao Notebook AMD...");
+                                        let mut req = Vec::with_capacity(33);
+                                        req.extend_from_slice(MAGIC);
+                                        req.extend_from_slice(&2466369941u32.to_be_bytes());
+                                        req.push(OP_KEYFRAME_REQ);
+                                        req.extend_from_slice(&cid.to_be_bytes());
+                                        req.extend_from_slice(&my_uid.to_be_bytes());
+                                        req.extend_from_slice(&pkt_uid.to_be_bytes());
+
+                                        let _ = socket.send_to(&req, src);
+                                        for target in &targets {
+                                            let _ = socket.send_to(&req, target);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error_count += 1;
+                                    println!("⚠️ [RX MONITOR ERRO] Frame #{} descartado: {:?} (len={}) -> Solicitando Keyframe PLI...", seq, e, clean_annex_b.len());
+                                    if last_pli_req.elapsed() >= Duration::from_millis(300) {
+                                        last_pli_req = Instant::now();
+                                        let mut req = Vec::with_capacity(33);
+                                        req.extend_from_slice(MAGIC);
+                                        req.extend_from_slice(&2466369941u32.to_be_bytes());
+                                        req.push(OP_KEYFRAME_REQ);
+                                        req.extend_from_slice(&cid.to_be_bytes());
+                                        req.extend_from_slice(&my_uid.to_be_bytes());
+                                        req.extend_from_slice(&pkt_uid.to_be_bytes());
+
+                                        let _ = socket.send_to(&req, src);
+                                        for target in &targets {
+                                            let _ = socket.send_to(&req, target);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::ConnectionReset => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => {
+                eprintln!("Erro no socket: {:?}", e);
+            }
+        }
+    }
 }
