@@ -98,6 +98,8 @@ pub const OP_KEYFRAME_REQ: u8 = 6;
 pub const OP_FEC_PARITY: u8 = 7;
 pub const OP_QOS_FEEDBACK: u8 = 8;
 
+static LAST_SEEN_PEER_ADDR: Mutex<Option<HashMap<u64, SocketAddr>>> = Mutex::new(None);
+
 #[derive(Debug, Clone)]
 pub struct MonitorItemInfo {
     pub id: i32,
@@ -1245,8 +1247,6 @@ impl ScreenCaptureManager {
         let is_running_decoder = Arc::clone(&self.is_receiver_running);
         let channel_id_decoder = Arc::clone(&self.channel_id);
         let peers_store_decoder = Arc::clone(&self.known_peers);
-
-        static LAST_SEEN_PEER_ADDR: Mutex<Option<HashMap<u64, SocketAddr>>> = Mutex::new(None);
 
         // Dedicated Video Decoder Worker Thread (Sunshine / Moonlight Architecture)
         std::thread::Builder::new()
