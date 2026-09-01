@@ -287,6 +287,8 @@ pub mod ffmpeg_nvenc {
                 let _ = opt_set_fn(codec_ctx, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                 let _ = opt_set_fn(codec_ctx, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
                 let _ = opt_set_fn(codec_ctx, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                let _ = opt_set_fn(codec_ctx, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                let _ = opt_set_fn(codec_ctx, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
 
                 let open_ret = open2_fn(codec_ctx, codec, std::ptr::null_mut());
                 if open_ret < 0 {
@@ -418,12 +420,16 @@ pub mod ffmpeg_nvenc {
                 self.frame_count += 1;
 
                 if self.needs_keyframe {
-                    *(frame_u8.add(120) as *mut i32) = 1; // key_frame = 1
-                    *(frame_u8.add(124) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
+                    *(frame_u8.add(120) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
+                    *(frame_u8.add(124) as *mut i32) = 1;
+                    *(frame_u8.add(160) as *mut i32) = 1; // flags = AV_FRAME_FLAG_KEY
+                    *(frame_u8.add(164) as *mut i32) = 1;
                     self.needs_keyframe = false;
                 } else {
-                    *(frame_u8.add(120) as *mut i32) = 0;
+                    *(frame_u8.add(120) as *mut i32) = 0; // pict_type = AV_PICTURE_TYPE_NONE
                     *(frame_u8.add(124) as *mut i32) = 0;
+                    *(frame_u8.add(160) as *mut i32) = 0;
+                    *(frame_u8.add(164) as *mut i32) = 0;
                 }
 
                 // Enviar quadro para a GPU NVIDIA
