@@ -527,16 +527,16 @@ pub mod ffmpeg_nvenc {
                 *(frame_u8.add(136) as *mut i64) = (self.frame_count * 16666) as i64;
                 self.frame_count += 1;
 
-                if self.needs_keyframe {
-                    *(frame_u8.add(120) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
-                    *(frame_u8.add(124) as *mut i32) = 1;
-                    self.needs_keyframe = false;
+                let is_key_req = self.needs_keyframe;
+                if is_key_req {
+                    *(frame_u8.add(120) as *mut i32) = 1; // key_frame = 1
+                    *(frame_u8.add(124) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
                 } else {
                     *(frame_u8.add(120) as *mut i32) = 0; // pict_type = AV_PICTURE_TYPE_NONE
                     *(frame_u8.add(124) as *mut i32) = 0;
                 }
 
-                // Enviar quadro para a GPU NVIDIA
+                // Enviar quadro para a GPU
                 let send_res = (self.send_frame_fn)(self.codec_ctx, self.frame);
                 if send_res < 0 {
                     return None;
@@ -599,7 +599,7 @@ fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
                         }
                     } else if !self.header_cache.is_empty() {
                         let is_idr = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 5) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 5));
-                        if is_idr || self.needs_keyframe || self.frame_count % 60 == 0 || self.frame_count < 10 {
+                        if is_idr || is_key_req || self.frame_count % 30 == 0 || self.frame_count < 10 {
                             let mut combined = Vec::with_capacity(self.header_cache.len() + self.out_buffer.len());
                             combined.extend_from_slice(&self.header_cache);
                             combined.extend_from_slice(&self.out_buffer);
@@ -607,6 +607,7 @@ fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
                             return Some(combined);
                         }
                     }
+                    self.needs_keyframe = false;
                     Some(std::mem::take(&mut self.out_buffer))
                 } else {
                     None
@@ -616,9 +617,6 @@ fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
 
         fn force_intra_frame(&mut self) {
             self.needs_keyframe = true;
-            if let Some(flush_fn) = self.flush_buffers_fn {
-                unsafe { flush_fn(self.codec_ctx); }
-            }
         }
 
         fn set_bitrate_bps(&mut self, bitrate_bps: u32) {

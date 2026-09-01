@@ -1232,6 +1232,8 @@ impl ScreenCaptureManager {
         let channel_id_decoder = Arc::clone(&self.channel_id);
         let peers_store_decoder = Arc::clone(&self.known_peers);
 
+        static LAST_SEEN_PEER_ADDR: Mutex<Option<HashMap<u64, SocketAddr>>> = Mutex::new(None);
+
         // Dedicated Video Decoder Worker Thread (Sunshine / Moonlight Architecture)
         std::thread::Builder::new()
             .name("video-decoder-worker".to_string())
@@ -1277,10 +1279,13 @@ impl ScreenCaptureManager {
 
                                 on_frame(peer_uid, peer_name, quality_label, pixel_buffer);
                             } else {
-                                // Decode failed on P-frame -> Request immediate IDR Keyframe (WebRTC PLI mechanism)
-                                 let last_req = last_pli_req.entry(peer_uid).or_insert_with(|| Instant::now() - Duration::from_secs(10));
-                                 if last_req.elapsed() >= Duration::from_millis(300) {
-                                     *last_req = Instant::now();
+                                // RTCP PLI Fast Intra-Frame Recovery
+                                let should_req_pli = match last_pli_req.get(&peer_uid) {
+                                    Some(&t) => t.elapsed() >= Duration::from_millis(300),
+                                    None => true,
+                                };
+                                if should_req_pli {
+                                    last_pli_req.insert(peer_uid, Instant::now());
                                     let current_cid = channel_id_decoder.load(Ordering::Relaxed);
                                     let inst = get_process_instance_id();
                                     let mut req_pkt = Vec::with_capacity(25);
@@ -1293,6 +1298,14 @@ impl ScreenCaptureManager {
                                         if let Some(sock) = guard.as_ref() {
                                             if let Ok(peers) = peers_store_decoder.lock() {
                                                 let mut sent_targets = Vec::new();
+                                                if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                                                    if let Some(map) = last_guard.as_ref() {
+                                                        if let Some(&direct_addr) = map.get(&peer_uid) {
+                                                            let _ = sock.send_to(&req_pkt, direct_addr);
+                                                            sent_targets.push(direct_addr);
+                                                        }
+                                                    }
+                                                }
                                                 for (&k, &(p_addr, _)) in peers.iter() {
                                                     let is_match = k == peer_uid
                                                         || (k as u64) & 0xFFFF_FFFF == (peer_uid & 0xFFFF_FFFF)
@@ -1545,6 +1558,10 @@ impl ScreenCaptureManager {
 
                                 if (pkt_uid == my_uid && my_uid > 0) || pkt_inst == my_instance_id {
                                     continue;
+                                }
+
+                                if let Ok(mut last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                                    last_guard.get_or_insert_with(HashMap::new).insert(pkt_uid, src_addr);
                                 }
 
                                 if op == OP_AUDIO_FRAME {
