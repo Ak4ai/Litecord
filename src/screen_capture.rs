@@ -2756,6 +2756,64 @@ fn fit_bgra_to_canvas(
 
 
 
+/// Garante que o bitstream esteja rigorosamente no padrão Annex B (00 00 00 01)
+/// Convertendo automaticamente qualquer fluxo em AVCC/MP4 (prefixos de 4 bytes) proveniente de drivers WMF/AMD/Intel.
+fn ensure_annex_b(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if data.len() < 4 {
+        return std::borrow::Cow::Borrowed(data);
+    }
+    // Já está em Annex B legítimo?
+    if data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1]) {
+        return std::borrow::Cow::Borrowed(data);
+    }
+
+    // Pular caixas de contêiner MP4 (ex: ftyp, moov, free, mdat) se existirem
+    let mut offset = 0;
+    while offset + 8 <= data.len() {
+        let box_size = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        let box_tag = &data[offset + 4..offset + 8];
+        if box_tag == b"ftyp" || box_tag == b"moov" || box_tag == b"free" {
+            if box_size == 0 || offset + box_size > data.len() {
+                break;
+            }
+            offset += box_size;
+        } else if box_tag == b"mdat" {
+            offset += 8;
+            break;
+        } else {
+            break;
+        }
+    }
+
+    let slice = &data[offset..];
+    if slice.is_empty() {
+        return std::borrow::Cow::Borrowed(data);
+    }
+    if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
+        return std::borrow::Cow::Borrowed(slice);
+    }
+
+    // Converte AVCC (prefixos de tamanho de 4 bytes) para Annex B (00 00 00 01)
+    let mut out = Vec::with_capacity(slice.len() + 64);
+    let mut pos = 0;
+    while pos + 4 <= slice.len() {
+        let nal_len = u32::from_be_bytes(slice[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        if nal_len == 0 || pos + nal_len > slice.len() {
+            break;
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&slice[pos..pos + nal_len]);
+        pos += nal_len;
+    }
+
+    if out.is_empty() {
+        std::borrow::Cow::Borrowed(data)
+    } else {
+        std::borrow::Cow::Owned(out)
+    }
+}
+
 fn decode_video_frame(
     decoders: &mut HashMap<u64, openh264::decoder::Decoder>,
     peer_uid: u64,
@@ -2773,7 +2831,9 @@ fn decode_video_frame(
         openh264::decoder::Decoder::new().expect("Falha ao criar Decoder H.264")
     });
 
-    match decoder.decode(frame_data) {
+    let annex_b = ensure_annex_b(frame_data);
+
+    match decoder.decode(&annex_b) {
         Ok(Some(decoded_yuv)) => {
             let (w, h) = decoded_yuv.dimensions();
             if w > 0 && h > 0 {

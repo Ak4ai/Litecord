@@ -249,13 +249,32 @@ pub mod ffmpeg_nvenc {
                         .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
                 );
 
-                let codec_name = CString::new("h264_nvenc").unwrap();
-                let codec = find_encoder_fn(codec_name.as_ptr());
-                if codec.is_null() {
-                    return Err("Hardware Codec 'h264_nvenc' não suportado na GPU deste computador".to_string());
+                let candidates = [
+                    ("h264_nvenc", "NVIDIA NVENC"),
+                    ("h264_amf", "AMD AMF"),
+                    ("h264_qsv", "Intel QuickSync"),
+                ];
+
+                let mut chosen_codec: *mut c_void = std::ptr::null_mut();
+                let mut chosen_name = "";
+                let mut chosen_desc = "";
+
+                for &(name, desc) in &candidates {
+                    let c_name = CString::new(name).unwrap();
+                    let codec = find_encoder_fn(c_name.as_ptr());
+                    if !codec.is_null() {
+                        chosen_codec = codec;
+                        chosen_name = name;
+                        chosen_desc = desc;
+                        break;
+                    }
                 }
 
-                let codec_ctx = alloc_context_fn(codec);
+                if chosen_codec.is_null() {
+                    return Err("Nenhum hardware encoder H.264 (NVENC / AMF / QSV) disponível via FFmpeg".to_string());
+                }
+
+                let codec_ctx = alloc_context_fn(chosen_codec);
                 if codec_ctx.is_null() {
                     return Err("Falha ao alocar AVCodecContext".to_string());
                 }
@@ -292,20 +311,30 @@ pub mod ffmpeg_nvenc {
                 if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
 
                 let mut opts: *mut c_void = std::ptr::null_mut();
-                dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                if chosen_name == "h264_nvenc" {
+                    dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                } else if chosen_name == "h264_amf" {
+                    dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
+                } else if chosen_name == "h264_qsv" {
+                    dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                }
 
-                let open_ret = open2_fn(codec_ctx, codec, &mut opts as *mut *mut c_void);
+                let open_ret = open2_fn(codec_ctx, chosen_codec, &mut opts as *mut *mut c_void);
                 dict_free_fn(&mut opts);
                 if open_ret < 0 {
                     free_ctx_fn(&mut (codec_ctx as *mut _));
-                    return Err(format!("avcodec_open2 falhou para h264_nvenc com código: {}", open_ret));
+                    return Err(format!("avcodec_open2 falhou para {} com código: {}", chosen_name, open_ret));
                 }
 
                 let frame = frame_alloc_fn();
@@ -327,7 +356,7 @@ pub mod ffmpeg_nvenc {
                     return Err("Falha ao alocar AVPacket".to_string());
                 }
 
-                info!("🎉 [NVENC GPU] Pipeline de Hardware NVIDIA NVENC (OBS / Sunshine Grade) INICIALIZADO COM SUCESSO!");
+                info!("🎉 [FFMPEG GPU] Pipeline de Hardware {} ({}) INICIALIZADO COM SUCESSO!", chosen_desc, chosen_name);
 
                 Ok(Self {
                     avcodec_dll,
