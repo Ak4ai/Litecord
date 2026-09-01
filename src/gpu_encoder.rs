@@ -507,23 +507,6 @@ pub mod ffmpeg_nvenc {
                 }
 
                 if !self.out_buffer.is_empty() {
-                    // Se o pacote gerado contém SPS (NAL type 7), armazena cópia no cache de cabeçalho
-                    if let Some(sps_idx) = self.out_buffer.windows(5).position(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7)) {
-                        let header_slice = &self.out_buffer[sps_idx..];
-                        // Captura SPS + PPS até o início do slice (NAL 5 ou NAL 1)
-                        if let Some(slice_idx) = header_slice[4..].windows(4).position(|w| w == [0, 0, 0, 1] || (w[0] == 0 && w[1] == 0 && w[2] == 1)) {
-                            self.header_cache = header_slice[..slice_idx + 4].to_vec();
-                        }
-                    } else if !self.header_cache.is_empty() {
-                        // Se o pacote é um IDR ou foi solicitado keyframe mas não tem SPS, injeta o cabeçalho SPS/PPS
-                        let is_idr = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 5) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 5));
-                        if is_idr {
-                            let mut combined = Vec::with_capacity(self.header_cache.len() + self.out_buffer.len());
-                            combined.extend_from_slice(&self.header_cache);
-                            combined.extend_from_slice(&self.out_buffer);
-                            return Some(combined);
-                        }
-                    }
                     Some(std::mem::take(&mut self.out_buffer))
                 } else {
                     None

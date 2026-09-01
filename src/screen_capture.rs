@@ -1634,12 +1634,19 @@ impl ScreenCaptureManager {
                                         let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
                                         let peer_key = (pkt_uid as u64) ^ ((pkt_inst as u64) << 32);
                                         if let Ok(mut peers) = peers_store.lock() {
+                                            let is_new = !peers.contains_key(&peer_key);
                                             peers.insert(peer_key, (src_addr, Instant::now()));
                                             if explicit_addr != src_addr {
                                                 peers.insert(peer_key.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
                                             }
+                                            if is_new && is_tx_running.load(Ordering::Relaxed) {
+                                                KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                            }
                                         }
                                         info!("📡 [P2P HEARTBEAT RECEBIDO] Peer UID={} conectado em {}", pkt_uid, src_addr);
+                                        if is_tx_running.load(Ordering::Relaxed) {
+                                            KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                        }
                                     }
                                 }
                                 OP_VIDEO_CHUNK => {
