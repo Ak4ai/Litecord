@@ -133,6 +133,7 @@ pub mod ffmpeg_nvenc {
         needs_keyframe: bool,
         frame_count: u64,
         out_buffer: Vec<u8>,
+        header_cache: Vec<u8>,
     }
 
     impl FfmpegNvencEncoder {
@@ -316,7 +317,8 @@ pub mod ffmpeg_nvenc {
                         dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"idr\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"repeat_headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                     } else if name == "h264_qsv" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
@@ -380,6 +382,7 @@ pub mod ffmpeg_nvenc {
                     needs_keyframe: true,
                     frame_count: 0,
                     out_buffer: Vec::with_capacity(128 * 1024),
+                    header_cache: Vec::new(),
                 })
             }
         }
@@ -500,7 +503,24 @@ pub mod ffmpeg_nvenc {
                 }
 
                 if !self.out_buffer.is_empty() {
-                    Some(self.out_buffer.clone())
+                    // Se o pacote gerado contém SPS (NAL type 7), armazena cópia no cache de cabeçalho
+                    if let Some(sps_idx) = self.out_buffer.windows(5).position(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7)) {
+                        let header_slice = &self.out_buffer[sps_idx..];
+                        // Captura SPS + PPS até o início do slice (NAL 5 ou NAL 1)
+                        if let Some(slice_idx) = header_slice[4..].windows(4).position(|w| w == [0, 0, 0, 1] || (w[0] == 0 && w[1] == 0 && w[2] == 1)) {
+                            self.header_cache = header_slice[..slice_idx + 4].to_vec();
+                        }
+                    } else if !self.header_cache.is_empty() {
+                        // Se o pacote é um IDR ou foi solicitado keyframe mas não tem SPS, injeta o cabeçalho SPS/PPS
+                        let is_idr = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 5) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 5));
+                        if is_idr {
+                            let mut combined = Vec::with_capacity(self.header_cache.len() + self.out_buffer.len());
+                            combined.extend_from_slice(&self.header_cache);
+                            combined.extend_from_slice(&self.out_buffer);
+                            return Some(combined);
+                        }
+                    }
+                    Some(std::mem::take(&mut self.out_buffer))
                 } else {
                     None
                 }
