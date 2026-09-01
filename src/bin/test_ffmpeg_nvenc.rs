@@ -152,25 +152,34 @@ fn main() {
         *(ctx_u8.add(156) as *mut i32) = 1;        // colorspace = BT709
         *(ctx_u8.add(160) as *mut i32) = 2;        // color_range = PC / Full
 
-        // GOP & B-Frames para Zero-Latency Ultra Baixa
-        let gop_off = get_offset(b"g\0");
-        if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = 60; }
-        let max_b_off = get_offset(b"bf\0");
-        if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
+        type FnAvDictSet = unsafe extern "C" fn(pm: *mut *mut c_void, key: *const c_char, value: *const c_char, flags: c_int) -> c_int;
+        type FnAvDictFree = unsafe extern "C" fn(pm: *mut *mut c_void);
 
-        let _ = opt_set_fn(ctx, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
-        let _ = opt_set_fn(ctx, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
-        let _ = opt_set_fn(ctx, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-        let _ = opt_set_fn(ctx, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-        let _ = opt_set_fn(ctx, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-        let _ = opt_set_fn(ctx, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+        let dict_set_fn: FnAvDictSet = std::mem::transmute(
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(avutil_dll, b"av_dict_set\0".as_ptr())
+        );
+        let dict_free_fn: FnAvDictFree = std::mem::transmute(
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(avutil_dll, b"av_dict_free\0".as_ptr())
+        );
 
-        println!("🚀 Inicializando AVCodecContext com avcodec_open2...");
-        let ret = open2_fn(ctx, codec, std::ptr::null_mut());
+        let mut opts: *mut c_void = std::ptr::null_mut();
+        dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+        dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+
+        println!("🚀 Inicializando AVCodecContext com avcodec_open2 passando AVDictionary...");
+        let ret = open2_fn(ctx, codec, &mut opts as *mut *mut c_void);
+        dict_free_fn(&mut opts);
         if ret < 0 {
             println!("❌ avcodec_open2 falhou com código: {}", ret);
             return;
         }
+        println!("🎉 SUCESSO! NVIDIA NVENC HARDWARE ENCODER INICIALIZADO COM ZERO-LATENCY!");
         println!("🎉 SUCESSO! NVIDIA NVENC HARDWARE ENCODER INICIALIZADO NA GPU!");
 
         let frame = frame_alloc_fn();
@@ -185,9 +194,27 @@ fn main() {
 
         let pkt = packet_alloc_fn();
 
-        println!("\n⏱️ TESTANDO ENCODE CONTÍNUO DE 5 QUADROS NA RTX 3050 (1080p 60 FPS):");
-        for i in 0..5 {
+        let mut decoder = openh264::decoder::Decoder::new().unwrap();
+
+        println!("\n⏱️ TESTANDO ENCODE CONTÍNUO DE 10 QUADROS NA RTX 3050 (1080p 60 FPS):");
+        for i in 0..10 {
             *(frame_u8.add(136) as *mut i64) = i * 16666; // pts
+
+            if i == 5 {
+                println!("   [Frame #5] 👉 FORÇANDO KEYFRAME...");
+                // In FFmpeg 6/7, AV_FRAME_FLAG_KEY = (1 << 0) in flags (offset 160 or 164)
+                // Let's set pict_type = 1 and flags |= 1 across potential offsets
+                *(frame_u8.add(120) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
+                *(frame_u8.add(124) as *mut i32) = 1;
+                *(frame_u8.add(160) as *mut i32) = 1; // flags = AV_FRAME_FLAG_KEY
+                *(frame_u8.add(164) as *mut i32) = 1;
+            } else {
+                *(frame_u8.add(120) as *mut i32) = 0;
+                *(frame_u8.add(124) as *mut i32) = 0;
+                *(frame_u8.add(160) as *mut i32) = 0;
+                *(frame_u8.add(164) as *mut i32) = 0;
+            }
+
             let t0 = Instant::now();
             let send_res = send_frame_fn(ctx, frame);
             let send_dur = t0.elapsed();
@@ -200,15 +227,45 @@ fn main() {
             let pkt_data = *(pkt_u8.add(24) as *mut *const u8);
             let pkt_size = *(pkt_u8.add(32) as *mut i32);
 
-            let is_idr = if !pkt_data.is_null() && pkt_size > 4 {
+            let mut nal_types = Vec::new();
+            if !pkt_data.is_null() && pkt_size > 4 {
                 let bytes = std::slice::from_raw_parts(pkt_data, pkt_size as usize);
-                bytes.windows(4).any(|w| w == [0, 0, 0, 1] || (w[0] == 0 && w[1] == 0 && w[2] == 1))
-            } else {
-                false
-            };
+                let mut idx = 0;
+                while idx + 4 <= bytes.len() {
+                    if bytes[idx..idx + 4] == [0, 0, 0, 1] {
+                        let nal_hdr = bytes[idx + 4];
+                        let nal_type = nal_hdr & 0x1F;
+                        nal_types.push(nal_type);
+                        idx += 4;
+                    } else if bytes[idx..idx + 3] == [0, 0, 1] {
+                        let nal_hdr = bytes[idx + 3];
+                        let nal_type = nal_hdr & 0x1F;
+                        nal_types.push(nal_type);
+                        idx += 3;
+                    } else {
+                        idx += 1;
+                    }
+                }
+            }
 
-            println!("   [Frame #{}] send={} ({:?}) | recv={} ({:?}) | H.264 NAL: {} bytes | Data: {:p} | Has StartCode: {}",
-                i, send_res, send_dur, recv_res, recv_dur, pkt_size, pkt_data, is_idr);
+            println!("   [Frame #{}] send={} ({:?}) | recv={} ({:?}) | H.264 NAL: {} bytes | NAL Types: {:?}",
+                i, send_res, send_dur, recv_res, recv_dur, pkt_size, nal_types);
+
+            if !pkt_data.is_null() && pkt_size > 0 {
+                let bytes = std::slice::from_raw_parts(pkt_data, pkt_size as usize);
+                match decoder.decode(bytes) {
+                    Ok(Some(yuv)) => {
+                        use openh264::formats::YUVSource;
+                        println!("      🎉 DECODER OPENH264 SUCESSO! Dimensões: {:?}", yuv.dimensions());
+                    }
+                    Ok(None) => {
+                        println!("      ⚠️ DECODER OPENH264 retornou Ok(None)");
+                    }
+                    Err(e) => {
+                        println!("      ❌ DECODER OPENH264 ERRO: {:?}", e);
+                    }
+                }
+            }
         }
     }
 }

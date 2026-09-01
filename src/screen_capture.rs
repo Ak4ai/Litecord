@@ -859,7 +859,7 @@ impl ScreenCaptureManager {
                 let mut total_pix_us = 0u128;
                 let mut last_local_preview = Instant::now() - Duration::from_secs(1);
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
-                let mut last_idr = Instant::now();
+                let mut last_idr = Instant::now() - Duration::from_secs(10);
                 let mut last_frame_sent = Instant::now() - Duration::from_secs(1);
                 let mut frame_seq: u32 = 0;
 
@@ -1027,7 +1027,7 @@ impl ScreenCaptureManager {
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
                         }
-                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(5000) {
+                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(1000) {
                             last_idr = Instant::now();
                             enc.force_intra_frame();
                         }
@@ -1292,16 +1292,21 @@ impl ScreenCaptureManager {
                                     if let Ok(guard) = SHARED_P2P_SOCKET.lock() {
                                         if let Some(sock) = guard.as_ref() {
                                             if let Ok(peers) = peers_store_decoder.lock() {
-                                                if let Some(&(p_addr, _)) = peers.get(&peer_uid) {
-                                                    let _ = sock.send_to(&req_pkt, p_addr);
+                                                let mut sent_targets = Vec::new();
+                                                for (&k, &(p_addr, _)) in peers.iter() {
+                                                    let is_match = k == peer_uid
+                                                        || (k as u64) & 0xFFFF_FFFF == (peer_uid & 0xFFFF_FFFF)
+                                                        || k.wrapping_sub(peer_uid) < 16;
+                                                    if is_match && !sent_targets.contains(&p_addr) {
+                                                        let _ = sock.send_to(&req_pkt, p_addr);
+                                                        sent_targets.push(p_addr);
+                                                    }
                                                 }
+                                                info!("🔄 [PLI RECOVERY] Keyframe solicitado ao peer {} (rotas acionadas: {:?})", peer_uid, sent_targets);
                                             }
                                             for bcast in get_broadcast_addresses() {
                                                 let _ = sock.send_to(&req_pkt, bcast);
                                             }
-                                        }
-                                    }
-                                    info!("🔄 [PLI RECOVERY] Keyframe solicitado ao peer {} após falha de decode", peer_uid);
                                 }
                             }
                         }
@@ -1850,6 +1855,7 @@ impl ScreenCaptureManager {
                                 }
                                 OP_KEYFRAME_REQ => {
                                     if is_tx_running.load(Ordering::Relaxed) {
+                                        info!("⚡ [KEYFRAME REQ RECEBIDO] Receptor solicitou IDR Keyframe imediato!");
                                         KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
                                     }
                                 }
@@ -2616,10 +2622,25 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
 }
 
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
-    vec![
-        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 50005),
-        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), 50005),
-    ]
+    let mut addrs = Vec::new();
+    for port in 50005..=50007 {
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
+        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
+    }
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
+                let octets = local.ip().octets();
+                for port in 50005..=50007 {
+                    addrs.push(SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
+                        port,
+                    ));
+                }
+            }
+        }
+    }
+    addrs
 }
 
 fn fit_bgra_to_canvas(
@@ -2826,8 +2847,13 @@ fn decode_video_frame(
                 return Some((pixel_buffer, w as u32, h as u32));
             }
         }
-        Ok(None) => {}
-        Err(_e) => {
+        Ok(None) => {
+            log::debug!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {} (frame_len={} bytes, header={:02X?})",
+                peer_uid, frame_data.len(), &frame_data[..frame_data.len().min(8)]);
+        }
+        Err(e) => {
+            log::warn!("❌ [DECODER RX] Erro ao decodificar frame H.264 para peer {}: {:?} (len={} bytes, header={:02X?})",
+                peer_uid, e, frame_data.len(), &frame_data[..frame_data.len().min(8)]);
             if let Ok(fresh) = openh264::decoder::Decoder::new() {
                 *decoder = fresh;
             }
