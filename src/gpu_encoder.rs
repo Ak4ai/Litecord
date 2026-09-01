@@ -318,6 +318,11 @@ pub mod ffmpeg_nvenc {
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"idr\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"repeat_headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"max_b_frames\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"b_frame_delta_qp\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                     } else if name == "h264_qsv" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);

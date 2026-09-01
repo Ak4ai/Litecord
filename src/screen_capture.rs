@@ -1278,9 +1278,9 @@ impl ScreenCaptureManager {
                                 on_frame(peer_uid, peer_name, quality_label, pixel_buffer);
                             } else {
                                 // Decode failed on P-frame -> Request immediate IDR Keyframe (WebRTC PLI mechanism)
-                                let last_req = last_pli_req.entry(peer_uid).or_insert_with(|| Instant::now() - Duration::from_secs(10));
-                                if last_req.elapsed() >= Duration::from_millis(250) {
-                                    *last_req = Instant::now();
+                                 let last_req = last_pli_req.entry(peer_uid).or_insert_with(|| Instant::now() - Duration::from_secs(10));
+                                 if last_req.elapsed() >= Duration::from_millis(300) {
+                                     *last_req = Instant::now();
                                     let current_cid = channel_id_decoder.load(Ordering::Relaxed);
                                     let inst = get_process_instance_id();
                                     let mut req_pkt = Vec::with_capacity(25);
