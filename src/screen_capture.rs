@@ -2756,14 +2756,82 @@ fn fit_bgra_to_canvas(
 
 
 
+static PEER_SPS_PPS_CACHE: std::sync::Mutex<Option<HashMap<u64, Vec<u8>>>> = std::sync::Mutex::new(None);
+
+fn cache_peer_sps_pps(peer_uid: u64, sps_pps_annex_b: &[u8]) {
+    if sps_pps_annex_b.is_empty() { return; }
+    if let Ok(mut lock) = PEER_SPS_PPS_CACHE.lock() {
+        let map = lock.get_or_insert_with(HashMap::new);
+        map.insert(peer_uid, sps_pps_annex_b.to_vec());
+    }
+}
+
+fn get_cached_peer_sps_pps(peer_uid: u64) -> Option<Vec<u8>> {
+    if let Ok(lock) = PEER_SPS_PPS_CACHE.lock() {
+        if let Some(map) = lock.as_ref() {
+            return map.get(&peer_uid).cloned();
+        }
+    }
+    None
+}
+
 /// Garante que o bitstream esteja rigorosamente no padrão Annex B (00 00 00 01)
 /// Convertendo automaticamente qualquer fluxo em AVCC/MP4 (prefixos de 4 bytes) proveniente de drivers WMF/AMD/Intel.
-fn ensure_annex_b(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     if data.len() < 4 {
         return std::borrow::Cow::Borrowed(data);
     }
+
+    // Varredura de metadados avcC (ISO/IEC 14496-15) em cabeçalhos MP4/WMF para extração dos parâmetros SPS/PPS
+    if let Some(avcc_pos) = data.windows(4).position(|w| w == b"avcC") {
+        let payload = &data[avcc_pos + 4..];
+        if payload.len() >= 7 {
+            let num_sps = (payload[5] & 0x1F) as usize;
+            let mut p = 6;
+            let mut extracted = Vec::new();
+            for _ in 0..num_sps {
+                if p + 2 <= payload.len() {
+                    let sps_len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+                    p += 2;
+                    if p + sps_len <= payload.len() {
+                        extracted.extend_from_slice(&[0, 0, 0, 1]);
+                        extracted.extend_from_slice(&payload[p..p + sps_len]);
+                        p += sps_len;
+                    }
+                }
+            }
+            if p < payload.len() {
+                let num_pps = payload[p] as usize;
+                p += 1;
+                for _ in 0..num_pps {
+                    if p + 2 <= payload.len() {
+                        let pps_len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+                        p += 2;
+                        if p + pps_len <= payload.len() {
+                            extracted.extend_from_slice(&[0, 0, 0, 1]);
+                            extracted.extend_from_slice(&payload[p..p + pps_len]);
+                            p += pps_len;
+                        }
+                    }
+                }
+            }
+            if !extracted.is_empty() {
+                cache_peer_sps_pps(peer_uid, &extracted);
+            }
+        }
+    }
+
     // Já está em Annex B legítimo?
     if data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1]) {
+        let has_sps = data.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
+        if !has_sps {
+            if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
+                let mut with_header = Vec::with_capacity(cached_header.len() + data.len());
+                with_header.extend_from_slice(&cached_header);
+                with_header.extend_from_slice(data);
+                return std::borrow::Cow::Owned(with_header);
+            }
+        }
         return std::borrow::Cow::Borrowed(data);
     }
 
@@ -2790,6 +2858,15 @@ fn ensure_annex_b(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
         return std::borrow::Cow::Borrowed(data);
     }
     if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
+        let has_sps = slice.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
+        if !has_sps {
+            if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
+                let mut with_header = Vec::with_capacity(cached_header.len() + slice.len());
+                with_header.extend_from_slice(&cached_header);
+                with_header.extend_from_slice(slice);
+                return std::borrow::Cow::Owned(with_header);
+            }
+        }
         return std::borrow::Cow::Borrowed(slice);
     }
 
@@ -2810,6 +2887,15 @@ fn ensure_annex_b(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     if out.is_empty() {
         std::borrow::Cow::Borrowed(data)
     } else {
+        let has_sps = out.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
+        if !has_sps {
+            if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
+                let mut with_header = Vec::with_capacity(cached_header.len() + out.len());
+                with_header.extend_from_slice(&cached_header);
+                with_header.extend_from_slice(&out);
+                return std::borrow::Cow::Owned(with_header);
+            }
+        }
         std::borrow::Cow::Owned(out)
     }
 }
@@ -2831,7 +2917,7 @@ fn decode_video_frame(
         openh264::decoder::Decoder::new().expect("Falha ao criar Decoder H.264")
     });
 
-    let annex_b = ensure_annex_b(frame_data);
+    let annex_b = ensure_annex_b(peer_uid, frame_data);
 
     match decoder.decode(&annex_b) {
         Ok(Some(decoded_yuv)) => {

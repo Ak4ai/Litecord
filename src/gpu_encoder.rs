@@ -255,87 +255,90 @@ pub mod ffmpeg_nvenc {
                     ("h264_qsv", "Intel QuickSync"),
                 ];
 
-                let mut chosen_codec: *mut c_void = std::ptr::null_mut();
+                let mut chosen_ctx: *mut c_void = std::ptr::null_mut();
                 let mut chosen_name = "";
                 let mut chosen_desc = "";
 
                 for &(name, desc) in &candidates {
                     let c_name = CString::new(name).unwrap();
                     let codec = find_encoder_fn(c_name.as_ptr());
-                    if !codec.is_null() {
-                        chosen_codec = codec;
+                    if codec.is_null() {
+                        continue;
+                    }
+
+                    let codec_ctx = alloc_context_fn(codec);
+                    if codec_ctx.is_null() {
+                        continue;
+                    }
+
+                    let get_offset = |name: &[u8]| -> usize {
+                        let opt = opt_find_fn(codec_ctx, name.as_ptr() as *const c_char, std::ptr::null(), 0, 0);
+                        if !opt.is_null() {
+                            (*opt).offset as usize
+                        } else {
+                            0
+                        }
+                    };
+
+                    let initial_width = 1920u32;
+                    let initial_height = 1080u32;
+                    let initial_bitrate = 6_000_000u32;
+
+                    let ctx_u8 = codec_ctx as *mut u8;
+                    *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
+                    *(ctx_u8.add(80) as *mut u32) = 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
+                    *(ctx_u8.add(84) as *mut i32) = 1;          // time_base.num
+                    *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
+                    *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
+                    *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
+                    *(ctx_u8.add(140) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
+                    *(ctx_u8.add(148) as *mut i32) = 1;         // color_primaries = BT709
+                    *(ctx_u8.add(152) as *mut i32) = 1;         // color_trc = BT709
+                    *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
+                    *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
+
+                    let gop_off = get_offset(b"g\0");
+                    if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = (target_fps * 2) as i32; }
+                    let max_b_off = get_offset(b"bf\0");
+                    if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
+
+                    let mut opts: *mut c_void = std::ptr::null_mut();
+                    if name == "h264_nvenc" {
+                        dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                    } else if name == "h264_amf" {
+                        dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
+                    } else if name == "h264_qsv" {
+                        dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    }
+
+                    let open_ret = open2_fn(codec_ctx, codec, &mut opts as *mut *mut c_void);
+                    dict_free_fn(&mut opts);
+                    if open_ret >= 0 {
+                        chosen_ctx = codec_ctx;
                         chosen_name = name;
                         chosen_desc = desc;
                         break;
-                    }
-                }
-
-                if chosen_codec.is_null() {
-                    return Err("Nenhum hardware encoder H.264 (NVENC / AMF / QSV) disponível via FFmpeg".to_string());
-                }
-
-                let codec_ctx = alloc_context_fn(chosen_codec);
-                if codec_ctx.is_null() {
-                    return Err("Falha ao alocar AVCodecContext".to_string());
-                }
-
-                let get_offset = |name: &[u8]| -> usize {
-                    let opt = opt_find_fn(codec_ctx, name.as_ptr() as *const c_char, std::ptr::null(), 0, 0);
-                    if !opt.is_null() {
-                        (*opt).offset as usize
                     } else {
-                        0
+                        free_ctx_fn(&mut (codec_ctx as *mut _));
                     }
-                };
-
-                let initial_width = 1920u32;
-                let initial_height = 1080u32;
-                let initial_bitrate = 6_000_000u32;
-
-                let ctx_u8 = codec_ctx as *mut u8;
-                *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
-                *(ctx_u8.add(80) as *mut u32) = 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
-                *(ctx_u8.add(84) as *mut i32) = 1;          // time_base.num
-                *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
-                *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
-                *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
-                *(ctx_u8.add(140) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
-                *(ctx_u8.add(148) as *mut i32) = 1;         // color_primaries = BT709
-                *(ctx_u8.add(152) as *mut i32) = 1;         // color_trc = BT709
-                *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
-                *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
-
-                let gop_off = get_offset(b"g\0");
-                if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = (target_fps * 2) as i32; }
-                let max_b_off = get_offset(b"bf\0");
-                if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
-
-                let mut opts: *mut c_void = std::ptr::null_mut();
-                if chosen_name == "h264_nvenc" {
-                    dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                } else if chosen_name == "h264_amf" {
-                    dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
-                } else if chosen_name == "h264_qsv" {
-                    dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                 }
 
-                let open_ret = open2_fn(codec_ctx, chosen_codec, &mut opts as *mut *mut c_void);
-                dict_free_fn(&mut opts);
-                if open_ret < 0 {
-                    free_ctx_fn(&mut (codec_ctx as *mut _));
-                    return Err(format!("avcodec_open2 falhou para {} com código: {}", chosen_name, open_ret));
+                if chosen_ctx.is_null() {
+                    return Err("Nenhum hardware encoder H.264 (NVENC / AMF / QSV) inicializou com sucesso via FFmpeg".to_string());
                 }
+
+                let codec_ctx = chosen_ctx;
 
                 let frame = frame_alloc_fn();
                 if frame.is_null() {
