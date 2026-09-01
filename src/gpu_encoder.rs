@@ -250,21 +250,30 @@ pub mod ffmpeg_nvenc {
                         .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
                 );
 
+                let get_offset = |ctx: *mut c_void, name: &[u8]| -> usize {
+                    let opt = opt_find_fn(ctx, name.as_ptr() as *const c_char, std::ptr::null(), 0, 0);
+                    if !opt.is_null() {
+                        (*opt).offset as usize
+                    } else {
+                        0
+                    }
+                };
+
                 let initial_width = 1920u32;
                 let initial_height = 1080u32;
                 let initial_bitrate = 6_000_000u32;
 
                 let candidates = [
-                    ("h264_nvenc", "NVIDIA NVENC"),
-                    ("h264_amf", "AMD AMF"),
-                    ("h264_qsv", "Intel QuickSync"),
+                    ("h264_nvenc", "NVIDIA NVENC Hardware Encoder"),
+                    ("h264_amf", "AMD AMF Hardware Encoder"),
+                    ("h264_qsv", "Intel QuickSync Video (QSV) Hardware Encoder"),
                 ];
 
-                let mut chosen_ctx: *mut c_void = std::ptr::null_mut();
+                let mut chosen_ctx: *mut AVCodecContext = std::ptr::null_mut();
                 let mut chosen_name = "";
                 let mut chosen_desc = "";
 
-                for &(name, desc) in &candidates {
+                for (name, desc) in candidates {
                     let c_name = CString::new(name).unwrap();
                     let codec = find_encoder_fn(c_name.as_ptr());
                     if codec.is_null() {
@@ -275,15 +284,6 @@ pub mod ffmpeg_nvenc {
                     if codec_ctx.is_null() {
                         continue;
                     }
-
-                    let get_offset = |name: &[u8]| -> usize {
-                        let opt = opt_find_fn(codec_ctx, name.as_ptr() as *const c_char, std::ptr::null(), 0, 0);
-                        if !opt.is_null() {
-                            (*opt).offset as usize
-                        } else {
-                            0
-                        }
-                    };
 
                     let ctx_u8 = codec_ctx as *mut u8;
                     *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
@@ -298,9 +298,9 @@ pub mod ffmpeg_nvenc {
                     *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
                     *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
 
-                    let gop_off = get_offset(b"g\0");
+                    let gop_off = get_offset(codec_ctx, b"g\0");
                     if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = target_fps.max(1) as i32; }
-                    let max_b_off = get_offset(b"bf\0");
+                    let max_b_off = get_offset(codec_ctx, b"bf\0");
                     if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
 
                     let mut opts: *mut c_void = std::ptr::null_mut();
@@ -349,8 +349,8 @@ pub mod ffmpeg_nvenc {
 
                 // Sunshine Grade: Captura de extradata (SPS/PPS) do AVCodecContext na inicialização
                 let mut initial_header_cache = Vec::new();
-                let extradata_off = get_offset(b"extradata\0");
-                let extradata_size_off = get_offset(b"extradata_size\0");
+                let extradata_off = get_offset(codec_ctx, b"extradata\0");
+                let extradata_size_off = get_offset(codec_ctx, b"extradata_size\0");
                 if extradata_off > 0 && extradata_size_off > 0 {
                     let ed_ptr = *(ctx_u8.add(extradata_off) as *mut *const u8);
                     let ed_size = *(ctx_u8.add(extradata_size_off) as *mut i32);
