@@ -111,6 +111,8 @@ pub mod ffmpeg_nvenc {
     type FnAvPacketUnref = unsafe extern "C" fn(pkt: *mut AVPacket);
     type FnAvOptSet = unsafe extern "C" fn(obj: *mut c_void, name: *const c_char, val: *const c_char, flags: c_int) -> c_int;
     type FnAvOptFind = unsafe extern "C" fn(obj: *mut c_void, name: *const c_char, unit: *const c_char, opt_flags: c_int, search_flags: c_int) -> *const AVOption;
+    type FnAvDictSet = unsafe extern "C" fn(pm: *mut *mut c_void, key: *const c_char, value: *const c_char, flags: c_int) -> c_int;
+    type FnAvDictFree = unsafe extern "C" fn(pm: *mut *mut c_void);
 
     pub struct FfmpegNvencEncoder {
         avcodec_dll: windows_sys::Win32::Foundation::HMODULE,
@@ -238,6 +240,14 @@ pub mod ffmpeg_nvenc {
                     get_proc(avutil_dll, b"av_opt_find\0".as_ptr())
                         .ok_or_else(|| "Símbolo av_opt_find ausente".to_string())?
                 );
+                let dict_set_fn: FnAvDictSet = std::mem::transmute(
+                    get_proc(avutil_dll, b"av_dict_set\0".as_ptr())
+                        .ok_or_else(|| "Símbolo av_dict_set ausente".to_string())?
+                );
+                let dict_free_fn: FnAvDictFree = std::mem::transmute(
+                    get_proc(avutil_dll, b"av_dict_free\0".as_ptr())
+                        .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
+                );
 
                 let codec_name = CString::new("h264_nvenc").unwrap();
                 let codec = find_encoder_fn(codec_name.as_ptr());
@@ -281,16 +291,18 @@ pub mod ffmpeg_nvenc {
                 let max_b_off = get_offset(b"bf\0");
                 if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
 
-                let _ = opt_set_fn(codec_ctx, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                let _ = opt_set_fn(codec_ctx, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                let mut opts: *mut c_void = std::ptr::null_mut();
+                dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
 
-                let open_ret = open2_fn(codec_ctx, codec, std::ptr::null_mut());
+                let open_ret = open2_fn(codec_ctx, codec, &mut opts as *mut *mut c_void);
+                dict_free_fn(&mut opts);
                 if open_ret < 0 {
                     free_ctx_fn(&mut (codec_ctx as *mut _));
                     return Err(format!("avcodec_open2 falhou para h264_nvenc com código: {}", open_ret));
@@ -422,14 +434,10 @@ pub mod ffmpeg_nvenc {
                 if self.needs_keyframe {
                     *(frame_u8.add(120) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
                     *(frame_u8.add(124) as *mut i32) = 1;
-                    *(frame_u8.add(160) as *mut i32) = 1; // flags = AV_FRAME_FLAG_KEY
-                    *(frame_u8.add(164) as *mut i32) = 1;
                     self.needs_keyframe = false;
                 } else {
                     *(frame_u8.add(120) as *mut i32) = 0; // pict_type = AV_PICTURE_TYPE_NONE
                     *(frame_u8.add(124) as *mut i32) = 0;
-                    *(frame_u8.add(160) as *mut i32) = 0;
-                    *(frame_u8.add(164) as *mut i32) = 0;
                 }
 
                 // Enviar quadro para a GPU NVIDIA
