@@ -2958,16 +2958,19 @@ fn extract_sps_pps_annex_b(data: &[u8]) -> Option<Vec<u8>> {
         let clean = strip_aud(slice);
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if has_sps {
-            if let Some(sps_pps) = extract_sps_pps_annex_b(clean) {
+            if let Some(sps_pps) = extract_sps_pps_annex_b(clean.as_ref()) {
                 cache_peer_sps_pps(peer_uid, &sps_pps);
             }
         } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
             let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
             with_header.extend_from_slice(&cached_header);
-            with_header.extend_from_slice(clean);
+            with_header.extend_from_slice(clean.as_ref());
             return std::borrow::Cow::Owned(with_header);
         }
-        return std::borrow::Cow::Borrowed(clean);
+        return match clean {
+            std::borrow::Cow::Borrowed(b) => std::borrow::Cow::Borrowed(b),
+            std::borrow::Cow::Owned(o) => std::borrow::Cow::Owned(o),
+        };
     }
 
     // Converte AVCC (prefixos de tamanho de 4 bytes) para Annex B (00 00 00 01)
@@ -2990,16 +2993,16 @@ fn extract_sps_pps_annex_b(data: &[u8]) -> Option<Vec<u8>> {
         let clean = strip_aud(&out);
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
         if has_sps {
-            if let Some(sps_pps) = extract_sps_pps_annex_b(clean) {
+            if let Some(sps_pps) = extract_sps_pps_annex_b(clean.as_ref()) {
                 cache_peer_sps_pps(peer_uid, &sps_pps);
             }
         } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
             let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
             with_header.extend_from_slice(&cached_header);
-            with_header.extend_from_slice(clean);
+            with_header.extend_from_slice(clean.as_ref());
             return std::borrow::Cow::Owned(with_header);
         }
-        std::borrow::Cow::Owned(clean.to_vec())
+        std::borrow::Cow::Owned(clean.into_owned())
     }
 }
 
