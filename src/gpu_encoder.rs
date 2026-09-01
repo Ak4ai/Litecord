@@ -288,20 +288,21 @@ pub mod ffmpeg_nvenc {
                     let ctx_u8 = codec_ctx as *mut u8;
                     *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
                     *(ctx_u8.add(80) as *mut u32) = 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
-                    *(ctx_u8.add(100) as *mut i32) = 1;         // time_base.num
-                    *(ctx_u8.add(104) as *mut i32) = target_fps.max(1) as i32; // time_base.den
+                    *(ctx_u8.add(84) as *mut i32) = 1;          // time_base.num
+                    *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
                     *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
                     *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
-                    *(ctx_u8.add(132) as *mut i32) = target_fps.max(1) as i32; // gop_size = 60
                     *(ctx_u8.add(140) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
                     *(ctx_u8.add(148) as *mut i32) = 1;         // color_primaries = BT709
                     *(ctx_u8.add(152) as *mut i32) = 1;         // color_trc = BT709
                     *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
                     *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
 
+                    opt_set_fn(codec_ctx as *mut c_void, b"g\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
+                    opt_set_fn(codec_ctx as *mut c_void, b"bf\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+
                     let mut opts: *mut c_void = std::ptr::null_mut();
                     dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"gop_size\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
                     if name == "h264_nvenc" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
@@ -315,11 +316,8 @@ pub mod ffmpeg_nvenc {
                         dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"both\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"idr\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"repeat_headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                     } else if name == "h264_qsv" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
@@ -328,11 +326,13 @@ pub mod ffmpeg_nvenc {
                     let open_ret = open2_fn(codec_ctx, codec, &mut opts as *mut *mut c_void);
                     dict_free_fn(&mut opts);
                     if open_ret >= 0 {
+                        info!("🎯 [FFMPEG GPU] Codec {} ({}) inicializou com sucesso via open2_fn!", name, desc);
                         chosen_ctx = codec_ctx;
                         chosen_name = name;
                         chosen_desc = desc;
                         break;
                     } else {
+                        warn!("⚠️ [FFMPEG GPU] open2_fn falhou para {} com código de erro {}", name, open_ret);
                         free_ctx_fn(&mut (codec_ctx as *mut _));
                     }
                 }
