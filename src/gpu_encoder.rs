@@ -507,7 +507,46 @@ pub mod ffmpeg_nvenc {
                     (self.packet_unref_fn)(self.packet);
                 }
 
+fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
+    let sps_start = data.windows(5).position(|w| {
+        (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7)
+    })?;
+    let slice_start = sps_start + 4;
+    let mut pos = slice_start;
+    let mut found_pps = false;
+    while pos + 4 <= data.len() {
+        let is_sc4 = data[pos..pos + 4] == [0, 0, 0, 1];
+        let is_sc3 = data[pos..pos + 3] == [0, 0, 1];
+        if is_sc4 || is_sc3 {
+            let nal_byte = if is_sc4 { data[pos + 4] } else { data[pos + 3] };
+            let nal_type = nal_byte & 0x1F;
+            if nal_type == 8 {
+                found_pps = true;
+            } else if nal_type == 5 || nal_type == 1 {
+                return Some(data[sps_start..pos].to_vec());
+            }
+        }
+        pos += 1;
+    }
+    if found_pps {
+        Some(data[sps_start..].to_vec())
+    } else {
+        None
+    }
+}
+
                 if !self.out_buffer.is_empty() {
+                    if let Some(extracted) = extract_sps_pps(&self.out_buffer) {
+                        self.header_cache = extracted;
+                    } else if !self.header_cache.is_empty() {
+                        let is_idr = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 5) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 5));
+                        if is_idr {
+                            let mut combined = Vec::with_capacity(self.header_cache.len() + self.out_buffer.len());
+                            combined.extend_from_slice(&self.header_cache);
+                            combined.extend_from_slice(&self.out_buffer);
+                            return Some(combined);
+                        }
+                    }
                     Some(std::mem::take(&mut self.out_buffer))
                 } else {
                     None

@@ -2865,17 +2865,47 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
         }
     }
 
+fn extract_sps_pps_annex_b(data: &[u8]) -> Option<Vec<u8>> {
+    let sps_start = data.windows(5).position(|w| {
+        (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7)
+    })?;
+    let slice_start = sps_start + 4;
+    let mut pos = slice_start;
+    let mut found_pps = false;
+    while pos + 4 <= data.len() {
+        let is_sc4 = data[pos..pos + 4] == [0, 0, 0, 1];
+        let is_sc3 = data[pos..pos + 3] == [0, 0, 1];
+        if is_sc4 || is_sc3 {
+            let nal_byte = if is_sc4 { data[pos + 4] } else { data[pos + 3] };
+            let nal_type = nal_byte & 0x1F;
+            if nal_type == 8 {
+                found_pps = true;
+            } else if nal_type == 5 || nal_type == 1 {
+                return Some(data[sps_start..pos].to_vec());
+            }
+        }
+        pos += 1;
+    }
+    if found_pps {
+        Some(data[sps_start..].to_vec())
+    } else {
+        None
+    }
+}
+
     // Já está em Annex B legítimo?
     if data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1]) {
         let clean = strip_aud(data);
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
-        if !has_sps {
-            if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-                let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
-                with_header.extend_from_slice(&cached_header);
-                with_header.extend_from_slice(clean);
-                return std::borrow::Cow::Owned(with_header);
+        if has_sps {
+            if let Some(sps_pps) = extract_sps_pps_annex_b(clean) {
+                cache_peer_sps_pps(peer_uid, &sps_pps);
             }
+        } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
+            let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
+            with_header.extend_from_slice(&cached_header);
+            with_header.extend_from_slice(clean);
+            return std::borrow::Cow::Owned(with_header);
         }
         return std::borrow::Cow::Borrowed(clean);
     }
@@ -2905,13 +2935,15 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
         let clean = strip_aud(slice);
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
-        if !has_sps {
-            if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-                let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
-                with_header.extend_from_slice(&cached_header);
-                with_header.extend_from_slice(clean);
-                return std::borrow::Cow::Owned(with_header);
+        if has_sps {
+            if let Some(sps_pps) = extract_sps_pps_annex_b(clean) {
+                cache_peer_sps_pps(peer_uid, &sps_pps);
             }
+        } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
+            let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
+            with_header.extend_from_slice(&cached_header);
+            with_header.extend_from_slice(clean);
+            return std::borrow::Cow::Owned(with_header);
         }
         return std::borrow::Cow::Borrowed(clean);
     }
@@ -2935,13 +2967,15 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     } else {
         let clean = strip_aud(&out);
         let has_sps = clean.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
-        if !has_sps {
-            if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
-                let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
-                with_header.extend_from_slice(&cached_header);
-                with_header.extend_from_slice(clean);
-                return std::borrow::Cow::Owned(with_header);
+        if has_sps {
+            if let Some(sps_pps) = extract_sps_pps_annex_b(clean) {
+                cache_peer_sps_pps(peer_uid, &sps_pps);
             }
+        } else if let Some(cached_header) = get_cached_peer_sps_pps(peer_uid) {
+            let mut with_header = Vec::with_capacity(cached_header.len() + clean.len());
+            with_header.extend_from_slice(&cached_header);
+            with_header.extend_from_slice(clean);
+            return std::borrow::Cow::Owned(with_header);
         }
         std::borrow::Cow::Owned(clean.to_vec())
     }
