@@ -299,11 +299,12 @@ pub mod ffmpeg_nvenc {
                     *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
 
                     let gop_off = get_offset(b"g\0");
-                    if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = (target_fps * 2) as i32; }
+                    if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = target_fps.max(1) as i32; }
                     let max_b_off = get_offset(b"bf\0");
                     if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
 
                     let mut opts: *mut c_void = std::ptr::null_mut();
+                    dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
                     if name == "h264_nvenc" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);

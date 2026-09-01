@@ -3049,9 +3049,6 @@ fn decode_video_frame(
         Err(e) => {
             log::warn!("❌ [DECODER RX] Erro ao decodificar frame H.264 para peer {}: {:?} (len={} bytes, header={:02X?})",
                 peer_uid, e, frame_data.len(), &frame_data[..frame_data.len().min(8)]);
-            if let Ok(fresh) = openh264::decoder::Decoder::new() {
-                *decoder = fresh;
-            }
         }
     }
     None
