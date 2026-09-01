@@ -2140,13 +2140,47 @@ fn build_mqtt_publish_pkt(topic: &str, payload: &[u8]) -> Vec<u8> {
 
 fn get_local_lan_addresses(port: u16) -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
-                addrs.push(SocketAddr::new(std::net::IpAddr::V4(*local.ip()), port));
+    let mut seen_ips = std::collections::HashSet::new();
+
+    // 1. Probes across diverse routing domains (Internet DNS, Tailscale CGNAT 100.64/10, LAN subnets)
+    let probe_targets = [
+        "8.8.8.8:80",
+        "1.1.1.1:80",
+        "100.100.100.100:80", // Tailscale MagicDNS probe (captures 100.x.x.x adapter IP)
+        "192.168.1.1:80",
+        "192.168.0.1:80",
+        "192.168.15.1:80",
+        "10.0.0.1:80",
+        "172.16.0.1:80",
+    ];
+
+    for target in probe_targets {
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect(target).is_ok() {
+                if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
+                    let ip = *local.ip();
+                    if !ip.is_loopback() && !ip.is_unspecified() && seen_ips.insert(ip) {
+                        addrs.push(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                    }
+                }
             }
         }
     }
+
+    // 2. Query hostname for all locally bound interface IPs
+    if let Ok(hostname) = std::env::var("COMPUTERNAME") {
+        if let Ok(host_addrs) = format!("{}:0", hostname).to_socket_addrs() {
+            for sa in host_addrs {
+                if let SocketAddr::V4(v4) = sa {
+                    let ip = *v4.ip();
+                    if !ip.is_loopback() && !ip.is_unspecified() && seen_ips.insert(ip) {
+                        addrs.push(SocketAddr::new(std::net::IpAddr::V4(ip), port));
+                    }
+                }
+            }
+        }
+    }
+
     addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
     addrs
 }
@@ -2568,7 +2602,7 @@ static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None)
 pub fn resolve_public_stun_address() -> Option<SocketAddr> {
     if let Ok(guard) = CACHED_STUN_ADDR.lock() {
         if let Some((addr, time)) = *guard {
-            if time.elapsed() < Duration::from_secs(60) {
+            if time.elapsed() < Duration::from_secs(45) {
                 return Some(addr);
             }
         }
@@ -2580,13 +2614,6 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
             "64.233.186.127:19302",  // Google STUN 1 IPv4
             "74.125.250.127:19302",  // Google STUN 2 IPv4
             "162.159.192.1:3478",    // Cloudflare STUN IPv4
-        ];
-
-        let stun_servers = [
-            "stun.l.google.com:19302",
-            "stun1.l.google.com:19302",
-            "stun2.l.google.com:19302",
-            "stun.cloudflare.com:3478",
         ];
 
         let stun_req: [u8; 20] = [
@@ -2601,44 +2628,11 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
                 let _ = socket.send_to(&stun_req, addr);
             }
         }
-
-        for s_host in stun_servers {
-            if let Ok(addrs) = s_host.to_socket_addrs() {
-                for stun_server in addrs.filter(|a| a.is_ipv4()) {
-                    let _ = socket.send_to(&stun_req, stun_server);
-                }
-            }
-        }
     }
 
     if let Ok(guard) = CACHED_STUN_ADDR.lock() {
         if let Some((addr, _)) = *guard {
             return Some(addr);
-        }
-    }
-
-    // HTTPS Fallback for firewalls/ISPs that block UDP STUN ports
-    let https_endpoints = [
-        "https://api.ipify.org",
-        "https://checkip.amazonaws.com",
-        "https://icanhazip.com",
-    ];
-    for ep in https_endpoints {
-        if let Ok(resp) = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_millis(1500))
-            .build()
-            .and_then(|c| c.get(ep).send())
-        {
-            if let Ok(text) = resp.text() {
-                if let Ok(ip) = text.trim().parse::<std::net::IpAddr>() {
-                    let rx_port = get_my_rx_port();
-                    let addr = SocketAddr::new(ip, rx_port);
-                    if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
-                        *guard = Some((addr, Instant::now()));
-                    }
-                    return Some(addr);
-                }
-            }
         }
     }
 
