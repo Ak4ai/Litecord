@@ -1543,6 +1543,10 @@ impl ScreenCaptureManager {
                                 let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
                                 let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
 
+                                if (pkt_uid == my_uid && my_uid > 0) || pkt_inst == my_instance_id {
+                                    continue;
+                                }
+
                                 if op == OP_AUDIO_FRAME {
                                     info!("🔥 [RECEIVER PROBE] OP_AUDIO_FRAME recebido! len={}, src={}, cid={}, uid={}, inst={}", len, src_addr, pkt_cid, pkt_uid, pkt_inst);
                                 }
@@ -2279,7 +2283,8 @@ fn parse_and_handle_mqtt_messages(
             let pkt_uid = val["uid"].as_u64().unwrap_or(0);
             let pkt_inst = val["inst"].as_u64().unwrap_or(0) as u32;
 
-            if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 {
+            let my_uid = crate::gateway::get_my_user_id();
+            if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 && (my_uid == 0 || pkt_uid != my_uid) {
                 info!("📡 [MQTT PRESENÇA RECEBIDA] De UID={} (inst={}) | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, val["wan_ip"], val["lan_ips"]);
 
                 // Negociação X25519 ECDH: computa a chave de sessão compartilhada exclusiva do peer
