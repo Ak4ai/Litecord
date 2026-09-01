@@ -113,6 +113,7 @@ pub mod ffmpeg_nvenc {
     type FnAvOptFind = unsafe extern "C" fn(obj: *mut c_void, name: *const c_char, unit: *const c_char, opt_flags: c_int, search_flags: c_int) -> *const AVOption;
     type FnAvDictSet = unsafe extern "C" fn(pm: *mut *mut c_void, key: *const c_char, value: *const c_char, flags: c_int) -> c_int;
     type FnAvDictFree = unsafe extern "C" fn(pm: *mut *mut c_void);
+    type FnAvcodecFlushBuffers = unsafe extern "C" fn(ctx: *mut AVCodecContext);
 
     pub struct FfmpegNvencEncoder {
         avcodec_dll: windows_sys::Win32::Foundation::HMODULE,
@@ -123,6 +124,7 @@ pub mod ffmpeg_nvenc {
         send_frame_fn: FnAvcodecSendFrame,
         recv_packet_fn: FnAvcodecReceivePacket,
         packet_unref_fn: FnAvPacketUnref,
+        flush_buffers_fn: Option<FnAvcodecFlushBuffers>,
         free_ctx_fn: FnAvcodecFreeContext,
         free_frame_fn: FnAvFrameFree,
         free_packet_fn: FnAvPacketFree,
@@ -259,6 +261,9 @@ pub mod ffmpeg_nvenc {
                     }
                 };
 
+                let flush_buffers_fn: Option<FnAvcodecFlushBuffers> = get_proc(avcodec_dll, b"avcodec_flush_buffers\0".as_ptr())
+                    .map(|p| std::mem::transmute(p));
+
                 let initial_width = 1920u32;
                 let initial_height = 1080u32;
                 let initial_bitrate = 6_000_000u32;
@@ -298,11 +303,11 @@ pub mod ffmpeg_nvenc {
                     *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
                     *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
 
-                    opt_set_fn(codec_ctx as *mut c_void, b"g\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
+                    opt_set_fn(codec_ctx as *mut c_void, b"g\0".as_ptr() as *const c_char, b"30\0".as_ptr() as *const c_char, 0);
                     opt_set_fn(codec_ctx as *mut c_void, b"bf\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
 
                     let mut opts: *mut c_void = std::ptr::null_mut();
-                    dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"30\0".as_ptr() as *const c_char, 0);
                     if name == "h264_nvenc" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
@@ -423,6 +428,7 @@ pub mod ffmpeg_nvenc {
                     send_frame_fn,
                     recv_packet_fn,
                     packet_unref_fn,
+                    flush_buffers_fn,
                     free_ctx_fn,
                     free_frame_fn: frame_free_fn,
                     free_packet_fn: packet_free_fn,
@@ -610,6 +616,9 @@ fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
 
         fn force_intra_frame(&mut self) {
             self.needs_keyframe = true;
+            if let Some(flush_fn) = self.flush_buffers_fn {
+                unsafe { flush_fn(self.codec_ctx); }
+            }
         }
 
         fn set_bitrate_bps(&mut self, bitrate_bps: u32) {
