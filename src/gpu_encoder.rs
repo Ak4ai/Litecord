@@ -288,23 +288,20 @@ pub mod ffmpeg_nvenc {
                     let ctx_u8 = codec_ctx as *mut u8;
                     *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
                     *(ctx_u8.add(80) as *mut u32) = 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
-                    *(ctx_u8.add(84) as *mut i32) = 1;          // time_base.num
-                    *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
+                    *(ctx_u8.add(100) as *mut i32) = 1;         // time_base.num
+                    *(ctx_u8.add(104) as *mut i32) = target_fps.max(1) as i32; // time_base.den
                     *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
                     *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
+                    *(ctx_u8.add(132) as *mut i32) = target_fps.max(1) as i32; // gop_size = 60
                     *(ctx_u8.add(140) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
                     *(ctx_u8.add(148) as *mut i32) = 1;         // color_primaries = BT709
                     *(ctx_u8.add(152) as *mut i32) = 1;         // color_trc = BT709
                     *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
                     *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
 
-                    let gop_off = get_offset(codec_ctx, b"g\0");
-                    if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = target_fps.max(1) as i32; }
-                    let max_b_off = get_offset(codec_ctx, b"bf\0");
-                    if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
-
                     let mut opts: *mut c_void = std::ptr::null_mut();
                     dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"gop_size\0".as_ptr() as *const c_char, b"60\0".as_ptr() as *const c_char, 0);
                     if name == "h264_nvenc" {
                         dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
@@ -318,7 +315,7 @@ pub mod ffmpeg_nvenc {
                         dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"idr\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"both\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"repeat_headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
@@ -347,51 +344,47 @@ pub mod ffmpeg_nvenc {
                 let codec_ctx = chosen_ctx;
                 let ctx_u8 = codec_ctx as *mut u8;
 
-                // Sunshine Grade: Captura de extradata (SPS/PPS) do AVCodecContext na inicialização
+                // Sunshine Grade: Leitura direta de extradata (SPS/PPS) do AVCodecContext na inicialização
                 let mut initial_header_cache = Vec::new();
-                let extradata_off = get_offset(codec_ctx, b"extradata\0");
-                let extradata_size_off = get_offset(codec_ctx, b"extradata_size\0");
-                if extradata_off > 0 && extradata_size_off > 0 {
-                    let ed_ptr = *(ctx_u8.add(extradata_off) as *mut *const u8);
-                    let ed_size = *(ctx_u8.add(extradata_size_off) as *mut i32);
-                    if !ed_ptr.is_null() && ed_size > 0 {
-                        let slice = std::slice::from_raw_parts(ed_ptr, ed_size as usize);
-                        if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
-                            initial_header_cache = slice.to_vec();
-                        } else if slice.len() >= 7 && slice[0] == 1 {
-                            // Container MP4 avcC -> Annex B
-                            let num_sps = (slice[5] & 0x1F) as usize;
-                            let mut p = 6;
-                            for _ in 0..num_sps {
+                let ed_ptr = *(ctx_u8.add(88) as *mut *const u8);
+                let ed_size = *(ctx_u8.add(96) as *mut i32);
+                if !ed_ptr.is_null() && ed_size > 0 {
+                    let slice = std::slice::from_raw_parts(ed_ptr, ed_size as usize);
+                    if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
+                        initial_header_cache = slice.to_vec();
+                    } else if slice.len() >= 7 && slice[0] == 1 {
+                        // Container MP4 avcC -> Annex B
+                        let num_sps = (slice[5] & 0x1F) as usize;
+                        let mut p = 6;
+                        for _ in 0..num_sps {
+                            if p + 2 <= slice.len() {
+                                let sps_len = u16::from_be_bytes([slice[p], slice[p + 1]]) as usize;
+                                p += 2;
+                                if p + sps_len <= slice.len() {
+                                    initial_header_cache.extend_from_slice(&[0, 0, 0, 1]);
+                                    initial_header_cache.extend_from_slice(&slice[p..p + sps_len]);
+                                    p += sps_len;
+                                }
+                            }
+                        }
+                        if p < slice.len() {
+                            let num_pps = slice[p] as usize;
+                            p += 1;
+                            for _ in 0..num_pps {
                                 if p + 2 <= slice.len() {
-                                    let sps_len = u16::from_be_bytes([slice[p], slice[p + 1]]) as usize;
+                                    let pps_len = u16::from_be_bytes([slice[p], slice[p + 1]]) as usize;
                                     p += 2;
-                                    if p + sps_len <= slice.len() {
+                                    if p + pps_len <= slice.len() {
                                         initial_header_cache.extend_from_slice(&[0, 0, 0, 1]);
-                                        initial_header_cache.extend_from_slice(&slice[p..p + sps_len]);
-                                        p += sps_len;
-                                    }
-                                }
-                            }
-                            if p < slice.len() {
-                                let num_pps = slice[p] as usize;
-                                p += 1;
-                                for _ in 0..num_pps {
-                                    if p + 2 <= slice.len() {
-                                        let pps_len = u16::from_be_bytes([slice[p], slice[p + 1]]) as usize;
-                                        p += 2;
-                                        if p + pps_len <= slice.len() {
-                                            initial_header_cache.extend_from_slice(&[0, 0, 0, 1]);
-                                            initial_header_cache.extend_from_slice(&slice[p..p + pps_len]);
-                                            p += pps_len;
-                                        }
+                                        initial_header_cache.extend_from_slice(&slice[p..p + pps_len]);
+                                        p += pps_len;
                                     }
                                 }
                             }
                         }
-                        if !initial_header_cache.is_empty() {
-                            info!("📦 [FFMPEG GPU] extradata (SPS/PPS) capturado com sucesso: {} bytes", initial_header_cache.len());
-                        }
+                    }
+                    if !initial_header_cache.is_empty() {
+                        info!("📦 [FFMPEG GPU] extradata (SPS/PPS) capturado com sucesso: {} bytes", initial_header_cache.len());
                     }
                 }
 
