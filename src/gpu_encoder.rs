@@ -315,14 +315,13 @@ pub mod ffmpeg_nvenc {
                         dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                     } else if name == "h264_amf" {
                         dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"ultralowlatency\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"idr\0".as_ptr() as *const c_char, 0);
-                        dict_set_fn(&mut opts, b"repeat_headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                        dict_set_fn(&mut opts, b"forced_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                         dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
