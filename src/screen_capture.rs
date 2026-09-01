@@ -1307,6 +1307,8 @@ impl ScreenCaptureManager {
                                             for bcast in get_broadcast_addresses() {
                                                 let _ = sock.send_to(&req_pkt, bcast);
                                             }
+                                        }
+                                    }
                                 }
                             }
                         }
