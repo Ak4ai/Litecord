@@ -1055,22 +1055,36 @@ impl ScreenCaptureManager {
                         let total_len = frame_bytes.len();
                         let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
 
-                        // Send directly to active peers (or fallback to LAN broadcast if no peers found yet)
+                        // Send directly to verified active peers (or fallback to known peers / LAN broadcast)
                         let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
                         let mut has_remote_peers = false;
-                        if let Ok(mut peers) = peers_store.lock() {
-                            let now = Instant::now();
-                            peers.retain(|_, (addr, seen)| {
-                                let is_private = match addr.ip() {
-                                    std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
-                                    _ => false,
-                                };
-                                is_private || now.duration_since(*seen) < Duration::from_secs(60)
-                            });
-                            for (&_p_key, &(addr, _)) in peers.iter() {
-                                if !target_addrs.contains(&addr) {
-                                    target_addrs.push(addr);
-                                    has_remote_peers = true;
+
+                        if let Ok(guard) = LAST_SEEN_PEER_ADDR.lock() {
+                            if let Some(map) = guard.as_ref() {
+                                for (&p_uid, &active_addr) in map.iter() {
+                                    if p_uid != uid && !target_addrs.contains(&active_addr) {
+                                        target_addrs.push(active_addr);
+                                        has_remote_peers = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if !has_remote_peers {
+                            if let Ok(mut peers) = peers_store.lock() {
+                                let now = Instant::now();
+                                peers.retain(|_, (addr, seen)| {
+                                    let is_private = match addr.ip() {
+                                        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
+                                        _ => false,
+                                    };
+                                    is_private || now.duration_since(*seen) < Duration::from_secs(60)
+                                });
+                                for (&_p_key, &(addr, _)) in peers.iter() {
+                                    if !target_addrs.contains(&addr) {
+                                        target_addrs.push(addr);
+                                        has_remote_peers = true;
+                                    }
                                 }
                             }
                         }
@@ -3124,10 +3138,11 @@ fn decode_video_frame(
             }
         }
         Ok(None) => {
-            log::trace!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {}", peer_uid);
+            log::info!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {} (len={})", peer_uid, annex_b.len());
         }
         Err(e) => {
-            log::debug!("⚠️ [DECODER RX] Frame descartado por falta de referência para peer {}: {:?} (solicitando IDR)", peer_uid, e);
+            log::warn!("⚠️ [DECODER RX] Frame descartado por erro/falta de referência para peer {}: {:?} (len={}, header={:02X?})",
+                peer_uid, e, annex_b.len(), &annex_b[..annex_b.len().min(8)]);
         }
     }
     None
