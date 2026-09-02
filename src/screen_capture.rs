@@ -2661,24 +2661,82 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
         }
     }
 
+    let stun_req: [u8; 20] = [
+        0x00, 0x01, // Binding Request
+        0x00, 0x00, // Length
+        0x21, 0x12, 0xa4, 0x42, // Magic Cookie
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+    ];
+
+    let stun_servers = [
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302",
+        "stun2.l.google.com:19302",
+        "stun.cloudflare.com:3478",
+        "74.125.250.129:19302",
+        "162.159.192.1:3478",
+    ];
+
     if let Some(socket) = get_shared_p2p_socket() {
-        let direct_stun_ips = [
-            "142.250.187.127:19302", // Google STUN IPv4
-            "64.233.186.127:19302",  // Google STUN 1 IPv4
-            "74.125.250.127:19302",  // Google STUN 2 IPv4
-            "162.159.192.1:3478",    // Cloudflare STUN IPv4
-        ];
-
-        let stun_req: [u8; 20] = [
-            0x00, 0x01, // Binding Request
-            0x00, 0x00, // Length
-            0x21, 0x12, 0xa4, 0x42, // Magic Cookie
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-        ];
-
-        for &ip_str in &direct_stun_ips {
-            if let Ok(addr) = ip_str.parse::<SocketAddr>() {
-                let _ = socket.send_to(&stun_req, addr);
+        for server in stun_servers {
+            if let Ok(addrs) = server.to_socket_addrs() {
+                for addr in addrs {
+                    if addr.is_ipv4() {
+                        let _ = socket.send_to(&stun_req, addr);
+                    }
+                }
+            }
+        }
+    } else {
+        // Fallback síncrono rápido se socket compartilhado ainda não foi inicializado
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let _ = socket.set_read_timeout(Some(Duration::from_millis(150)));
+            for server in stun_servers {
+                if let Ok(addrs) = server.to_socket_addrs() {
+                    for addr in addrs {
+                        if addr.is_ipv4() {
+                            let _ = socket.send_to(&stun_req, addr);
+                        }
+                    }
+                }
+            }
+            let mut buf = [0u8; 1024];
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_millis(200) {
+                if let Ok((len, _)) = socket.recv_from(&mut buf) {
+                    if len >= 20 && buf[0] == 0x01 && buf[1] == 0x01 && &buf[4..8] == &[0x21, 0x12, 0xa4, 0x42] {
+                        let mut i = 20;
+                        while i + 4 <= len {
+                            let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
+                            let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+                            if i + 4 + attr_len > len { break; }
+                            if (attr_type == 0x0020 || attr_type == 0x0001) && attr_len >= 8 {
+                                let port = if attr_type == 0x0020 {
+                                    u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112
+                                } else {
+                                    u16::from_be_bytes([buf[i + 6], buf[i + 7]])
+                                };
+                                let ip = if attr_type == 0x0020 {
+                                    std::net::Ipv4Addr::new(
+                                        buf[i + 8] ^ 0x21,
+                                        buf[i + 9] ^ 0x12,
+                                        buf[i + 10] ^ 0xa4,
+                                        buf[i + 11] ^ 0x42,
+                                    )
+                                } else {
+                                    std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11])
+                                };
+                                let resolved = SocketAddr::new(std::net::IpAddr::V4(ip), port);
+                                if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+                                    *guard = Some((resolved, Instant::now()));
+                                }
+                                info!("🌐 [STUN SYNCHRONOUS RESOLUTION] IP Público WAN mapeado: {}", resolved);
+                                return Some(resolved);
+                            }
+                            i += 4 + ((attr_len + 3) & !3);
+                        }
+                    }
+                }
             }
         }
     }
