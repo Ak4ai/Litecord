@@ -274,7 +274,7 @@ pub mod ffmpeg_nvenc {
 
                 let initial_width = 1920u32;
                 let initial_height = 1080u32;
-                let initial_bitrate = 6_000_000u32;
+                let initial_bitrate = 4_500_000u32;
 
                 let candidates = [
                     ("h264_nvenc", "NVIDIA NVENC Hardware Encoder"),

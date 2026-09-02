@@ -109,9 +109,9 @@ fn main() {
             let start = Instant::now();
 
             if is_sender {
-                println!("🎥 Transmitindo fluxo H.264 720p/60fps via WAN Pública...");
+                println!("🎥 Transmitindo fluxo H.264 720p/60fps com Sunshine Pacing via WAN Pública...");
                 let mut config = EncoderConfig::new();
-                config.set_bitrate_bps(3_000_000);
+                config.set_bitrate_bps(4_500_000);
                 let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), config).unwrap();
 
                 let w = 1280usize;
@@ -120,14 +120,36 @@ fn main() {
                 let u_plane = vec![128u8; (w / 2) * (h / 2)];
                 let v_plane = vec![128u8; (w / 2) * (h / 2)];
                 let mut seq = 0u32;
+                let mut cur_bitrate = 4_500_000u32;
 
-                while start.elapsed() < Duration::from_secs(15) {
+                while start.elapsed() < Duration::from_secs(10) {
                     if let Ok((len, src)) = socket.recv_from(&mut recv_buf) {
                         if len >= 5 && &recv_buf[0..4] == MAGIC {
                             if src != remote_peer {
                                 println!("🎯 [SENDER] Peer remoto conectado via WAN: {}", src);
                                 remote_peer = src;
                             }
+                        }
+                    }
+
+                    // Dinâmica de bitrate a cada 3 segundos
+                    if seq == 60 {
+                        cur_bitrate = 3_500_000;
+                        let mut cfg = EncoderConfig::new();
+                        cfg.set_bitrate_bps(cur_bitrate);
+                        if let Ok(new_enc) = Encoder::with_api_config(OpenH264API::from_source(), cfg) {
+                            encoder = new_enc;
+                            encoder.force_intra_frame();
+                            println!("📉 [BITRATE ADAPTATIVO] Ajustando taxa para 3.50 Mbps...");
+                        }
+                    } else if seq == 180 {
+                        cur_bitrate = 5_000_000;
+                        let mut cfg = EncoderConfig::new();
+                        cfg.set_bitrate_bps(cur_bitrate);
+                        if let Ok(new_enc) = Encoder::with_api_config(OpenH264API::from_source(), cfg) {
+                            encoder = new_enc;
+                            encoder.force_intra_frame();
+                            println!("📈 [BITRATE ADAPTATIVO] Ajustando taxa para 5.00 Mbps...");
                         }
                     }
 
@@ -160,6 +182,11 @@ fn main() {
                             pkt.extend_from_slice(chunk);
 
                             let _ = socket.send_to(&pkt, remote_peer);
+
+                            // Sunshine micro-pacing: pausa microscópica a cada 4 pacotes
+                            if (idx + 1) % 4 == 0 && (idx + 1) < total_chunks as usize {
+                                std::thread::yield_now();
+                            }
                         }
                     }
                     std::thread::sleep(Duration::from_micros(16666));
@@ -170,8 +197,10 @@ fn main() {
                 let mut decoder = Decoder::new().unwrap();
                 let mut in_flight: HashMap<u32, (u16, HashMap<u16, Vec<u8>>)> = HashMap::new();
                 let mut frames_ok = 0u32;
+                let mut last_stat = Instant::now();
+                let mut window_frames = 0u32;
 
-                while start.elapsed() < Duration::from_secs(15) {
+                while start.elapsed() < Duration::from_secs(12) {
                     if let Ok((len, src)) = socket.recv_from(&mut recv_buf) {
                         if len < 37 || &recv_buf[0..4] != MAGIC { continue; }
                         let op = recv_buf[8];
@@ -197,11 +226,19 @@ fn main() {
                                 }
                                 in_flight.remove(&seq);
 
+                                let t_dec = Instant::now();
                                 if let Ok(Some(yuv)) = decoder.decode(&full_frame) {
                                     frames_ok += 1;
+                                    window_frames += 1;
                                     let dims = yuv.dimensions();
-                                    if frames_ok % 60 == 0 || frames_ok == 1 {
-                                        println!("🎬 [RX WAN SUCESSO] Frame #{} decodificado de {} ({}x{}) | Total OK: {}", seq, src, dims.0, dims.1, frames_ok);
+                                    let dec_ms = t_dec.elapsed().as_micros() as f64 / 1000.0;
+
+                                    if last_stat.elapsed() >= Duration::from_secs(1) {
+                                        let fps = (window_frames as f64) / last_stat.elapsed().as_secs_f64();
+                                        println!("🎬 [RX WAN MONITOR] {:.1} FPS | {}x{} | Decode: {:.2}ms | Total OK: {}",
+                                            fps, dims.0, dims.1, dec_ms, frames_ok);
+                                        window_frames = 0;
+                                        last_stat = Instant::now();
                                     }
                                 }
                             }

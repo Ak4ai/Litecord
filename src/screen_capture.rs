@@ -37,7 +37,7 @@ pub fn set_my_rx_port(port: u16) {
 
 static CURRENT_TX_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static KEYFRAME_REQUESTED: AtomicBool = AtomicBool::new(false);
-static REQUESTED_BITRATE_BPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6_000_000);
+static REQUESTED_BITRATE_BPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4_500_000);
 
 pub fn request_intra_keyframe() {
     KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
@@ -1140,6 +1140,11 @@ impl ScreenCaptureManager {
 
                             for target in &target_addrs {
                                 let _ = socket.send_to(&pkt, target);
+                            }
+
+                            // Sunshine micro-pacing: pausa microscópica a cada 4 pacotes para evitar bufferbloat
+                            if (chunk_idx + 1) % 4 == 0 && (chunk_idx + 1) < total_chunks {
+                                std::thread::yield_now();
                             }
                         }
 
