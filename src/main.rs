@@ -1605,10 +1605,11 @@ impl log::Log for AppLogger {
             print!("{}", console_msg);
             let _ = std::io::stdout().flush();
 
-            // 2. Persist to log file for user support diagnostics
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("litecord_app.log") {
-                let _ = f.write_all(file_msg.as_bytes());
-                let _ = f.flush();
+            // 2. Persist to log file without file-open overhead on hot path
+            if let Ok(mut guard) = self.file.lock() {
+                if let Some(ref mut f) = *guard {
+                    let _ = f.write_all(file_msg.as_bytes());
+                }
             }
         }
     }
@@ -1616,6 +1617,11 @@ impl log::Log for AppLogger {
     fn flush(&self) {
         use std::io::Write;
         let _ = std::io::stdout().flush();
+        if let Ok(mut guard) = self.file.lock() {
+            if let Some(ref mut f) = *guard {
+                let _ = f.flush();
+            }
+        }
     }
 }
 

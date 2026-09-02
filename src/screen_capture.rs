@@ -1029,7 +1029,7 @@ impl ScreenCaptureManager {
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
                         }
-                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(1000) {
+                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(500) {
                             last_idr = Instant::now();
                             enc.force_intra_frame();
                         }
@@ -1581,10 +1581,6 @@ impl ScreenCaptureManager {
                                     last_guard.get_or_insert_with(HashMap::new).insert(pkt_uid, src_addr);
                                 }
 
-                                if op == OP_AUDIO_FRAME {
-                                    info!("🔥 [RECEIVER PROBE] OP_AUDIO_FRAME recebido! len={}, src={}, cid={}, uid={}, inst={}", len, src_addr, pkt_cid, pkt_uid, pkt_inst);
-                                }
-
                             match op {
                                 OP_ANNOUNCE => {
                                     if len >= 29 {
@@ -1687,13 +1683,12 @@ impl ScreenCaptureManager {
                                             if is_private_ip && explicit_addr != src_addr {
                                                 peers.insert(peer_key.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
                                             }
-                                            if is_new && is_tx_running.load(Ordering::Relaxed) {
-                                                KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                            if is_new {
+                                                info!("📡 [P2P HEARTBEAT RECEBIDO] Novo peer UID={} conectado em {}", pkt_uid, src_addr);
+                                                if is_tx_running.load(Ordering::Relaxed) {
+                                                    KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                                }
                                             }
-                                        }
-                                        info!("📡 [P2P HEARTBEAT RECEBIDO] Peer UID={} conectado em {}", pkt_uid, src_addr);
-                                        if is_tx_running.load(Ordering::Relaxed) {
-                                            KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
                                         }
                                     }
                                 }
