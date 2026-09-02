@@ -86,7 +86,7 @@ pub fn update_audio_clock_pts(pts_ms: u32) {
 }
 
 // Litecord P2P Video
-const CHUNK_SIZE: usize = 1350; // Optimized MTU for local & VPN UDP transmission without fragmentation
+const CHUNK_SIZE: usize = 1200; // Universal MTU for Open Internet (WAN), 4G/5G, IPv6 & LAN without fragmentation
 
 // Protocol Opcodes
 const OP_ANNOUNCE: u8 = 1;
@@ -2179,14 +2179,14 @@ fn get_local_lan_addresses(port: u16) -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
     let mut seen_ips = std::collections::HashSet::new();
 
-    // 1. Probes across diverse routing domains (Internet DNS, Tailscale CGNAT 100.64/10, LAN subnets)
+    // 1. Probes across physical LAN gateways and internet routing (Direct Internet / Wi-Fi / Ethernet only)
     let probe_targets = [
         "8.8.8.8:80",
         "1.1.1.1:80",
-        "100.100.100.100:80", // Tailscale MagicDNS probe (captures 100.x.x.x adapter IP)
         "192.168.1.1:80",
         "192.168.0.1:80",
         "192.168.15.1:80",
+        "192.168.10.1:80",
         "10.0.0.1:80",
         "172.16.0.1:80",
     ];
@@ -2196,6 +2196,14 @@ fn get_local_lan_addresses(port: u16) -> Vec<SocketAddr> {
             if socket.connect(target).is_ok() {
                 if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
                     let ip = *local.ip();
+                    let octets = ip.octets();
+                    // Ignora VPNs / Tailscale (100.64.0.0/10), Link-Local (169.254.x.x) e Virtual Adapters
+                    if (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+                        || (octets[0] == 169 && octets[1] == 254)
+                        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+                    {
+                        continue;
+                    }
                     if !ip.is_loopback() && !ip.is_unspecified() && seen_ips.insert(ip) {
                         addrs.push(SocketAddr::new(std::net::IpAddr::V4(ip), port));
                     }
@@ -2204,12 +2212,20 @@ fn get_local_lan_addresses(port: u16) -> Vec<SocketAddr> {
         }
     }
 
-    // 2. Query hostname for all locally bound interface IPs
+    // 2. Query hostname for all locally bound physical interface IPs
     if let Ok(hostname) = std::env::var("COMPUTERNAME") {
         if let Ok(host_addrs) = format!("{}:0", hostname).to_socket_addrs() {
             for sa in host_addrs {
                 if let SocketAddr::V4(v4) = sa {
                     let ip = *v4.ip();
+                    let octets = ip.octets();
+                    // Ignora VPNs / Tailscale (100.64.0.0/10), Link-Local (169.254.x.x) e Virtual Adapters
+                    if (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+                        || (octets[0] == 169 && octets[1] == 254)
+                        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+                    {
+                        continue;
+                    }
                     if !ip.is_loopback() && !ip.is_unspecified() && seen_ips.insert(ip) {
                         addrs.push(SocketAddr::new(std::net::IpAddr::V4(ip), port));
                     }
@@ -2686,11 +2702,13 @@ fn get_broadcast_addresses() -> Vec<SocketAddr> {
         if socket.connect("8.8.8.8:80").is_ok() {
             if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
                 let octets = local.ip().octets();
-                for port in 50005..=50007 {
-                    addrs.push(SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
-                        port,
-                    ));
+                if !(octets[0] == 100 && (octets[1] & 0xC0) == 64) && !(octets[0] == 169 && octets[1] == 254) {
+                    for port in 50005..=50007 {
+                        addrs.push(SocketAddr::new(
+                            std::net::IpAddr::V4(std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255)),
+                            port,
+                        ));
+                    }
                 }
             }
         }
