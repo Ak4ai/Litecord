@@ -5389,132 +5389,149 @@ pub fn start_audio_loopback_tx(
 
             #[cfg(target_os = "windows")]
             let mut active_stream = None;
+            #[cfg(target_os = "windows")]
+            let mut wasapi_isolated_handle = None;
 
             #[cfg(target_os = "windows")]
             {
-                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (WASAPI Loopback)...");
-                let host = cpal::default_host();
+                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio nativa isolada (WASAPI Process Loopback)...");
+                match crate::wasapi_loopback::start_wasapi_isolated_loopback(
+                    Arc::clone(&is_running),
+                    Arc::clone(&pcm_buffer_cb),
+                ) {
+                    Ok(handle) => {
+                        active_sample_rate = handle.sample_rate;
+                        target_chunk_samples = ((handle.sample_rate as usize) * 10) / 1000;
+                        info!("🔊 [LOOPBACK TX] Captura de áudio ISOLADA nativa WASAPI ATIVA (excluindo Litecord) ({}Hz, {} canais, chunk={} amostras/10ms)!", handle.sample_rate, handle.channels, target_chunk_samples);
+                        wasapi_isolated_handle = Some(handle);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [LOOPBACK TX] WASAPI Process Loopback isolado indisponível ({}), utilizando fallback CPAL...", e);
+                        let host = cpal::default_host();
 
-                let selected_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
-                    guard.clone()
-                } else {
-                    String::new()
-                };
+                        let selected_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
+                            guard.clone()
+                        } else {
+                            String::new()
+                        };
 
-                let devices_to_try: Vec<cpal::Device> = {
-                    let mut list = Vec::new();
-                    if !selected_dev_name.is_empty() {
-                        if let Ok(devs) = host.output_devices() {
-                            for d in devs {
-                                if d.name().map_or(false, |n| n == selected_dev_name) {
-                                    list.push(d);
+                        let devices_to_try: Vec<cpal::Device> = {
+                            let mut list = Vec::new();
+                            if !selected_dev_name.is_empty() {
+                                if let Ok(devs) = host.output_devices() {
+                                    for d in devs {
+                                        if d.name().map_or(false, |n| n == selected_dev_name) {
+                                            list.push(d);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(def) = host.default_output_device() {
+                                if !list.iter().any(|existing| existing.name().ok() == def.name().ok()) {
+                                    list.push(def);
+                                }
+                            }
+                            if let Ok(devs) = host.output_devices() {
+                                for d in devs {
+                                    let name = d.name().unwrap_or_default();
+                                    if name.contains("Steam") || name.contains("Virtual") || name.contains("Null") {
+                                        continue;
+                                    }
+                                    if !list.iter().any(|existing| existing.name().ok() == d.name().ok()) {
+                                        list.push(d);
+                                    }
+                                }
+                            }
+                            list
+                        };
+
+                        for dev in devices_to_try {
+                            let dev_name = dev.name().unwrap_or_else(|_| "Dispositivo Desconhecido".to_string());
+                            let config_res = dev.default_output_config();
+                            let config = match config_res {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    warn!("⚠️ [LOOPBACK TX] Falha ao obter configuração para '{}': {:?}", dev_name, e);
+                                    continue;
+                                }
+                            };
+                            let sample_rate = config.sample_rate().0;
+                            let channels = config.channels() as usize;
+
+                            let pcm_buf = Arc::clone(&pcm_buffer_cb);
+                            let dev_name_err = dev_name.clone();
+                            let err_fn = move |err| {
+                                warn!("Erro na captura de áudio loopback ({}): {}", dev_name_err, err);
+                            };
+
+                            let stream_res = match config.sample_format() {
+                                cpal::SampleFormat::F32 => {
+                                    dev.build_input_stream(
+                                        &config.into(),
+                                        move |data: &[f32], _| {
+                                            let mut buf = pcm_buf.lock().unwrap();
+                                            if channels == 1 {
+                                                for &s in data {
+                                                    let sample_i16 = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                                    buf.push(sample_i16);
+                                                }
+                                            } else if channels >= 2 {
+                                                for chunk in data.chunks_exact(channels) {
+                                                    let mono_f = (chunk[0] + chunk[1]) * 0.5;
+                                                    let sample_i16 = (mono_f.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                                    buf.push(sample_i16);
+                                                }
+                                            }
+                                        },
+                                        err_fn,
+                                        None,
+                                    )
+                                }
+                                cpal::SampleFormat::I16 => {
+                                    dev.build_input_stream(
+                                        &config.into(),
+                                        move |data: &[i16], _| {
+                                            let mut buf = pcm_buf.lock().unwrap();
+                                            if channels == 1 {
+                                                buf.extend_from_slice(data);
+                                            } else if channels >= 2 {
+                                                for chunk in data.chunks_exact(channels) {
+                                                    let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
+                                                    buf.push(mono);
+                                                }
+                                            }
+                                        },
+                                        err_fn,
+                                        None,
+                                    )
+                                }
+                                _ => {
+                                    warn!("Formato de áudio não suportado para '{}'", dev_name);
+                                    continue;
+                                }
+                            };
+
+                            if let Ok(stream) = stream_res {
+                                if stream.play().is_ok() {
+                                    active_sample_rate = sample_rate;
+                                    target_chunk_samples = ((sample_rate as usize) * 10) / 1000;
+                                    info!("🔊 [LOOPBACK TX] Captura de áudio ATIVA no dispositivo '{}' ({}Hz, {} canais, chunk={} amostras/10ms)!", dev_name, sample_rate, channels, target_chunk_samples);
+                                    active_stream = Some(stream);
                                     break;
                                 }
                             }
-                        }
-                    }
-                    if let Some(def) = host.default_output_device() {
-                        if !list.iter().any(|existing| existing.name().ok() == def.name().ok()) {
-                            list.push(def);
-                        }
-                    }
-                    if let Ok(devs) = host.output_devices() {
-                        for d in devs {
-                            let name = d.name().unwrap_or_default();
-                            if name.contains("Steam") || name.contains("Virtual") || name.contains("Null") {
-                                continue;
-                            }
-                            if !list.iter().any(|existing| existing.name().ok() == d.name().ok()) {
-                                list.push(d);
-                            }
-                        }
-                    }
-                    list
-                };
-
-                for dev in devices_to_try {
-                    let dev_name = dev.name().unwrap_or_else(|_| "Dispositivo Desconhecido".to_string());
-                    let config_res = dev.default_output_config();
-                    let config = match config_res {
-                        Ok(c) => c,
-                        Err(e) => {
-                            warn!("⚠️ [LOOPBACK TX] Falha ao obter configuração para '{}': {:?}", dev_name, e);
-                            continue;
-                        }
-                    };
-                    let sample_rate = config.sample_rate().0;
-                    let channels = config.channels() as usize;
-
-                    let pcm_buf = Arc::clone(&pcm_buffer_cb);
-                    let dev_name_err = dev_name.clone();
-                    let err_fn = move |err| {
-                        warn!("Erro na captura de áudio loopback ({}): {}", dev_name_err, err);
-                    };
-
-                    let stream_res = match config.sample_format() {
-                        cpal::SampleFormat::F32 => {
-                            dev.build_input_stream(
-                                &config.into(),
-                                move |data: &[f32], _| {
-                                    let mut buf = pcm_buf.lock().unwrap();
-                                    if channels == 1 {
-                                        for &s in data {
-                                            let sample_i16 = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-                                            buf.push(sample_i16);
-                                        }
-                                    } else if channels >= 2 {
-                                        for chunk in data.chunks_exact(channels) {
-                                            let mono_f = (chunk[0] + chunk[1]) * 0.5;
-                                            let sample_i16 = (mono_f.clamp(-1.0, 1.0) * 32767.0) as i16;
-                                            buf.push(sample_i16);
-                                        }
-                                    }
-                                },
-                                err_fn,
-                                None,
-                            )
-                        }
-                        cpal::SampleFormat::I16 => {
-                            dev.build_input_stream(
-                                &config.into(),
-                                move |data: &[i16], _| {
-                                    let mut buf = pcm_buf.lock().unwrap();
-                                    if channels == 1 {
-                                        buf.extend_from_slice(data);
-                                    } else if channels >= 2 {
-                                        for chunk in data.chunks_exact(channels) {
-                                            let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
-                                            buf.push(mono);
-                                        }
-                                    }
-                                },
-                                err_fn,
-                                None,
-                            )
-                        }
-                        _ => {
-                            warn!("Formato de áudio não suportado para '{}'", dev_name);
-                            continue;
-                        }
-                    };
-
-                    if let Ok(stream) = stream_res {
-                        if stream.play().is_ok() {
-                            active_sample_rate = sample_rate;
-                            target_chunk_samples = ((sample_rate as usize) * 10) / 1000;
-                            info!("🔊 [LOOPBACK TX] Captura de áudio ATIVA no dispositivo '{}' ({}Hz, {} canais, chunk={} amostras/10ms)!", dev_name, sample_rate, channels, target_chunk_samples);
-                            active_stream = Some(stream);
-                            break;
                         }
                     }
                 }
             }
 
             #[cfg(target_os = "windows")]
-            if active_stream.is_none() {
+            if active_stream.is_none() && wasapi_isolated_handle.is_none() {
                 warn!("⚠️ [LOOPBACK TX] Falha ao ativar stream de áudio em todos os dispositivos disponíveis!");
                 return;
             }
+
 
             #[cfg(target_os = "linux")]
             if gst_child.is_none() {
@@ -5615,7 +5632,10 @@ pub fn start_audio_loopback_tx(
             }
 
             #[cfg(target_os = "windows")]
-            drop(active_stream);
+            {
+                drop(active_stream);
+                drop(wasapi_isolated_handle);
+            }
 
             #[cfg(target_os = "linux")]
             if let Some(mut child) = gst_child {

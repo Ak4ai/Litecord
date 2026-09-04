@@ -13,6 +13,8 @@ mod emoji_cache;
 mod attachment_cache;
 pub mod gpu_encoder;
 pub mod cpu_profiler;
+#[cfg(target_os = "windows")]
+pub mod wasapi_loopback;
 
 use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use http::DiscordHttpClient;
