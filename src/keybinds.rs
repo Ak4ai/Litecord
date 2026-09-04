@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, Ordering}};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::info;
 
 pub const KEYBINDS_CONFIG_FILE: &str = ".litecord_keybinds.json";
@@ -402,7 +402,206 @@ impl KeybindManager {
                 .expect("Falha ao iniciar thread de keybinds global");
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        {
+            let config_arc = Arc::clone(&self.config);
+            let is_running = Arc::clone(&self.is_running);
+
+            std::thread::Builder::new()
+                .name("global-keybinds-listener".to_string())
+                .spawn(move || {
+                    info!("⌨️ [KEYBINDS] Listener global de atalhos (Linux evdev) iniciado com sucesso");
+                    let mut mute_was_pressed = false;
+                    let mut deafen_was_pressed = false;
+                    let mut last_scan = Instant::now() - Duration::from_secs(10);
+                    let mut kbd_fds: Vec<i32> = Vec::new();
+
+                    while is_running.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(20));
+
+                        if kbd_fds.is_empty() || last_scan.elapsed() >= Duration::from_secs(5) {
+                            last_scan = Instant::now();
+                            for fd in kbd_fds.drain(..) {
+                                unsafe { libc::close(fd); }
+                            }
+                            kbd_fds = find_keyboard_devices();
+                            if kbd_fds.is_empty() {
+                                static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                                if !WARNED.swap(true, Ordering::Relaxed) {
+                                    log::warn!("⚠️ [KEYBINDS] Nenhum teclado com permissão de leitura em /dev/input/. Atalhos globais requerem acesso aos dispositivos de entrada.");
+                                }
+                            }
+                        }
+
+                        if kbd_fds.is_empty() {
+                            continue;
+                        }
+
+                        const EVIOCGKEY_64: u64 = 0x80404518;
+                        let mut global_key_state = [0u8; 64];
+                        let mut valid_fds = Vec::with_capacity(kbd_fds.len());
+                        for fd in kbd_fds {
+                            let mut dev_key_state = [0u8; 64];
+                            let res = unsafe { libc::ioctl(fd, EVIOCGKEY_64 as _, dev_key_state.as_mut_ptr()) };
+                            if res >= 0 {
+                                for i in 0..64 {
+                                    global_key_state[i] |= dev_key_state[i];
+                                }
+                                valid_fds.push(fd);
+                            } else {
+                                unsafe { libc::close(fd); }
+                            }
+                        }
+                        kbd_fds = valid_fds;
+
+                        let is_key_down = |code: u16| -> bool {
+                            let idx = (code as usize) / 8;
+                            let bit = (code as usize) % 8;
+                            if idx < 64 {
+                                (global_key_state[idx] & (1 << bit)) != 0
+                            } else {
+                                false
+                            }
+                        };
+
+                        let ctrl_down = is_key_down(29) || is_key_down(97);   // KEY_LEFTCTRL, KEY_RIGHTCTRL
+                        let shift_down = is_key_down(42) || is_key_down(54);  // KEY_LEFTSHIFT, KEY_RIGHTSHIFT
+                        let alt_down = is_key_down(56) || is_key_down(100);   // KEY_LEFTALT, KEY_RIGHTALT
+
+                        let rec_target = RECORDING_TARGET.load(Ordering::Relaxed);
+                        if rec_target != 0 {
+                            for &evdev_code in CANDIDATE_EVDEV_KEYS {
+                                if is_key_down(evdev_code) {
+                                    if evdev_code == 1 && !ctrl_down && !shift_down && !alt_down {
+                                        RECORDING_TARGET.store(0, Ordering::Relaxed);
+                                        info!("⌨️ [KEYBINDS] Gravação cancelada via ESC");
+                                        on_recorded(rec_target, String::new());
+                                        loop {
+                                            std::thread::sleep(Duration::from_millis(30));
+                                            let mut esc = false;
+                                            for &fd in &kbd_fds {
+                                                let mut s = [0u8; 64];
+                                                if unsafe { libc::ioctl(fd, EVIOCGKEY_64 as _, s.as_mut_ptr()) } >= 0 {
+                                                    if (s[1 / 8] & (1 << (1 % 8))) != 0 {
+                                                        esc = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if !esc { break; }
+                                        }
+                                        break;
+                                    }
+
+                                    if let Some(vk) = evdev_code_to_vk(evdev_code) {
+                                        let key_name = vkey_to_name(vk);
+                                        let combo_str = format_combo_display(ctrl_down, shift_down, alt_down, key_name);
+                                        info!("⌨️ [KEYBINDS] Gravado com sucesso para target {}: {}", rec_target, combo_str);
+
+                                        {
+                                            let mut cfg = config_arc.lock().unwrap();
+                                            if rec_target == 1 {
+                                                cfg.mute_shortcut = combo_str.clone();
+                                            } else if rec_target == 2 {
+                                                cfg.deafen_shortcut = combo_str.clone();
+                                            }
+                                            save_persisted_keybinds_config(&cfg);
+                                        }
+
+                                        RECORDING_TARGET.store(0, Ordering::Relaxed);
+                                        on_recorded(rec_target, combo_str);
+
+                                        // Wait until released
+                                        loop {
+                                            std::thread::sleep(Duration::from_millis(30));
+                                            let mut any_down = false;
+                                            for &fd in &kbd_fds {
+                                                let mut s = [0u8; 64];
+                                                if unsafe { libc::ioctl(fd, EVIOCGKEY_64 as _, s.as_mut_ptr()) } >= 0 {
+                                                    let k_idx = (evdev_code as usize) / 8;
+                                                    let k_bit = (evdev_code as usize) % 8;
+                                                    if (s[k_idx] & (1 << k_bit)) != 0
+                                                        || (s[29 / 8] & (1 << (29 % 8))) != 0
+                                                        || (s[97 / 8] & (1 << (97 % 8))) != 0
+                                                        || (s[42 / 8] & (1 << (42 % 8))) != 0
+                                                        || (s[54 / 8] & (1 << (54 % 8))) != 0
+                                                        || (s[56 / 8] & (1 << (56 % 8))) != 0
+                                                        || (s[100 / 8] & (1 << (100 % 8))) != 0
+                                                    {
+                                                        any_down = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if !any_down { break; }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Normal hotkey detection mode
+                        let (mute_combo, deaf_combo) = {
+                            let cfg = config_arc.lock().unwrap();
+                            (
+                                KeyCombo::parse(&cfg.mute_shortcut),
+                                KeyCombo::parse(&cfg.deafen_shortcut),
+                            )
+                        };
+
+                        // Check Mute
+                        if let Some(ref combo) = mute_combo {
+                            let match_modifiers = (!combo.ctrl || ctrl_down)
+                                && (!combo.shift || shift_down)
+                                && (!combo.alt || alt_down)
+                                && (combo.ctrl == ctrl_down)
+                                && (combo.shift == shift_down)
+                                && (combo.alt == alt_down);
+
+                            let key_pressed = vk_to_evdev_code(combo.vkey).map_or(false, &is_key_down);
+                            let is_pressed = match_modifiers && key_pressed;
+
+                            if is_pressed && !mute_was_pressed {
+                                info!("🎙️ [KEYBINDS] Atalho Global de Mutar disparado: {}", combo.display);
+                                on_mute_trigger();
+                            }
+                            mute_was_pressed = is_pressed;
+                        } else {
+                            mute_was_pressed = false;
+                        }
+
+                        // Check Deafen
+                        if let Some(ref combo) = deaf_combo {
+                            let match_modifiers = (!combo.ctrl || ctrl_down)
+                                && (!combo.shift || shift_down)
+                                && (!combo.alt || alt_down)
+                                && (combo.ctrl == ctrl_down)
+                                && (combo.shift == shift_down)
+                                && (combo.alt == alt_down);
+
+                            let key_pressed = vk_to_evdev_code(combo.vkey).map_or(false, &is_key_down);
+                            let is_pressed = match_modifiers && key_pressed;
+
+                            if is_pressed && !deafen_was_pressed {
+                                info!("🎧 [KEYBINDS] Atalho Global de Ensurdecer disparado: {}", combo.display);
+                                on_deafen_trigger();
+                            }
+                            deafen_was_pressed = is_pressed;
+                        } else {
+                            deafen_was_pressed = false;
+                        }
+                    }
+
+                    for fd in kbd_fds {
+                        unsafe { libc::close(fd); }
+                    }
+                })
+                .expect("Falha ao iniciar thread de keybinds global no Linux");
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let _ = on_mute_trigger;
             let _ = on_deafen_trigger;
@@ -411,3 +610,105 @@ impl KeybindManager {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+fn find_keyboard_devices() -> Vec<i32> {
+    let mut fds = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/dev/input") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("event") {
+                    if let Ok(c_path) = std::ffi::CString::new(path.to_str().unwrap_or("")) {
+                        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+                        if fd >= 0 {
+                            let mut key_bits = [0u8; 64];
+                            const EVIOCGBIT_KEY_64: u64 = 0x80404521;
+                            let res = unsafe { libc::ioctl(fd, EVIOCGBIT_KEY_64 as _, key_bits.as_mut_ptr()) };
+                            const KEY_A: usize = 30;
+                            let is_kbd = res >= 0 && (key_bits[KEY_A / 8] & (1 << (KEY_A % 8))) != 0;
+                            if is_kbd {
+                                fds.push(fd);
+                            } else {
+                                unsafe { libc::close(fd); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fds
+}
+
+#[cfg(target_os = "linux")]
+pub fn vk_to_evdev_code(vk: i32) -> Option<u16> {
+    match vk {
+        0x41 => Some(30), 0x42 => Some(48), 0x43 => Some(46), 0x44 => Some(32),
+        0x45 => Some(18), 0x46 => Some(33), 0x47 => Some(34), 0x48 => Some(35),
+        0x49 => Some(23), 0x4A => Some(36), 0x4B => Some(37), 0x4C => Some(38),
+        0x4D => Some(50), 0x4E => Some(49), 0x4F => Some(24), 0x50 => Some(25),
+        0x51 => Some(16), 0x52 => Some(19), 0x53 => Some(31), 0x54 => Some(20),
+        0x55 => Some(22), 0x56 => Some(47), 0x57 => Some(17), 0x58 => Some(45),
+        0x59 => Some(21), 0x5A => Some(44),
+        0x30 => Some(11), 0x31 => Some(2),  0x32 => Some(3),  0x33 => Some(4),
+        0x34 => Some(5),  0x35 => Some(6),  0x36 => Some(7),  0x37 => Some(8),
+        0x38 => Some(9),  0x39 => Some(10),
+        0x70 => Some(59), 0x71 => Some(60), 0x72 => Some(61), 0x73 => Some(62),
+        0x74 => Some(63), 0x75 => Some(64), 0x76 => Some(65), 0x77 => Some(66),
+        0x78 => Some(67), 0x79 => Some(68), 0x7A => Some(87), 0x7B => Some(88),
+        0x60 => Some(82), 0x61 => Some(79), 0x62 => Some(80), 0x63 => Some(81),
+        0x64 => Some(75), 0x65 => Some(76), 0x66 => Some(77), 0x67 => Some(71),
+        0x68 => Some(72), 0x69 => Some(73), 0x6A => Some(55), 0x6B => Some(78),
+        0x6D => Some(74), 0x6F => Some(98),
+        0x20 => Some(57), 0x09 => Some(15), 0x1B => Some(1),  0x2D => Some(110),
+        0x2E => Some(111), 0x24 => Some(102), 0x23 => Some(107), 0x21 => Some(104),
+        0x22 => Some(109), 0x26 => Some(103), 0x28 => Some(108), 0x25 => Some(105),
+        0x27 => Some(106), 0x14 => Some(58),  0x13 => Some(119), 0x91 => Some(70),
+        0xC0 => Some(41), 0xBD => Some(12), 0xBB => Some(13), 0xDB => Some(26),
+        0xDD => Some(27), 0xBA => Some(39), 0xDE => Some(40), 0xBC => Some(51),
+        0xBE => Some(52), 0xBF => Some(53), 0xDC => Some(43),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn evdev_code_to_vk(code: u16) -> Option<i32> {
+    match code {
+        30 => Some(0x41), 48 => Some(0x42), 46 => Some(0x43), 32 => Some(0x44),
+        18 => Some(0x45), 33 => Some(0x46), 34 => Some(0x47), 35 => Some(0x48),
+        23 => Some(0x49), 36 => Some(0x4A), 37 => Some(0x4B), 38 => Some(0x4C),
+        50 => Some(0x4D), 49 => Some(0x4E), 24 => Some(0x4F), 25 => Some(0x50),
+        16 => Some(0x51), 19 => Some(0x52), 31 => Some(0x53), 20 => Some(0x54),
+        22 => Some(0x55), 47 => Some(0x56), 17 => Some(0x57), 45 => Some(0x58),
+        21 => Some(0x59), 44 => Some(0x5A),
+        11 => Some(0x30), 2 => Some(0x31),  3 => Some(0x32),  4 => Some(0x33),
+        5 => Some(0x34),  6 => Some(0x35),  7 => Some(0x36),  8 => Some(0x37),
+        9 => Some(0x38),  10 => Some(0x39),
+        59 => Some(0x70), 60 => Some(0x71), 61 => Some(0x72), 62 => Some(0x73),
+        63 => Some(0x74), 64 => Some(0x75), 65 => Some(0x76), 66 => Some(0x77),
+        67 => Some(0x78), 68 => Some(0x79), 87 => Some(0x7A), 88 => Some(0x7B),
+        82 => Some(0x60), 79 => Some(0x61), 80 => Some(0x62), 81 => Some(0x63),
+        75 => Some(0x64), 76 => Some(0x65), 77 => Some(0x66), 71 => Some(0x67),
+        72 => Some(0x68), 73 => Some(0x69), 55 => Some(0x6A), 78 => Some(0x6B),
+        74 => Some(0x6D), 98 => Some(0x6F),
+        57 => Some(0x20), 15 => Some(0x09), 1 => Some(0x1B),  110 => Some(0x2D),
+        111 => Some(0x2E), 102 => Some(0x24), 107 => Some(0x23), 104 => Some(0x21),
+        109 => Some(0x22), 103 => Some(0x26), 108 => Some(0x28), 105 => Some(0x25),
+        106 => Some(0x27), 58 => Some(0x14),  119 => Some(0x13), 70 => Some(0x91),
+        41 => Some(0xC0), 12 => Some(0xBD), 13 => Some(0xBB), 26 => Some(0xDB),
+        27 => Some(0xDD), 39 => Some(0xBA), 40 => Some(0xDE), 51 => Some(0xBC),
+        52 => Some(0xBE), 53 => Some(0xBF), 43 => Some(0xDC),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+const CANDIDATE_EVDEV_KEYS: &[u16] = &[
+    30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44,
+    11, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 87, 88,
+    82, 79, 80, 81, 75, 76, 77, 71, 72, 73, 55, 78, 74, 98,
+    57, 15, 1, 110, 111, 102, 107, 104, 109, 103, 108, 105, 106, 58, 119, 70,
+    41, 12, 13, 26, 27, 39, 40, 51, 52, 53, 43,
+];
