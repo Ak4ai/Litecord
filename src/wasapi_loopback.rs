@@ -462,7 +462,8 @@ pub fn start_wasapi_isolated_loopback(
                             let mut buf = pcm_buf.lock().unwrap();
 
                             if silent {
-                                buf.resize(buf.len() + num_frames as usize, 0);
+                                let new_len = buf.len() + (num_frames as usize);
+                                buf.resize(new_len, 0);
                             } else if is_float {
                                 let total_samples = (num_frames as usize) * (channels as usize);
                                 let f32_slice = std::slice::from_raw_parts(p_data as *const f32, total_samples);
