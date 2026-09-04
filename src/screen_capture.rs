@@ -5000,8 +5000,11 @@ pub fn ensure_stream_audio_playback_started() {
                     }
                 }
                 if let Some(def) = host.default_output_device() {
-                    if !devices_to_try.iter().any(|d| d.name().ok() == def.name().ok()) {
-                        devices_to_try.push(def);
+                    let def_name = def.name().unwrap_or_default();
+                    if !def_name.contains("Litecord") && !def_name.contains("Virtual") && !def_name.contains("Null") && !def_name.contains("Steam") {
+                        if !devices_to_try.iter().any(|d| d.name().ok() == def.name().ok()) {
+                            devices_to_try.push(def);
+                        }
                     }
                 }
                 if let Ok(devs) = host.output_devices() {
@@ -5184,10 +5187,26 @@ impl LinuxLoopbackSinkGuard {
         };
 
         if mod_null.is_some() && mod_loopback.is_some() {
+            // Força todas as streams internas do processo Litecord (ALSA/PipeWire) a irem direto para os alto-falantes reais
+            std::env::set_var("PIPEWIRE_NODE", &orig);
+
             let _ = std::process::Command::new("pactl")
                 .args(["set-default-sink", "LitecordDesktopSink"])
                 .status();
             info!("🛡️ [LOOPBACK TX] Sink virtual isolado 'LitecordDesktopSink' criado (áudio do Litecord excluído da transmissão de tela)!");
+
+            // Move imediatamente qualquer stream já aberta do Litecord de volta para o hardware físico
+            let pid = std::process::id();
+            let move_cmd = format!(
+                r#"for id in $(pactl list sink-inputs 2>/dev/null | awk -v pid="{}" '
+                    /^[A-Za-z].*#[0-9]+/ {{ match($0, /#[0-9]+/); id=substr($0, RSTART+1, RLENGTH-1) }}
+                    tolower($0) ~ /litecord/ || $0 ~ pid {{ if (id) print id }}
+                ' | sort -u); do
+                    pactl move-sink-input "$id" "{}" 2>/dev/null
+                done"#,
+                pid, orig
+            );
+            let _ = std::process::Command::new("sh").arg("-c").arg(&move_cmd).status();
         }
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -5198,11 +5217,10 @@ impl LinuxLoopbackSinkGuard {
         let recheck_thread = if mod_null.is_some() && mod_loopback.is_some() && !orig.is_empty() {
             Some(std::thread::spawn(move || {
                 let move_cmd = format!(
-                    r#"for id in $(pactl list sink-inputs 2>/dev/null | awk -v pid="{}" -v bin="litecord" '
+                    r#"for id in $(pactl list sink-inputs 2>/dev/null | awk -v pid="{}" '
                         /^[A-Za-z].*#[0-9]+/ {{ match($0, /#[0-9]+/); id=substr($0, RSTART+1, RLENGTH-1) }}
-                        /application\.process\.id =/ {{ if ($3 == "\"" pid "\"") print id }}
-                        /application\.process\.binary =/ {{ if ($3 == "\"" bin "\"") print id }}
-                    '); do
+                        tolower($0) ~ /litecord/ || $0 ~ pid {{ if (id) print id }}
+                    ' | sort -u); do
                         pactl move-sink-input "$id" "{}" 2>/dev/null
                     done"#,
                     pid, orig_for_thread
@@ -5213,7 +5231,7 @@ impl LinuxLoopbackSinkGuard {
                         .arg("-c")
                         .arg(&move_cmd)
                         .status();
-                    std::thread::sleep(Duration::from_millis(1000));
+                    std::thread::sleep(Duration::from_millis(500));
                 }
             }))
         } else {
@@ -5233,6 +5251,7 @@ impl LinuxLoopbackSinkGuard {
 #[cfg(target_os = "linux")]
 impl Drop for LinuxLoopbackSinkGuard {
     fn drop(&mut self) {
+        std::env::remove_var("PIPEWIRE_NODE");
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(t) = self.recheck_thread.take() {
             let _ = t.join();
