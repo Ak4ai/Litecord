@@ -1879,7 +1879,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             while let Ok(event) = tray_rx.try_recv() {
                 info!("TrayIconEvent recebido: {:?}", event);
-                if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
+                if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
                     should_restore = true;
                 }
             }
@@ -4852,11 +4852,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
-                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-                    K32EmptyWorkingSet(GetCurrentProcess());
                 }
             }
+            trim_process_memory();
+            info!("[DeepSleep] Memória RAM compactada e liberada (minimize to tray)!");
         });
     });
 
@@ -4943,17 +4942,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hwnd) = target_hwnd {
                 unsafe {
                     ShowWindow(hwnd as _, SW_HIDE);
-                    use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-                    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-                    K32EmptyWorkingSet(GetCurrentProcess());
-                    info!("[DeepSleep] Memória RAM liberada via K32EmptyWorkingSet!");
                 }
             }
-            #[cfg(target_os = "linux")]
-            {
-                trim_memory_if_linux();
-                info!("[DeepSleep] Memória RAM liberada via malloc_trim no Linux!");
-            }
+            trim_process_memory();
+            info!("[DeepSleep] Memória RAM compactada e liberada ao minimizar!");
         });
     });
 
@@ -4974,15 +4966,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
         std::process::exit(0);
-    });
-
-    #[cfg(target_os = "linux")]
-    tokio::spawn(async {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            trim_memory_if_linux();
-        }
     });
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
@@ -5682,8 +5665,10 @@ pub fn trim_memory_if_linux() {
     unsafe {
         extern "C" {
             fn malloc_trim(pad: usize) -> i32;
+            fn mi_collect(force: bool);
         }
         malloc_trim(0);
+        mi_collect(true);
     }
 }
 
@@ -5967,14 +5952,10 @@ async fn try_login_with_candidates(
                 let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
                 gw.start(cmd_rx).await;
 
-                #[cfg(target_os = "windows")]
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    unsafe {
-                        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
-                        use windows_sys::Win32::System::Threading::GetCurrentProcess;
-                        K32EmptyWorkingSet(GetCurrentProcess());
-                    }
+                    trim_process_memory();
+                    info!("🧹 [MEMÓRIA] Faxina pós-login concluída — RAM compactada!");
                 });
 
                 return true;
