@@ -4361,6 +4361,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             log::info!("🔧 GStreamer pipeline args: {:?}", gst_args);
 
             let mut child = match Command::new("gst-launch-1.0")
+                .env_remove("PIPEWIRE_NODE")
                 .args(&gst_args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -5187,9 +5188,6 @@ impl LinuxLoopbackSinkGuard {
         };
 
         if mod_null.is_some() && mod_loopback.is_some() {
-            // Força todas as streams internas do processo Litecord (ALSA/PipeWire) a irem direto para os alto-falantes reais
-            std::env::set_var("PIPEWIRE_NODE", &orig);
-
             let _ = std::process::Command::new("pactl")
                 .args(["set-default-sink", "LitecordDesktopSink"])
                 .status();
@@ -5251,7 +5249,6 @@ impl LinuxLoopbackSinkGuard {
 #[cfg(target_os = "linux")]
 impl Drop for LinuxLoopbackSinkGuard {
     fn drop(&mut self) {
-        std::env::remove_var("PIPEWIRE_NODE");
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(t) = self.recheck_thread.take() {
             let _ = t.join();
@@ -5315,6 +5312,7 @@ pub fn start_audio_loopback_tx(
 
                 info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (Linux PulseAudio/PipeWire no dispositivo '{}')...", monitor_device);
                 let mut cmd = std::process::Command::new("gst-launch-1.0");
+                cmd.env_remove("PIPEWIRE_NODE");
                 cmd.args([
                     "-q",
                     "pulsesrc",
