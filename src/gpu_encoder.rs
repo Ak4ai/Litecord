@@ -672,23 +672,17 @@ pub mod ffmpeg_nvenc {
                 });
 
                 let pts_val = (self.frame_count * 16666) as i64;
-                *(frame_u8.add(132) as *mut i64) = pts_val; // FFmpeg 6/7 PTS
-                *(frame_u8.add(136) as *mut i64) = pts_val; // FFmpeg 5 PTS
+                *(frame_u8.add(136) as *mut i64) = pts_val; // AVFrame.pts (offset 136 em todas as versões do FFmpeg)
                 self.frame_count += 1;
 
+                *(frame_u8.add(116) as *mut i32) = 23; // format = AV_PIX_FMT_NV12 (23)
                 let is_key_req = self.needs_keyframe;
                 if is_key_req {
-                    *(frame_u8.add(116) as *mut i32) = 23; // NV12
-                    *(frame_u8.add(120) as *mut i32) = 1;  // FFmpeg 6/7 pict_type = AV_PICTURE_TYPE_I
-                    *(frame_u8.add(124) as *mut i32) = 1;  // FFmpeg 5 pict_type = AV_PICTURE_TYPE_I
-                    *(frame_u8.add(380) as *mut i32) |= 2; // FFmpeg 6/7 flags |= AV_FRAME_FLAG_KEY
-                    *(frame_u8.add(384) as *mut i32) |= 2; // FFmpeg 5 flags |= AV_FRAME_FLAG_KEY
+                    *(frame_u8.add(120) as *mut i32) = 1;  // pict_type = AV_PICTURE_TYPE_I (FFmpeg 7/8) / key_frame = 1 (FFmpeg 5/6)
+                    *(frame_u8.add(124) as *mut i32) = 1;  // pict_type = AV_PICTURE_TYPE_I (FFmpeg 5/6)
                 } else {
-                    *(frame_u8.add(116) as *mut i32) = 23; // NV12
-                    *(frame_u8.add(120) as *mut i32) = 0;
+                    *(frame_u8.add(120) as *mut i32) = 0;  // pict_type = AV_PICTURE_TYPE_NONE
                     *(frame_u8.add(124) as *mut i32) = 0;
-                    *(frame_u8.add(380) as *mut i32) &= !2;
-                    *(frame_u8.add(384) as *mut i32) &= !2;
                 }
 
                 // Enviar quadro para a GPU
