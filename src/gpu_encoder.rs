@@ -221,10 +221,10 @@ pub mod ffmpeg_nvenc {
 
                     let get_proc = windows_sys::Win32::System::LibraryLoader::GetProcAddress;
                     let get_proc_codec = move |sym: &[u8]| -> Option<unsafe extern "C" fn()> {
-                        get_proc(avcodec_dll, sym.as_ptr())
+                        get_proc(avcodec_dll, sym.as_ptr()).map(|f| unsafe { std::mem::transmute(f) })
                     };
                     let get_proc_util = move |sym: &[u8]| -> Option<unsafe extern "C" fn()> {
-                        get_proc(avutil_dll, sym.as_ptr())
+                        get_proc(avutil_dll, sym.as_ptr()).map(|f| unsafe { std::mem::transmute(f) })
                     };
                     (avcodec_dll, avutil_dll, get_proc_codec, get_proc_util)
                 };

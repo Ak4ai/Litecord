@@ -1,17 +1,22 @@
+#[cfg(windows)]
 use std::net::{SocketAddr, UdpSocket};
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 #[path = "../gpu_encoder.rs"]
 mod gpu_encoder;
+#[cfg(windows)]
 use gpu_encoder::VideoEncoder;
+#[cfg(windows)]
 use gpu_encoder::amd_amf::AmdAmfZeroCopyEncoder;
 
-const MAGIC: &[u8; 4] = b"LTPV";
-const OP_VIDEO_CHUNK: u8 = 2;
-const OP_KEYFRAME_REQ: u8 = 6;
-const OP_ANNOUNCE: u8 = 1;
-const MAX_UDP_PAYLOAD: usize = 1200;
+#[cfg(not(windows))]
+fn main() {
+    println!("test_amd_amf_sender is only supported on Windows.");
+}
 
+#[cfg(windows)]
 fn main() {
     println!("==================================================================");
     println!("🚀 LITECORD | TEST_AMD_AMF_SENDER (AMF Native Zero-Copy Sender)");
