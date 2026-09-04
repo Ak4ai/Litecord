@@ -4141,7 +4141,7 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_
 }
 
 #[cfg(not(windows))]
-static PORTAL_FRAME: std::sync::Mutex<Option<(SharedPixelBuffer<Rgba8Pixel>, Vec<u8>)>> = std::sync::Mutex::new(None);
+static PORTAL_FRAME: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
 #[cfg(not(windows))]
 static PORTAL_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(not(windows))]
@@ -4322,7 +4322,6 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
 
             let (dst_w, dst_h) = (target_w, target_h);
             let frame_size = (dst_w * dst_h * 4) as usize;
-            let total_pixels = (dst_w * dst_h) as usize;
 
             let mut gst_args = vec![
                 "-q".to_string(),
@@ -4414,7 +4413,6 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let mut raw_buf = vec![0u8; frame_size];
             let mut pw_frame_count = 0u64;
             let mut last_pw_stats = std::time::Instant::now();
-            let first_frame_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut got_first_frame = false;
 
             log::info!("⏳ Aguardando primeiro quadro do GStreamer PipeWire (timeout 10s)...");
@@ -4437,25 +4435,30 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                 let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(dst_w, dst_h);
                 pixel_buffer.make_mut_bytes().copy_from_slice(&raw_buf);
 
-                if let Ok(cb_guard) = PORTAL_LOCAL_CB.lock() {
-                    if let Some(ref local_cb) = *cb_guard {
-                        local_cb(pixel_buffer.clone());
-                    }
-                }
-
-                let mut rgb_bytes = vec![0u8; total_pixels * 3];
-                for (chunk, rgb_chunk) in raw_buf.chunks_exact(4).zip(rgb_bytes.chunks_exact_mut(3)) {
-                    rgb_chunk[0] = chunk[0];
-                    rgb_chunk[1] = chunk[1];
-                    rgb_chunk[2] = chunk[2];
+                // Converter raw_buf de RGBA para BGRA in-place para os encoders H.264
+                for chunk in raw_buf.chunks_exact_mut(4) {
+                    chunk.swap(0, 2);
                 }
 
                 if let Some(digit) = get_test_watermark_digit() {
-                    draw_test_watermark(pixel_buffer.make_mut_slice(), &mut rgb_bytes, dst_w, dst_h, digit);
+                    draw_test_watermark(pixel_buffer.make_mut_slice(), &mut raw_buf, dst_w, dst_h, digit);
+                }
+
+                if let Ok(cb_guard) = PORTAL_LOCAL_CB.lock() {
+                    if let Some(ref local_cb) = *cb_guard {
+                        local_cb(pixel_buffer);
+                    }
                 }
 
                 if let Ok(mut slot) = PORTAL_FRAME.lock() {
-                    *slot = Some((pixel_buffer, rgb_bytes));
+                    if let Some(ref mut dest) = *slot {
+                        if dest.len() != raw_buf.len() {
+                            dest.resize(raw_buf.len(), 0);
+                        }
+                        dest.copy_from_slice(&raw_buf);
+                    } else {
+                        *slot = Some(raw_buf.clone());
+                    }
                 }
             }
 
@@ -4487,7 +4490,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
 }
 
 #[cfg(not(windows))]
-fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64, out_bgra: &mut Vec<u8>) -> Option<(u128, u128)> {
+fn capture_screen_rgb(_target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64, out_bgra: &mut Vec<u8>) -> Option<(u128, u128)> {
     #[cfg(target_os = "linux")]
     {
         init_wayland_portal_screencast(target_w, target_h, target_fps);
@@ -4495,19 +4498,26 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, target_f
         if let Ok(slot) = PORTAL_FRAME.lock() {
             if let Some(ref frame) = *slot {
                 let total = (target_w * target_h * 4) as usize;
-                if out_bgra.len() != total {
-                    out_bgra.resize(total, 0);
+                if frame.len() == total {
+                    if out_bgra.len() != total {
+                        out_bgra.resize(total, 0);
+                    }
+                    out_bgra.copy_from_slice(frame);
+                    return Some((0, 0));
                 }
-                return Some((0, 0));
             }
         }
+        return None;
     }
 
-    let total = (target_w * target_h * 4) as usize;
-    if out_bgra.len() != total {
-        out_bgra.resize(total, 24);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let total = (target_w * target_h * 4) as usize;
+        if out_bgra.len() != total {
+            out_bgra.resize(total, 24);
+        }
+        Some((0, 0))
     }
-    Some((0, 0))
 }
 
 const GLYPH_1: [u8; 12] = [
@@ -4560,7 +4570,7 @@ fn get_test_watermark_digit() -> Option<char> {
 
 fn draw_test_watermark(
     slice: &mut [Rgba8Pixel],
-    rgb_bytes: &mut [u8],
+    bgra_bytes: &mut [u8],
     width: u32,
     height: u32,
     digit: char,
@@ -4599,16 +4609,16 @@ fn draw_test_watermark(
             }
 
             let idx = (y as usize) * (width as usize) + (x as usize);
-            let offset_rgb = idx * 3;
+            let offset_bgra = idx * 4;
 
             let is_border = dx.abs() >= half_w - border_thick || dy.abs() >= half_h - border_thick;
 
             let (r, g, b) = if is_border {
                 (border_r, border_g, border_b)
             } else {
-                let cur_r = rgb_bytes[offset_rgb];
-                let cur_g = rgb_bytes[offset_rgb + 1];
-                let cur_b = rgb_bytes[offset_rgb + 2];
+                let cur_b = bgra_bytes[offset_bgra];
+                let cur_g = bgra_bytes[offset_bgra + 1];
+                let cur_r = bgra_bytes[offset_bgra + 2];
                 let bg_r = 17u8;
                 let bg_g = 18u8;
                 let bg_b = 20u8;
@@ -4619,9 +4629,10 @@ fn draw_test_watermark(
             };
 
             slice[idx] = Rgba8Pixel::new(r, g, b, 255);
-            rgb_bytes[offset_rgb] = r;
-            rgb_bytes[offset_rgb + 1] = g;
-            rgb_bytes[offset_rgb + 2] = b;
+            bgra_bytes[offset_bgra] = b;
+            bgra_bytes[offset_bgra + 1] = g;
+            bgra_bytes[offset_bgra + 2] = r;
+            bgra_bytes[offset_bgra + 3] = 255;
         }
     }
 
@@ -4647,16 +4658,17 @@ fn draw_test_watermark(
                         }
 
                         let idx = (y as usize) * (width as usize) + (x as usize);
-                        let offset_rgb = idx * 3;
+                        let offset_bgra = idx * 4;
 
                         let r = 255u8;
                         let g = 255u8;
                         let b = 255u8;
 
                         slice[idx] = Rgba8Pixel::new(r, g, b, 255);
-                        rgb_bytes[offset_rgb] = r;
-                        rgb_bytes[offset_rgb + 1] = g;
-                        rgb_bytes[offset_rgb + 2] = b;
+                        bgra_bytes[offset_bgra] = b;
+                        bgra_bytes[offset_bgra + 1] = g;
+                        bgra_bytes[offset_bgra + 2] = r;
+                        bgra_bytes[offset_bgra + 3] = 255;
                     }
                 }
             }
