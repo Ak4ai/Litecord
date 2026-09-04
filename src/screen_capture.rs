@@ -3,8 +3,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-#[cfg(not(windows))]
-use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use log::{info, warn};
@@ -36,6 +34,7 @@ pub fn set_my_rx_port(port: u16) {
 }
 
 static CURRENT_TX_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static CURRENT_RX_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static KEYFRAME_REQUESTED: AtomicBool = AtomicBool::new(false);
 static REQUESTED_BITRATE_BPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(8_000_000);
 
@@ -53,6 +52,11 @@ pub fn get_current_bitrate_bps() -> u32 {
 
 pub fn get_tx_fps() -> f32 {
     let raw = CURRENT_TX_FPS.load(Ordering::Relaxed);
+    (raw as f32) / 10.0
+}
+
+pub fn get_rx_fps() -> f32 {
+    let raw = CURRENT_RX_FPS.load(Ordering::Relaxed);
     (raw as f32) / 10.0
 }
 
@@ -1378,6 +1382,7 @@ impl ScreenCaptureManager {
                                 if last_stats.elapsed() >= Duration::from_secs(1) {
                                     let elapsed_s = last_stats.elapsed().as_secs_f64();
                                     let rx_fps = (*count as f64) / elapsed_s;
+                                    CURRENT_RX_FPS.store((rx_fps * 10.0).round() as u32, Ordering::Relaxed);
                                     info!("📥 [TELEMETRIA RX WORKER] Peer {}: {:.1} FPS ({} quadros em {:.2}s) | {}p {}fps | Decode: {:.2}ms",
                                         peer_uid, rx_fps, *count, elapsed_s, h, peer_fps, dec_us as f64 / 1000.0);
                                     *count = 0;
@@ -1411,10 +1416,22 @@ impl ScreenCaptureManager {
                                 send_pli(peer_uid);
                             }
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            let mut has_recent = false;
+                            for (_, t) in rx_last_stats.iter() {
+                                if t.elapsed() < Duration::from_millis(2000) {
+                                    has_recent = true;
+                                    break;
+                                }
+                            }
+                            if !has_recent && CURRENT_RX_FPS.load(Ordering::Relaxed) > 0 {
+                                CURRENT_RX_FPS.store(0, Ordering::Relaxed);
+                            }
+                        }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
+                CURRENT_RX_FPS.store(0, Ordering::Relaxed);
                 info!("🎬 [VIDEO DECODER WORKER] Thread de decodificação finalizada.");
             })
             .ok();

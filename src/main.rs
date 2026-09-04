@@ -2332,6 +2332,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
                             let uid_str = uid.to_string();
                             let frame = Image::from_rgba8(pixel_buf);
+                            let rx_fps = screen_capture::get_rx_fps();
+                            let rx_fps_str = if rx_fps > 0.0 {
+                                format!("{:.1} FPS", rx_fps)
+                            } else {
+                                "".to_string()
+                            };
                             let mut should_update_pop = false;
                             if let Some(ui) = app_w2.upgrade() {
                                 let popped_uid = ui.get_popped_out_stream_uid().to_string();
@@ -2343,6 +2349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_active_stream_user(uname.into());
                                 ui.set_tr_stream_quality(quality.into());
                                 ui.set_remote_stream_frame(frame.clone());
+                                ui.set_remote_stream_fps(rx_fps_str.clone().into());
 
                                 // Garantir que o participante na lista de voz esteja marcado como streaming
                                 let cur_model = ui.get_voice_participants();
@@ -2360,6 +2367,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let pop_uid = pop.get_user_id().to_string();
                                     if pop_uid == uid_str || pop_uid.is_empty() {
                                         pop.set_stream_frame(frame);
+                                        pop.set_stream_fps(rx_fps_str.into());
                                     }
                                 }
                             }
@@ -2400,6 +2408,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_active_stream_user("".into());
                                 ui.set_active_stream_user_id("".into());
                                 ui.set_tr_stream_quality("".into());
+                                ui.set_remote_stream_fps("".into());
                             }
                             if ui.get_popped_out_stream_uid() == uid_str.as_str() || uid == 0 {
                                 ui.set_popped_out_stream_uid("".into());
@@ -3470,6 +3479,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_current_voice_channel("".into());
             ui.set_is_screen_sharing(false);
             ui.set_local_preview_fps("".into());
+            ui.set_remote_stream_fps("".into());
             ui.set_has_active_stream(false);
             gateway::clear_voice_participants();
             let my_uid = gateway::get_my_user_id();

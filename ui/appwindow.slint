@@ -1346,6 +1346,7 @@ export component AppWindow inherits Window {
     in-out property <string> tr_live_badge: "AO VIVO";
     in-out property <string> tr_stream_quality: "720p 30fps";
     in-out property <string> local_preview_fps: "";
+    in-out property <string> remote_stream_fps: "";
     in-out property <float> stream_remote_volume: 1.0;
     in-out property <bool> is_popout_intangible: false;
     in-out property <bool> is_maximized: false;
@@ -2055,10 +2056,45 @@ export component AppWindow inherits Window {
 
                             VerticalLayout {
                                 alignment: center;
-                                Button {
-                                    icon: @image-url("../assets/log-out.svg");
-                                    text: root.tr_leave;
-                                    clicked => { root.leave_voice(); }
+                                Rectangle {
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: btn_leave_sidebar_ta.has-hover ? #ffffff : #ffffffcc;
+                                    background: btn_leave_sidebar_ta.pressed ? #991b1b : (btn_leave_sidebar_ta.has-hover ? #dc2626 : #0000002b);
+                                    animate background { duration: 120ms; }
+                                    animate border-color { duration: 120ms; }
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 6px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/log-out.svg");
+                                                width: 13px;
+                                                height: 13px;
+                                                colorize: #ffffff;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.tr_leave;
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    btn_leave_sidebar_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.leave_voice(); }
+                                    }
                                 }
                             }
                         }
@@ -2434,7 +2470,7 @@ export component AppWindow inherits Window {
                                         }
 
                                         // Top Overlay Bar (Left: Live badge, username, mute, prio | Right: Popout, Fullscreen)
-                                        Rectangle {
+                                        stream_top_bar := Rectangle {
                                             x: 8px;
                                             y: 8px;
                                             width: parent.width - 16px;
@@ -2519,6 +2555,36 @@ export component AppWindow inherits Window {
                                                             }
                                                             Text {
                                                                 text: root.local_preview_fps;
+                                                                color: #23a55a;
+                                                                font-size: 11px;
+                                                                font-weight: 800;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Remote Receiver FPS Counter Badge (Displayed ONLY on remote stream cards when there is space)
+                                                    if !(p.is_self && root.is_screen_sharing) && root.remote_stream_fps != "" && stream_top_bar.width > 480px: Rectangle {
+                                                        background: #23a55a22;
+                                                        border-radius: 4px;
+                                                        border-width: 1px;
+                                                        border-color: #23a55a;
+                                                        height: 24px;
+                                                        HorizontalLayout {
+                                                            padding-left: 8px;
+                                                            padding-right: 8px;
+                                                            spacing: 5px;
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Rectangle {
+                                                                    width: 6px;
+                                                                    height: 6px;
+                                                                    border-radius: 3px;
+                                                                    background: #23a55a;
+                                                                }
+                                                            }
+                                                            Text {
+                                                                text: root.remote_stream_fps;
                                                                 color: #23a55a;
                                                                 font-size: 11px;
                                                                 font-weight: 800;
