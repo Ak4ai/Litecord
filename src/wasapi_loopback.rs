@@ -122,7 +122,7 @@ pub struct IActivateAudioInterfaceCompletionHandlerVtbl {
 struct CompletionHandler {
     vtbl: &'static IActivateAudioInterfaceCompletionHandlerVtbl,
     ref_count: AtomicU32,
-    event_handle: isize,
+    event_handle: *mut c_void,
     client_slot: Arc<Mutex<Option<*mut c_void>>>,
 }
 
@@ -168,7 +168,7 @@ unsafe extern "system" fn ch_activate_completed(this: *mut c_void, operation: *m
             warn!("⚠️ [WASAPI LOOPBACK] ActivateCompleted falhou: hr=0x{:08x}, hr_res=0x{:08x}", hr, hr_res);
         }
     }
-    if handler.event_handle != 0 {
+    if !handler.event_handle.is_null() {
         windows_sys::Win32::System::Threading::SetEvent(handler.event_handle);
     }
     0
@@ -196,7 +196,7 @@ pub struct IAudioClientVtbl {
     pub Start: unsafe extern "system" fn(this: *mut c_void) -> i32,
     pub Stop: unsafe extern "system" fn(this: *mut c_void) -> i32,
     pub Reset: unsafe extern "system" fn(this: *mut c_void) -> i32,
-    pub SetEventHandle: unsafe extern "system" fn(this: *mut c_void, eventHandle: isize) -> i32,
+    pub SetEventHandle: unsafe extern "system" fn(this: *mut c_void, eventHandle: *mut c_void) -> i32,
     pub GetService: unsafe extern "system" fn(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> i32,
 }
 
@@ -280,7 +280,7 @@ pub fn start_wasapi_isolated_loopback(
 
         let vad_path: Vec<u16> = "VAD\\Process_Loopback\0".encode_utf16().collect();
         let event = windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null_mut());
-        if event == 0 {
+        if event.is_null() {
             return Err("Falha ao criar evento de sincronização COM".to_string());
         }
 
@@ -356,7 +356,7 @@ pub fn start_wasapi_isolated_loopback(
         }
 
         let stream_event = windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null_mut());
-        if stream_event == 0 {
+        if stream_event.is_null() {
             windows_sys::Win32::System::Com::CoTaskMemFree(p_format as *mut c_void);
             let _ = ((*client_vtbl).Release)(client_ptr as *mut c_void);
             return Err("Falha ao criar evento do stream de áudio".to_string());
@@ -412,7 +412,7 @@ pub fn start_wasapi_isolated_loopback(
 
         let client_addr = client_ptr as usize;
         let capture_addr = capture_ptr as usize;
-        let event_handle = stream_event;
+        let event_handle_addr = stream_event as usize;
         let is_running_thread = Arc::clone(&is_running);
         let pcm_buf = Arc::clone(&pcm_buffer);
 
@@ -428,6 +428,7 @@ pub fn start_wasapi_isolated_loopback(
 
                     let client = client_addr as *mut IAudioClient;
                     let capture = capture_addr as *mut IAudioCaptureClient;
+                    let event_handle = event_handle_addr as *mut c_void;
                     let client_vtbl = (*client).vtbl;
                     let capture_vtbl = (*capture).vtbl;
 
