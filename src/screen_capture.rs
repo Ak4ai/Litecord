@@ -37,7 +37,7 @@ pub fn set_my_rx_port(port: u16) {
 
 static CURRENT_TX_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static KEYFRAME_REQUESTED: AtomicBool = AtomicBool::new(false);
-static REQUESTED_BITRATE_BPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4_500_000);
+static REQUESTED_BITRATE_BPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(8_000_000);
 
 pub fn request_intra_keyframe() {
     KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
@@ -99,6 +99,22 @@ pub const OP_FEC_PARITY: u8 = 7;
 pub const OP_QOS_FEEDBACK: u8 = 8;
 
 static LAST_SEEN_PEER_ADDR: Mutex<Option<HashMap<u64, SocketAddr>>> = Mutex::new(None);
+
+#[inline]
+pub fn is_tailscale_or_forbidden(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        std::net::IpAddr::V4(v4) => {
+            let oct = v4.octets();
+            // 100.64.0.0/10 (Tailscale / Carrier-Grade NAT)
+            (oct[0] == 100 && (oct[1] & 0xC0) == 64)
+                // 169.254.0.0/16 (Link-local)
+                || (oct[0] == 169 && oct[1] == 254)
+                // 198.18.0.0/15 (Benchmarking / Virtual)
+                || (oct[0] == 198 && (oct[1] == 18 || oct[1] == 19))
+        }
+        _ => false,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MonitorItemInfo {
@@ -376,6 +392,13 @@ impl ScreenCaptureManager {
                 if let Ok(peers) = self.known_peers.lock() {
                     for (&_, &(addr, _)) in peers.iter() {
                         let _ = sock_ref.send_to(&stop_pkt, addr);
+                    }
+                }
+                if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                    if let Some(map) = last_guard.as_ref() {
+                        for (&_p_uid, &addr) in map.iter() {
+                            let _ = sock_ref.send_to(&stop_pkt, addr);
+                        }
                     }
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -916,6 +939,15 @@ impl ScreenCaptureManager {
                                 let _ = socket.send_to(&ann_pkt, addr);
                             }
                         }
+                        if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                            if let Some(map) = last_guard.as_ref() {
+                                for (&p_uid, &addr) in map.iter() {
+                                    if p_uid != uid {
+                                        let _ = socket.send_to(&ann_pkt, addr);
+                                    }
+                                }
+                            }
+                        }
                         last_announce = Instant::now();
                     }
 
@@ -1029,7 +1061,7 @@ impl ScreenCaptureManager {
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
                         }
-                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(500) {
+                        if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= Duration::from_millis(2000) {
                             last_idr = Instant::now();
                             enc.force_intra_frame();
                         }
@@ -1064,7 +1096,7 @@ impl ScreenCaptureManager {
                         if let Ok(guard) = LAST_SEEN_PEER_ADDR.lock() {
                             if let Some(map) = guard.as_ref() {
                                 for (&p_uid, &active_addr) in map.iter() {
-                                    if p_uid != uid && !target_addrs.contains(&active_addr) {
+                                    if p_uid != uid && !is_tailscale_or_forbidden(&active_addr) && !target_addrs.contains(&active_addr) {
                                         target_addrs.push(active_addr);
                                         has_remote_peers = true;
                                     }
@@ -1072,21 +1104,15 @@ impl ScreenCaptureManager {
                             }
                         }
 
-                        if !has_remote_peers {
-                            if let Ok(mut peers) = peers_store.lock() {
-                                let now = Instant::now();
-                                peers.retain(|_, (addr, seen)| {
-                                    let is_private = match addr.ip() {
-                                        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
-                                        _ => false,
-                                    };
-                                    is_private || now.duration_since(*seen) < Duration::from_secs(60)
-                                });
-                                for (&_p_key, &(addr, _)) in peers.iter() {
-                                    if !target_addrs.contains(&addr) {
-                                        target_addrs.push(addr);
-                                        has_remote_peers = true;
-                                    }
+                        if let Ok(mut peers) = peers_store.lock() {
+                            let now = Instant::now();
+                            peers.retain(|_, (_, seen)| {
+                                now.duration_since(*seen) < Duration::from_secs(60)
+                            });
+                            for (&_p_key, &(addr, _)) in peers.iter() {
+                                if !is_tailscale_or_forbidden(&addr) && !target_addrs.contains(&addr) {
+                                    target_addrs.push(addr);
+                                    has_remote_peers = true;
                                 }
                             }
                         }
@@ -1264,12 +1290,85 @@ impl ScreenCaptureManager {
                 let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
                 let mut rx_frame_count: HashMap<u64, u64> = HashMap::new();
                 let mut rx_last_stats: HashMap<u64, Instant> = HashMap::new();
+                let mut rx_error_streak: HashMap<u64, u32> = HashMap::new();
+                // Aguardando IDR por peer: quando true, dropa frames até receber SPS/IDR
+                let mut waiting_for_idr: HashMap<u64, bool> = HashMap::new();
 
                 while is_running_decoder.load(Ordering::Relaxed) {
                     match rx_decode.recv_timeout(Duration::from_millis(100)) {
                         Ok(item) => {
                             let QueuedVideoFrame { peer_uid, peer_name, peer_fps, seq, pts_ms, frame_data } = item;
                             let t_dec_start = Instant::now();
+
+                            let mut send_pli = |target_uid: u64| {
+                                let should_req_pli = match last_pli_req.get(&target_uid) {
+                                    Some(&t) => t.elapsed() >= Duration::from_millis(300),
+                                    None => true,
+                                };
+                                if should_req_pli {
+                                    last_pli_req.insert(target_uid, Instant::now());
+                                    let current_cid = channel_id_decoder.load(Ordering::Relaxed);
+                                    let my_uid = my_user_id_decoder.load(Ordering::Relaxed);
+                                    let inst = get_process_instance_id();
+                                    let mut req_pkt = Vec::with_capacity(33);
+                                    req_pkt.extend_from_slice(MAGIC);
+                                    req_pkt.extend_from_slice(&inst.to_be_bytes());
+                                    req_pkt.push(OP_KEYFRAME_REQ);
+                                    req_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                                    req_pkt.extend_from_slice(&my_uid.to_be_bytes());
+                                    req_pkt.extend_from_slice(&target_uid.to_be_bytes());
+                                    if let Ok(guard) = SHARED_P2P_SOCKET.lock() {
+                                        if let Some(sock) = guard.as_ref() {
+                                            if let Ok(peers) = peers_store_decoder.lock() {
+                                                let mut sent_targets = Vec::new();
+                                                if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                                                    if let Some(map) = last_guard.as_ref() {
+                                                        if let Some(&direct_addr) = map.get(&target_uid) {
+                                                            if !is_tailscale_or_forbidden(&direct_addr) {
+                                                                let _ = sock.send_to(&req_pkt, direct_addr);
+                                                                sent_targets.push(direct_addr);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                for (&k, &(p_addr, _)) in peers.iter() {
+                                                    if is_tailscale_or_forbidden(&p_addr) {
+                                                        continue;
+                                                    }
+                                                    let base_low = (k & 0xFFFF_FFFF) as u32;
+                                                    let target_low = (target_uid & 0xFFFF_FFFF) as u32;
+                                                    let is_match = k == target_uid
+                                                        || base_low.abs_diff(target_low) < 16;
+                                                    if is_match && !sent_targets.contains(&p_addr) {
+                                                        let _ = sock.send_to(&req_pkt, p_addr);
+                                                        sent_targets.push(p_addr);
+                                                    }
+                                                }
+                                                info!("🔄 [PLI RECOVERY] Keyframe solicitado ao peer {} (rotas acionadas: {:?})", target_uid, sent_targets);
+                                            }
+                                            for bcast in get_broadcast_addresses() {
+                                                let _ = sock.send_to(&req_pkt, bcast);
+                                            }
+                                        }
+                                    }
+                                }
+                            };
+
+                            // Se estiver aguardando IDR, verificar se o frame atual contém SPS ou IDR antes de decodificar
+                            if *waiting_for_idr.entry(peer_uid).or_insert(false) {
+                                let is_idr_or_sps = frame_data.windows(5).any(|w| {
+                                    (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F == 7 || w[4] & 0x1F == 5)) ||
+                                    (w[..3] == [0, 0, 1] && (w[3] & 0x1F == 7 || w[3] & 0x1F == 5))
+                                });
+                                if !is_idr_or_sps {
+                                    // Continua aguardando IDR: solicita PLI periodicamente para destravar o transmissor
+                                    send_pli(peer_uid);
+                                    continue;
+                                }
+                                // Recebeu IDR/SPS — pode decodificar normalmente
+                                waiting_for_idr.insert(peer_uid, false);
+                                log::info!("✅ [DECODER RECOVERY] IDR/SPS recebido para peer {} — retomando decodificação!", peer_uid);
+                            }
 
                             if let Some((pixel_buffer, _w, h)) = decode_video_frame(&mut h264_decoders, peer_uid, &frame_data) {
                                 let dec_us = t_dec_start.elapsed().as_micros();
@@ -1297,54 +1396,19 @@ impl ScreenCaptureManager {
                                     log::trace!("⏱️ [A/V SYNC] Frame {} | Video PTS: {}ms | Audio PTS: {}ms | Delta: {}ms", seq, pts_ms, audio_pts, delta);
                                 }
 
+                                rx_error_streak.remove(&peer_uid);
                                 on_frame(peer_uid, peer_name, quality_label, pixel_buffer);
                             } else {
-                                // RTCP PLI Fast Intra-Frame Recovery
-                                let should_req_pli = match last_pli_req.get(&peer_uid) {
-                                    Some(&t) => t.elapsed() >= Duration::from_millis(300),
-                                    None => true,
-                                };
-                                if should_req_pli {
-                                    last_pli_req.insert(peer_uid, Instant::now());
-                                    let current_cid = channel_id_decoder.load(Ordering::Relaxed);
-                                    let my_uid = my_user_id_decoder.load(Ordering::Relaxed);
-                                    let inst = get_process_instance_id();
-                                    let mut req_pkt = Vec::with_capacity(33);
-                                    req_pkt.extend_from_slice(MAGIC);
-                                    req_pkt.extend_from_slice(&inst.to_be_bytes());
-                                    req_pkt.push(OP_KEYFRAME_REQ);
-                                    req_pkt.extend_from_slice(&current_cid.to_be_bytes());
-                                    req_pkt.extend_from_slice(&my_uid.to_be_bytes());
-                                    req_pkt.extend_from_slice(&peer_uid.to_be_bytes());
-                                    if let Ok(guard) = SHARED_P2P_SOCKET.lock() {
-                                        if let Some(sock) = guard.as_ref() {
-                                            if let Ok(peers) = peers_store_decoder.lock() {
-                                                let mut sent_targets = Vec::new();
-                                                if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
-                                                    if let Some(map) = last_guard.as_ref() {
-                                                        if let Some(&direct_addr) = map.get(&peer_uid) {
-                                                            let _ = sock.send_to(&req_pkt, direct_addr);
-                                                            sent_targets.push(direct_addr);
-                                                        }
-                                                    }
-                                                }
-                                                for (&k, &(p_addr, _)) in peers.iter() {
-                                                    let is_match = k == peer_uid
-                                                        || (k as u64) & 0xFFFF_FFFF == (peer_uid & 0xFFFF_FFFF)
-                                                        || k.wrapping_sub(peer_uid) < 16;
-                                                    if is_match && !sent_targets.contains(&p_addr) {
-                                                        let _ = sock.send_to(&req_pkt, p_addr);
-                                                        sent_targets.push(p_addr);
-                                                    }
-                                                }
-                                                info!("🔄 [PLI RECOVERY] Keyframe solicitado ao peer {} (rotas acionadas: {:?})", peer_uid, sent_targets);
-                                            }
-                                            for bcast in get_broadcast_addresses() {
-                                                let _ = sock.send_to(&req_pkt, bcast);
-                                            }
-                                        }
-                                    }
+                                let streak = rx_error_streak.entry(peer_uid).or_insert(0);
+                                *streak += 1;
+                                if *streak >= 60 {
+                                    log::info!("🔄 [DECODER RECOVERY] Resetando instância do OpenH264 para peer {} após {} falhas consecutivas — aguardando IDR", peer_uid, *streak);
+                                    h264_decoders.remove(&peer_uid);
+                                    waiting_for_idr.insert(peer_uid, true);
+                                    *streak = 0;
                                 }
+
+                                send_pli(peer_uid);
                             }
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -1364,11 +1428,10 @@ impl ScreenCaptureManager {
                     for port in P2P_VIDEO_PORT..=(P2P_VIDEO_PORT + 10) {
                         if let Ok(addr) = format!("0.0.0.0:{}", port).parse::<SocketAddr>() {
                             if let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)) {
-                                let _ = sock.set_reuse_address(true);
-                                let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
-                                let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+                                let _ = sock.set_send_buffer_size(16 * 1024 * 1024);
+                                let _ = sock.set_recv_buffer_size(16 * 1024 * 1024);
                                 let _ = sock.set_broadcast(true);
-                                let _ = sock.set_read_timeout(Some(Duration::from_millis(5)));
+                                let _ = sock.set_read_timeout(Some(Duration::from_millis(2)));
                                 if sock.bind(&addr.into()).is_ok() {
                                     let std_sock: UdpSocket = sock.into();
                                     bound = Some((std_sock, port));
@@ -1382,11 +1445,10 @@ impl ScreenCaptureManager {
                         None => {
                             if let Ok(addr) = "0.0.0.0:0".parse::<SocketAddr>() {
                                 if let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)) {
-                                    let _ = sock.set_reuse_address(true);
-                                    let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
-                                    let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+                                    let _ = sock.set_send_buffer_size(16 * 1024 * 1024);
+                                    let _ = sock.set_recv_buffer_size(16 * 1024 * 1024);
                                     let _ = sock.set_broadcast(true);
-                                    let _ = sock.set_read_timeout(Some(Duration::from_millis(5)));
+                                    let _ = sock.set_read_timeout(Some(Duration::from_millis(2)));
                                     if sock.bind(&addr.into()).is_ok() {
                                         let std_sock: UdpSocket = sock.into();
                                         let p = std_sock.local_addr().map(|a| a.port()).unwrap_or(P2P_VIDEO_PORT);
@@ -1516,14 +1578,34 @@ impl ScreenCaptureManager {
                         hb_pkt.extend_from_slice(uname_bytes);
                         hb_pkt.extend_from_slice(&my_rx.to_be_bytes());
 
-                        for target in get_broadcast_addresses() {
+                        let bcasts = get_broadcast_addresses();
+                        for target in &bcasts {
                             let _ = socket.send_to(&hb_pkt, target);
                         }
+                        
+                        let mut sent_peers = Vec::new();
                         if let Ok(peers) = peers_store.lock() {
                             for (&_p_uid, &(p_addr, _)) in peers.iter() {
-                                let _ = socket.send_to(&hb_pkt, p_addr);
+                                if !is_tailscale_or_forbidden(&p_addr) {
+                                    let _ = socket.send_to(&hb_pkt, p_addr);
+                                    sent_peers.push(p_addr);
+                                }
                             }
                         }
+                        // Enviar também para LAST_SEEN_PEER_ADDR para manter NAT pinhole aberto
+                        // (o endereço real de onde chegaram os chunks de vídeo pode diferir do peers_store)
+                        let mut sent_last = Vec::new();
+                        if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                            if let Some(map) = last_guard.as_ref() {
+                                for (&_p_uid, &addr) in map.iter() {
+                                    if !is_tailscale_or_forbidden(&addr) {
+                                        let _ = socket.send_to(&hb_pkt, addr);
+                                        sent_last.push(addr);
+                                    }
+                                }
+                            }
+                        }
+                        info!("💓 [HEARTBEAT PROATIVO] Enviado para {} bcasts. PeersStore: {:?}, LastSeen: {:?}", bcasts.len(), sent_peers, sent_last);
                     }
 
                     let mut packets_drained = 0;
@@ -1538,7 +1620,7 @@ impl ScreenCaptureManager {
                                         let attr_type = u16::from_be_bytes([recv_buf[i], recv_buf[i + 1]]);
                                         let attr_len = u16::from_be_bytes([recv_buf[i + 2], recv_buf[i + 3]]) as usize;
                                         if i + 4 + attr_len > len { break; }
-                                        if (attr_type == 0x0020 || attr_type == 0x0001) && attr_len >= 8 {
+                                        if (attr_type == 0x0020 || attr_type == 0x0001) && attr_len >= 8 && recv_buf[i + 5] == 0x01 {
                                             let port = if attr_type == 0x0020 {
                                                 u16::from_be_bytes([recv_buf[i + 6], recv_buf[i + 7]]) ^ 0x2112
                                             } else {
@@ -1578,12 +1660,17 @@ impl ScreenCaptureManager {
                                 let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
                                 let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
 
+                                info!("📥 [TELEMETRIA RX P2P] Pacote MÁGICO recebido: OP={}, de UID={}, de IP={}", op, pkt_uid, src_addr);
+
                                 if (pkt_uid == my_uid && my_uid > 0) || pkt_inst == my_instance_id {
+                                    info!("🚫 [TELEMETRIA RX P2P] Pacote ignorado (self echo): UID={}, IP={}", pkt_uid, src_addr);
                                     continue;
                                 }
 
-                                if let Ok(mut last_guard) = LAST_SEEN_PEER_ADDR.lock() {
-                                    last_guard.get_or_insert_with(HashMap::new).insert(pkt_uid, src_addr);
+                                if !is_tailscale_or_forbidden(&src_addr) {
+                                    if let Ok(mut last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                                        last_guard.get_or_insert_with(HashMap::new).insert(pkt_uid, src_addr);
+                                    }
                                 }
 
                             match op {
@@ -1614,10 +1701,12 @@ impl ScreenCaptureManager {
 
                                         let explicit_addr = SocketAddr::new(src_addr.ip(), peer_rx_port);
 
-                                        if let Ok(mut peers) = peers_store.lock() {
-                                            peers.insert(pkt_uid, (src_addr, Instant::now()));
-                                            if is_private_ip && explicit_addr != src_addr {
-                                                peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                        if !is_tailscale_or_forbidden(&src_addr) {
+                                            if let Ok(mut peers) = peers_store.lock() {
+                                                peers.insert(pkt_uid, (src_addr, Instant::now()));
+                                                if is_private_ip && explicit_addr != src_addr && !is_tailscale_or_forbidden(&explicit_addr) {
+                                                    peers.insert(pkt_uid.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                                }
                                             }
                                         }
 
@@ -1681,17 +1770,19 @@ impl ScreenCaptureManager {
                                         };
 
                                         let explicit_addr = SocketAddr::new(src_addr.ip(), peer_port);
-                                        let peer_key = (pkt_uid as u64) ^ ((pkt_inst as u64) << 32);
-                                        if let Ok(mut peers) = peers_store.lock() {
-                                            let is_new = !peers.contains_key(&peer_key);
-                                            peers.insert(peer_key, (src_addr, Instant::now()));
-                                            if is_private_ip && explicit_addr != src_addr {
-                                                peers.insert(peer_key.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
-                                            }
-                                            if is_new {
-                                                info!("📡 [P2P HEARTBEAT RECEBIDO] Novo peer UID={} conectado em {}", pkt_uid, src_addr);
-                                                if is_tx_running.load(Ordering::Relaxed) {
-                                                    KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                        if !is_tailscale_or_forbidden(&src_addr) {
+                                            let peer_key = (pkt_uid as u64) ^ ((pkt_inst as u64) << 32);
+                                            if let Ok(mut peers) = peers_store.lock() {
+                                                let is_new = !peers.contains_key(&peer_key);
+                                                peers.insert(peer_key, (src_addr, Instant::now()));
+                                                if is_private_ip && explicit_addr != src_addr && !is_tailscale_or_forbidden(&explicit_addr) {
+                                                    peers.insert(peer_key.wrapping_add(0x8000_0000_0000_0000), (explicit_addr, Instant::now()));
+                                                }
+                                                if is_new {
+                                                    info!("📡 [P2P HEARTBEAT RECEBIDO] Novo peer UID={} conectado em {}", pkt_uid, src_addr);
+                                                    if is_tx_running.load(Ordering::Relaxed) {
+                                                        KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                                    }
                                                 }
                                             }
                                         }
@@ -1746,6 +1837,12 @@ impl ScreenCaptureManager {
                                                             if i < recovered.len() { recovered[i] ^= b; }
                                                         }
                                                     }
+                                                    if m_idx == total.saturating_sub(1) && frame_entry.total_len > 0 {
+                                                        let expected_last_len = frame_entry.total_len.saturating_sub((total as usize - 1) * CHUNK_SIZE);
+                                                        if expected_last_len > 0 && expected_last_len < recovered.len() {
+                                                            recovered.truncate(expected_last_len);
+                                                        }
+                                                    }
                                                     frame_entry.received.insert(m_idx, recovered);
                                                 }
                                             }
@@ -1757,6 +1854,9 @@ impl ScreenCaptureManager {
                                                 if let Some(c) = frame_entry.received.get(&i) {
                                                     complete_frame.extend_from_slice(c);
                                                 }
+                                            }
+                                            if frame_entry.total_len > 0 && complete_frame.len() > frame_entry.total_len {
+                                                complete_frame.truncate(frame_entry.total_len);
                                             }
                                             user_frames.remove(&seq);
 
@@ -1857,6 +1957,12 @@ impl ScreenCaptureManager {
                                                             if i < recovered.len() { recovered[i] ^= b; }
                                                         }
                                                     }
+                                                    if m_idx == total.saturating_sub(1) && frame_entry.total_len > 0 {
+                                                        let expected_last_len = frame_entry.total_len.saturating_sub((total as usize - 1) * CHUNK_SIZE);
+                                                        if expected_last_len > 0 && expected_last_len < recovered.len() {
+                                                            recovered.truncate(expected_last_len);
+                                                        }
+                                                    }
                                                     frame_entry.received.insert(m_idx, recovered);
                                                 }
                                             }
@@ -1866,45 +1972,57 @@ impl ScreenCaptureManager {
                                                     complete_frame.extend_from_slice(c);
                                                 }
                                             }
+                                            if frame_entry.total_len > 0 && complete_frame.len() > frame_entry.total_len {
+                                                complete_frame.truncate(frame_entry.total_len);
+                                            }
                                             user_frames.remove(&seq);
 
-                                            let final_frame = if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) || (complete_frame.len() >= 2 && complete_frame[0] == 0xFF && complete_frame[1] == 0xD8) {
-                                                complete_frame
+                                            let final_frame_opt = if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) || (complete_frame.len() >= 2 && complete_frame[0] == 0xFF && complete_frame[1] == 0xD8) {
+                                                Some(complete_frame)
                                             } else {
                                                 let effective_cid = if current_cid != 0 { current_cid } else { pkt_cid };
                                                 let sec_key = get_voice_encryption_key(effective_cid);
                                                 if let Some(decrypted) = decrypt_signaling_payload(&sec_key, &complete_frame) {
-                                                    decrypted
+                                                    Some(decrypted)
                                                 } else {
                                                     let zero_key = get_voice_encryption_key(0);
-                                                    decrypt_signaling_payload(&zero_key, &complete_frame).unwrap_or(complete_frame)
+                                                    decrypt_signaling_payload(&zero_key, &complete_frame)
                                                 }
                                             };
 
-                                            let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
-                                            let is_newer = seq > last_seq || (last_seq.wrapping_sub(seq) > 0x8000_0000);
+                                            if let Some(valid_frame) = final_frame_opt {
+                                                let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
+                                                let is_newer = seq > last_seq || (last_seq.wrapping_sub(seq) > 0x8000_0000);
 
-                                            if is_newer || last_rendered_seq.get(&pkt_uid).is_none() {
-                                                last_rendered_seq.insert(pkt_uid, seq);
+                                                if is_newer || last_rendered_seq.get(&pkt_uid).is_none() {
+                                                    last_rendered_seq.insert(pkt_uid, seq);
 
-                                                let qos = qos_windows.entry(pkt_uid).or_default();
-                                                qos.frames_received += 1;
-                                                last_stream_activity.insert(pkt_uid, Instant::now());
+                                                    let prev_state = active_streaming_users.insert(pkt_uid, true);
+                                                    if prev_state != Some(true) {
+                                                        info!("📡 [AUTO-ATIVAÇÃO STREAM FEC] Usuário {} iniciou transmissão de tela (quadro recuperado via FEC)!", pkt_uid);
+                                                        on_state(pkt_uid, true);
+                                                    }
 
-                                                let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
-                                                let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(60);
+                                                    let qos = qos_windows.entry(pkt_uid).or_default();
+                                                    qos.frames_received += 1;
+                                                    qos.fec_recovered += 1;
+                                                    last_stream_activity.insert(pkt_uid, Instant::now());
 
-                                                let q_item = QueuedVideoFrame {
-                                                    peer_uid: pkt_uid,
-                                                    peer_name: uname,
-                                                    peer_fps: fps_val,
-                                                    seq,
-                                                    pts_ms,
-                                                    frame_data: final_frame,
-                                                };
+                                                    let uname = peer_names.get(&pkt_uid).cloned().unwrap_or_else(|| format!("Usuário {}", pkt_uid));
+                                                    let fps_val = peer_fps.get(&pkt_uid).copied().unwrap_or(60);
 
-                                                if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
-                                                    log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia, descartando frame {} para manter latência ultra-baixa em tempo real", seq);
+                                                    let q_item = QueuedVideoFrame {
+                                                        peer_uid: pkt_uid,
+                                                        peer_name: uname,
+                                                        peer_fps: fps_val,
+                                                        seq,
+                                                        pts_ms,
+                                                        frame_data: valid_frame,
+                                                    };
+
+                                                    if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
+                                                        log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia, descartando frame {} para manter latência ultra-baixa em tempo real", seq);
+                                                    }
                                                 }
                                             }
                                         }
@@ -1933,7 +2051,7 @@ impl ScreenCaptureManager {
                                             if loss_permille > 80 {
                                                 // Congestion / Loss > 8%: Multiplicative Decrease (-20% to relieve queue buffers)
                                                 let new_bps = ((current_bps as f64) * 0.80).round() as u32;
-                                                let clamped = new_bps.clamp(1_500_000, 6_000_000);
+                                                let clamped = new_bps.clamp(3_000_000, 8_000_000);
                                                 if (current_bps as i32 - clamped as i32).abs() >= 1_000_000 {
                                                     info!("📉 [DYNAMIC ABR] Perda de {:.1}% reportada pelo receptor. Reduzindo bitrate: {:.2} Mbps -> {:.2} Mbps",
                                                         (loss_permille as f64) / 10.0,
@@ -2080,6 +2198,11 @@ impl ScreenCaptureManager {
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
                             break;
                         }
+                        #[cfg(target_os = "windows")]
+                        Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                            // Ignora ICMP Port/Host Unreachable (WSAECONNRESET 10054) no socket UDP
+                            continue;
+                        }
                         Err(_) => break,
                     }
                 }
@@ -2092,7 +2215,7 @@ impl ScreenCaptureManager {
                     let now = Instant::now();
                     let mut expired = Vec::new();
                     for (&uid, &last_act) in last_stream_activity.iter() {
-                        if now.duration_since(last_act) > Duration::from_millis(1500) {
+                        if now.duration_since(last_act) > Duration::from_millis(8000) {
                             expired.push(uid);
                         }
                     }
@@ -2399,29 +2522,65 @@ fn parse_and_handle_mqtt_messages(
                 }
 
                 let mut addrs_to_punch = Vec::new();
+                let mut remote_wan_addr = None;
 
                 // 1. WAN IP (Public Internet)
                 if let Some(wan_str) = val["wan_ip"].as_str() {
                     if let Ok(addr) = wan_str.parse::<SocketAddr>() {
-                        addrs_to_punch.push(addr);
-                    }
-                }
-
-                // 2. LAN / Tailscale IPs
-                if let Some(lan_arr) = val["lan_ips"].as_array() {
-                    for item in lan_arr {
-                        if let Some(s) = item.as_str() {
-                            if let Ok(addr) = s.parse::<SocketAddr>() {
-                                if !addrs_to_punch.contains(&addr) {
-                                    addrs_to_punch.push(addr);
-                                }
-                            }
+                        if !is_tailscale_or_forbidden(&addr) {
+                            addrs_to_punch.push(addr);
+                            remote_wan_addr = Some(addr);
                         }
                     }
                 }
 
+                // Determina se o peer está em WAN externa (diferente da nossa WAN)
+                let is_cross_wan = if let Some(r_wan) = remote_wan_addr {
+                    if let Some(my_wan) = resolve_public_stun_address() {
+                        r_wan.ip() != my_wan.ip()
+                    } else {
+                        match r_wan.ip() {
+                            std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback() && !v4.is_link_local(),
+                            _ => false,
+                        }
+                    }
+                } else {
+                    false
+                };
+
+                // 2. LAN IPs: inclui SOMENTE se NÃO for cross-WAN (ex: ambos na mesma rede local)
+                if !is_cross_wan {
+                    if let Some(lan_arr) = val["lan_ips"].as_array() {
+                        for item in lan_arr {
+                            if let Some(s) = item.as_str() {
+                                if let Ok(addr) = s.parse::<SocketAddr>() {
+                                    if !is_tailscale_or_forbidden(&addr) && !addr.ip().is_loopback() && !addrs_to_punch.contains(&addr) {
+                                        addrs_to_punch.push(addr);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    info!("🌐 [P2P WAN ROTEAMENTO] Peer UID={} está em WAN externa ({:?}) - ignorando LANs internas para evitar ICMP reset!", pkt_uid, remote_wan_addr);
+                }
+
                 if !addrs_to_punch.is_empty() {
                     if let Ok(mut peers) = peers_store.lock() {
+                        // Se estivermos em WAN externa, limpa qualquer IP privado anterior para este peer
+                        if is_cross_wan {
+                            peers.retain(|&k, (a, _)| {
+                                let key_uid = (k & 0xFFFF_FFFF) as u32;
+                                if key_uid == (pkt_uid as u32) {
+                                    match a.ip() {
+                                        std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback(),
+                                        _ => true,
+                                    }
+                                } else {
+                                    true
+                                }
+                            });
+                        }
                         for (i, &addr) in addrs_to_punch.iter().enumerate() {
                             let key = ((pkt_uid as u64) ^ ((pkt_inst as u64) << 32)).wrapping_add(i as u64);
                             peers.insert(key, (addr, Instant::now()));
@@ -2442,7 +2601,8 @@ fn parse_and_handle_mqtt_messages(
                         punch_pkt.extend_from_slice(&get_my_rx_port().to_be_bytes());
 
                         for &target in &addrs_to_punch {
-                            for _ in 0..3 {
+                            info!("🥊 [UDP HOLE PUNCH] Enviando burst de STUN/Punch (10 pacotes) para {} a partir do MQTT handler", target);
+                            for _ in 0..10 {
                                 let _ = socket.send_to(&punch_pkt, target);
                             }
                         }
@@ -2660,7 +2820,7 @@ static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None)
 pub fn resolve_public_stun_address() -> Option<SocketAddr> {
     if let Ok(guard) = CACHED_STUN_ADDR.lock() {
         if let Some((addr, time)) = *guard {
-            if time.elapsed() < Duration::from_secs(45) {
+            if time.elapsed() < Duration::from_secs(30) {
                 return Some(addr);
             }
         }
@@ -2682,6 +2842,8 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
         "162.159.192.1:3478",
     ];
 
+    // Fase 1: Se o socket compartilhado estiver ativo, enviar pacotes STUN nele
+    // e aguardar até 200ms para a thread screen-capture-rx processar a resposta.
     if let Some(socket) = get_shared_p2p_socket() {
         for server in stun_servers {
             if let Ok(addrs) = server.to_socket_addrs() {
@@ -2692,54 +2854,66 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
                 }
             }
         }
-    } else {
-        // Fallback síncrono rápido se socket compartilhado ainda não foi inicializado
-        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-            let _ = socket.set_read_timeout(Some(Duration::from_millis(150)));
-            for server in stun_servers {
-                if let Ok(addrs) = server.to_socket_addrs() {
-                    for addr in addrs {
-                        if addr.is_ipv4() {
-                            let _ = socket.send_to(&stun_req, addr);
-                        }
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(200) {
+            if let Ok(guard) = CACHED_STUN_ADDR.lock() {
+                if let Some((addr, _)) = *guard {
+                    return Some(addr);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    // Fase 2: Fallback síncrono dedicado caso a thread rx ainda não tenha preenchido o cache
+    let my_rx_port = get_my_rx_port();
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(150)));
+        for server in stun_servers {
+            if let Ok(addrs) = server.to_socket_addrs() {
+                for addr in addrs {
+                    if addr.is_ipv4() {
+                        let _ = socket.send_to(&stun_req, addr);
                     }
                 }
             }
-            let mut buf = [0u8; 1024];
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_millis(200) {
-                if let Ok((len, _)) = socket.recv_from(&mut buf) {
-                    if len >= 20 && buf[0] == 0x01 && buf[1] == 0x01 && &buf[4..8] == &[0x21, 0x12, 0xa4, 0x42] {
-                        let mut i = 20;
-                        while i + 4 <= len {
-                            let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
-                            let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
-                            if i + 4 + attr_len > len { break; }
-                            if (attr_type == 0x0020 || attr_type == 0x0001) && attr_len >= 8 {
-                                let port = if attr_type == 0x0020 {
-                                    u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112
-                                } else {
-                                    u16::from_be_bytes([buf[i + 6], buf[i + 7]])
-                                };
-                                let ip = if attr_type == 0x0020 {
-                                    std::net::Ipv4Addr::new(
-                                        buf[i + 8] ^ 0x21,
-                                        buf[i + 9] ^ 0x12,
-                                        buf[i + 10] ^ 0xa4,
-                                        buf[i + 11] ^ 0x42,
-                                    )
-                                } else {
-                                    std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11])
-                                };
-                                let resolved = SocketAddr::new(std::net::IpAddr::V4(ip), port);
-                                if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
-                                    *guard = Some((resolved, Instant::now()));
-                                }
-                                info!("🌐 [STUN SYNCHRONOUS RESOLUTION] IP Público WAN mapeado: {}", resolved);
-                                return Some(resolved);
+        }
+        let mut buf = [0u8; 1024];
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(250) {
+            if let Ok((len, _)) = socket.recv_from(&mut buf) {
+                if len >= 20 && buf[0] == 0x01 && buf[1] == 0x01 && &buf[4..8] == &[0x21, 0x12, 0xa4, 0x42] {
+                    let mut i = 20;
+                    while i + 4 <= len {
+                        let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
+                        let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+                        if i + 4 + attr_len > len { break; }
+                        if (attr_type == 0x0020 || attr_type == 0x0001) && attr_len >= 8 && buf[i + 5] == 0x01 {
+                            let port = if attr_type == 0x0020 {
+                                u16::from_be_bytes([buf[i + 6], buf[i + 7]]) ^ 0x2112
+                            } else {
+                                u16::from_be_bytes([buf[i + 6], buf[i + 7]])
+                            };
+                            let ip = if attr_type == 0x0020 {
+                                std::net::Ipv4Addr::new(
+                                    buf[i + 8] ^ 0x21,
+                                    buf[i + 9] ^ 0x12,
+                                    buf[i + 10] ^ 0xa4,
+                                    buf[i + 11] ^ 0x42,
+                                )
+                            } else {
+                                std::net::Ipv4Addr::new(buf[i + 8], buf[i + 9], buf[i + 10], buf[i + 11])
+                            };
+                            let resolved_port = if my_rx_port > 0 { my_rx_port } else { port };
+                            let resolved = SocketAddr::new(std::net::IpAddr::V4(ip), resolved_port);
+                            if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+                                *guard = Some((resolved, Instant::now()));
                             }
-                            i += 4 + ((attr_len + 3) & !3);
+                            info!("🌐 [STUN SYNCHRONOUS RESOLUTION] IP Público WAN mapeado: {}", resolved);
+                            return Some(resolved);
                         }
+                        i += 4 + ((attr_len + 3) & !3);
                     }
                 }
             }
@@ -2758,7 +2932,6 @@ pub fn resolve_public_stun_address() -> Option<SocketAddr> {
 fn get_broadcast_addresses() -> Vec<SocketAddr> {
     let mut addrs = Vec::new();
     for port in 50005..=50007 {
-        addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), port));
         addrs.push(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)), port));
     }
     if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
@@ -5156,7 +5329,7 @@ pub fn start_audio_loopback_tx(
                     let mut has_remote_peers = false;
                     if let Ok(peers) = peers_store.lock() {
                         for (&_p_key, &(addr, _)) in peers.iter() {
-                            if !target_addrs.contains(&addr) {
+                            if !is_tailscale_or_forbidden(&addr) && !target_addrs.contains(&addr) {
                                 target_addrs.push(addr);
                                 has_remote_peers = true;
                             }

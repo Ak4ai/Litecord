@@ -1,25 +1,60 @@
+# Rust & Cargo build artifacts
 /target
+*.pdb
+*.old.exe
+*.rs.bk
+
+# Litecord user sessions, caches & configs
 .litecord_*
+.litecord_*/**
 .litecord_token
-.litecord_cache
+.litecord_cache/
 .litecord_user_settings.json
 .litecord_audio_config.json
+.tui_status.txt
+
+# Backups and temporary files
 backup_*
 backup_*/
 build_*.txt
+scratch/
+scratch_*
+*.bak
+*.old
+*.orig
+*.tmp
+*.temp
+*.swp
+*~
+
+# Logs, media test outputs and dumps
 *.log
 *.wav
 *.bin
 *.txt
-scratch/
-scratch_*
+*.dmp
+*.core
+*.yuv
+*.h264
+test_*.py
+__pycache__/
+*.pyc
+
+# Archives & Packages
 *.tar.gz
+*.zip
 release-pkg/
+
+# IDE & OS files
 .vscode/
 .idea/
-*.pdb
-*.bat
-*.zip
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets & Environment variables
 *.pem
 *.key
 *.env
+*.env.*
+*.bat

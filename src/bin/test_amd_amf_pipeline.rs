@@ -152,6 +152,12 @@ fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> Cow<'_, [u8]> {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--live") {
+        run_live_rx_monitor();
+        return;
+    }
+
     println!("==================================================================");
     println!("🧪 LITECORD | TESTBENCH NATIVO DO PIPELINE AMD AMF / SUNSHINE");
     println!("==================================================================");

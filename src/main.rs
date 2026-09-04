@@ -4,6 +4,8 @@ mod gateway;
 mod http;
 mod tray;
 mod i18n;
+mod keybinds;
+mod sound_effects;
 mod remote_auth;
 mod updater;
 mod screen_capture;
@@ -161,6 +163,20 @@ fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_tr_qr_title(tr.qr_title.into());
     ui.set_tr_qr_desc(tr.qr_desc.into());
     ui.set_tr_qr_confirm(tr.qr_confirm.into());
+    ui.set_tr_settings_tab_voice(tr.settings_tab_voice.into());
+    ui.set_tr_settings_tab_language(tr.settings_tab_language.into());
+    ui.set_tr_settings_tab_keybinds(tr.settings_tab_keybinds.into());
+    ui.set_tr_settings_tab_security(tr.settings_tab_security.into());
+    ui.set_tr_settings_tab_updates(tr.settings_tab_updates.into());
+    ui.set_tr_keybind_mute_title(tr.keybind_mute_title.into());
+    ui.set_tr_keybind_mute_desc(tr.keybind_mute_desc.into());
+    ui.set_tr_keybind_deafen_title(tr.keybind_deafen_title.into());
+    ui.set_tr_keybind_deafen_desc(tr.keybind_deafen_desc.into());
+    ui.set_tr_keybind_recording_prompt(tr.keybind_recording_prompt.into());
+    ui.set_tr_keybind_btn_record(tr.keybind_btn_record.into());
+    ui.set_tr_keybind_btn_clear(tr.keybind_btn_clear.into());
+    ui.set_tr_keybind_guide_title(tr.keybind_guide_title.into());
+    ui.set_tr_keybind_guide_desc(tr.keybind_guide_desc.into());
 
     let lang_items: Vec<LanguageItem> = i18n::Language::all_available().iter().map(|&l| {
         let (display, native) = l.display_info();
@@ -1723,6 +1739,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved_audio_cfg = gateway::load_persisted_audio_config();
     app.set_vad_threshold(saved_audio_cfg.vad_threshold);
     app.set_app_version(updater::get_local_version_string().into());
+
+    let initial_keybinds = keybinds::load_persisted_keybinds_config();
+    app.set_keybind_mute_str(initial_keybinds.mute_shortcut.clone().into());
+    app.set_keybind_deafen_str(initial_keybinds.deafen_shortcut.clone().into());
+    let keybind_mgr = Arc::new(keybinds::KeybindManager::new(initial_keybinds));
+    sound_effects::init_sound_effects();
+
     let app_weak = app.as_weak();
 
     let popout_window = PopoutStreamWindow::new()?;
@@ -2310,9 +2333,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let pop_w2 = pop_w.clone();
                     let latest_slot = Arc::clone(&latest_rx_frame_cb);
                     let pending_flag = Arc::clone(&is_rx_ui_pending_cb);
+                    let pending_flag_inner = Arc::clone(&pending_flag);
 
-                    let _ = slint::invoke_from_event_loop(move || {
-                        pending_flag.store(false, Ordering::Release);
+                    if let Err(_) = slint::invoke_from_event_loop(move || {
+                        pending_flag_inner.store(false, Ordering::Release);
                         if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
                             let uid_str = uid.to_string();
                             let frame = Image::from_rgba8(pixel_buf);
@@ -2327,6 +2351,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_active_stream_user(uname.into());
                                 ui.set_tr_stream_quality(quality.into());
                                 ui.set_remote_stream_frame(frame.clone());
+
+                                // Garantir que o participante na lista de voz esteja marcado como streaming
+                                let cur_model = ui.get_voice_participants();
+                                for i in 0..cur_model.row_count() {
+                                    if let Some(mut p) = cur_model.row_data(i) {
+                                        if p.user_id == uid_str.as_str() && !p.is_streaming {
+                                            p.is_streaming = true;
+                                            cur_model.set_row_data(i, p);
+                                        }
+                                    }
+                                }
                             }
                             if should_update_pop {
                                 if let Some(pop) = pop_w2.upgrade() {
@@ -2337,7 +2372,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                    });
+                    }) {
+                        pending_flag.store(false, Ordering::Release);
+                    }
                 }
             }
         },
@@ -3369,6 +3406,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             apply_i18n_translations(&ui, selected);
         }
         info!("🌐 Idioma alterado para: {:?} (código: {})", selected, code.as_str());
+    });
+
+    let app_weak_rec = app_weak.clone();
+    app.on_start_recording_keybind(move |target: i32| {
+        keybinds::RECORDING_TARGET.store(target as u8, Ordering::Relaxed);
+        if let Some(ui) = app_weak_rec.upgrade() {
+            ui.set_recording_keybind_for(target);
+        }
+        info!("⌨️ [KEYBINDS] Modo gravação alterado para target: {}", target);
+    });
+
+    let keybind_mgr_reset = Arc::clone(&keybind_mgr);
+    let app_weak_reset = app_weak.clone();
+    app.on_reset_keybind(move |target: i32| {
+        let mut cfg = keybind_mgr_reset.get_config();
+        if target == 1 {
+            cfg.mute_shortcut = "None".to_string();
+            if let Some(ui) = app_weak_reset.upgrade() {
+                ui.set_keybind_mute_str("None".into());
+                ui.set_recording_keybind_for(0);
+            }
+        } else if target == 2 {
+            cfg.deafen_shortcut = "None".to_string();
+            if let Some(ui) = app_weak_reset.upgrade() {
+                ui.set_keybind_deafen_str("None".into());
+                ui.set_recording_keybind_for(0);
+            }
+        }
+        keybinds::RECORDING_TARGET.store(0, Ordering::Relaxed);
+        keybind_mgr_reset.update_config(cfg);
+        info!("⌨️ [KEYBINDS] Atalho desativado para target: {}", target);
+    });
+
+    let keybind_mgr_custom = Arc::clone(&keybind_mgr);
+    let app_weak_custom = app_weak.clone();
+    app.on_set_custom_keybind(move |target: i32, shortcut: SharedString| {
+        let mut cfg = keybind_mgr_custom.get_config();
+        let s = shortcut.to_string();
+        if target == 1 {
+            cfg.mute_shortcut = s.clone();
+            if let Some(ui) = app_weak_custom.upgrade() {
+                ui.set_keybind_mute_str(s.into());
+            }
+        } else if target == 2 {
+            cfg.deafen_shortcut = s.clone();
+            if let Some(ui) = app_weak_custom.upgrade() {
+                ui.set_keybind_deafen_str(s.into());
+            }
+        }
+        keybind_mgr_custom.update_config(cfg);
     });
 
     // Leave Voice Callback
@@ -4412,6 +4499,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_mute.upgrade() {
             let new_muted = !ui.get_is_muted();
             ui.set_is_muted(new_muted);
+            sound_effects::play_ui_sound(if new_muted {
+                sound_effects::UiSound::Mute
+            } else {
+                sound_effects::UiSound::Unmute
+            });
 
             let gid = active_guild_mute.lock().unwrap().clone();
             let cid = active_channel_mute.lock().unwrap().clone();
@@ -4439,6 +4531,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let new_deafened = !ui.get_is_deafened();
             ui.set_is_deafened(new_deafened);
             gateway::set_self_deaf(new_deafened);
+            sound_effects::play_ui_sound(if new_deafened {
+                sound_effects::UiSound::Deafen
+            } else {
+                sound_effects::UiSound::Undeafen
+            });
 
             let gid = active_guild_deafen.lock().unwrap().clone();
             let cid = active_channel_deafen.lock().unwrap().clone();
@@ -4454,6 +4551,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // Start Global Keybinds Listener (Global shortcuts for Mute/Deafen)
+    let app_weak_kb_mute = app_weak.clone();
+    let cmd_tx_kb_mute = Arc::clone(&cmd_tx_store);
+    let active_guild_kb_mute = Arc::clone(&active_guild_id);
+    let active_channel_kb_mute = Arc::clone(&active_channel_id);
+
+    let app_weak_kb_deaf = app_weak.clone();
+    let cmd_tx_kb_deaf = Arc::clone(&cmd_tx_store);
+    let active_guild_kb_deaf = Arc::clone(&active_guild_id);
+    let active_channel_kb_deaf = Arc::clone(&active_channel_id);
+
+    let app_weak_kb_rec = app_weak.clone();
+
+    keybind_mgr.start_global_listener(
+        move || {
+            let app_w = app_weak_kb_mute.clone();
+            let cmd_tx = Arc::clone(&cmd_tx_kb_mute);
+            let agid = Arc::clone(&active_guild_kb_mute);
+            let acid = Arc::clone(&active_channel_kb_mute);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    let new_muted = !ui.get_is_muted();
+                    ui.set_is_muted(new_muted);
+                    sound_effects::play_ui_sound(if new_muted {
+                        sound_effects::UiSound::Mute
+                    } else {
+                        sound_effects::UiSound::Unmute
+                    });
+
+                    let gid = agid.lock().unwrap().clone();
+                    let cid = acid.lock().unwrap().clone();
+                    let deafened = ui.get_is_deafened();
+
+                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                            guild_id: gid,
+                            channel_id: Some(cid),
+                            self_mute: new_muted,
+                            self_deaf: deafened,
+                        });
+                    }
+                }
+            });
+        },
+        move || {
+            let app_w = app_weak_kb_deaf.clone();
+            let cmd_tx = Arc::clone(&cmd_tx_kb_deaf);
+            let agid = Arc::clone(&active_guild_kb_deaf);
+            let acid = Arc::clone(&active_channel_kb_deaf);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    let new_deafened = !ui.get_is_deafened();
+                    ui.set_is_deafened(new_deafened);
+                    gateway::set_self_deaf(new_deafened);
+                    sound_effects::play_ui_sound(if new_deafened {
+                        sound_effects::UiSound::Deafen
+                    } else {
+                        sound_effects::UiSound::Undeafen
+                    });
+
+                    let gid = agid.lock().unwrap().clone();
+                    let cid = acid.lock().unwrap().clone();
+                    let muted = ui.get_is_muted();
+
+                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                            guild_id: gid,
+                            channel_id: Some(cid),
+                            self_mute: muted,
+                            self_deaf: new_deafened,
+                        });
+                    }
+                }
+            });
+        },
+        move |target: u8, combo: String| {
+            let app_w = app_weak_kb_rec.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    if target == 1 && !combo.is_empty() {
+                        ui.set_keybind_mute_str(combo.into());
+                    } else if target == 2 && !combo.is_empty() {
+                        ui.set_keybind_deafen_str(combo.into());
+                    }
+                    ui.set_recording_keybind_for(0);
+                }
+            });
+        },
+    );
 
     // Send Message Callback from UI
     let http_client_msg = Arc::clone(&http_client);

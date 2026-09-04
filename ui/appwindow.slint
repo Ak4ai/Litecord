@@ -1097,6 +1097,9 @@ export component AppWindow inherits Window {
     callback close_settings();
     callback select_input_device(string /* device_name */);
     callback select_output_device(string /* device_name */);
+    callback start_recording_keybind(int /* 1 = mute, 2 = deafen */);
+    callback reset_keybind(int /* 1 = mute, 2 = deafen */);
+    callback set_custom_keybind(int /* 1 = mute, 2 = deafen */, string /* shortcut */);
     callback auto_detect_token();
     callback toggle_user_mute(string /* user_id */);
     callback set_user_volume(string /* user_id */, float /* volume */);
@@ -1260,6 +1263,23 @@ export component AppWindow inherits Window {
     in-out property <string> tr_qr_title: "Log in with QR Code";
     in-out property <string> tr_qr_desc: "Scan this with the Discord mobile app to log in instantly.";
     in-out property <string> tr_qr_confirm: "Approve login on your phone!";
+    in-out property <string> tr_settings_tab_voice: "Voz & Áudio";
+    in-out property <string> tr_settings_tab_language: "Idioma";
+    in-out property <string> tr_settings_tab_keybinds: "Atalhos";
+    in-out property <string> tr_settings_tab_security: "Segurança & E2EE";
+    in-out property <string> tr_settings_tab_updates: "Atualizações & Sobre";
+    in-out property <string> tr_keybind_mute_title: "Mutar / Desmutar Microfone";
+    in-out property <string> tr_keybind_mute_desc: "Atalho global para mutar ou desmutar seu microfone durante chamadas.";
+    in-out property <string> tr_keybind_deafen_title: "Ensurdecer / Desensurdecer";
+    in-out property <string> tr_keybind_deafen_desc: "Atalho global para ensurdecer ou desensurdecer todo áudio e microfone.";
+    in-out property <string> tr_keybind_recording_prompt: "Pressione a combinação de teclas...";
+    in-out property <string> tr_keybind_btn_record: "Gravar Atalho";
+    in-out property <string> tr_keybind_btn_clear: "Desativar";
+    in-out property <string> tr_keybind_guide_title: "Atalhos Globais";
+    in-out property <string> tr_keybind_guide_desc: "Os atalhos funcionam em qualquer janela ou jogo em tela cheia, mesmo com o Litecord minimizado.";
+    in-out property <string> keybind_mute_str: "Ctrl+Shift+M";
+    in-out property <string> keybind_deafen_str: "Ctrl+Shift+D";
+    in-out property <int> recording_keybind_for: 0;
 
     // QR Code Login Properties
     in-out property <image> qr_code_image;
@@ -3787,7 +3807,7 @@ export component AppWindow inherits Window {
                                     }
 
                                     Text {
-                                        text: "Voz & Áudio";
+                                        text: root.tr_settings_tab_voice;
                                         color: root.settings_active_tab == 0 ? #f2f3f5 : #dbdee1;
                                         font-size: 13px;
                                         font-weight: root.settings_active_tab == 0 ? 700 : 500;
@@ -3834,7 +3854,7 @@ export component AppWindow inherits Window {
                                     }
 
                                     Text {
-                                        text: "Idioma / Language";
+                                        text: root.tr_settings_tab_language;
                                         color: root.settings_active_tab == 1 ? #f2f3f5 : #dbdee1;
                                         font-size: 13px;
                                         font-weight: root.settings_active_tab == 1 ? 700 : 500;
@@ -3849,13 +3869,60 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            // Tab 2: Segurança & Privacidade
+                            // Tab 2: Atalhos / Keybinds
                             Rectangle {
                                 height: 38px;
                                 border-radius: 6px;
                                 background: root.settings_active_tab == 2 ? #35373c : tab2_touch.has-hover ? #2b2d31 : #0000;
 
                                 if root.settings_active_tab == 2: Rectangle {
+                                    x: 0px;
+                                    y: 10px;
+                                    width: 3px;
+                                    height: 18px;
+                                    background: #5865f2;
+                                    border-radius: 2px;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/key.svg");
+                                            width: 16px;
+                                            height: 16px;
+                                            colorize: root.settings_active_tab == 2 ? #5865f2 : #949ba4;
+                                            image-fit: contain;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.tr_settings_tab_keybinds;
+                                        color: root.settings_active_tab == 2 ? #f2f3f5 : #dbdee1;
+                                        font-size: 13px;
+                                        font-weight: root.settings_active_tab == 2 ? 700 : 500;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+
+                                tab2_touch := TouchArea {
+                                    clicked => { root.settings_active_tab = 2; }
+                                }
+                            }
+
+                            // Tab 3: Segurança & Privacidade
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 6px;
+                                background: root.settings_active_tab == 3 ? #35373c : tab3_touch.has-hover ? #2b2d31 : #0000;
+
+                                if root.settings_active_tab == 3: Rectangle {
                                     x: 0px;
                                     y: 10px;
                                     width: 3px;
@@ -3875,34 +3942,34 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/settings.svg");
                                             width: 16px;
                                             height: 16px;
-                                            colorize: root.settings_active_tab == 2 ? #23a55a : #949ba4;
+                                            colorize: root.settings_active_tab == 3 ? #23a55a : #949ba4;
                                             image-fit: contain;
                                         }
                                     }
 
                                     Text {
-                                        text: "Segurança & E2EE";
-                                        color: root.settings_active_tab == 2 ? #f2f3f5 : #dbdee1;
+                                        text: root.tr_settings_tab_security;
+                                        color: root.settings_active_tab == 3 ? #f2f3f5 : #dbdee1;
                                         font-size: 13px;
-                                        font-weight: root.settings_active_tab == 2 ? 700 : 500;
+                                        font-weight: root.settings_active_tab == 3 ? 700 : 500;
                                         vertical-alignment: center;
                                     }
 
                                     Rectangle { horizontal-stretch: 1; }
                                 }
 
-                                tab2_touch := TouchArea {
-                                    clicked => { root.settings_active_tab = 2; }
+                                tab3_touch := TouchArea {
+                                    clicked => { root.settings_active_tab = 3; }
                                 }
                             }
 
-                            // Tab 3: Atualizações & Sistema
+                            // Tab 4: Atualizações & Sistema
                             Rectangle {
                                 height: 38px;
                                 border-radius: 6px;
-                                background: root.settings_active_tab == 3 ? #35373c : tab3_touch.has-hover ? #2b2d31 : #0000;
+                                background: root.settings_active_tab == 4 ? #35373c : tab4_touch.has-hover ? #2b2d31 : #0000;
 
-                                if root.settings_active_tab == 3: Rectangle {
+                                if root.settings_active_tab == 4: Rectangle {
                                     x: 0px;
                                     y: 10px;
                                     width: 3px;
@@ -3922,24 +3989,24 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/rocket.svg");
                                             width: 16px;
                                             height: 16px;
-                                            colorize: root.settings_active_tab == 3 ? #f0b232 : #949ba4;
+                                            colorize: root.settings_active_tab == 4 ? #f0b232 : #949ba4;
                                             image-fit: contain;
                                         }
                                     }
 
                                     Text {
-                                        text: "Atualizações & Sobre";
-                                        color: root.settings_active_tab == 3 ? #f2f3f5 : #dbdee1;
+                                        text: root.tr_settings_tab_updates;
+                                        color: root.settings_active_tab == 4 ? #f2f3f5 : #dbdee1;
                                         font-size: 13px;
-                                        font-weight: root.settings_active_tab == 3 ? 700 : 500;
+                                        font-weight: root.settings_active_tab == 4 ? 700 : 500;
                                         vertical-alignment: center;
                                     }
 
                                     Rectangle { horizontal-stretch: 1; }
                                 }
 
-                                tab3_touch := TouchArea {
-                                    clicked => { root.settings_active_tab = 3; }
+                                tab4_touch := TouchArea {
+                                    clicked => { root.settings_active_tab = 4; }
                                 }
                             }
 
@@ -4847,9 +4914,352 @@ export component AppWindow inherits Window {
                                     }
 
                                     // =============================================================
-                                    // TAB 2: SEGURANÇA & PRIVACIDADE (OPTIONS AND GUIDES)
+                                    // TAB 2: ATALHOS / KEYBINDS (OPTIONS AND ACCOMPANYING GUIDE)
                                     // =============================================================
                                     if root.settings_active_tab == 2: VerticalLayout {
+                                        spacing: 16px;
+
+                                        // --- ROW 1: MUTE / UNMUTE KEYBIND ---
+                                        HorizontalLayout {
+                                            spacing: 0px;
+
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                padding-right: 16px;
+                                                spacing: 10px;
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: root.tr_keybind_mute_title;
+                                                        color: #f2f3f5;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: root.tr_keybind_mute_desc;
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+
+                                                HorizontalLayout {
+                                                    spacing: 10px;
+
+                                                    // Shortcut Badge Display
+                                                    Rectangle {
+                                                        background: root.recording_keybind_for == 1 ? #473a24 : #1e1f22;
+                                                        border-radius: 6px;
+                                                        border-width: 1px;
+                                                        border-color: root.recording_keybind_for == 1 ? #f0b232 : #383a40;
+                                                        height: 36px;
+                                                        horizontal-stretch: 1;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 12px;
+                                                            padding-right: 12px;
+                                                            spacing: 8px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: root.recording_keybind_for == 1 ? root.tr_keybind_recording_prompt : (root.keybind_mute_str != "" ? root.keybind_mute_str : "Nenhum / Desativado");
+                                                                color: root.recording_keybind_for == 1 ? #f0b232 : (root.keybind_mute_str != "" ? #ffffff : #80848e);
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Record / Set button
+                                                    Rectangle {
+                                                        width: 120px;
+                                                        height: 36px;
+                                                        background: root.recording_keybind_for == 1 ? #f0b232 : (btn_rec_mute_touch.has-hover ? #4752c4 : #5865f2);
+                                                        border-radius: 4px;
+
+                                                        HorizontalLayout {
+                                                            alignment: center;
+                                                            Text {
+                                                                text: root.recording_keybind_for == 1 ? "Gravando..." : root.tr_keybind_btn_record;
+                                                                color: root.recording_keybind_for == 1 ? #000000 : #ffffff;
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        btn_rec_mute_touch := TouchArea {
+                                                            clicked => {
+                                                                if root.recording_keybind_for == 1 {
+                                                                    root.start_recording_keybind(0);
+                                                                } else {
+                                                                    root.start_recording_keybind(1);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Reset / Clear button
+                                                    Rectangle {
+                                                        width: 80px;
+                                                        height: 36px;
+                                                        background: btn_clear_mute_touch.has-hover ? #35373c : #2b2d31;
+                                                        border-radius: 4px;
+
+                                                        HorizontalLayout {
+                                                            alignment: center;
+                                                            Text {
+                                                                text: root.tr_keybind_btn_clear;
+                                                                color: #dbdee1;
+                                                                font-size: 12px;
+                                                                font-weight: 600;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        btn_clear_mute_touch := TouchArea {
+                                                            clicked => { root.reset_keybind(1); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
+
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/key.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #5865f2;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: root.tr_keybind_guide_title;
+                                                        color: #5865f2;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: root.tr_keybind_guide_desc;
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
+                                        // --- ROW 2: DEAFEN / UNDEAFEN KEYBIND ---
+                                        HorizontalLayout {
+                                            spacing: 0px;
+
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                padding-right: 16px;
+                                                spacing: 10px;
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/headphones.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: root.tr_keybind_deafen_title;
+                                                        color: #f2f3f5;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: root.tr_keybind_deafen_desc;
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+
+                                                HorizontalLayout {
+                                                    spacing: 10px;
+
+                                                    // Shortcut Badge Display
+                                                    Rectangle {
+                                                        background: root.recording_keybind_for == 2 ? #473a24 : #1e1f22;
+                                                        border-radius: 6px;
+                                                        border-width: 1px;
+                                                        border-color: root.recording_keybind_for == 2 ? #f0b232 : #383a40;
+                                                        height: 36px;
+                                                        horizontal-stretch: 1;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 12px;
+                                                            padding-right: 12px;
+                                                            spacing: 8px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: root.recording_keybind_for == 2 ? root.tr_keybind_recording_prompt : (root.keybind_deafen_str != "" ? root.keybind_deafen_str : "Nenhum / Desativado");
+                                                                color: root.recording_keybind_for == 2 ? #f0b232 : (root.keybind_deafen_str != "" ? #ffffff : #80848e);
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Record / Set button
+                                                    Rectangle {
+                                                        width: 120px;
+                                                        height: 36px;
+                                                        background: root.recording_keybind_for == 2 ? #f0b232 : (btn_rec_deaf_touch.has-hover ? #1f8b4c : #23a55a);
+                                                        border-radius: 4px;
+
+                                                        HorizontalLayout {
+                                                            alignment: center;
+                                                            Text {
+                                                                text: root.recording_keybind_for == 2 ? "Gravando..." : root.tr_keybind_btn_record;
+                                                                color: root.recording_keybind_for == 2 ? #000000 : #ffffff;
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        btn_rec_deaf_touch := TouchArea {
+                                                            clicked => {
+                                                                if root.recording_keybind_for == 2 {
+                                                                    root.start_recording_keybind(0);
+                                                                } else {
+                                                                    root.start_recording_keybind(2);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Reset / Clear button
+                                                    Rectangle {
+                                                        width: 80px;
+                                                        height: 36px;
+                                                        background: btn_clear_deaf_touch.has-hover ? #35373c : #2b2d31;
+                                                        border-radius: 4px;
+
+                                                        HorizontalLayout {
+                                                            alignment: center;
+                                                            Text {
+                                                                text: root.tr_keybind_btn_clear;
+                                                                color: #dbdee1;
+                                                                font-size: 12px;
+                                                                font-weight: 600;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        btn_clear_deaf_touch := TouchArea {
+                                                            clicked => { root.reset_keybind(2); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
+
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/headphones.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #23a55a;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "Dica de Teclas";
+                                                        color: #23a55a;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Você pode usar teclas como F1-F12, teclas do NumPad, ou combinações com Ctrl, Shift e Alt para evitar conflitos.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 16px; }
+                                    }
+
+                                    // =============================================================
+                                    // TAB 3: SEGURANÇA & PRIVACIDADE (OPTIONS AND GUIDES)
+                                    // =============================================================
+                                    if root.settings_active_tab == 3: VerticalLayout {
                                         spacing: 16px;
 
                                         // --- ROW 1: E2EE VIDEO/AUDIO + GUIDE ---
@@ -5130,9 +5540,9 @@ export component AppWindow inherits Window {
                                     }
 
                                     // =============================================================
-                                    // TAB 3: ATUALIZAÇÕES & SISTEMA (OPTIONS AND GUIDES)
+                                    // TAB 4: ATUALIZAÇÕES & SISTEMA (OPTIONS AND GUIDES)
                                     // =============================================================
-                                    if root.settings_active_tab == 3: VerticalLayout {
+                                    if root.settings_active_tab == 4: VerticalLayout {
                                         spacing: 16px;
 
                                         // --- ROW 1: UPDATER + GUIDE ---

@@ -1940,15 +1940,23 @@ impl GatewayClient {
                     GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
                         *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
 
-                        // Incrementa session ID para cancelar tarefas antigas de áudio UDP
-                        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+                        let is_channel_change = {
+                            let cur_gid = client_cmd.voice_guild_id.lock().unwrap();
+                            let cur_cid = client_cmd.voice_channel_id.lock().unwrap();
+                            *cur_gid != Some(guild_id.clone()) || *cur_cid != channel_id
+                        };
 
-                        // Reset de credenciais de voz para garantir handshake limpo
-                        *client_cmd.voice_token.lock().unwrap() = None;
-                        *client_cmd.voice_session_id.lock().unwrap() = None;
-                        *client_cmd.voice_endpoint.lock().unwrap() = None;
-                        *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
-                        *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
+                        if is_channel_change {
+                            // Incrementa session ID para cancelar tarefas antigas de áudio UDP
+                            CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+
+                            // Reset de credenciais de voz para garantir handshake limpo apenas em troca/desconexão
+                            *client_cmd.voice_token.lock().unwrap() = None;
+                            *client_cmd.voice_session_id.lock().unwrap() = None;
+                            *client_cmd.voice_endpoint.lock().unwrap() = None;
+                            *client_cmd.voice_guild_id.lock().unwrap() = Some(guild_id.clone());
+                            *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
+                        }
 
                         let effective_gid_val = if guild_id.trim().is_empty() {
                             serde_json::Value::Null
@@ -1971,41 +1979,41 @@ impl GatewayClient {
                             let _ = tx.send(Message::Text(payload.to_string().into())).await;
                         }
 
-                        // 🛡️ Watchdog Anti-Estado Fantasma: Se em 4.5s ainda não estivermos conectados à voz
-                        // (ex: queda/troca de rede onde o servidor do Discord ainda acha que o usuário está no canal),
-                        // forçamos um reset OP 4 com channel_id: null seguido do canal desejado para destravar imediatamente!
-                        if let Some(target_cid) = channel_id {
-                            let client_watchdog = Arc::clone(&client_cmd);
-                            let target_gid = guild_id.clone();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_millis(4500)).await;
-                                let is_still_pending = {
-                                    let cur_cid = client_watchdog.voice_channel_id.lock().unwrap();
-                                    *cur_cid == Some(target_cid.clone()) && !is_connected_to_voice()
-                                };
+                        // 🛡️ Watchdog Anti-Estado Fantasma: Apenas ao conectar a um NOVO canal
+                        if is_channel_change {
+                            if let Some(target_cid) = channel_id {
+                                let client_watchdog = Arc::clone(&client_cmd);
+                                let target_gid = guild_id.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(4500)).await;
+                                    let is_still_pending = {
+                                        let cur_cid = client_watchdog.voice_channel_id.lock().unwrap();
+                                        *cur_cid == Some(target_cid.clone()) && !is_connected_to_voice()
+                                    };
 
-                                if is_still_pending {
-                                    warn!("⚠️ [VOICE WATCHDOG] Detectado estado fantasma/timeout na Gateway! Forçando reset OP 4 para reconexão limpa...");
-                                    let effective_gid = if target_gid.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(target_gid) };
-                                    let reset_payload = serde_json::json!({
-                                        "op": 4,
-                                        "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": false, "self_deaf": false }
-                                    });
-                                    if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
-                                        let _ = tx.send(Message::Text(reset_payload.to_string().into())).await;
+                                    if is_still_pending {
+                                        warn!("⚠️ [VOICE WATCHDOG] Detectado estado fantasma/timeout na Gateway! Forçando reset OP 4 para reconexão limpa...");
+                                        let effective_gid = if target_gid.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(target_gid) };
+                                        let reset_payload = serde_json::json!({
+                                            "op": 4,
+                                            "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": false, "self_deaf": false }
+                                        });
+                                        if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
+                                            let _ = tx.send(Message::Text(reset_payload.to_string().into())).await;
+                                        }
+
+                                        tokio::time::sleep(Duration::from_millis(300)).await;
+
+                                        let rejoin_payload = serde_json::json!({
+                                            "op": 4,
+                                            "d": { "guild_id": effective_gid, "channel_id": target_cid, "self_mute": false, "self_deaf": false }
+                                        });
+                                        if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
+                                            let _ = tx.send(Message::Text(rejoin_payload.to_string().into())).await;
+                                        }
                                     }
-
-                                    tokio::time::sleep(Duration::from_millis(300)).await;
-
-                                    let rejoin_payload = serde_json::json!({
-                                        "op": 4,
-                                        "d": { "guild_id": effective_gid, "channel_id": target_cid, "self_mute": false, "self_deaf": false }
-                                    });
-                                    if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
-                                        let _ = tx.send(Message::Text(rejoin_payload.to_string().into())).await;
-                                    }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
                     GatewayCommand::SubscribeGuild { .. } => {}
