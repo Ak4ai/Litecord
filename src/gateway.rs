@@ -3263,11 +3263,15 @@ pub async fn connect_voice_gateway(
 
                                                     let target_dev_name = get_selected_output_device_store().lock().unwrap().clone();
                                                     let device = if let Ok(devices) = host.output_devices() {
+                                                        let dev_list: Vec<_> = devices.into_iter().collect();
                                                         if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
-                                                            devices.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
+                                                            dev_list.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
                                                                 .or_else(|| host.default_output_device())
                                                         } else {
-                                                            host.default_output_device()
+                                                            dev_list.into_iter().find(|d| {
+                                                                let n = d.name().unwrap_or_default();
+                                                                !n.contains("Litecord") && !n.contains("Virtual") && !n.contains("Null") && !n.contains("Steam")
+                                                            }).or_else(|| host.default_output_device())
                                                         }
                                                     } else {
                                                         host.default_output_device()

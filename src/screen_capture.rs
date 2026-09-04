@@ -5007,7 +5007,7 @@ pub fn ensure_stream_audio_playback_started() {
                 if let Ok(devs) = host.output_devices() {
                     for d in devs {
                         let name = d.name().unwrap_or_default();
-                        if name.contains("Steam") || name.contains("Virtual") || name.contains("Null") {
+                        if name.contains("Steam") || name.contains("Virtual") || name.contains("Null") || name.contains("Litecord") {
                             continue;
                         }
                         if !devices_to_try.iter().any(|existing| existing.name().ok() == d.name().ok()) {
@@ -5129,6 +5129,133 @@ pub fn ensure_stream_audio_playback_started() {
     });
 }
 
+#[cfg(target_os = "linux")]
+struct LinuxLoopbackSinkGuard {
+    original_sink: String,
+    mod_null: Option<String>,
+    mod_loopback: Option<String>,
+    stop_flag: Arc<AtomicBool>,
+    recheck_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxLoopbackSinkGuard {
+    fn setup() -> Self {
+        // Limpa módulos anteriores que possam ter sobrado de uma execução anterior
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("for m in $(pactl list modules short 2>/dev/null | grep 'LitecordDesktop' | awk '{print $1}'); do pactl unload-module $m 2>/dev/null; done")
+            .status();
+
+        let orig = std::process::Command::new("pactl")
+            .arg("get-default-sink")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        if orig.is_empty() || orig.contains("Litecord") {
+            return Self {
+                original_sink: orig,
+                mod_null: None,
+                mod_loopback: None,
+                stop_flag: Arc::new(AtomicBool::new(false)),
+                recheck_thread: None,
+            };
+        }
+
+        let mod_null = std::process::Command::new("pactl")
+            .args(["load-module", "module-null-sink", "sink_name=LitecordDesktopSink", "sink_properties=device.description=Litecord_Desktop_Audio"])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_string());
+
+        let mod_loopback = if let Some(ref _mn) = mod_null {
+            std::process::Command::new("pactl")
+                .args(["load-module", "module-loopback", "source=LitecordDesktopSink.monitor", &format!("sink={}", orig), "latency_msec=10"])
+                .output()
+                .ok()
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+
+        if mod_null.is_some() && mod_loopback.is_some() {
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-sink", "LitecordDesktopSink"])
+                .status();
+            info!("🛡️ [LOOPBACK TX] Sink virtual isolado 'LitecordDesktopSink' criado (áudio do Litecord excluído da transmissão de tela)!");
+        }
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let orig_for_thread = orig.clone();
+        let stop_for_thread = Arc::clone(&stop_flag);
+        let pid = std::process::id();
+
+        let recheck_thread = if mod_null.is_some() && mod_loopback.is_some() && !orig.is_empty() {
+            Some(std::thread::spawn(move || {
+                let move_cmd = format!(
+                    r#"for id in $(pactl list sink-inputs 2>/dev/null | awk -v pid="{}" -v bin="litecord" '
+                        /^[A-Za-z].*#[0-9]+/ {{ match($0, /#[0-9]+/); id=substr($0, RSTART+1, RLENGTH-1) }}
+                        /application\.process\.id =/ {{ if ($3 == "\"" pid "\"") print id }}
+                        /application\.process\.binary =/ {{ if ($3 == "\"" bin "\"") print id }}
+                    '); do
+                        pactl move-sink-input "$id" "{}" 2>/dev/null
+                    done"#,
+                    pid, orig_for_thread
+                );
+
+                while !stop_for_thread.load(Ordering::Relaxed) {
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&move_cmd)
+                        .status();
+                    std::thread::sleep(Duration::from_millis(1000));
+                }
+            }))
+        } else {
+            None
+        };
+
+        Self {
+            original_sink: orig,
+            mod_null,
+            mod_loopback,
+            stop_flag,
+            recheck_thread,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxLoopbackSinkGuard {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(t) = self.recheck_thread.take() {
+            let _ = t.join();
+        }
+        if !self.original_sink.is_empty() && !self.original_sink.contains("Litecord") {
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-sink", &self.original_sink])
+                .status();
+            info!("🛡️ [LOOPBACK TX] Sink padrão restaurado para '{}'", self.original_sink);
+        }
+        if let Some(ref m) = self.mod_loopback {
+            let _ = std::process::Command::new("pactl")
+                .args(["unload-module", m])
+                .status();
+        }
+        if let Some(ref m) = self.mod_null {
+            let _ = std::process::Command::new("pactl")
+                .args(["unload-module", m])
+                .status();
+        }
+    }
+}
+
 pub fn start_audio_loopback_tx(
     is_running: Arc<AtomicBool>,
     channel_id: Arc<AtomicU64>,
@@ -5154,16 +5281,25 @@ pub fn start_audio_loopback_tx(
             let mut target_chunk_samples: usize = 480;
 
             #[cfg(target_os = "linux")]
+            let _sink_guard = LinuxLoopbackSinkGuard::setup();
+
+            #[cfg(target_os = "linux")]
             let mut gst_child: Option<std::process::Child> = None;
 
             #[cfg(target_os = "linux")]
             {
-                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (Linux PulseAudio/PipeWire Monitor via GStreamer)...");
+                let monitor_device = if _sink_guard.mod_null.is_some() {
+                    "LitecordDesktopSink.monitor"
+                } else {
+                    "@DEFAULT_SINK@.monitor"
+                };
+
+                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (Linux PulseAudio/PipeWire no dispositivo '{}')...", monitor_device);
                 let mut cmd = std::process::Command::new("gst-launch-1.0");
                 cmd.args([
                     "-q",
                     "pulsesrc",
-                    "device=@DEFAULT_SINK@.monitor",
+                    &format!("device={}", monitor_device),
                     "buffer-time=20000",
                     "latency-time=10000",
                     "!",
