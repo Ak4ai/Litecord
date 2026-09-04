@@ -4340,9 +4340,9 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             if target_fps > 0 && target_fps < 120 {
                 gst_args.push("videorate".to_string());
                 gst_args.push("!".to_string());
-                gst_args.push(format!("video/x-raw,format=RGBA,width={},height={},framerate={}/1", dst_w, dst_h, target_fps));
+                gst_args.push(format!("video/x-raw,format=BGRA,width={},height={},framerate={}/1", dst_w, dst_h, target_fps));
             } else {
-                gst_args.push(format!("video/x-raw,format=RGBA,width={},height={}", dst_w, dst_h));
+                gst_args.push(format!("video/x-raw,format=BGRA,width={},height={}", dst_w, dst_h));
             }
 
             gst_args.extend_from_slice(&[
@@ -4413,6 +4413,7 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
             let mut raw_buf = vec![0u8; frame_size];
             let mut pw_frame_count = 0u64;
             let mut last_pw_stats = std::time::Instant::now();
+            let mut last_local_preview_ts = std::time::Instant::now() - std::time::Duration::from_secs(1);
             let mut got_first_frame = false;
 
             log::info!("⏳ Aguardando primeiro quadro do GStreamer PipeWire (timeout 10s)...");
@@ -4432,21 +4433,22 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
                     last_pw_stats = now;
                 }
 
-                let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(dst_w, dst_h);
-                pixel_buffer.make_mut_bytes().copy_from_slice(&raw_buf);
-
-                // Converter raw_buf de RGBA para BGRA in-place para os encoders H.264
-                for chunk in raw_buf.chunks_exact_mut(4) {
-                    chunk.swap(0, 2);
-                }
-
-                if let Some(digit) = get_test_watermark_digit() {
-                    draw_test_watermark(pixel_buffer.make_mut_slice(), &mut raw_buf, dst_w, dst_h, digit);
-                }
-
-                if let Ok(cb_guard) = PORTAL_LOCAL_CB.lock() {
-                    if let Some(ref local_cb) = *cb_guard {
-                        local_cb(pixel_buffer);
+                // Despacha miniatura da interface local apenas periodicamente (~7 FPS) para eliminar 500 MB/s de alocação
+                if now.duration_since(last_local_preview_ts) >= std::time::Duration::from_millis(150) {
+                    last_local_preview_ts = now;
+                    if let Ok(cb_guard) = PORTAL_LOCAL_CB.lock() {
+                        if let Some(ref local_cb) = *cb_guard {
+                            let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(dst_w, dst_h);
+                            let bytes = pixel_buffer.make_mut_bytes();
+                            bytes.copy_from_slice(&raw_buf);
+                            for chunk in bytes.chunks_exact_mut(4) {
+                                chunk.swap(0, 2); // BGRA -> RGBA para exibição na UI Slint
+                            }
+                            if let Some(digit) = get_test_watermark_digit() {
+                                draw_test_watermark(pixel_buffer.make_mut_slice(), &mut raw_buf, dst_w, dst_h, digit);
+                            }
+                            local_cb(pixel_buffer);
+                        }
                     }
                 }
 

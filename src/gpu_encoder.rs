@@ -71,6 +71,31 @@ pub fn detect_gpu_hardware() -> GpuHardwareType {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    unsafe {
+        for nv_name in [b"libnvidia-encode.so.1\0".as_ptr(), b"libnvidia-encode.so\0".as_ptr()] {
+            let h = libc::dlopen(nv_name as *const libc::c_char, libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            if !h.is_null() {
+                let sym = libc::dlsym(h, b"NvEncodeAPICreateInstance\0".as_ptr() as *const libc::c_char);
+                libc::dlclose(h);
+                if !sym.is_null() {
+                    return GpuHardwareType::NvidiaNvenc;
+                }
+            }
+        }
+
+        for amf_name in [b"libamfrt64.so.1\0".as_ptr(), b"libamfrt64.so\0".as_ptr()] {
+            let h = libc::dlopen(amf_name as *const libc::c_char, libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            if !h.is_null() {
+                let sym = libc::dlsym(h, b"AMFQueryVersion\0".as_ptr() as *const libc::c_char);
+                libc::dlclose(h);
+                if !sym.is_null() {
+                    return GpuHardwareType::AmdAmf;
+                }
+            }
+        }
+    }
+
     GpuHardwareType::SoftwareOnly
 }
 
@@ -78,10 +103,10 @@ pub fn detect_gpu_hardware() -> GpuHardwareType {
 // 1. BACKEND DE GPU: NVIDIA NVENC HARDWARE ACCELERATED VIDEO ENGINE
 // ----------------------------------------------------------------------------
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ffmpeg_nvenc {
     use super::*;
-    use log::info;
+    use log::{info, warn};
     use std::ffi::{c_char, c_int, c_void, CString};
 
     type AVCodec = c_void;
@@ -116,8 +141,14 @@ pub mod ffmpeg_nvenc {
     type FnAvcodecFlushBuffers = unsafe extern "C" fn(ctx: *mut AVCodecContext);
 
     pub struct FfmpegNvencEncoder {
+        #[cfg(target_os = "windows")]
         avcodec_dll: windows_sys::Win32::Foundation::HMODULE,
+        #[cfg(target_os = "windows")]
         avutil_dll: windows_sys::Win32::Foundation::HMODULE,
+        #[cfg(not(target_os = "windows"))]
+        avcodec_dll: *mut c_void,
+        #[cfg(not(target_os = "windows"))]
+        avutil_dll: *mut c_void,
         codec_ctx: *mut AVCodecContext,
         frame: *mut AVFrame,
         packet: *mut AVPacket,
@@ -141,115 +172,185 @@ pub mod ffmpeg_nvenc {
 
     impl FfmpegNvencEncoder {
         pub fn try_new(target_fps: u32, _is_screen_content: bool) -> Result<Self, String> {
-            info!("🔍 [NVENC FFMPEG PROBE] Localizando bibliotecas FFmpeg (OBS / Sunshine) no sistema...");
+            info!("🔍 [NVENC FFMPEG PROBE] Localizando bibliotecas FFmpeg no sistema...");
 
             unsafe {
-                let candidate_dirs = [
-                    "", // App directory / PATH
-                    r"C:\Program Files\obs-studio\bin\64bit",
-                    r"C:\Users\Henrique\.scrcpy\scrcpy-win64-v3.1",
-                    r"C:\Program Files\ldplayer9box",
-                ];
+                #[cfg(target_os = "windows")]
+                let (avcodec_dll, avutil_dll, get_proc_codec, get_proc_util) = {
+                    let candidate_dirs = [
+                        "", // App directory / PATH
+                        r"C:\Program Files\obs-studio\bin\64bit",
+                        r"C:\Users\Henrique\.scrcpy\scrcpy-win64-v3.1",
+                        r"C:\Program Files\ldplayer9box",
+                    ];
 
-                let mut avcodec_dll: windows_sys::Win32::Foundation::HMODULE = std::ptr::null_mut();
-                let mut avutil_dll: windows_sys::Win32::Foundation::HMODULE = std::ptr::null_mut();
+                    let mut avcodec_dll: windows_sys::Win32::Foundation::HMODULE = std::ptr::null_mut();
+                    let mut avutil_dll: windows_sys::Win32::Foundation::HMODULE = std::ptr::null_mut();
 
-                for dir in candidate_dirs {
-                    if !dir.is_empty() {
-                        let c_dir = CString::new(dir).unwrap();
-                        windows_sys::Win32::System::LibraryLoader::SetDllDirectoryA(c_dir.as_ptr() as *const u8);
-                    }
+                    for dir in candidate_dirs {
+                        if !dir.is_empty() {
+                            let c_dir = CString::new(dir).unwrap();
+                            windows_sys::Win32::System::LibraryLoader::SetDllDirectoryA(c_dir.as_ptr() as *const u8);
+                        }
 
-                    for codec_dll_name in [b"avcodec-61.dll\0", b"avcodec-62.dll\0", b"avcodec-60.dll\0", b"avcodec-59.dll\0"] {
-                        let h_codec = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(codec_dll_name.as_ptr());
-                        if !h_codec.is_null() {
-                            avcodec_dll = h_codec;
+                        for codec_dll_name in [b"avcodec-61.dll\0", b"avcodec-62.dll\0", b"avcodec-60.dll\0", b"avcodec-59.dll\0"] {
+                            let h_codec = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(codec_dll_name.as_ptr());
+                            if !h_codec.is_null() {
+                                avcodec_dll = h_codec;
+                                break;
+                            }
+                        }
+
+                        for util_dll_name in [b"avutil-59.dll\0", b"avutil-60.dll\0", b"avutil-58.dll\0", b"avutil-57.dll\0"] {
+                            let h_util = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(util_dll_name.as_ptr());
+                            if !h_util.is_null() {
+                                avutil_dll = h_util;
+                                break;
+                            }
+                        }
+
+                        if !avcodec_dll.is_null() && !avutil_dll.is_null() {
+                            info!("✅ [NVENC FFMPEG] Bibliotecas carregadas a partir de: '{}'", if dir.is_empty() { "Sistema/App" } else { dir });
                             break;
                         }
                     }
 
-                    for util_dll_name in [b"avutil-59.dll\0", b"avutil-60.dll\0", b"avutil-58.dll\0", b"avutil-57.dll\0"] {
-                        let h_util = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(util_dll_name.as_ptr());
-                        if !h_util.is_null() {
-                            avutil_dll = h_util;
+                    if avcodec_dll.is_null() || avutil_dll.is_null() {
+                        return Err("Bibliotecas FFmpeg (avcodec / avutil) não encontradas".to_string());
+                    }
+
+                    let get_proc = windows_sys::Win32::System::LibraryLoader::GetProcAddress;
+                    let get_proc_codec = move |sym: &[u8]| -> Option<unsafe extern "C" fn()> {
+                        get_proc(avcodec_dll, sym.as_ptr())
+                    };
+                    let get_proc_util = move |sym: &[u8]| -> Option<unsafe extern "C" fn()> {
+                        get_proc(avutil_dll, sym.as_ptr())
+                    };
+                    (avcodec_dll, avutil_dll, get_proc_codec, get_proc_util)
+                };
+
+                #[cfg(not(target_os = "windows"))]
+                let (avcodec_dll, avutil_dll, get_proc_codec, get_proc_util) = {
+                    let mut avcodec_dll: *mut c_void = std::ptr::null_mut();
+                    let mut avutil_dll: *mut c_void = std::ptr::null_mut();
+
+                    for codec_name in [
+                        b"libavcodec.so.62\0".as_ptr(),
+                        b"libavcodec.so.61\0".as_ptr(),
+                        b"libavcodec.so.60\0".as_ptr(),
+                        b"libavcodec.so.59\0".as_ptr(),
+                        b"libavcodec.so.58\0".as_ptr(),
+                        b"libavcodec.so\0".as_ptr(),
+                    ] {
+                        let h = libc::dlopen(codec_name as *const libc::c_char, libc::RTLD_NOW | libc::RTLD_GLOBAL);
+                        if !h.is_null() {
+                            avcodec_dll = h;
+                            info!("✅ [NVENC FFMPEG] libavcodec carregada via dlopen");
                             break;
                         }
                     }
 
-                    if !avcodec_dll.is_null() && !avutil_dll.is_null() {
-                        info!("✅ [NVENC FFMPEG] Bibliotecas carregadas a partir de: '{}'", if dir.is_empty() { "Sistema/App" } else { dir });
-                        break;
+                    for util_name in [
+                        b"libavutil.so.60\0".as_ptr(),
+                        b"libavutil.so.59\0".as_ptr(),
+                        b"libavutil.so.58\0".as_ptr(),
+                        b"libavutil.so.57\0".as_ptr(),
+                        b"libavutil.so.56\0".as_ptr(),
+                        b"libavutil.so\0".as_ptr(),
+                    ] {
+                        let h = libc::dlopen(util_name as *const libc::c_char, libc::RTLD_NOW | libc::RTLD_GLOBAL);
+                        if !h.is_null() {
+                            avutil_dll = h;
+                            info!("✅ [NVENC FFMPEG] libavutil carregada via dlopen");
+                            break;
+                        }
                     }
-                }
 
-                if avcodec_dll.is_null() || avutil_dll.is_null() {
-                    return Err("Bibliotecas FFmpeg (avcodec / avutil) não encontradas".to_string());
-                }
+                    if avcodec_dll.is_null() || avutil_dll.is_null() {
+                        return Err("Bibliotecas FFmpeg (libavcodec / libavutil) não encontradas no Linux".to_string());
+                    }
 
-                let get_proc = windows_sys::Win32::System::LibraryLoader::GetProcAddress;
+                    let get_proc_codec = move |sym: &[u8]| -> Option<unsafe extern "C" fn()> {
+                        let p = libc::dlsym(avcodec_dll, sym.as_ptr() as *const libc::c_char);
+                        if !p.is_null() {
+                            Some(std::mem::transmute(p))
+                        } else {
+                            None
+                        }
+                    };
+                    let get_proc_util = move |sym: &[u8]| -> Option<unsafe extern "C" fn()> {
+                        let p = libc::dlsym(avutil_dll, sym.as_ptr() as *const libc::c_char);
+                        if !p.is_null() {
+                            Some(std::mem::transmute(p))
+                        } else {
+                            None
+                        }
+                    };
+                    (avcodec_dll, avutil_dll, get_proc_codec, get_proc_util)
+                };
 
                 let find_encoder_fn: FnAvcodecFindEncoderByName = std::mem::transmute(
-                    get_proc(avcodec_dll, b"avcodec_find_encoder_by_name\0".as_ptr())
+                    get_proc_codec(b"avcodec_find_encoder_by_name\0")
                         .ok_or_else(|| "Símbolo avcodec_find_encoder_by_name ausente".to_string())?
                 );
                 let alloc_context_fn: FnAvcodecAllocContext3 = std::mem::transmute(
-                    get_proc(avcodec_dll, b"avcodec_alloc_context3\0".as_ptr())
+                    get_proc_codec(b"avcodec_alloc_context3\0")
                         .ok_or_else(|| "Símbolo avcodec_alloc_context3 ausente".to_string())?
                 );
                 let free_ctx_fn: FnAvcodecFreeContext = std::mem::transmute(
-                    get_proc(avcodec_dll, b"avcodec_free_context\0".as_ptr())
+                    get_proc_codec(b"avcodec_free_context\0")
                         .ok_or_else(|| "Símbolo avcodec_free_context ausente".to_string())?
                 );
                 let open2_fn: FnAvcodecOpen2 = std::mem::transmute(
-                    get_proc(avcodec_dll, b"avcodec_open2\0".as_ptr())
+                    get_proc_codec(b"avcodec_open2\0")
                         .ok_or_else(|| "Símbolo avcodec_open2 ausente".to_string())?
                 );
                 let frame_alloc_fn: FnAvFrameAlloc = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_frame_alloc\0".as_ptr())
+                    get_proc_util(b"av_frame_alloc\0")
                         .ok_or_else(|| "Símbolo av_frame_alloc ausente".to_string())?
                 );
                 let frame_free_fn: FnAvFrameFree = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_frame_free\0".as_ptr())
+                    get_proc_util(b"av_frame_free\0")
                         .ok_or_else(|| "Símbolo av_frame_free ausente".to_string())?
                 );
                 let frame_get_buf_fn: FnAvFrameGetBuffer = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_frame_get_buffer\0".as_ptr())
+                    get_proc_util(b"av_frame_get_buffer\0")
                         .ok_or_else(|| "Símbolo av_frame_get_buffer ausente".to_string())?
                 );
                 let packet_alloc_fn: FnAvPacketAlloc = std::mem::transmute(
-                    get_proc(avcodec_dll, b"av_packet_alloc\0".as_ptr())
+                    get_proc_codec(b"av_packet_alloc\0")
                         .ok_or_else(|| "Símbolo av_packet_alloc ausente".to_string())?
                 );
                 let packet_free_fn: FnAvPacketFree = std::mem::transmute(
-                    get_proc(avcodec_dll, b"av_packet_free\0".as_ptr())
+                    get_proc_codec(b"av_packet_free\0")
                         .ok_or_else(|| "Símbolo av_packet_free ausente".to_string())?
                 );
                 let send_frame_fn: FnAvcodecSendFrame = std::mem::transmute(
-                    get_proc(avcodec_dll, b"avcodec_send_frame\0".as_ptr())
+                    get_proc_codec(b"avcodec_send_frame\0")
                         .ok_or_else(|| "Símbolo avcodec_send_frame ausente".to_string())?
                 );
                 let recv_packet_fn: FnAvcodecReceivePacket = std::mem::transmute(
-                    get_proc(avcodec_dll, b"avcodec_receive_packet\0".as_ptr())
+                    get_proc_codec(b"avcodec_receive_packet\0")
                         .ok_or_else(|| "Símbolo avcodec_receive_packet ausente".to_string())?
                 );
                 let packet_unref_fn: FnAvPacketUnref = std::mem::transmute(
-                    get_proc(avcodec_dll, b"av_packet_unref\0".as_ptr())
+                    get_proc_codec(b"av_packet_unref\0")
                         .ok_or_else(|| "Símbolo av_packet_unref ausente".to_string())?
                 );
                 let opt_set_fn: FnAvOptSet = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_opt_set\0".as_ptr())
+                    get_proc_util(b"av_opt_set\0")
                         .ok_or_else(|| "Símbolo av_opt_set ausente".to_string())?
                 );
                 let opt_find_fn: FnAvOptFind = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_opt_find\0".as_ptr())
+                    get_proc_util(b"av_opt_find\0")
                         .ok_or_else(|| "Símbolo av_opt_find ausente".to_string())?
                 );
                 let dict_set_fn: FnAvDictSet = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_dict_set\0".as_ptr())
+                    get_proc_util(b"av_dict_set\0")
                         .ok_or_else(|| "Símbolo av_dict_set ausente".to_string())?
                 );
                 let dict_free_fn: FnAvDictFree = std::mem::transmute(
-                    get_proc(avutil_dll, b"av_dict_free\0".as_ptr())
+                    get_proc_util(b"av_dict_free\0")
                         .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
                 );
 
@@ -262,14 +363,14 @@ pub mod ffmpeg_nvenc {
                     }
                 };
 
-                let flush_buffers_fn: Option<FnAvcodecFlushBuffers> = get_proc(avcodec_dll, b"avcodec_flush_buffers\0".as_ptr())
+                let flush_buffers_fn: Option<FnAvcodecFlushBuffers> = get_proc_codec(b"avcodec_flush_buffers\0")
                     .map(|p| std::mem::transmute(p));
 
-                let par_alloc_fn: Option<unsafe extern "C" fn() -> *mut c_void> = get_proc(avcodec_dll, b"avcodec_parameters_alloc\0".as_ptr())
+                let par_alloc_fn: Option<unsafe extern "C" fn() -> *mut c_void> = get_proc_codec(b"avcodec_parameters_alloc\0")
                     .map(|p| std::mem::transmute(p));
-                let par_from_ctx_fn: Option<unsafe extern "C" fn(par: *mut c_void, ctx: *const c_void) -> c_int> = get_proc(avcodec_dll, b"avcodec_parameters_from_context\0".as_ptr())
+                let par_from_ctx_fn: Option<unsafe extern "C" fn(par: *mut c_void, ctx: *const c_void) -> c_int> = get_proc_codec(b"avcodec_parameters_from_context\0")
                     .map(|p| std::mem::transmute(p));
-                let par_free_fn: Option<unsafe extern "C" fn(par: *mut *mut c_void)> = get_proc(avcodec_dll, b"avcodec_parameters_free\0".as_ptr())
+                let par_free_fn: Option<unsafe extern "C" fn(par: *mut *mut c_void)> = get_proc_codec(b"avcodec_parameters_free\0")
                     .map(|p| std::mem::transmute(p));
 
                 let initial_width = 1920u32;
@@ -299,13 +400,45 @@ pub mod ffmpeg_nvenc {
                     }
 
                     let ctx_u8 = codec_ctx as *mut u8;
-                    *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
-                    *(ctx_u8.add(80) as *mut u32) = 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
-                    *(ctx_u8.add(84) as *mut i32) = 1;          // time_base.num
-                    *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
-                    *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
-                    *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
-                    *(ctx_u8.add(140) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
+                    let video_size_off = get_offset(codec_ctx as *mut c_void, b"video_size\0");
+                    let pix_fmt_off = get_offset(codec_ctx as *mut c_void, b"pixel_format\0");
+                    let flags_off = get_offset(codec_ctx as *mut c_void, b"flags\0");
+                    let time_base_off = get_offset(codec_ctx as *mut c_void, b"time_base\0");
+                    let b_off = get_offset(codec_ctx as *mut c_void, b"b\0");
+
+                    if b_off > 0 {
+                        *(ctx_u8.add(b_off) as *mut i64) = initial_bitrate as i64;
+                    } else {
+                        *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
+                    }
+
+                    if flags_off > 0 {
+                        *(ctx_u8.add(flags_off) as *mut u32) |= 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
+                    } else {
+                        *(ctx_u8.add(80) as *mut u32) = 0x00080000;
+                    }
+
+                    if time_base_off > 0 {
+                        *(ctx_u8.add(time_base_off) as *mut i32) = 1;          // time_base.num
+                        *(ctx_u8.add(time_base_off + 4) as *mut i32) = target_fps.max(1) as i32; // time_base.den
+                    } else {
+                        *(ctx_u8.add(84) as *mut i32) = 1;
+                        *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32;
+                    }
+
+                    if video_size_off > 0 {
+                        *(ctx_u8.add(video_size_off) as *mut i32) = initial_width as i32;
+                        *(ctx_u8.add(video_size_off + 4) as *mut i32) = initial_height as i32;
+                    } else {
+                        *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
+                        *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
+                    }
+
+                    if pix_fmt_off > 0 {
+                        *(ctx_u8.add(pix_fmt_off) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
+                    } else {
+                        *(ctx_u8.add(140) as *mut i32) = 23;
+                    }
                     *(ctx_u8.add(148) as *mut i32) = 1;         // color_primaries = BT709
                     *(ctx_u8.add(152) as *mut i32) = 1;         // color_trc = BT709
                     *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
@@ -677,11 +810,23 @@ fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
                     (self.free_ctx_fn)(&mut self.codec_ctx);
                     self.codec_ctx = std::ptr::null_mut();
                 }
-                if !self.avcodec_dll.is_null() {
-                    windows_sys::Win32::Foundation::FreeLibrary(self.avcodec_dll);
+                #[cfg(target_os = "windows")]
+                {
+                    if !self.avcodec_dll.is_null() {
+                        windows_sys::Win32::Foundation::FreeLibrary(self.avcodec_dll);
+                    }
+                    if !self.avutil_dll.is_null() {
+                        windows_sys::Win32::Foundation::FreeLibrary(self.avutil_dll);
+                    }
                 }
-                if !self.avutil_dll.is_null() {
-                    windows_sys::Win32::Foundation::FreeLibrary(self.avutil_dll);
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if !self.avcodec_dll.is_null() {
+                        libc::dlclose(self.avcodec_dll);
+                    }
+                    if !self.avutil_dll.is_null() {
+                        libc::dlclose(self.avutil_dll);
+                    }
                 }
                 info!("🛑 [NVENC GPU] Pipeline NVIDIA NVENC encerrado e recursos liberados.");
             }
@@ -1945,6 +2090,23 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
             }
             Err(e) => {
                 warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando fallback de segurança...", e);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let hw = detect_gpu_hardware();
+        info!("🎯 [VIDEO CODEC FACTORY] Hardware detectado no sistema: {:?}", hw);
+
+        info!("🎯 [VIDEO CODEC FACTORY] Tentando Hardware GPU Engine via FFmpeg (NVENC / AMF / QSV)...");
+        match ffmpeg_nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
+            Ok(enc) => {
+                info!("🚀 [VIDEO CODEC FACTORY] Hardware GPU Engine via FFmpeg ativado com sucesso!");
+                return Box::new(enc);
+            }
+            Err(e) => {
+                warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU indisponível ({}), usando fallback OpenH264...", e);
             }
         }
     }
