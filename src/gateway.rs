@@ -129,6 +129,7 @@ pub static MIC_LOOPBACK_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque
 
 pub static SELF_DEAF_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static IS_CONNECTED_TO_VOICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static IS_WATCHDOG_RESETTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const GLOBAL_AUDIO_CONFIG_FILE: &str = ".litecord_audio_config.json";
 
@@ -1985,7 +1986,7 @@ impl GatewayClient {
                                 let client_watchdog = Arc::clone(&client_cmd);
                                 let target_gid = guild_id.clone();
                                 tokio::spawn(async move {
-                                    tokio::time::sleep(Duration::from_millis(4500)).await;
+                                    tokio::time::sleep(Duration::from_millis(8000)).await;
                                     let is_still_pending = {
                                         let cur_cid = client_watchdog.voice_channel_id.lock().unwrap();
                                         *cur_cid == Some(target_cid.clone()) && !is_connected_to_voice()
@@ -1993,6 +1994,7 @@ impl GatewayClient {
 
                                     if is_still_pending {
                                         warn!("⚠️ [VOICE WATCHDOG] Detectado estado fantasma/timeout na Gateway! Forçando reset OP 4 para reconexão limpa...");
+                                        IS_WATCHDOG_RESETTING.store(true, Ordering::SeqCst);
                                         let effective_gid = if target_gid.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(target_gid) };
                                         let reset_payload = serde_json::json!({
                                             "op": 4,
@@ -2011,6 +2013,9 @@ impl GatewayClient {
                                         if let Some(tx) = client_watchdog.ws_tx.lock().await.as_ref() {
                                             let _ = tx.send(Message::Text(rejoin_payload.to_string().into())).await;
                                         }
+
+                                        tokio::time::sleep(Duration::from_millis(2000)).await;
+                                        IS_WATCHDOG_RESETTING.store(false, Ordering::SeqCst);
                                     }
                                 });
                             }
@@ -2405,15 +2410,23 @@ impl GatewayClient {
                                     };
 
                                     if my_active_cid.is_some() && is_matching_guild {
-                                        info!("🚪 [VOICE_STATE_UPDATE] Desconectado da sala de voz da guild {:?}", my_active_gid);
-                                        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
-                                        *self.voice_session_id.lock().unwrap() = None;
-                                        *self.voice_token.lock().unwrap() = None;
-                                        *self.voice_endpoint.lock().unwrap() = None;
-                                        *self.voice_channel_id.lock().unwrap() = None;
-                                        *self.voice_guild_id.lock().unwrap() = None;
-                                        clear_voice_participants();
-                                        let _ = self.event_tx.send(GatewayEvent::VoiceDisconnected).await;
+                                        if IS_WATCHDOG_RESETTING.swap(false, Ordering::SeqCst) {
+                                            info!("🛡️ [VOICE_STATE_UPDATE] Reset interno do Watchdog em andamento. Limpando credenciais antigas sem desconectar a UI...");
+                                            CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+                                            *self.voice_session_id.lock().unwrap() = None;
+                                            *self.voice_token.lock().unwrap() = None;
+                                            *self.voice_endpoint.lock().unwrap() = None;
+                                        } else {
+                                            info!("🚪 [VOICE_STATE_UPDATE] Desconectado da sala de voz da guild {:?}", my_active_gid);
+                                            CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+                                            *self.voice_session_id.lock().unwrap() = None;
+                                            *self.voice_token.lock().unwrap() = None;
+                                            *self.voice_endpoint.lock().unwrap() = None;
+                                            *self.voice_channel_id.lock().unwrap() = None;
+                                            *self.voice_guild_id.lock().unwrap() = None;
+                                            clear_voice_participants();
+                                            let _ = self.event_tx.send(GatewayEvent::VoiceDisconnected).await;
+                                        }
                                     } else {
                                         info!("🛡️ [VOICE_STATE_UPDATE] Ignorando evento de desconexão de outra guild ({:?}) enquanto estamos em ({:?})", event_gid, my_active_gid);
                                     }
@@ -4170,8 +4183,8 @@ pub async fn connect_voice_gateway(
             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
                 break;
             }
-            warn!("Falha ao conectar na Voice Gateway: {:?}. Tentando reconectar em 2s...", e);
-            tokio::time::sleep(Duration::from_millis(2000)).await;
+            warn!("Falha ao conectar na Voice Gateway: {:?}. Tentando reconectar em 800ms...", e);
+            tokio::time::sleep(Duration::from_millis(800)).await;
         }
     }
 }
