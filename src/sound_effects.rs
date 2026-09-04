@@ -11,6 +11,8 @@ pub enum UiSound {
     Unmute,
     Deafen,
     Undeafen,
+    JoinChannel,
+    LeaveChannel,
 }
 
 static SOUND_SENDER: std::sync::OnceLock<SyncSender<UiSound>> = std::sync::OnceLock::new();
@@ -154,6 +156,64 @@ fn generate_sound_samples(sound: UiSound, sample_rate: u32) -> Vec<f32> {
                 samples.push(wave);
             }
         }
+        UiSound::JoinChannel => {
+            // Ascending warm chime: Note 1 (440Hz, 85ms), Note 2 (660Hz, 130ms)
+            let duration = 0.215;
+            let total = (sample_rate as f32 * duration) as usize;
+            let split = (sample_rate as f32 * 0.085) as usize;
+            let mut phase1 = 0.0f32;
+            let mut phase2 = 0.0f32;
+
+            for i in 0..total {
+                let wave = if i < split {
+                    let t = i as f32 / split as f32;
+                    let freq = 440.0;
+                    phase1 += 2.0 * std::f32::consts::PI * freq * dt;
+                    let attack = (i as f32 / (sample_rate as f32 * 0.005)).min(1.0);
+                    let decay = (-t * 2.5).exp();
+                    (phase1.sin() + 0.15 * (phase1 * 2.0).sin()) * 0.75 * attack * decay
+                } else {
+                    let j = i - split;
+                    let rem = total - split;
+                    let t = j as f32 / rem as f32;
+                    let freq = 660.0;
+                    phase2 += 2.0 * std::f32::consts::PI * freq * dt;
+                    let attack = (j as f32 / (sample_rate as f32 * 0.005)).min(1.0);
+                    let decay = (-t * 3.0).exp();
+                    (phase2.sin() + 0.18 * (phase2 * 2.0).sin()) * 0.80 * attack * decay
+                };
+                samples.push(wave);
+            }
+        }
+        UiSound::LeaveChannel => {
+            // Descending warm chime: Note 1 (660Hz, 85ms), Note 2 (440Hz, 130ms)
+            let duration = 0.215;
+            let total = (sample_rate as f32 * duration) as usize;
+            let split = (sample_rate as f32 * 0.085) as usize;
+            let mut phase1 = 0.0f32;
+            let mut phase2 = 0.0f32;
+
+            for i in 0..total {
+                let wave = if i < split {
+                    let t = i as f32 / split as f32;
+                    let freq = 660.0;
+                    phase1 += 2.0 * std::f32::consts::PI * freq * dt;
+                    let attack = (i as f32 / (sample_rate as f32 * 0.005)).min(1.0);
+                    let decay = (-t * 2.8).exp();
+                    (phase1.sin() + 0.15 * (phase1 * 2.0).sin()) * 0.75 * attack * decay
+                } else {
+                    let j = i - split;
+                    let rem = total - split;
+                    let t = j as f32 / rem as f32;
+                    let freq = 440.0;
+                    phase2 += 2.0 * std::f32::consts::PI * freq * dt;
+                    let attack = (j as f32 / (sample_rate as f32 * 0.005)).min(1.0);
+                    let decay = (-t * 3.2).exp();
+                    (phase2.sin() + 0.15 * (phase2 * 2.0).sin()) * 0.75 * attack * decay
+                };
+                samples.push(wave);
+            }
+        }
     }
 
     samples
@@ -161,9 +221,17 @@ fn generate_sound_samples(sound: UiSound, sample_rate: u32) -> Vec<f32> {
 
 fn play_sound_cpal(sound: UiSound) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "Nenhum dispositivo de áudio de saída padrão encontrado")?;
+    let target_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
+        guard.clone()
+    } else {
+        String::new()
+    };
+    let device = if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+        host.output_devices().ok().and_then(|mut devs| devs.find(|d| d.name().map_or(false, |n| n == target_dev_name)))
+            .or_else(|| host.default_output_device())
+    } else {
+        host.default_output_device()
+    }.ok_or_else(|| "Nenhum dispositivo de áudio de saída encontrado")?;
 
     let config = device.default_output_config()?;
     let sample_rate = config.sample_rate().0;
@@ -281,6 +349,49 @@ fn play_sound_fallback(sound: UiSound) {
 
     #[cfg(not(windows))]
     {
-        let _ = sound;
+        let sample_rate = 44100u32;
+        let samples = generate_sound_samples(sound, sample_rate);
+        let mut wav = Vec::with_capacity(44 + samples.len() * 2);
+
+        let data_size = (samples.len() * 2) as u32;
+        let file_size = 36 + data_size;
+
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&file_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+
+        for s in samples {
+            let s_i16 = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            wav.extend_from_slice(&s_i16.to_le_bytes());
+        }
+
+        for player in &["pw-play", "paplay", "aplay"] {
+            if let Ok(mut child) = std::process::Command::new(player)
+                .arg("-")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(&wav);
+                }
+                let _ = child.wait();
+                break;
+            }
+        }
     }
 }

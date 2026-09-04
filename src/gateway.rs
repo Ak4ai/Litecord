@@ -3283,15 +3283,7 @@ pub async fn connect_voice_gateway(
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
 
-                                                    let stream_config: cpal::StreamConfig = {
-                                                        let mut sc: cpal::StreamConfig = config.clone().into();
-                                                        #[cfg(target_os = "linux")]
-                                                        {
-                                                            let desired_frames = ((out_sample_rate as f32 * 0.02).round() as u32).max(480);
-                                                            sc.buffer_size = cpal::BufferSize::Fixed(desired_frames);
-                                                        }
-                                                        sc
-                                                    };
+                                                    let stream_config: cpal::StreamConfig = config.clone().into();
 
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {

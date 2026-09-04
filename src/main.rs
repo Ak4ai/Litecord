@@ -287,15 +287,7 @@ fn start_mic_capture(
 
     info!("Capturando microfone: {}Hz, {} canal(is), formato={:?}", sample_rate, channels, config.sample_format());
 
-    let stream_config: cpal::StreamConfig = {
-        let mut sc: cpal::StreamConfig = config.clone().into();
-        #[cfg(target_os = "linux")]
-        {
-            let desired_frames = ((sample_rate as f32 * 0.02).round() as u32).max(480);
-            sc.buffer_size = cpal::BufferSize::Fixed(desired_frames);
-        }
-        sc
-    };
+    let stream_config: cpal::StreamConfig = config.clone().into();
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
@@ -3467,6 +3459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     app.on_leave_voice(move || {
         info!("Usuário solicitou desconexão da sala de voz...");
+        sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
         sm_leave.stop();
         sm_leave.set_context(0, 0, "");
         screen_capture::clear_stream_audio_queue();
@@ -4416,6 +4409,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_is_voice_connecting(true);
                 ui.set_is_voice_focused(true);
                 ui.set_current_voice_channel(ch_name.clone().into());
+                sound_effects::play_ui_sound(sound_effects::UiSound::JoinChannel);
                 gateway::sync_voice_channel_participants(&ch_id);
                 let muted = ui.get_is_muted();
                 let deafened = ui.get_is_deafened();
@@ -5010,6 +5004,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match event {
                 GatewayEvent::VoiceDisconnected => {
+                    sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
                     let app_w = app_weak.clone();
                     let sm_disc = Arc::clone(&sm_gw_inner);
                     let _ = slint::invoke_from_event_loop(move || {
