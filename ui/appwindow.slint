@@ -2920,17 +2920,19 @@ export component AppWindow inherits Window {
                                         if (p.is_self && root.is_screen_sharing && root.show_self_preview_notice): Rectangle {
                                             x: 8px;
                                             y: 38px;
+                                            max-width: parent.width - 16px;
                                             height: 20px;
                                             background: #111214ee;
                                             border-radius: 4px;
                                             border-width: 1px;
                                             border-color: #5865f2aa;
+                                            clip: true;
 
                                             HorizontalLayout {
                                                 padding-left: 6px;
                                                 padding-right: 8px;
                                                 spacing: 5px;
-                                                alignment: center;
+                                                alignment: start;
 
                                                 VerticalLayout {
                                                     alignment: center;
@@ -2944,11 +2946,12 @@ export component AppWindow inherits Window {
                                                 }
 
                                                 Text {
-                                                    text: "Prévia reduzida para poupar recursos • Não reflete a transmissão real";
+                                                    text: "Prévia reduzida para poupar recursos";
                                                     color: #dbdee1;
                                                     font-size: 10px;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
+                                                    overflow: elide;
                                                 }
                                             }
 
@@ -8406,17 +8409,19 @@ export component PopoutStreamWindow inherits Window {
     if (root.is_self && root.show_self_preview_notice): Rectangle {
         x: 8px;
         y: 44px;
+        max-width: parent.width - 16px;
         height: 20px;
         background: #111214ee;
         border-radius: 4px;
         border-width: 1px;
         border-color: #5865f2aa;
+        clip: true;
 
         HorizontalLayout {
             padding-left: 6px;
             padding-right: 8px;
             spacing: 5px;
-            alignment: center;
+            alignment: start;
 
             VerticalLayout {
                 alignment: center;
@@ -8430,11 +8435,12 @@ export component PopoutStreamWindow inherits Window {
             }
 
             Text {
-                text: "Prévia reduzida para poupar recursos • Não reflete a transmissão real";
+                text: "Prévia reduzida para poupar recursos";
                 color: #dbdee1;
                 font-size: 10px;
                 font-weight: 600;
                 vertical-alignment: center;
+                overflow: elide;
             }
         }
 
