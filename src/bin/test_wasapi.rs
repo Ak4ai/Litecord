@@ -60,7 +60,7 @@ pub const IID_IMARSHAL: GUID = GUID {
 };
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct WAVEFORMATEX {
     pub wFormatTag: u16,
     pub nChannels: u16,
@@ -69,6 +69,15 @@ pub struct WAVEFORMATEX {
     pub nBlockAlign: u16,
     pub wBitsPerSample: u16,
     pub cbSize: u16,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WAVEFORMATEXTENSIBLE {
+    pub Format: WAVEFORMATEX,
+    pub Samples: u16,
+    pub dwChannelMask: u32,
+    pub SubFormat: GUID,
 }
 
 #[repr(C)]
