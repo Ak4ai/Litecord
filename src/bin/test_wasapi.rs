@@ -316,34 +316,24 @@ fn main() {
                 let client = client_ptr as *mut IAudioClient;
                 println!("Successfully received IAudioClient pointer: {:?}", client);
                 let client_vtbl = (*client).vtbl;
-                let mut fmt_ext = WAVEFORMATEXTENSIBLE {
-                    Format: WAVEFORMATEX {
-                        wFormatTag: 0xFFFE, // WAVE_FORMAT_EXTENSIBLE
-                        nChannels: 2,
-                        nSamplesPerSec: 48000,
-                        nAvgBytesPerSec: 48000 * 2 * 4,
-                        nBlockAlign: 8,
-                        wBitsPerSample: 32,
-                        cbSize: 22,
-                    },
-                    Samples: 32,
-                    dwChannelMask: 0x3,
-                    SubFormat: GUID {
-                        data1: 0x00000003,
-                        data2: 0x0000,
-                        data3: 0x0010,
-                        data4: [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
-                    },
+                let fmt_pcm = WAVEFORMATEX {
+                    wFormatTag: 1, // WAVE_FORMAT_PCM
+                    nChannels: 2,
+                    nSamplesPerSec: 48000,
+                    nAvgBytesPerSec: 48000 * 4,
+                    nBlockAlign: 4,
+                    wBitsPerSample: 16,
+                    cbSize: 0,
                 };
                 let stream_event = windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null_mut());
-                let flags = 0x00020000 | 0x00040000; // LOOPBACK | EVENTCALLBACK
+                let flags: u32 = 0x00020000 | 0x00040000 | 0x80000000 | 0x08000000; // LOOPBACK | EVENTCALLBACK | AUTOCONVERTPCM | SRC_DEFAULT_QUALITY
                 let hr_init = ((*client_vtbl).Initialize)(
                     client as *mut c_void,
                     0, // SHARED
                     flags,
-                    200_000, // 20ms buffer
+                    0, // buffer duration 0 for autoconvert/default
                     0,
-                    &fmt_ext.Format as *const WAVEFORMATEX,
+                    &fmt_pcm as *const WAVEFORMATEX,
                     std::ptr::null(),
                 );
                 println!("Initialize hr=0x{:08x}", hr_init);
