@@ -26,10 +26,10 @@ pub const IID_IUNKNOWN: GUID = GUID {
 };
 
 pub const IID_IAUDIOCLIENT: GUID = GUID {
-    data1: 0x7cdc33ac,
-    data2: 0x7036,
-    data3: 0x4568,
-    data4: [0xac, 0xfd, 0x27, 0x0e, 0x90, 0x36, 0x32, 0x14],
+    data1: 0x1cb9ad4c,
+    data2: 0xdbfa,
+    data3: 0x4c32,
+    data4: [0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2],
 };
 
 pub const IID_IAUDIOCAPTURECLIENT: GUID = GUID {
@@ -44,6 +44,20 @@ pub const IID_IACTIVATEAUDIOINTERFACECOMPLETIONHANDLER: GUID = GUID {
     data2: 0x44a6,
     data3: 0x4c5b,
     data4: [0x88, 0xb1, 0x83, 0xb9, 0x0a, 0x69, 0x67, 0x32],
+};
+
+pub const IID_IAGILEOBJECT: GUID = GUID {
+    data1: 0x94ea2b94,
+    data2: 0xe9cc,
+    data3: 0x49e0,
+    data4: [0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90],
+};
+
+pub const IID_IMARSHAL: GUID = GUID {
+    data1: 0x00000003,
+    data2: 0x0000,
+    data3: 0x0000,
+    data4: [0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
 };
 
 #[repr(C)]
@@ -124,6 +138,7 @@ struct CompletionHandler {
     ref_count: AtomicU32,
     event_handle: *mut c_void,
     client_slot: Arc<Mutex<Option<*mut c_void>>>,
+    ftm: *mut c_void,
 }
 
 unsafe extern "system" fn ch_query_interface(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> i32 {
@@ -131,10 +146,17 @@ unsafe extern "system" fn ch_query_interface(this: *mut c_void, riid: *const GUI
         return -2147467261; // E_POINTER
     }
     let guid = *riid;
-    if guid_eq(&guid, &IID_IUNKNOWN) || guid_eq(&guid, &IID_IACTIVATEAUDIOINTERFACECOMPLETIONHANDLER) {
+    let handler = &*(this as *mut CompletionHandler);
+    if guid_eq(&guid, &IID_IUNKNOWN)
+        || guid_eq(&guid, &IID_IACTIVATEAUDIOINTERFACECOMPLETIONHANDLER)
+        || guid_eq(&guid, &IID_IAGILEOBJECT)
+    {
         *ppv = this;
         ch_add_ref(this);
         0
+    } else if guid_eq(&guid, &IID_IMARSHAL) && !handler.ftm.is_null() {
+        let ftm_unk = *(handler.ftm as *mut *mut IActivateAudioInterfaceAsyncOperationVtbl);
+        ((*ftm_unk).QueryInterface)(handler.ftm, riid, ppv)
     } else {
         *ppv = std::ptr::null_mut();
         -2147467262 // E_NOINTERFACE
@@ -150,6 +172,10 @@ unsafe extern "system" fn ch_release(this: *mut c_void) -> u32 {
     let handler = &*(this as *mut CompletionHandler);
     let prev = handler.ref_count.fetch_sub(1, Ordering::SeqCst);
     if prev == 1 {
+        if !handler.ftm.is_null() {
+            let ftm_unk = *(handler.ftm as *mut *mut IActivateAudioInterfaceAsyncOperationVtbl);
+            ((*ftm_unk).Release)(handler.ftm);
+        }
         let _ = Box::from_raw(this as *mut CompletionHandler);
     }
     prev - 1
@@ -285,11 +311,15 @@ pub fn start_wasapi_isolated_loopback(
         }
 
         let client_slot: Arc<Mutex<Option<*mut c_void>>> = Arc::new(Mutex::new(None));
+        let mut ftm: *mut c_void = std::ptr::null_mut();
+        windows_sys::Win32::System::Com::CoCreateFreeThreadedMarshaler(std::ptr::null_mut(), &mut ftm);
+
         let handler = Box::into_raw(Box::new(CompletionHandler {
             vtbl: &CH_VTBL,
             ref_count: AtomicU32::new(1),
             event_handle: event,
             client_slot: Arc::clone(&client_slot),
+            ftm,
         }));
 
         let mut async_op: *mut IActivateAudioInterfaceAsyncOperation = std::ptr::null_mut();
@@ -327,53 +357,37 @@ pub fn start_wasapi_isolated_loopback(
         };
 
         let client_vtbl = (*client_ptr).vtbl;
-        let mut p_format: *mut WAVEFORMATEX = std::ptr::null_mut();
-        let hr_fmt = ((*client_vtbl).GetMixFormat)(client_ptr as *mut c_void, &mut p_format);
-        if hr_fmt != 0 || p_format.is_null() {
-            let _ = ((*client_vtbl).Release)(client_ptr as *mut c_void);
-            return Err(format!("GetMixFormat falhou com hr=0x{:08x}", hr_fmt));
-        }
-
-        let fmt = &*p_format;
-        let sample_rate = fmt.nSamplesPerSec;
-        let channels = fmt.nChannels;
-        let bits_per_sample = fmt.wBitsPerSample;
-
-        let is_float = if fmt.wFormatTag == WAVE_FORMAT_IEEE_FLOAT {
-            true
-        } else if fmt.wFormatTag == WAVE_FORMAT_EXTENSIBLE && fmt.cbSize >= 22 {
-            let ext = &*(p_format as *const WAVEFORMATEXTENSIBLE);
-            ext.SubFormat.data1 == 3 // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
-        } else {
-            false
+        let sample_rate = 48000u32;
+        let channels = 2u16;
+        let bits_per_sample = 16u16;
+        let fmt_pcm = WAVEFORMATEX {
+            wFormatTag: WAVE_FORMAT_PCM,
+            nChannels: channels,
+            nSamplesPerSec: sample_rate,
+            nAvgBytesPerSec: sample_rate * (channels as u32) * ((bits_per_sample / 8) as u32),
+            nBlockAlign: channels * (bits_per_sample / 8),
+            wBitsPerSample: bits_per_sample,
+            cbSize: 0,
         };
-
-        if !is_float && bits_per_sample != 16 {
-            warn!("⚠️ [WASAPI LOOPBACK] Formato de áudio não suportado: tag=0x{:04x}, bits={}", fmt.wFormatTag, bits_per_sample);
-            windows_sys::Win32::System::Com::CoTaskMemFree(p_format as *mut c_void);
-            let _ = ((*client_vtbl).Release)(client_ptr as *mut c_void);
-            return Err(format!("Formato de áudio incompatível (bits={})", bits_per_sample));
-        }
 
         let stream_event = windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null_mut());
         if stream_event.is_null() {
-            windows_sys::Win32::System::Com::CoTaskMemFree(p_format as *mut c_void);
             let _ = ((*client_vtbl).Release)(client_ptr as *mut c_void);
             return Err("Falha ao criar evento do stream de áudio".to_string());
         }
 
-        let flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        // AUDCLNT_STREAMFLAGS_LOOPBACK (0x00020000) | AUDCLNT_STREAMFLAGS_EVENTCALLBACK (0x00040000)
+        // AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM (0x80000000) | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY (0x08000000)
+        let flags: u32 = 0x00020000 | 0x00040000 | 0x80000000 | 0x08000000;
         let hr_init = ((*client_vtbl).Initialize)(
             client_ptr as *mut c_void,
             0, // AUDCLNT_SHAREMODE_SHARED
             flags,
-            200_000, // 20ms buffer (em unidades de 100ns)
             0,
-            p_format,
+            0,
+            &fmt_pcm as *const WAVEFORMATEX,
             std::ptr::null(),
         );
-
-        windows_sys::Win32::System::Com::CoTaskMemFree(p_format as *mut c_void);
 
         if hr_init != 0 {
             windows_sys::Win32::Foundation::CloseHandle(stream_event);
@@ -406,8 +420,7 @@ pub fn start_wasapi_isolated_loopback(
         }
 
         info!(
-            "🔊 [WASAPI LOOPBACK] Captura iniciada com sucesso ({}Hz, {} canais, bits={}, float={}) com EXCLUSÃO do processo Litecord!",
-            sample_rate, channels, bits_per_sample, is_float
+            "🔊 [WASAPI LOOPBACK] Captura iniciada com sucesso (48000Hz, 2 canais PCM 16-bit) com EXCLUSÃO do processo Litecord!"
         );
 
         let client_addr = client_ptr as usize;
@@ -464,31 +477,12 @@ pub fn start_wasapi_isolated_loopback(
                             if silent {
                                 let new_len = buf.len() + (num_frames as usize);
                                 buf.resize(new_len, 0);
-                            } else if is_float {
-                                let total_samples = (num_frames as usize) * (channels as usize);
-                                let f32_slice = std::slice::from_raw_parts(p_data as *const f32, total_samples);
-                                let ch = channels as usize;
-                                if ch == 1 {
-                                    for &s in f32_slice {
-                                        buf.push((s.clamp(-1.0, 1.0) * 32767.0) as i16);
-                                    }
-                                } else {
-                                    for chunk in f32_slice.chunks_exact(ch) {
-                                        let mono_f = (chunk[0] + chunk[1]) * 0.5;
-                                        buf.push((mono_f.clamp(-1.0, 1.0) * 32767.0) as i16);
-                                    }
-                                }
                             } else {
-                                let total_samples = (num_frames as usize) * (channels as usize);
+                                let total_samples = (num_frames as usize) * 2;
                                 let i16_slice = std::slice::from_raw_parts(p_data as *const i16, total_samples);
-                                let ch = channels as usize;
-                                if ch == 1 {
-                                    buf.extend_from_slice(i16_slice);
-                                } else {
-                                    for chunk in i16_slice.chunks_exact(ch) {
-                                        let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
-                                        buf.push(mono);
-                                    }
+                                for chunk in i16_slice.chunks_exact(2) {
+                                    let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
+                                    buf.push(mono);
                                 }
                             }
 
