@@ -294,6 +294,12 @@ impl AttachmentCache {
 
 fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedImage> {
     if let Ok(dyn_img) = image::load_from_memory(bytes) {
+        let (w, h) = (dyn_img.width(), dyn_img.height());
+        // Guard against decompression bombs / excessive dimensions causing OOM
+        if w > 8192 || h > 8192 || (w as u64 * h as u64) > 25_000_000 {
+            log::warn!("Anexo de imagem com dimensões excessivas rejeitado por segurança: {}x{}", w, h);
+            return None;
+        }
         let rgba = dyn_img.to_rgba8();
         let (width, height) = rgba.dimensions();
         Some(DecodedImage {

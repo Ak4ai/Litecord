@@ -282,6 +282,11 @@ impl EmojiCache {
 
 fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedEmoji> {
     if let Ok(dyn_img) = image::load_from_memory(bytes) {
+        let (w, h) = (dyn_img.width(), dyn_img.height());
+        if w > 1024 || h > 1024 {
+            log::warn!("Emoji com dimensões excessivas rejeitado: {}x{}", w, h);
+            return None;
+        }
         let rgba = dyn_img.to_rgba8();
         let (width, height) = rgba.dimensions();
         Some(DecodedEmoji {

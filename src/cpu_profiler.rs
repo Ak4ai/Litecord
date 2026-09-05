@@ -71,7 +71,7 @@ pub fn start_thread_cpu_profiler() {
                                     }
                                     if unsafe { GetThreadDescription(h_thread, &mut p_desc) } >= 0 && !p_desc.is_null() {
                                         let mut len = 0;
-                                        while unsafe { *p_desc.add(len) } != 0 {
+                                        while len < 256 && unsafe { *p_desc.add(len) } != 0 {
                                             len += 1;
                                         }
                                         let slice = unsafe { std::slice::from_raw_parts(p_desc, len) };

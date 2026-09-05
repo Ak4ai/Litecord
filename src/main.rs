@@ -1953,7 +1953,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
                         let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
-                        winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(320.0, 180.0)));
+                        winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                         winit_pop.set_visible(false);
                         #[cfg(target_os = "windows")]
                         {
@@ -5950,6 +5950,7 @@ pub fn sync_ui_saved_accounts(app_weak: &slint::Weak<AppWindow>, vault: &Account
     });
 }
 
+#[allow(dead_code)]
 fn save_secure_token(token_str: &str) {
     save_or_update_account(token_str, "", "", "");
 }
