@@ -3373,20 +3373,26 @@ export component AppWindow inherits Window {
                                     spacing: 6px;
                                     alignment: center;
 
-                                    Image {
-                                        source: @image-url("../assets/speaker.svg");
-                                        width: 15px;
-                                        height: 15px;
-                                        colorize: #ffffff;
-                                        image-fit: contain;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/speaker.svg");
+                                            width: 15px;
+                                            height: 15px;
+                                            colorize: #ffffff;
+                                            image-fit: contain;
+                                        }
                                     }
 
-                                    Text {
-                                        text: root.tr_view_voice_room;
-                                        color: #ffffff;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: root.tr_view_voice_room;
+                                            color: #ffffff;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
 
