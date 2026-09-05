@@ -193,7 +193,11 @@ component ChatMessagesView inherits Rectangle {
     }
 
     public function scroll_to_bottom() {
-        scroll_y = Math.min(0.0, (msg_scroll.visible-height - msg_scroll.viewport-height) / 1px) * 1px;
+        if (msg_scroll.viewport-height > msg_scroll.visible-height) {
+            scroll_y = (msg_scroll.visible-height - msg_scroll.viewport-height);
+        } else {
+            scroll_y = 0px;
+        }
     }
 
     msg_scroll := ScrollView {
@@ -1190,6 +1194,16 @@ export component AppWindow inherits Window {
 
     public function scroll_chat_to_bottom() {
         root.scroll_to_bottom_trigger += 1;
+    }
+
+    changed is_voice_focused => {
+        if (!root.is_voice_focused) {
+            root.scroll_chat_to_bottom();
+        }
+    }
+
+    changed active_channel_id => {
+        root.scroll_chat_to_bottom();
     }
 
     public function move_suggestion_up() {
@@ -2304,6 +2318,7 @@ export component AppWindow inherits Window {
                                         mouse-cursor: pointer;
                                         clicked => {
                                             root.toggle_voice_focus();
+                                            root.scroll_chat_to_bottom();
                                         }
                                     }
                                 }

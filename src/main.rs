@@ -238,6 +238,20 @@ fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     result
 }
 
+pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
+    let _ = slint::invoke_from_event_loop(move || {
+        let delays = [15, 45, 100, 200, 400];
+        for delay in delays {
+            let app_w = app_weak.clone();
+            slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
+                if let Some(ui) = app_w.upgrade() {
+                    ui.invoke_scroll_chat_to_bottom();
+                }
+            });
+        }
+    });
+}
+
 fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], level: f32) {
     for &s in pcm_samples {
         let clamped = s.clamp(-1.0, 1.0);
@@ -1041,6 +1055,7 @@ async fn fetch_and_populate_channels(
                             ui.set_active_channel_id(ch_id_val.into());
                         }
                     });
+                    request_chat_scroll_to_bottom(app_weak.clone());
                     loaded_readable = true;
                     break;
                 }
@@ -1517,12 +1532,7 @@ async fn load_messages_for_channel(
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
 
-                    let app_w_scroll = app_weak.clone();
-                    slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
-                        if let Some(ui) = app_w_scroll.upgrade() {
-                            ui.invoke_scroll_chat_to_bottom();
-                        }
-                    });
+                    request_chat_scroll_to_bottom(app_weak.clone());
                 }
             });
             true
@@ -1972,7 +1982,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_toggle_voice_focus(move || {
         if let Some(ui) = app_weak_voice_focus.upgrade() {
             let cur = ui.get_is_voice_focused();
-            ui.set_is_voice_focused(!cur);
+            let new_val = !cur;
+            ui.set_is_voice_focused(new_val);
+            if !new_val {
+                request_chat_scroll_to_bottom(app_weak_voice_focus.clone());
+            }
         }
     });
 
@@ -4330,6 +4344,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let gid = guild_id.to_string();
         info!("Servidor selecionado pelo usuário: {}", gid);
 
+        if let Some(ui) = app_weak_guild_select.upgrade() {
+            ui.set_is_voice_focused(false);
+        }
+
         if let Some(tx) = cmd_tx_guild_select.lock().unwrap().as_ref() {
             let _ = tx.try_send(GatewayCommand::SubscribeGuild { guild_id: gid.clone(), channel_ids: Vec::new() });
         }
@@ -4481,6 +4499,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let clean_name = ch_name.trim_start_matches('#').trim();
                 ui.set_active_channel_name(clean_name.into());
                 ui.set_active_channel_id(ch_id.clone().into());
+                ui.set_is_voice_focused(false);
+                request_chat_scroll_to_bottom(app_weak_chan_select.clone());
 
                 let http_opt = http_client_chan_select.lock().unwrap().as_ref().cloned();
                 let app_w = app_weak_chan_select.clone();
@@ -5090,12 +5110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                                 ui.set_messages(model.into());
 
-                                let app_w_scroll = app_weak_inner.clone();
-                                slint::Timer::single_shot(std::time::Duration::from_millis(20), move || {
-                                    if let Some(ui) = app_w_scroll.upgrade() {
-                                        ui.invoke_scroll_chat_to_bottom();
-                                    }
-                                });
+                                request_chat_scroll_to_bottom(app_weak_inner.clone());
                             }
                         });
                     }
