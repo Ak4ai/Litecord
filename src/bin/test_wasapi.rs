@@ -307,63 +307,74 @@ fn main() {
                 let client = client_ptr as *mut IAudioClient;
                 println!("Successfully received IAudioClient pointer: {:?}", client);
                 let client_vtbl = (*client).vtbl;
-                let mut p_format: *mut WAVEFORMATEX = std::ptr::null_mut();
-                let hr_fmt = ((*client_vtbl).GetMixFormat)(client as *mut c_void, &mut p_format);
-                println!("GetMixFormat hr=0x{:08x}", hr_fmt);
-                if hr_fmt == 0 && !p_format.is_null() {
-                    let fmt = &*p_format;
-                    println!("Mix format: rate={} channels={} bits={}", fmt.nSamplesPerSec, fmt.nChannels, fmt.wBitsPerSample);
-                    let stream_event = windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null_mut());
-                    let flags = 0x00020000 | 0x00040000; // LOOPBACK | EVENTCALLBACK
-                    let hr_init = ((*client_vtbl).Initialize)(
-                        client as *mut c_void,
-                        0, // SHARED
-                        flags,
-                        200_000, // 20ms buffer
-                        0,
-                        p_format,
-                        std::ptr::null(),
-                    );
-                    println!("Initialize hr=0x{:08x}", hr_init);
-                    if hr_init == 0 {
-                        let hr_set = ((*client_vtbl).SetEventHandle)(client as *mut c_void, stream_event);
-                        println!("SetEventHandle hr=0x{:08x}", hr_set);
-                        let mut capture_ptr: *mut c_void = std::ptr::null_mut();
-                        let hr_svc = ((*client_vtbl).GetService)(client as *mut c_void, &IID_IAUDIOCAPTURECLIENT, &mut capture_ptr);
-                        println!("GetService IAudioCaptureClient hr=0x{:08x}", hr_svc);
-                        if hr_svc == 0 && !capture_ptr.is_null() {
-                            let capture = capture_ptr as *mut IAudioCaptureClient;
-                            let capture_vtbl = (*capture).vtbl;
-                            let hr_start = ((*client_vtbl).Start)(client as *mut c_void);
-                            println!("Start hr=0x{:08x}", hr_start);
-                            println!("Audio capture started! Capturing 5 packets...");
-                            for i in 0..5 {
-                                windows_sys::Win32::System::Threading::WaitForSingleObject(stream_event, 200);
-                                let mut p_data: *mut u8 = std::ptr::null_mut();
-                                let mut num_frames: u32 = 0;
-                                let mut flags: u32 = 0;
-                                let mut dev_pos: u64 = 0;
-                                let mut qpc_pos: u64 = 0;
-                                let hr_buf = ((*capture_vtbl).GetBuffer)(
-                                    capture as *mut c_void,
-                                    &mut p_data,
-                                    &mut num_frames,
-                                    &mut flags,
-                                    &mut dev_pos,
-                                    &mut qpc_pos,
-                                );
-                                if hr_buf == 0 && num_frames > 0 {
-                                    println!("Packet {}: {} frames read, silent={}", i, num_frames, (flags & 0x2) != 0);
-                                    let _ = ((*capture_vtbl).ReleaseBuffer)(capture as *mut c_void, num_frames);
-                                }
+                let mut fmt_ext = WAVEFORMATEXTENSIBLE {
+                    Format: WAVEFORMATEX {
+                        wFormatTag: 0xFFFE, // WAVE_FORMAT_EXTENSIBLE
+                        nChannels: 2,
+                        nSamplesPerSec: 48000,
+                        nAvgBytesPerSec: 48000 * 2 * 4,
+                        nBlockAlign: 8,
+                        wBitsPerSample: 32,
+                        cbSize: 22,
+                    },
+                    Samples: 32,
+                    dwChannelMask: 0x3,
+                    SubFormat: GUID {
+                        data1: 0x00000003,
+                        data2: 0x0000,
+                        data3: 0x0010,
+                        data4: [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
+                    },
+                };
+                let stream_event = windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null_mut());
+                let flags = 0x00020000 | 0x00040000; // LOOPBACK | EVENTCALLBACK
+                let hr_init = ((*client_vtbl).Initialize)(
+                    client as *mut c_void,
+                    0, // SHARED
+                    flags,
+                    200_000, // 20ms buffer
+                    0,
+                    &fmt_ext.Format as *const WAVEFORMATEX,
+                    std::ptr::null(),
+                );
+                println!("Initialize hr=0x{:08x}", hr_init);
+                if hr_init == 0 {
+                    let hr_set = ((*client_vtbl).SetEventHandle)(client as *mut c_void, stream_event);
+                    println!("SetEventHandle hr=0x{:08x}", hr_set);
+                    let mut capture_ptr: *mut c_void = std::ptr::null_mut();
+                    let hr_svc = ((*client_vtbl).GetService)(client as *mut c_void, &IID_IAUDIOCAPTURECLIENT, &mut capture_ptr);
+                    println!("GetService IAudioCaptureClient hr=0x{:08x}", hr_svc);
+                    if hr_svc == 0 && !capture_ptr.is_null() {
+                        let capture = capture_ptr as *mut IAudioCaptureClient;
+                        let capture_vtbl = (*capture).vtbl;
+                        let hr_start = ((*client_vtbl).Start)(client as *mut c_void);
+                        println!("Start hr=0x{:08x}", hr_start);
+                        println!("Audio capture started! Capturing 5 packets...");
+                        for i in 0..5 {
+                            windows_sys::Win32::System::Threading::WaitForSingleObject(stream_event, 200);
+                            let mut p_data: *mut u8 = std::ptr::null_mut();
+                            let mut num_frames: u32 = 0;
+                            let mut flags: u32 = 0;
+                            let mut dev_pos: u64 = 0;
+                            let mut qpc_pos: u64 = 0;
+                            let hr_buf = ((*capture_vtbl).GetBuffer)(
+                                capture as *mut c_void,
+                                &mut p_data,
+                                &mut num_frames,
+                                &mut flags,
+                                &mut dev_pos,
+                                &mut qpc_pos,
+                            );
+                            if hr_buf == 0 && num_frames > 0 {
+                                println!("Packet {}: {} frames read, silent={}", i, num_frames, (flags & 0x2) != 0);
+                                let _ = ((*capture_vtbl).ReleaseBuffer)(capture as *mut c_void, num_frames);
                             }
-                            let _ = ((*client_vtbl).Stop)(client as *mut c_void);
-                            println!("SUCCESS! Audio capture completed cleanly!");
-                            let _ = ((*capture_vtbl).Release)(capture as *mut c_void);
                         }
-                        windows_sys::Win32::Foundation::CloseHandle(stream_event);
+                        let _ = ((*client_vtbl).Stop)(client as *mut c_void);
+                        println!("SUCCESS! Audio capture completed cleanly!");
+                        let _ = ((*capture_vtbl).Release)(capture as *mut c_void);
                     }
-                    windows_sys::Win32::System::Com::CoTaskMemFree(p_format as *mut c_void);
+                    windows_sys::Win32::Foundation::CloseHandle(stream_event);
                 }
                 let _ = ((*client_vtbl).Release)(client as *mut c_void);
             } else {
