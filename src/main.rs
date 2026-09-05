@@ -13,6 +13,7 @@ mod emoji_cache;
 mod attachment_cache;
 pub mod gpu_encoder;
 pub mod cpu_profiler;
+pub mod video_settings;
 #[cfg(target_os = "windows")]
 pub mod wasapi_loopback;
 
@@ -190,6 +191,178 @@ fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
         }
     }).collect();
     ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
+}
+
+fn populate_video_interface_settings(ui: &AppWindow) {
+    let enc = video_settings::get_video_encoder();
+    let vcap = video_settings::get_video_capture_backend();
+    let aloop = video_settings::get_audio_loopback_backend();
+    let notice = video_settings::get_enable_self_preview_notice();
+
+    ui.set_selected_video_encoder(enc.clone().into());
+    ui.set_selected_video_capture_backend(vcap.clone().into());
+    ui.set_selected_audio_loopback_backend(aloop.clone().into());
+    ui.set_enable_self_preview_notice(notice);
+
+    #[cfg(target_os = "windows")]
+    let enc_items = vec![
+        SettingOptionItem {
+            id: "auto".into(),
+            name: "Automático (Recomendado)".into(),
+            desc: "Prioriza aceleração por hardware GPU disponível com fallback para CPU.".into(),
+            is_selected: enc == "auto",
+        },
+        SettingOptionItem {
+            id: "nvenc".into(),
+            name: "NVIDIA NVENC".into(),
+            desc: "Codificação dedicada ultrarrápida para GPUs NVIDIA GeForce / RTX.".into(),
+            is_selected: enc == "nvenc",
+        },
+        SettingOptionItem {
+            id: "amf".into(),
+            name: "AMD AMF (Zero-Copy)".into(),
+            desc: "Aceleração nativa Direct3D 11 / VCE para placas AMD Radeon.".into(),
+            is_selected: enc == "amf",
+        },
+        SettingOptionItem {
+            id: "ffmpeg".into(),
+            name: "FFmpeg Hardware".into(),
+            desc: "Pipeline GPU unificado FFmpeg (NVENC, AMF ou Intel QuickSync).".into(),
+            is_selected: enc == "ffmpeg",
+        },
+        SettingOptionItem {
+            id: "wmf".into(),
+            name: "Windows Media Foundation".into(),
+            desc: "Codificador Direct3D 11 nativo do Windows (H.264 MFT).".into(),
+            is_selected: enc == "wmf",
+        },
+        SettingOptionItem {
+            id: "openh264".into(),
+            name: "Cisco OpenH264 (CPU)".into(),
+            desc: "Codificação universal por software multithread com otimizações SIMD.".into(),
+            is_selected: enc == "openh264",
+        },
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    let enc_items = vec![
+        SettingOptionItem {
+            id: "auto".into(),
+            name: "Automático (Recomendado)".into(),
+            desc: "Prioriza aceleração por hardware GPU disponível com fallback para CPU.".into(),
+            is_selected: enc == "auto",
+        },
+        SettingOptionItem {
+            id: "nvenc".into(),
+            name: "NVIDIA NVENC".into(),
+            desc: "Codificação acelerada por hardware via GPU NVIDIA GeForce / RTX.".into(),
+            is_selected: enc == "nvenc",
+        },
+        SettingOptionItem {
+            id: "ffmpeg".into(),
+            name: "FFmpeg Hardware (VA-API / QSV)".into(),
+            desc: "Pipeline acelerado por GPU via FFmpeg (VA-API, QSV, NVENC).".into(),
+            is_selected: enc == "ffmpeg",
+        },
+        SettingOptionItem {
+            id: "openh264".into(),
+            name: "Cisco OpenH264 (CPU)".into(),
+            desc: "Codificação universal por software multithread com otimizações SIMD.".into(),
+            is_selected: enc == "openh264",
+        },
+    ];
+
+    #[cfg(target_os = "windows")]
+    let vcap_items = vec![
+        SettingOptionItem {
+            id: "auto".into(),
+            name: "Automático (Recomendado)".into(),
+            desc: "Tenta PrintWindow para janelas DirectX e usa BitBlt GDI para desktop e fallback.".into(),
+            is_selected: vcap == "auto",
+        },
+        SettingOptionItem {
+            id: "printwindow".into(),
+            name: "PrintWindow (DirectX / DWM)".into(),
+            desc: "Captura direta de janelas em primeiro ou segundo plano via DWM.".into(),
+            is_selected: vcap == "printwindow",
+        },
+        SettingOptionItem {
+            id: "bitblt".into(),
+            name: "BitBlt GDI (Desktop Crop)".into(),
+            desc: "Captura clássica de alto desempenho diretamente do framebuffer do desktop.".into(),
+            is_selected: vcap == "bitblt",
+        },
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    let vcap_items = vec![
+        SettingOptionItem {
+            id: "auto".into(),
+            name: "Automático (Recomendado)".into(),
+            desc: "Utiliza o seletor nativo do sistema via XDG Desktop Portal e PipeWire.".into(),
+            is_selected: vcap == "auto",
+        },
+        SettingOptionItem {
+            id: "portal".into(),
+            name: "XDG Desktop Portal + PipeWire".into(),
+            desc: "Captura de tela moderna de baixa latência compatível com Wayland e Flatpak.".into(),
+            is_selected: vcap == "portal",
+        },
+        SettingOptionItem {
+            id: "x11".into(),
+            name: "X11 Fallback".into(),
+            desc: "Captura legada direta de tela em sessões gráficas X11.".into(),
+            is_selected: vcap == "x11",
+        },
+    ];
+
+    #[cfg(target_os = "windows")]
+    let aloop_items = vec![
+        SettingOptionItem {
+            id: "auto".into(),
+            name: "Automático (Recomendado)".into(),
+            desc: "Captura com isolamento de processo WASAPI (exclui o Litecord do áudio da stream).".into(),
+            is_selected: aloop == "auto",
+        },
+        SettingOptionItem {
+            id: "wasapi_isolated".into(),
+            name: "WASAPI Process-Loopback Isolado".into(),
+            desc: "Captura nativa que remove vozes dos amigos e sons do Litecord da sua transmissão.".into(),
+            is_selected: aloop == "wasapi_isolated",
+        },
+        SettingOptionItem {
+            id: "cpal".into(),
+            name: "CPAL WASAPI Loopback".into(),
+            desc: "Captura direta do endpoint de saída padrão do sistema operacional.".into(),
+            is_selected: aloop == "cpal",
+        },
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    let aloop_items = vec![
+        SettingOptionItem {
+            id: "auto".into(),
+            name: "Automático (Recomendado)".into(),
+            desc: "Captura monitor do sink padrão PulseAudio/PipeWire via GStreamer pulsesrc.".into(),
+            is_selected: aloop == "auto",
+        },
+        SettingOptionItem {
+            id: "pulsesrc".into(),
+            name: "GStreamer pulsesrc (Monitor)".into(),
+            desc: "Pipeline GStreamer dedicado conectado ao sink monitor do PipeWire.".into(),
+            is_selected: aloop == "pulsesrc",
+        },
+        SettingOptionItem {
+            id: "cpal".into(),
+            name: "CPAL Audio Loopback".into(),
+            desc: "Captura padrão via interface de áudio CPAL.".into(),
+            is_selected: aloop == "cpal",
+        },
+    ];
+
+    ui.set_video_encoder_options(std::rc::Rc::new(slint::VecModel::from(enc_items)).into());
+    ui.set_video_capture_options(std::rc::Rc::new(slint::VecModel::from(vcap_items)).into());
+    ui.set_audio_loopback_options(std::rc::Rc::new(slint::VecModel::from(aloop_items)).into());
 }
 
 static CACHED_AUDIO_DEVICES: std::sync::OnceLock<Arc<std::sync::Mutex<Option<(Vec<String>, Vec<String>)>>>> = std::sync::OnceLock::new();
@@ -1751,6 +1924,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_keybind_deafen_str(initial_keybinds.deafen_shortcut.clone().into());
     let keybind_mgr = Arc::new(keybinds::KeybindManager::new(initial_keybinds));
     sound_effects::init_sound_effects();
+    populate_video_interface_settings(&app);
 
     let app_weak = app.as_weak();
 
@@ -2038,7 +2212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pop_win.set_stream_frame(cur_frame);
                 pop_win.set_show_controls(true);
                 pop_win.set_is_self(is_pop_self);
-                if is_pop_self {
+                if is_pop_self && video_settings::get_enable_self_preview_notice() {
                     pop_win.set_show_self_preview_notice(true);
                     let pop_w_notice = pop_w_cb.clone();
                     slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
@@ -2576,13 +2750,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
                 ui.set_is_screen_sharing(true);
-                ui.set_show_self_preview_notice(true);
-                let app_weak_notice = app_weak_ss.clone();
-                slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
-                    if let Some(ui) = app_weak_notice.upgrade() {
-                        ui.set_show_self_preview_notice(false);
-                    }
-                });
+                if video_settings::get_enable_self_preview_notice() {
+                    ui.set_show_self_preview_notice(true);
+                    let app_weak_notice = app_weak_ss.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
+                        if let Some(ui) = app_weak_notice.upgrade() {
+                            ui.set_show_self_preview_notice(false);
+                        }
+                    });
+                } else {
+                    ui.set_show_self_preview_notice(false);
+                }
             }
         }
     });
@@ -3249,6 +3427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }).collect();
             ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
+            populate_video_interface_settings(&ui);
 
             // 2. Populate devices immediately from cache if available
             let cur_input = selected_input_open.lock().unwrap().clone();
@@ -3497,6 +3676,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         keybind_mgr_custom.update_config(cfg);
+    });
+
+    // Video & Interface Settings Callbacks
+    let app_weak_enc = app_weak.clone();
+    app.on_select_video_encoder(move |id: SharedString| {
+        video_settings::set_video_encoder(id.to_string());
+        if let Some(ui) = app_weak_enc.upgrade() {
+            populate_video_interface_settings(&ui);
+        }
+    });
+
+    let app_weak_vcap = app_weak.clone();
+    app.on_select_video_capture_backend(move |id: SharedString| {
+        video_settings::set_video_capture_backend(id.to_string());
+        if let Some(ui) = app_weak_vcap.upgrade() {
+            populate_video_interface_settings(&ui);
+        }
+    });
+
+    let app_weak_aloop = app_weak.clone();
+    app.on_select_audio_loopback_backend(move |id: SharedString| {
+        video_settings::set_audio_loopback_backend(id.to_string());
+        if let Some(ui) = app_weak_aloop.upgrade() {
+            populate_video_interface_settings(&ui);
+        }
+    });
+
+    let app_weak_notice = app_weak.clone();
+    app.on_toggle_enable_self_preview_notice(move || {
+        let new_val = video_settings::toggle_enable_self_preview_notice();
+        if let Some(ui) = app_weak_notice.upgrade() {
+            ui.set_enable_self_preview_notice(new_val);
+        }
     });
 
     // Leave Voice Callback

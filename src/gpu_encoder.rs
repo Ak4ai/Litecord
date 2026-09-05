@@ -171,8 +171,12 @@ pub mod ffmpeg_nvenc {
     }
 
     impl FfmpegNvencEncoder {
-        pub fn try_new(target_fps: u32, _is_screen_content: bool) -> Result<Self, String> {
-            info!("🔍 [NVENC FFMPEG PROBE] Localizando bibliotecas FFmpeg no sistema...");
+        pub fn try_new(target_fps: u32, is_screen_content: bool) -> Result<Self, String> {
+            Self::try_new_with_codec(target_fps, is_screen_content, None)
+        }
+
+        pub fn try_new_with_codec(target_fps: u32, _is_screen_content: bool, preferred_codec: Option<&str>) -> Result<Self, String> {
+            info!("🔍 [NVENC FFMPEG PROBE] Localizando bibliotecas FFmpeg no sistema (preferência: {:?})...", preferred_codec);
 
             unsafe {
                 #[cfg(target_os = "windows")]
@@ -377,11 +381,16 @@ pub mod ffmpeg_nvenc {
                 let initial_height = 1080u32;
                 let initial_bitrate = 4_500_000u32;
 
-                let candidates = [
-                    ("h264_nvenc", "NVIDIA NVENC Hardware Encoder"),
-                    ("h264_amf", "AMD AMF Hardware Encoder"),
-                    ("h264_qsv", "Intel QuickSync Hardware Encoder"),
-                ];
+                let candidates: Vec<(&str, &str)> = match preferred_codec {
+                    Some("nvenc") => vec![("h264_nvenc", "NVIDIA NVENC Hardware Encoder")],
+                    Some("amf") => vec![("h264_amf", "AMD AMF Hardware Encoder")],
+                    Some("qsv") => vec![("h264_qsv", "Intel QuickSync Hardware Encoder")],
+                    _ => vec![
+                        ("h264_nvenc", "NVIDIA NVENC Hardware Encoder"),
+                        ("h264_amf", "AMD AMF Hardware Encoder"),
+                        ("h264_qsv", "Intel QuickSync Hardware Encoder"),
+                    ],
+                };
 
                 let mut chosen_ctx: *mut AVCodecContext = std::ptr::null_mut();
                 let mut chosen_name = "";
@@ -2046,6 +2055,70 @@ pub mod wmf {
 
 pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
     info!("🔍 [VIDEO CODEC FACTORY] Avaliando melhor engine de codificação para o sistema...");
+
+    let manual_selection = crate::video_settings::get_video_encoder();
+    if manual_selection != "auto" {
+        info!("🎯 [VIDEO CODEC FACTORY] Codificador manual configurado pelo usuário: '{}'", manual_selection);
+        match manual_selection.as_str() {
+            "nvenc" => {
+                match ffmpeg_nvenc::FfmpegNvencEncoder::try_new_with_codec(target_fps, is_screen_content, Some("nvenc")) {
+                    Ok(enc) => {
+                        info!("🚀 [VIDEO CODEC FACTORY] Codificador manual NVIDIA NVENC ativado com sucesso!");
+                        return Box::new(enc);
+                    }
+                    Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] NVENC manual indisponível ({}), executando detecção automática...", e),
+                }
+            }
+            "amf" => {
+                #[cfg(target_os = "windows")]
+                {
+                    match amd_amf::AmdAmfZeroCopyEncoder::try_new(target_fps, is_screen_content) {
+                        Ok(enc) => {
+                            info!("🚀 [VIDEO CODEC FACTORY] Codificador manual AMD AMF Zero-Copy ativado com sucesso!");
+                            return Box::new(enc);
+                        }
+                        Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] AMF Zero-Copy manual falhou ({}), tentando h264_amf...", e),
+                    }
+                }
+                match ffmpeg_nvenc::FfmpegNvencEncoder::try_new_with_codec(target_fps, is_screen_content, Some("amf")) {
+                    Ok(enc) => {
+                        info!("🚀 [VIDEO CODEC FACTORY] Codificador manual AMD AMF ativado com sucesso!");
+                        return Box::new(enc);
+                    }
+                    Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] AMF manual indisponível ({}), executando detecção automática...", e),
+                }
+            }
+            "ffmpeg" => {
+                match ffmpeg_nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
+                    Ok(enc) => {
+                        info!("🚀 [VIDEO CODEC FACTORY] Codificador manual FFmpeg GPU ativado com sucesso!");
+                        return Box::new(enc);
+                    }
+                    Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU manual indisponível ({}), executando detecção automática...", e),
+                }
+            }
+            "wmf" => {
+                #[cfg(target_os = "windows")]
+                {
+                    match wmf::WmfGpuEncoder::try_new(target_fps, is_screen_content) {
+                        Ok(enc) => {
+                            info!("🚀 [VIDEO CODEC FACTORY] Codificador manual WMF GPU ativado com sucesso!");
+                            return Box::new(enc);
+                        }
+                        Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU manual indisponível ({}), executando detecção automática...", e),
+                    }
+                }
+            }
+            "openh264" => {
+                info!("🎯 [VIDEO CODEC FACTORY] Inicializando Cisco OpenH264 CPU manual...");
+                if let Ok(enc) = OpenH264Encoder::new(target_fps, is_screen_content) {
+                    info!("🚀 [VIDEO CODEC FACTORY] Cisco OpenH264 CPU manual ativado com sucesso!");
+                    return Box::new(enc);
+                }
+            }
+            _ => {}
+        }
+    }
 
     #[cfg(target_os = "windows")]
     {

@@ -4152,8 +4152,9 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_
                     SelectObject(hdc_win_mem, cache.hbm_win);
                 }
 
+                let capture_backend = crate::video_settings::get_video_capture_backend();
                 let mut captured_ok = false;
-                if IsIconic(hwnd) == 0 {
+                if capture_backend != "bitblt" && IsIconic(hwnd) == 0 {
                     // 1. Tenta PrintWindow com PW_RENDERFULLCONTENT (2) para janelas DirectX/DWM
                     if PrintWindow(hwnd, hdc_win_mem, 2) != 0 {
                         captured_ok = true;
@@ -4161,7 +4162,7 @@ fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _target_
                 }
 
                 // 2. Fallback para crop direto do desktop (garante fidelidade visual e zero rabiscos)
-                if !captured_ok && IsIconic(hwnd) == 0 {
+                if (!captured_ok || capture_backend == "bitblt") && IsIconic(hwnd) == 0 {
                     let src_x = rc.left.max(0);
                     let src_y = rc.top.max(0);
                     BitBlt(hdc_win_mem, 0, 0, win_w, win_h, hdc_desktop, src_x, src_y, SRCCOPY);
@@ -4602,17 +4603,20 @@ fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: u64)
 fn capture_screen_rgb(_target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64, out_bgra: &mut Vec<u8>) -> Option<(u128, u128)> {
     #[cfg(target_os = "linux")]
     {
-        init_wayland_portal_screencast(target_w, target_h, target_fps);
+        let capture_backend = crate::video_settings::get_video_capture_backend();
+        if capture_backend != "x11" {
+            init_wayland_portal_screencast(target_w, target_h, target_fps);
 
-        if let Ok(slot) = PORTAL_FRAME.lock() {
-            if let Some(ref frame) = *slot {
-                let total = (target_w * target_h * 4) as usize;
-                if frame.len() == total {
-                    if out_bgra.len() != total {
-                        out_bgra.resize(total, 0);
+            if let Ok(slot) = PORTAL_FRAME.lock() {
+                if let Some(ref frame) = *slot {
+                    let total = (target_w * target_h * 4) as usize;
+                    if frame.len() == total {
+                        if out_bgra.len() != total {
+                            out_bgra.resize(total, 0);
+                        }
+                        out_bgra.copy_from_slice(frame);
+                        return Some((0, 0));
                     }
-                    out_bgra.copy_from_slice(frame);
-                    return Some((0, 0));
                 }
             }
         }
@@ -5250,6 +5254,16 @@ struct LinuxLoopbackSinkGuard {
 
 #[cfg(target_os = "linux")]
 impl LinuxLoopbackSinkGuard {
+    fn empty() -> Self {
+        Self {
+            original_sink: String::new(),
+            mod_null: None,
+            mod_loopback: None,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            recheck_thread: None,
+        }
+    }
+
     fn setup() -> Self {
         // Limpa módulos anteriores que possam ter sobrado de uma execução anterior
         let _ = std::process::Command::new("sh")
@@ -5403,13 +5417,22 @@ pub fn start_audio_loopback_tx(
             let mut target_chunk_samples: usize = 480;
 
             #[cfg(target_os = "linux")]
-            let _sink_guard = LinuxLoopbackSinkGuard::setup();
+            let loopback_backend = crate::video_settings::get_audio_loopback_backend();
+            #[cfg(target_os = "linux")]
+            let try_pulse = loopback_backend == "auto" || loopback_backend == "pulsesrc";
+
+            #[cfg(target_os = "linux")]
+            let _sink_guard = if try_pulse {
+                LinuxLoopbackSinkGuard::setup()
+            } else {
+                LinuxLoopbackSinkGuard::empty()
+            };
 
             #[cfg(target_os = "linux")]
             let mut gst_child: Option<std::process::Child> = None;
 
             #[cfg(target_os = "linux")]
-            {
+            if try_pulse {
                 let monitor_device = if _sink_guard.mod_null.is_some() {
                     "LitecordDesktopSink.monitor"
                 } else {
@@ -5483,20 +5506,29 @@ pub fn start_audio_loopback_tx(
 
             #[cfg(target_os = "windows")]
             {
-                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio nativa isolada (WASAPI Process Loopback)...");
-                match crate::wasapi_loopback::start_wasapi_isolated_loopback(
-                    Arc::clone(&is_running),
-                    Arc::clone(&pcm_buffer_cb),
-                ) {
-                    Ok(handle) => {
-                        active_sample_rate = handle.sample_rate;
-                        target_chunk_samples = ((handle.sample_rate as usize) * 10) / 1000;
-                        info!("🔊 [LOOPBACK TX] Captura de áudio ISOLADA nativa WASAPI ATIVA (excluindo Litecord) ({}Hz, {} canais, chunk={} amostras/10ms)!", handle.sample_rate, handle.channels, target_chunk_samples);
-                        wasapi_isolated_handle = Some(handle);
+                let loopback_backend = crate::video_settings::get_audio_loopback_backend();
+                let try_wasapi_isolated = loopback_backend == "auto" || loopback_backend == "wasapi_isolated";
+
+                if try_wasapi_isolated {
+                    info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio nativa isolada (WASAPI Process Loopback)...");
+                    match crate::wasapi_loopback::start_wasapi_isolated_loopback(
+                        Arc::clone(&is_running),
+                        Arc::clone(&pcm_buffer_cb),
+                    ) {
+                        Ok(handle) => {
+                            active_sample_rate = handle.sample_rate;
+                            target_chunk_samples = ((handle.sample_rate as usize) * 10) / 1000;
+                            info!("🔊 [LOOPBACK TX] Captura de áudio ISOLADA nativa WASAPI ATIVA (excluindo Litecord) ({}Hz, {} canais, chunk={} amostras/10ms)!", handle.sample_rate, handle.channels, target_chunk_samples);
+                            wasapi_isolated_handle = Some(handle);
+                        }
+                        Err(e) => {
+                            warn!("⚠️ [LOOPBACK TX] WASAPI Process Loopback isolado indisponível ({}), utilizando fallback CPAL...", e);
+                        }
                     }
-                    Err(e) => {
-                        warn!("⚠️ [LOOPBACK TX] WASAPI Process Loopback isolado indisponível ({}), utilizando fallback CPAL...", e);
-                        let host = cpal::default_host();
+                }
+
+                if wasapi_isolated_handle.is_none() {
+                    let host = cpal::default_host();
 
                         let selected_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
                             guard.clone()
@@ -5611,7 +5643,6 @@ pub fn start_audio_loopback_tx(
                                 }
                             }
                         }
-                    }
                 }
             }
 

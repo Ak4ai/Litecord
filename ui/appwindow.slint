@@ -128,6 +128,13 @@ struct LanguageItem {
     is_selected: bool,
 }
 
+struct SettingOptionItem {
+    id: string,
+    name: string,
+    desc: string,
+    is_selected: bool,
+}
+
 struct AudioDeviceItem {
     id: string,
     name: string,
@@ -1280,6 +1287,7 @@ export component AppWindow inherits Window {
     in-out property <string> tr_settings_tab_voice: "Voz & Áudio";
     in-out property <string> tr_settings_tab_language: "Idioma";
     in-out property <string> tr_settings_tab_keybinds: "Atalhos";
+    in-out property <string> tr_settings_tab_video_interface: "Vídeo e Interface";
     in-out property <string> tr_settings_tab_security: "Segurança & E2EE";
     in-out property <string> tr_settings_tab_updates: "Atualizações & Sobre";
     in-out property <string> tr_keybind_mute_title: "Mutar / Desmutar Microfone";
@@ -1294,6 +1302,21 @@ export component AppWindow inherits Window {
     in-out property <string> keybind_mute_str: "Ctrl+Shift+M";
     in-out property <string> keybind_deafen_str: "Ctrl+Shift+D";
     in-out property <int> recording_keybind_for: 0;
+
+    // Video & Interface Settings Properties
+    in-out property <string> selected_video_encoder: "auto";
+    in-out property <string> selected_video_capture_backend: "auto";
+    in-out property <string> selected_audio_loopback_backend: "auto";
+    in-out property <bool> enable_self_preview_notice: true;
+
+    in-out property <[SettingOptionItem]> video_encoder_options: [];
+    in-out property <[SettingOptionItem]> video_capture_options: [];
+    in-out property <[SettingOptionItem]> audio_loopback_options: [];
+
+    callback select_video_encoder(string);
+    callback select_video_capture_backend(string);
+    callback select_audio_loopback_backend(string);
+    callback toggle_enable_self_preview_notice();
 
     // QR Code Login Properties
     in-out property <image> qr_code_image;
@@ -4102,6 +4125,53 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            // Tab 5: Vídeo e Interface
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 6px;
+                                background: root.settings_active_tab == 5 ? #35373c : tab5_touch.has-hover ? #2b2d31 : #0000;
+
+                                if root.settings_active_tab == 5: Rectangle {
+                                    x: 0px;
+                                    y: 10px;
+                                    width: 3px;
+                                    height: 18px;
+                                    background: #5865f2;
+                                    border-radius: 2px;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/monitor.svg");
+                                            width: 16px;
+                                            height: 16px;
+                                            colorize: root.settings_active_tab == 5 ? #5865f2 : #949ba4;
+                                            image-fit: contain;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.tr_settings_tab_video_interface;
+                                        color: root.settings_active_tab == 5 ? #f2f3f5 : #dbdee1;
+                                        font-size: 13px;
+                                        font-weight: root.settings_active_tab == 5 ? 700 : 500;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+
+                                tab5_touch := TouchArea {
+                                    clicked => { root.settings_active_tab = 5; }
+                                }
+                            }
+
                             // Tab 3: Segurança & Privacidade
                             Rectangle {
                                 height: 38px;
@@ -5440,6 +5510,389 @@ export component AppWindow inherits Window {
 
                                         // Generous Bottom Spacer
                                         Rectangle { height: 16px; }
+                                    }
+
+                                    // =============================================================
+                                    // TAB 5: VÍDEO E INTERFACE (ENCODER, CAPTURE, LOOPBACK, NOTICE)
+                                    // =============================================================
+                                    if root.settings_active_tab == 5: VerticalLayout {
+                                        spacing: 16px;
+
+                                        // --- SEÇÃO 1: CODIFICADOR DE VÍDEO (ENCODER) ---
+                                        VerticalLayout {
+                                            spacing: 8px;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/monitor.svg");
+                                                        width: 15px;
+                                                        height: 15px;
+                                                        colorize: #5865f2;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "CODIFICADOR DE VÍDEO (H.264 ENCODER)";
+                                                    color: #b5bac1;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+
+                                            Text {
+                                                text: "Selecione o motor de aceleração por GPU ou CPU para codificar as transmissões de tela.";
+                                                color: #949ba4;
+                                                font-size: 11px;
+                                            }
+
+                                            Rectangle {
+                                                background: #1e1f22;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: #383a40;
+
+                                                VerticalLayout {
+                                                    padding-top: 6px;
+                                                    padding-bottom: 6px;
+                                                    padding-left: 6px;
+                                                    padding-right: 6px;
+                                                    spacing: 4px;
+
+                                                    for opt in root.video_encoder_options: Rectangle {
+                                                        height: 44px;
+                                                        background: opt.is_selected ? #35373c : (opt_enc_ta.has-hover ? #2b2d31 : transparent);
+                                                        border-radius: 6px;
+                                                        animate background { duration: 120ms; }
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 12px;
+                                                            spacing: 10px;
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: opt.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                    width: 16px;
+                                                                    height: 16px;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                spacing: 2px;
+
+                                                                Text {
+                                                                    text: opt.name;
+                                                                    color: opt.is_selected ? #ffffff : #dbdee1;
+                                                                    font-size: 12px;
+                                                                    font-weight: opt.is_selected ? 700 : 500;
+                                                                }
+
+                                                                Text {
+                                                                    text: opt.desc;
+                                                                    color: opt.is_selected ? #949ba4 : #80848e;
+                                                                    font-size: 10px;
+                                                                }
+                                                            }
+
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+
+                                                        opt_enc_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.select_video_encoder(opt.id); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // --- SEÇÃO 2: MÉTODO DE CAPTURA DE VÍDEO ---
+                                        VerticalLayout {
+                                            spacing: 8px;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/window.svg");
+                                                        width: 15px;
+                                                        height: 15px;
+                                                        colorize: #5865f2;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "MÉTODO DE CAPTURA DE TELA E JANELAS";
+                                                    color: #b5bac1;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+
+                                            Text {
+                                                text: "Define como o Litecord captura o conteúdo visual do sistema operacional.";
+                                                color: #949ba4;
+                                                font-size: 11px;
+                                            }
+
+                                            Rectangle {
+                                                background: #1e1f22;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: #383a40;
+
+                                                VerticalLayout {
+                                                    padding-top: 6px;
+                                                    padding-bottom: 6px;
+                                                    padding-left: 6px;
+                                                    padding-right: 6px;
+                                                    spacing: 4px;
+
+                                                    for opt in root.video_capture_options: Rectangle {
+                                                        height: 44px;
+                                                        background: opt.is_selected ? #35373c : (opt_vcap_ta.has-hover ? #2b2d31 : transparent);
+                                                        border-radius: 6px;
+                                                        animate background { duration: 120ms; }
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 12px;
+                                                            spacing: 10px;
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: opt.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                    width: 16px;
+                                                                    height: 16px;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                spacing: 2px;
+
+                                                                Text {
+                                                                    text: opt.name;
+                                                                    color: opt.is_selected ? #ffffff : #dbdee1;
+                                                                    font-size: 12px;
+                                                                    font-weight: opt.is_selected ? 700 : 500;
+                                                                }
+
+                                                                Text {
+                                                                    text: opt.desc;
+                                                                    color: opt.is_selected ? #949ba4 : #80848e;
+                                                                    font-size: 10px;
+                                                                }
+                                                            }
+
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+
+                                                        opt_vcap_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.select_video_capture_backend(opt.id); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // --- SEÇÃO 3: CAPTURA DE ÁUDIO DA TRANSMISSÃO (LOOPBACK) ---
+                                        VerticalLayout {
+                                            spacing: 8px;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/speaker.svg");
+                                                        width: 15px;
+                                                        height: 15px;
+                                                        colorize: #5865f2;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "ÁUDIO DA TRANSMISSÃO (LOOPBACK DO SISTEMA)";
+                                                    color: #b5bac1;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+
+                                            Text {
+                                                text: "Define a tecnologia de captura do som interno de jogos, vídeos e do sistema.";
+                                                color: #949ba4;
+                                                font-size: 11px;
+                                            }
+
+                                            Rectangle {
+                                                background: #1e1f22;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: #383a40;
+
+                                                VerticalLayout {
+                                                    padding-top: 6px;
+                                                    padding-bottom: 6px;
+                                                    padding-left: 6px;
+                                                    padding-right: 6px;
+                                                    spacing: 4px;
+
+                                                    for opt in root.audio_loopback_options: Rectangle {
+                                                        height: 44px;
+                                                        background: opt.is_selected ? #35373c : (opt_aloop_ta.has-hover ? #2b2d31 : transparent);
+                                                        border-radius: 6px;
+                                                        animate background { duration: 120ms; }
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 12px;
+                                                            spacing: 10px;
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: opt.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                    width: 16px;
+                                                                    height: 16px;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                spacing: 2px;
+
+                                                                Text {
+                                                                    text: opt.name;
+                                                                    color: opt.is_selected ? #ffffff : #dbdee1;
+                                                                    font-size: 12px;
+                                                                    font-weight: opt.is_selected ? 700 : 500;
+                                                                }
+
+                                                                Text {
+                                                                    text: opt.desc;
+                                                                    color: opt.is_selected ? #949ba4 : #80848e;
+                                                                    font-size: 10px;
+                                                                }
+                                                            }
+
+                                                            Rectangle { horizontal-stretch: 1; }
+                                                        }
+
+                                                        opt_aloop_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.select_audio_loopback_backend(opt.id); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // --- SEÇÃO 4: AVISOS E INTERFACE DE TRANSMISSÃO ---
+                                        VerticalLayout {
+                                            spacing: 8px;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/info.svg");
+                                                        width: 15px;
+                                                        height: 15px;
+                                                        colorize: #5865f2;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "AVISOS E INTERFACE DE TRANSMISSÃO";
+                                                    color: #b5bac1;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+
+                                            Rectangle {
+                                                background: #1e1f22;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: #383a40;
+
+                                                HorizontalLayout {
+                                                    padding: 14px;
+                                                    spacing: 12px;
+                                                    alignment: space-between;
+
+                                                    VerticalLayout {
+                                                        spacing: 4px;
+                                                        horizontal-stretch: 1;
+
+                                                        Text {
+                                                            text: "Aviso de Prévia Econômica";
+                                                            color: #f2f3f5;
+                                                            font-size: 13px;
+                                                            font-weight: 700;
+                                                        }
+
+                                                        Text {
+                                                            text: "Exibe a pílula de aviso na pré-visualização própria ao iniciar a transmissão informando sobre a taxa de quadros reduzida para economizar recursos.";
+                                                            color: #949ba4;
+                                                            font-size: 11px;
+                                                            wrap: word-wrap;
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            width: 42px;
+                                                            height: 24px;
+                                                            border-radius: 12px;
+                                                            background: root.enable_self_preview_notice ? #5865f2 : #4e5058;
+                                                            animate background { duration: 150ms; }
+
+                                                            Rectangle {
+                                                                x: root.enable_self_preview_notice ? 20px : 2px;
+                                                                y: 2px;
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: #ffffff;
+                                                                animate x { duration: 150ms; easing: ease-out; }
+                                                            }
+
+                                                            notice_sw_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.toggle_enable_self_preview_notice(); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 20px; }
                                     }
 
                                     // =============================================================
