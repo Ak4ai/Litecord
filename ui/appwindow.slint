@@ -2541,270 +2541,250 @@ export component AppWindow inherits Window {
                                             background: transparent;
 
                                             HorizontalLayout {
-                                                spacing: 8px;
+                                                spacing: 6px;
                                                 alignment: space-between;
 
-                                                // Left side: Badge, User Info, Mute and Priority
-                                                HorizontalLayout {
-                                                    spacing: 6px;
-                                                    alignment: start;
+                                                // Left side info container (clipped, expands to take available space)
+                                                Rectangle {
+                                                    horizontal-stretch: 1;
+                                                    height: 24px;
+                                                    clip: true;
+                                                    background: transparent;
 
-                                                    // Live Badge
-                                                    Rectangle {
-                                                        background: #f23f43;
-                                                        border-radius: 4px;
-                                                        height: 24px;
-                                                        HorizontalLayout {
-                                                            padding-left: 8px;
-                                                            padding-right: 8px;
-                                                            spacing: 5px;
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Rectangle {
-                                                                    width: 6px;
-                                                                    height: 6px;
-                                                                    border-radius: 3px;
-                                                                    background: #ffffff;
-                                                                }
-                                                            }
-                                                            Text {
-                                                                text: root.tr_live_badge;
-                                                                color: #ffffff;
-                                                                font-size: 10px;
-                                                                font-weight: 800;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        alignment: start;
 
-                                                    // Username & Quality Pill
-                                                    Rectangle {
-                                                        background: #000000aa;
-                                                        border-radius: 4px;
-                                                        height: 24px;
-                                                        HorizontalLayout {
-                                                            padding-left: 8px;
-                                                            padding-right: 8px;
-                                                            spacing: 6px;
-                                                            Text {
-                                                                text: p.username + " • " + root.tr_stream_quality;
-                                                                color: #dbdee1;
-                                                                font-size: 11px;
-                                                                font-weight: 600;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Local Transmitter FPS Counter Badge (Displayed ONLY on local transmitter preview)
-                                                    if (p.is_self && root.is_screen_sharing) && root.local_preview_fps != "": Rectangle {
-                                                        background: #23a55a22;
-                                                        border-radius: 4px;
-                                                        border-width: 1px;
-                                                        border-color: #23a55a;
-                                                        height: 24px;
-                                                        HorizontalLayout {
-                                                            padding-left: 8px;
-                                                            padding-right: 8px;
-                                                            spacing: 5px;
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Rectangle {
-                                                                    width: 6px;
-                                                                    height: 6px;
-                                                                    border-radius: 3px;
-                                                                    background: #23a55a;
-                                                                }
-                                                            }
-                                                            Text {
-                                                                text: root.local_preview_fps;
-                                                                color: #23a55a;
-                                                                font-size: 11px;
-                                                                font-weight: 800;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Remote Receiver FPS Counter Badge (Displayed ONLY on remote stream cards when there is space)
-                                                    if !(p.is_self && root.is_screen_sharing) && root.remote_stream_fps != "" && stream_top_bar.width > 480px: Rectangle {
-                                                        background: #23a55a22;
-                                                        border-radius: 4px;
-                                                        border-width: 1px;
-                                                        border-color: #23a55a;
-                                                        height: 24px;
-                                                        HorizontalLayout {
-                                                            padding-left: 8px;
-                                                            padding-right: 8px;
-                                                            spacing: 5px;
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Rectangle {
-                                                                    width: 6px;
-                                                                    height: 6px;
-                                                                    border-radius: 3px;
-                                                                    background: #23a55a;
-                                                                }
-                                                            }
-                                                            Text {
-                                                                text: root.remote_stream_fps;
-                                                                color: #23a55a;
-                                                                font-size: 11px;
-                                                                font-weight: 800;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Stream Audio Volume Slider (only shown for remote stream cards)
-                                                    if !(p.is_self && root.is_screen_sharing): Rectangle {
-                                                        background: #000000aa;
-                                                        border-radius: 4px;
-                                                        height: 24px;
-                                                        HorizontalLayout {
-                                                            padding-left: 8px;
-                                                            padding-right: 8px;
-                                                            spacing: 6px;
-                                                            alignment: center;
-
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Image {
-                                                                    source: root.stream_remote_volume <= 0.01 ? @image-url("../assets/volume-x.svg") : @image-url("../assets/speaker.svg");
-                                                                    width: 12px;
-                                                                    height: 12px;
-                                                                    colorize: root.stream_remote_volume <= 0.01 ? #f23f43 : #949ba4;
-                                                                    image-fit: contain;
-                                                                }
-                                                            }
-
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                Rectangle {
-                                                                    width: 55px;
-                                                                    height: 5px;
-                                                                    background: #35373c;
-                                                                    border-radius: 2.5px;
-
-                                                                    // Progress fill
+                                                        // 6. AO VIVO Badge (Priority 6 - least important, hidden first when width < 380px)
+                                                        if (stream_top_bar.width >= 380px): Rectangle {
+                                                            background: #f23f43;
+                                                            border-radius: 4px;
+                                                            height: 24px;
+                                                            HorizontalLayout {
+                                                                padding-left: 8px;
+                                                                padding-right: 8px;
+                                                                spacing: 5px;
+                                                                VerticalLayout {
+                                                                    alignment: center;
                                                                     Rectangle {
-                                                                        x: 0;
-                                                                        y: 0;
-                                                                        width: parent.width * (root.stream_remote_volume.clamp(0.0, 1.0));
-                                                                        height: 100%;
-                                                                        background: root.stream_remote_volume <= 0.01 ? #f23f43 : #5865f2;
-                                                                        border-radius: 2.5px;
-                                                                    }
-
-                                                                    TouchArea {
-                                                                        mouse-cursor: pointer;
-                                                                        clicked => {
-                                                                            let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                                                            root.stream_remote_volume = new_vol;
-                                                                            root.set_stream_volume(p.user_id, new_vol);
-                                                                        }
-                                                                        moved => {
-                                                                            if self.pressed {
-                                                                                let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                                                                root.stream_remote_volume = new_vol;
-                                                                                root.set_stream_volume(p.user_id, new_vol);
-                                                                            }
-                                                                        }
+                                                                        width: 6px;
+                                                                        height: 6px;
+                                                                        border-radius: 3px;
+                                                                        background: #ffffff;
                                                                     }
                                                                 }
-                                                            }
-
-                                                            VerticalLayout {
-                                                                alignment: center;
                                                                 Text {
-                                                                    text: "\{Math.round(root.stream_remote_volume * 100)}%";
-                                                                    color: #949ba4;
-                                                                    font-size: 9px;
-                                                                    font-weight: 700;
+                                                                    text: root.tr_live_badge;
+                                                                    color: #ffffff;
+                                                                    font-size: 10px;
+                                                                    font-weight: 800;
                                                                     vertical-alignment: center;
                                                                 }
                                                             }
                                                         }
-                                                    }
 
-                                                    // If another user is streaming: Mute button and Priority controls directly on the stream card!
-                                                    if !(p.is_self && root.is_screen_sharing): HorizontalLayout {
-                                                        spacing: 4px;
-                                                        alignment: start;
-
-                                                        // Stream Mute Button
-                                                        Rectangle {
-                                                            width: 26px;
-                                                            height: 24px;
+                                                        // 4. Username & Quality Pill (Priority 4 - hidden when width < 210px)
+                                                        if (stream_top_bar.width >= 210px): Rectangle {
+                                                            background: #000000aa;
                                                             border-radius: 4px;
-                                                            background: str_mute_ta.has-hover ? #000000dd : #000000aa;
-
-                                                            VerticalLayout {
-                                                                alignment: center;
-                                                                HorizontalLayout {
-                                                                    alignment: center;
-                                                                    Image {
-                                                                        source: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
-                                                                        width: 12px;
-                                                                        height: 12px;
-                                                                        colorize: p.is_muted ? #f23f43 : #dbdee1;
-                                                                        image-fit: contain;
-                                                                    }
+                                                            height: 24px;
+                                                            clip: true;
+                                                            HorizontalLayout {
+                                                                padding-left: 8px;
+                                                                padding-right: 8px;
+                                                                spacing: 6px;
+                                                                alignment: start;
+                                                                Text {
+                                                                    text: (stream_top_bar.width >= 320px) ? (p.username + " • " + root.tr_stream_quality) : p.username;
+                                                                    color: #dbdee1;
+                                                                    font-size: 11px;
+                                                                    font-weight: 600;
+                                                                    vertical-alignment: center;
+                                                                    overflow: elide;
                                                                 }
-                                                            }
-
-                                                            str_mute_ta := TouchArea {
-                                                                mouse-cursor: pointer;
-                                                                clicked => { root.toggle_user_mute(p.user_id); }
                                                             }
                                                         }
 
-                                                        // Stream Speech Priority Control Box
-                                                        Rectangle {
-                                                            width: 76px;
-                                                            height: 24px;
-                                                            background: #000000aa;
+                                                        // 5. FPS Counter Badge (Priority 5 - hidden when width < 310px)
+                                                        if (((p.is_self && root.is_screen_sharing && root.local_preview_fps != "") || (!(p.is_self && root.is_screen_sharing) && root.remote_stream_fps != "")) && stream_top_bar.width >= 310px): Rectangle {
+                                                            background: #23a55a22;
                                                             border-radius: 4px;
                                                             border-width: 1px;
-                                                            border-color: p.priority > 0 ? #5865f2 : #383a40;
-
+                                                            border-color: #23a55a;
+                                                            height: 24px;
                                                             HorizontalLayout {
-                                                                padding: 1px;
-                                                                spacing: 2px;
+                                                                padding-left: 8px;
+                                                                padding-right: 8px;
+                                                                spacing: 5px;
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Rectangle {
+                                                                        width: 6px;
+                                                                        height: 6px;
+                                                                        border-radius: 3px;
+                                                                        background: #23a55a;
+                                                                    }
+                                                                }
+                                                                Text {
+                                                                    text: (p.is_self && root.is_screen_sharing) ? root.local_preview_fps : root.remote_stream_fps;
+                                                                    color: #23a55a;
+                                                                    font-size: 11px;
+                                                                    font-weight: 800;
+                                                                    vertical-alignment: center;
+                                                                }
+                                                            }
+                                                        }
 
-                                                                Rectangle {
-                                                                    width: 18px;
-                                                                    height: 20px;
-                                                                    border-radius: 3px;
-                                                                    background: str_pdec_ta.has-hover ? #383a40 : transparent;
-                                                                    Text { text: "-"; color: #dbdee1; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-                                                                    str_pdec_ta := TouchArea {
-                                                                        mouse-cursor: pointer;
-                                                                        clicked => { if p.priority > 0 { root.set_user_priority(p.user_id, p.priority - 1); } }
+                                                        // Stream Audio Volume Slider (only shown for remote stream cards when plenty of room >= 560px)
+                                                        if !(p.is_self && root.is_screen_sharing) && stream_top_bar.width >= 560px: Rectangle {
+                                                            background: #000000aa;
+                                                            border-radius: 4px;
+                                                            height: 24px;
+                                                            HorizontalLayout {
+                                                                padding-left: 8px;
+                                                                padding-right: 8px;
+                                                                spacing: 6px;
+                                                                alignment: center;
+
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Image {
+                                                                        source: root.stream_remote_volume <= 0.01 ? @image-url("../assets/volume-x.svg") : @image-url("../assets/speaker.svg");
+                                                                        width: 12px;
+                                                                        height: 12px;
+                                                                        colorize: root.stream_remote_volume <= 0.01 ? #f23f43 : #949ba4;
+                                                                        image-fit: contain;
                                                                     }
                                                                 }
 
                                                                 VerticalLayout {
-                                                                    horizontal-stretch: 1;
                                                                     alignment: center;
-                                                                    Text {
-                                                                        text: p.priority == 0 ? "Normal" : ("P" + p.priority);
-                                                                        color: p.priority > 0 ? #5865f2 : #949ba4;
-                                                                        font-size: 9px;
-                                                                        font-weight: 700;
-                                                                        horizontal-alignment: center;
+                                                                    Rectangle {
+                                                                        width: 55px;
+                                                                        height: 5px;
+                                                                        background: #35373c;
+                                                                        border-radius: 2.5px;
+
+                                                                        // Progress fill
+                                                                        Rectangle {
+                                                                            x: 0;
+                                                                            y: 0;
+                                                                            width: parent.width * (root.stream_remote_volume.clamp(0.0, 1.0));
+                                                                            height: 100%;
+                                                                            background: root.stream_remote_volume <= 0.01 ? #f23f43 : #5865f2;
+                                                                            border-radius: 2.5px;
+                                                                        }
+
+                                                                        TouchArea {
+                                                                            mouse-cursor: pointer;
+                                                                            clicked => {
+                                                                                let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
+                                                                                root.stream_remote_volume = new_vol;
+                                                                                root.set_stream_volume(p.user_id, new_vol);
+                                                                            }
+                                                                            moved => {
+                                                                                if self.pressed {
+                                                                                    let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
+                                                                                    root.stream_remote_volume = new_vol;
+                                                                                    root.set_stream_volume(p.user_id, new_vol);
+                                                                                }
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
 
-                                                                Rectangle {
-                                                                    width: 18px;
-                                                                    height: 20px;
-                                                                    border-radius: 3px;
-                                                                    background: str_pinc_ta.has-hover ? #383a40 : transparent;
-                                                                    Text { text: "+"; color: #dbdee1; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-                                                                    str_pinc_ta := TouchArea {
-                                                                        mouse-cursor: pointer;
-                                                                        clicked => { if p.priority < 3 { root.set_user_priority(p.user_id, p.priority + 1); } }
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Text {
+                                                                        text: "\{Math.round(root.stream_remote_volume * 100)}%";
+                                                                        color: #949ba4;
+                                                                        font-size: 9px;
+                                                                        font-weight: 700;
+                                                                        vertical-alignment: center;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // If another user is streaming: Mute button and Priority controls directly on the stream card (when plenty of room >= 700px)
+                                                        if !(p.is_self && root.is_screen_sharing) && stream_top_bar.width >= 700px: HorizontalLayout {
+                                                            spacing: 4px;
+                                                            alignment: start;
+
+                                                            // Stream Mute Button
+                                                            Rectangle {
+                                                                width: 26px;
+                                                                height: 24px;
+                                                                border-radius: 4px;
+                                                                background: str_mute_ta.has-hover ? #000000dd : #000000aa;
+
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    HorizontalLayout {
+                                                                        alignment: center;
+                                                                        Image {
+                                                                            source: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
+                                                                            width: 12px;
+                                                                            height: 12px;
+                                                                            colorize: p.is_muted ? #f23f43 : #dbdee1;
+                                                                            image-fit: contain;
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                str_mute_ta := TouchArea {
+                                                                    mouse-cursor: pointer;
+                                                                    clicked => { root.toggle_user_mute(p.user_id); }
+                                                                }
+                                                            }
+
+                                                            // Stream Speech Priority Control Box
+                                                            Rectangle {
+                                                                width: 76px;
+                                                                height: 24px;
+                                                                background: #000000aa;
+                                                                border-radius: 4px;
+                                                                border-width: 1px;
+                                                                border-color: p.priority > 0 ? #5865f2 : #383a40;
+
+                                                                HorizontalLayout {
+                                                                    padding: 1px;
+                                                                    spacing: 2px;
+
+                                                                    Rectangle {
+                                                                        width: 18px;
+                                                                        height: 20px;
+                                                                        border-radius: 3px;
+                                                                        background: str_pdec_ta.has-hover ? #383a40 : transparent;
+                                                                        Text { text: "-"; color: #dbdee1; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                                                        str_pdec_ta := TouchArea {
+                                                                            mouse-cursor: pointer;
+                                                                            clicked => { if p.priority > 0 { root.set_user_priority(p.user_id, p.priority - 1); } }
+                                                                        }
+                                                                    }
+
+                                                                    VerticalLayout {
+                                                                        horizontal-stretch: 1;
+                                                                        alignment: center;
+                                                                        Text {
+                                                                            text: p.priority == 0 ? "Normal" : ("P" + p.priority);
+                                                                            color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                            font-size: 9px;
+                                                                            font-weight: 700;
+                                                                            horizontal-alignment: center;
+                                                                        }
+                                                                    }
+
+                                                                    Rectangle {
+                                                                        width: 18px;
+                                                                        height: 20px;
+                                                                        border-radius: 3px;
+                                                                        background: str_pinc_ta.has-hover ? #383a40 : transparent;
+                                                                        Text { text: "+"; color: #dbdee1; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                                                        str_pinc_ta := TouchArea {
+                                                                            mouse-cursor: pointer;
+                                                                            clicked => { if p.priority < 3 { root.set_user_priority(p.user_id, p.priority + 1); } }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -2812,46 +2792,47 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
 
-                                                // Right side: Stop, Popout and Fullscreen buttons
+                                                // Right side action buttons (Priority: x > desanexar > max)
                                                 HorizontalLayout {
+                                                    horizontal-stretch: 0;
                                                     spacing: 6px;
                                                     alignment: end;
 
-                                                    // Stop Screen Share Button (Direct on stream card!)
-                                                    Rectangle {
+                                                    // 3. max (Stream Card Focus / Expand Toggle - Priority 3, hidden when width < 160px)
+                                                    if (stream_top_bar.width >= 160px): Rectangle {
                                                         width: 28px;
                                                         height: 24px;
                                                         border-radius: 4px;
-                                                        background: card_stop_ta.has-hover ? #f23f43 : #000000aa;
+                                                        background: card_fs_ta.has-hover ? #000000dd : #000000aa;
 
                                                         VerticalLayout {
                                                             alignment: center;
                                                             HorizontalLayout {
                                                                 alignment: center;
                                                                 Image {
-                                                                    source: @image-url("../assets/chrome-close.svg");
+                                                                    source: is_this_stream_focused ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
                                                                     width: 10px;
                                                                     height: 10px;
-                                                                    colorize: #ffffff;
+                                                                    colorize: is_this_stream_focused ? #5865f2 : #ffffff;
                                                                     image-fit: contain;
                                                                 }
                                                             }
                                                         }
 
-                                                        card_stop_ta := TouchArea {
+                                                        card_fs_ta := TouchArea {
                                                             mouse-cursor: pointer;
                                                             clicked => {
-                                                                if (p.is_self && root.is_screen_sharing) {
-                                                                    root.toggle_screen_share();
+                                                                if is_this_stream_focused {
+                                                                    root.focused_stream_uid = "";
                                                                 } else {
-                                                                    root.hide_stream(p.user_id);
+                                                                    root.focused_stream_uid = (p.is_self && root.is_screen_sharing) ? "self" : p.user_id;
                                                                 }
                                                             }
                                                         }
                                                     }
 
-                                                    // Popout Button
-                                                    Rectangle {
+                                                    // 2. desanexar (Popout Button - Priority 2, hidden when width < 110px)
+                                                    if (stream_top_bar.width >= 110px): Rectangle {
                                                         width: 28px;
                                                         height: 24px;
                                                         border-radius: 4px;
@@ -2880,34 +2861,34 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
 
-                                                    // Stream Card Focus / Expand Toggle
+                                                    // 1. x (Stop Screen Share or Hide Stream - Priority 1, ALWAYS visible)
                                                     Rectangle {
                                                         width: 28px;
                                                         height: 24px;
                                                         border-radius: 4px;
-                                                        background: card_fs_ta.has-hover ? #000000dd : #000000aa;
+                                                        background: card_stop_ta.has-hover ? #f23f43 : #000000aa;
 
                                                         VerticalLayout {
                                                             alignment: center;
                                                             HorizontalLayout {
                                                                 alignment: center;
                                                                 Image {
-                                                                    source: is_this_stream_focused ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
+                                                                    source: @image-url("../assets/chrome-close.svg");
                                                                     width: 10px;
                                                                     height: 10px;
-                                                                    colorize: is_this_stream_focused ? #5865f2 : #ffffff;
+                                                                    colorize: #ffffff;
                                                                     image-fit: contain;
                                                                 }
                                                             }
                                                         }
 
-                                                        card_fs_ta := TouchArea {
+                                                        card_stop_ta := TouchArea {
                                                             mouse-cursor: pointer;
                                                             clicked => {
-                                                                if is_this_stream_focused {
-                                                                    root.focused_stream_uid = "";
+                                                                if (p.is_self && root.is_screen_sharing) {
+                                                                    root.toggle_screen_share();
                                                                 } else {
-                                                                    root.focused_stream_uid = (p.is_self && root.is_screen_sharing) ? "self" : p.user_id;
+                                                                    root.hide_stream(p.user_id);
                                                                 }
                                                             }
                                                         }
