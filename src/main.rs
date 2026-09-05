@@ -853,10 +853,12 @@ async fn fetch_and_populate_channels(
 
     let app_w_top = app_weak.clone();
     let g_name_top = g_name.clone();
+    let g_id_top = guild_id.to_string();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_w_top.upgrade() {
             ui.set_connection_status(format!("Servidor: {} | Gateway v9 (Online)", g_name_top).into());
             ui.set_active_guild_name(g_name_top.into());
+            ui.set_active_guild_id(g_id_top.into());
         }
     });
 
@@ -3478,6 +3480,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Leave Voice Callback
     let cmd_tx_leave = Arc::clone(&cmd_tx_store);
     let active_guild_leave = Arc::clone(&active_guild_id);
+    let active_channel_leave = Arc::clone(&active_channel_id);
+    let guilds_map_leave = Arc::clone(&guilds_map);
+    let http_client_leave = Arc::clone(&http_client);
     let app_weak_leave = app_weak.clone();
     let sm_leave = Arc::clone(&screen_manager);
     let hidden_streams_leave = Arc::clone(&hidden_streams);
@@ -3492,6 +3497,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);
+            ui.set_is_voice_focused(false);
             ui.set_current_voice_channel("".into());
             ui.set_is_screen_sharing(false);
             ui.set_local_preview_fps("".into());
@@ -3509,35 +3515,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(cmd_tx_guard) = cmd_tx_leave.lock().unwrap().as_ref() {
                 let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
+                    guild_id: gid.clone(),
                     channel_id: None,
                     self_mute: false,
                     self_deaf: false,
                 });
             }
 
-            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
-            current_msgs.push(ChatMessage {
-                id: "".into(),
-                author: "Litecord Voice".into(),
-                content: "🔴 Desconectado da sala de voz.".into(),
-                commands: slint::ModelRc::default(),
-                content_lines: slint::ModelRc::default(),
-                embed_content: "".into(),
-                embed_lines: slint::ModelRc::default(),
-                embed_color: slint::Color::from_rgb_u8(88, 101, 242),
-                embed_footer: "".into(),
-                code_block: "".into(),
-                reply_author: "".into(),
-                reply_content: "".into(),
-                reply_command: "".into(),
-                links: slint::ModelRc::default(),
-                buttons: slint::ModelRc::default(),
-                attachments: slint::ModelRc::default(),
-                timestamp: "Agora".into(),
-            });
-            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-            ui.set_messages(model.into());
+            // Find the first readable text channel of the current guild
+            let target_text_ch = if let Ok(map) = guilds_map_leave.lock() {
+                map.get(&gid).and_then(|g| {
+                    g.channels.iter().find(|c| !c.is_voice && !c.is_category).cloned()
+                })
+            } else {
+                None
+            };
+
+            if let Some(tch) = target_text_ch {
+                *active_channel_leave.lock().unwrap() = tch.id.clone();
+                let clean_name = tch.name.trim_start_matches('#').trim().to_string();
+                let tch_id = tch.id.clone();
+                ui.set_active_channel_name(clean_name.into());
+                ui.set_active_channel_id(tch_id.clone().into());
+
+                let http_opt = http_client_leave.lock().unwrap().as_ref().cloned();
+                let app_w = app_weak_leave.clone();
+                if let Some(http) = http_opt {
+                    tokio::spawn(async move {
+                        load_messages_for_channel(&http, app_w, &tch_id).await;
+                    });
+                }
+            } else {
+                let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+                current_msgs.push(ChatMessage {
+                    id: "".into(),
+                    author: "Litecord Voice".into(),
+                    content: "🔴 Desconectado da sala de voz.".into(),
+                    commands: slint::ModelRc::default(),
+                    content_lines: slint::ModelRc::default(),
+                    embed_content: "".into(),
+                    embed_lines: slint::ModelRc::default(),
+                    embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                    embed_footer: "".into(),
+                    code_block: "".into(),
+                    reply_author: "".into(),
+                    reply_content: "".into(),
+                    reply_command: "".into(),
+                    links: slint::ModelRc::default(),
+                    buttons: slint::ModelRc::default(),
+                    attachments: slint::ModelRc::default(),
+                    timestamp: "Agora".into(),
+                });
+                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                ui.set_messages(model.into());
+                request_chat_scroll_to_bottom(app_weak_leave.clone());
+            }
         }
     });
 

@@ -1308,6 +1308,7 @@ export component AppWindow inherits Window {
     in-out property <string> active_channel_name: "Selecione um canal";
     in-out property <string> active_channel_id: "";
     in-out property <string> active_guild_name: "";
+    in-out property <string> active_guild_id: "";
     in-out property <bool> is_muted: false;
     in-out property <bool> is_deafened: false;
     in-out property <bool> is_in_voice: false;
@@ -1812,12 +1813,29 @@ export component AppWindow inherits Window {
 
                                 for guild in root.guilds: HorizontalLayout {
                                     alignment: center;
+                                    spacing: 0px;
+
+                                    // Left indicator pill (Discord style)
+                                    VerticalLayout {
+                                        alignment: center;
+                                        width: 8px;
+                                        Rectangle {
+                                            width: 4px;
+                                            height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
+                                            background: #ffffff;
+                                            border-top-right-radius: 4px;
+                                            border-bottom-right-radius: 4px;
+                                            animate height { duration: 150ms; easing: ease-out; }
+                                        }
+                                    }
+
                                     Rectangle {
                                         height: 48px;
                                         width: 48px;
-                                        background: #313338;
-                                        border-radius: 24px;
+                                        background: (guild.id == root.active_guild_id) ? #5865f2 : (guild_ta.has-hover ? #5865f2 : #313338);
+                                        border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 14px : 16px;
                                         clip: true;
+                                        animate border-radius, background { duration: 150ms; easing: ease-out; }
 
                                         if guild.has_image: Image {
                                             source: guild.icon_image;
@@ -1836,11 +1854,17 @@ export component AppWindow inherits Window {
                                             overflow: elide;
                                         }
 
-                                        TouchArea {
+                                        guild_ta := TouchArea {
                                             mouse-cursor: pointer;
-                                            clicked => { root.select_guild(guild.id); }
+                                            clicked => {
+                                                root.active_guild_id = guild.id;
+                                                root.select_guild(guild.id);
+                                            }
                                         }
                                     }
+
+                                    // Spacer to balance the 8px on the left
+                                    Rectangle { width: 8px; }
                                 }
                             }
                         }
@@ -1956,7 +1980,7 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/speaker.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: #23a55a;
+                                                colorize: (channel.id == root.active_channel_id) ? #93c5fd : #5865f2;
                                                 image-fit: contain;
                                             }
                                         }
@@ -2028,7 +2052,7 @@ export component AppWindow inherits Window {
                     // Active Voice Channel Banner
                     if root.is_in_voice: Rectangle {
                         height: 44px;
-                        background: root.is_voice_connecting ? #d97706 : #23a55a;
+                        background: root.is_voice_connecting ? #d97706 : #5865f2;
                         border-radius: 6px;
 
                         HorizontalLayout {
@@ -3337,10 +3361,39 @@ export component AppWindow inherits Window {
 
                             Rectangle { horizontal-stretch: 1; }
 
-                            if root.is_in_voice: Button {
-                                icon: @image-url("../assets/speaker.svg");
-                                text: root.tr_view_voice_room;
-                                clicked => { root.toggle_voice_focus(); }
+                            if root.is_in_voice: Rectangle {
+                                height: 32px;
+                                border-radius: 4px;
+                                background: btn_vroom_ta.pressed ? #4752c4 : (btn_vroom_ta.has-hover ? #5865f2 : #383a40);
+                                animate background { duration: 120ms; }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 12px;
+                                    spacing: 6px;
+                                    alignment: center;
+
+                                    Image {
+                                        source: @image-url("../assets/speaker.svg");
+                                        width: 15px;
+                                        height: 15px;
+                                        colorize: #ffffff;
+                                        image-fit: contain;
+                                    }
+
+                                    Text {
+                                        text: root.tr_view_voice_room;
+                                        color: #ffffff;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                btn_vroom_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.toggle_voice_focus(); }
+                                }
                             }
                         }
                     }
