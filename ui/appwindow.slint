@@ -2893,54 +2893,39 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Self-Preview Resource/Framerate Notice (below AO VIVO badge)
+                                        // Self-Preview Resource Notice (Single compact line below AO VIVO badge)
                                         if (p.is_self && root.is_screen_sharing && root.show_self_preview_notice): Rectangle {
                                             x: 8px;
-                                            y: 44px;
+                                            y: 38px;
+                                            height: 20px;
                                             background: #111214ee;
-                                            border-radius: 6px;
+                                            border-radius: 4px;
                                             border-width: 1px;
-                                            border-color: #5865f2cc;
-                                            drop-shadow-blur: 8px;
-                                            drop-shadow-color: #000000bb;
+                                            border-color: #5865f2aa;
 
                                             HorizontalLayout {
-                                                padding-left: 8px;
-                                                padding-right: 10px;
-                                                padding-top: 5px;
-                                                padding-bottom: 5px;
-                                                spacing: 6px;
-                                                alignment: start;
+                                                padding-left: 6px;
+                                                padding-right: 8px;
+                                                spacing: 5px;
+                                                alignment: center;
 
                                                 VerticalLayout {
                                                     alignment: center;
                                                     Image {
                                                         source: @image-url("../assets/info.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 11px;
+                                                        height: 11px;
                                                         colorize: #5865f2;
                                                         image-fit: contain;
                                                     }
                                                 }
 
-                                                VerticalLayout {
-                                                    alignment: center;
-                                                    spacing: 1px;
-
-                                                    Text {
-                                                        text: "Prévia com taxa reduzida";
-                                                        color: #ffffff;
-                                                        font-size: 10px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-
-                                                    Text {
-                                                        text: "Poupa recursos e não reflete a transmissão real.";
-                                                        color: #949ba4;
-                                                        font-size: 9px;
-                                                        vertical-alignment: center;
-                                                    }
+                                                Text {
+                                                    text: "Prévia reduzida para poupar recursos • Não reflete a transmissão real";
+                                                    color: #dbdee1;
+                                                    font-size: 10px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
                                                 }
                                             }
 
@@ -7964,54 +7949,39 @@ export component PopoutStreamWindow inherits Window {
         }
     }
 
-    // Self-Preview Resource/Framerate Notice in Popout (below AO VIVO badge)
+    // Self-Preview Resource Notice in Popout (Single compact line below AO VIVO badge)
     if (root.is_self && root.show_self_preview_notice): Rectangle {
         x: 8px;
-        y: 50px;
+        y: 44px;
+        height: 20px;
         background: #111214ee;
-        border-radius: 6px;
+        border-radius: 4px;
         border-width: 1px;
-        border-color: #5865f2cc;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #000000bb;
+        border-color: #5865f2aa;
 
         HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 10px;
-            padding-top: 5px;
-            padding-bottom: 5px;
-            spacing: 6px;
-            alignment: start;
+            padding-left: 6px;
+            padding-right: 8px;
+            spacing: 5px;
+            alignment: center;
 
             VerticalLayout {
                 alignment: center;
                 Image {
                     source: @image-url("../assets/info.svg");
-                    width: 14px;
-                    height: 14px;
+                    width: 11px;
+                    height: 11px;
                     colorize: #5865f2;
                     image-fit: contain;
                 }
             }
 
-            VerticalLayout {
-                alignment: center;
-                spacing: 1px;
-
-                Text {
-                    text: "Prévia com taxa reduzida";
-                    color: #ffffff;
-                    font-size: 10px;
-                    font-weight: 700;
-                    vertical-alignment: center;
-                }
-
-                Text {
-                    text: "Poupa recursos e não reflete a transmissão real.";
-                    color: #949ba4;
-                    font-size: 9px;
-                    vertical-alignment: center;
-                }
+            Text {
+                text: "Prévia reduzida para poupar recursos • Não reflete a transmissão real";
+                color: #dbdee1;
+                font-size: 10px;
+                font-weight: 600;
+                vertical-alignment: center;
             }
         }
 
