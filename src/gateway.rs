@@ -2035,6 +2035,8 @@ impl GatewayClient {
             match connect_async(url).await {
                 Ok((ws_stream, _)) => {
                     info!("Conexão WebSocket estabelecida com sucesso!");
+                    crate::screen_capture::invalidate_cached_stun_address();
+                    crate::screen_capture::force_signaling_broadcast();
                     let (mut write, mut read) = ws_stream.split();
                     let (ws_out_tx, mut ws_out_rx) = mpsc::channel::<Message>(100);
 
@@ -2659,6 +2661,8 @@ pub async fn connect_voice_gateway(
         match connect_async(&voice_url).await {
             Ok((ws_stream, _)) => {
                 info!("Conexão WebSocket com Voice Gateway estabelecida!");
+                crate::screen_capture::invalidate_cached_stun_address();
+                crate::screen_capture::force_signaling_broadcast();
                 let (write, mut read) = ws_stream.split();
                 let write_arc = Arc::new(Mutex::new(write));
 

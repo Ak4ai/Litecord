@@ -5,9 +5,12 @@ use std::net::{SocketAddr, UdpSocket, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use log::{info, warn};
+use log::{info, warn, error};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use futures_util::{SinkExt, StreamExt};
 
 const P2P_VIDEO_PORT: u16 = 50005;
 const MAGIC: &[u8; 4] = b"LTPV";
@@ -103,6 +106,61 @@ pub const OP_FEC_PARITY: u8 = 7;
 pub const OP_QOS_FEEDBACK: u8 = 8;
 
 static LAST_SEEN_PEER_ADDR: Mutex<Option<HashMap<u64, SocketAddr>>> = Mutex::new(None);
+static ON_STREAM_STATE_CB: Mutex<Option<Arc<dyn Fn(u64, bool) + Send + Sync + 'static>>> = Mutex::new(None);
+static SIGNALING_FORCE_WAKE: AtomicBool = AtomicBool::new(false);
+static SIGNALING_OUT_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>>> = Mutex::new(None);
+
+pub fn force_signaling_broadcast() {
+    SIGNALING_FORCE_WAKE.store(true, Ordering::Relaxed);
+}
+
+pub fn trigger_stream_stopped(uid: u64) {
+    info!("🛑 [STREAM STOPPED] Encerrando imediatamente estado do stream UID={}", uid);
+    if let Ok(mut frames) = get_active_stream_frames().lock() {
+        frames.remove(&uid);
+    }
+    let stream_ssrc: u32 = ((uid as u32) ^ 0x5354524D) | 0x8000_0000;
+    if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
+        queues.remove(&stream_ssrc);
+    }
+    if let Ok(guard) = ON_STREAM_STATE_CB.lock() {
+        if let Some(ref cb) = *guard {
+            cb(uid, false);
+        }
+    }
+}
+
+pub fn notify_signaling_stream_state(cid: u64, uid: u64, streaming: bool) {
+    force_signaling_broadcast();
+    if let Ok(guard) = SIGNALING_OUT_TX.lock() {
+        if let Some(ref tx) = *guard {
+            let my_inst = get_process_instance_id();
+            let my_rx_port = get_my_rx_port();
+            let wan_addr = resolve_public_stun_address();
+            let lan_addrs = get_local_lan_addresses(my_rx_port);
+            let my_ecdh_pub = get_or_create_local_ecdh_keypair();
+            let ecdh_hex: String = my_ecdh_pub.iter().map(|b| format!("{:02x}", b)).collect();
+
+            let payload = serde_json::json!({
+                "op": "presence",
+                "cid": cid,
+                "uid": uid,
+                "inst": my_inst,
+                "uname": "",
+                "ecdh_pub": ecdh_hex,
+                "streaming": streaming,
+                "rx_port": my_rx_port,
+                "lan_ips": lan_addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                "wan_ip": wan_addr.map(|a| a.to_string()),
+            });
+
+            let current_key = get_voice_encryption_key(cid);
+            if let Some(enc_payload) = encrypt_signaling_payload(&current_key, payload.to_string().as_bytes()) {
+                let _ = tx.send(tokio_tungstenite::tungstenite::Message::Binary(enc_payload.into()));
+            }
+        }
+    }
+}
 
 #[inline]
 pub fn is_tailscale_or_forbidden(addr: &SocketAddr) -> bool {
@@ -369,44 +427,55 @@ impl ScreenCaptureManager {
             if uid == 0 {
                 uid = crate::gateway::get_my_user_id();
             }
-            let socket_opt = get_shared_p2p_socket();
-            let temp_sock;
-            let sock_ref = if let Some(ref s) = socket_opt {
-                s.as_ref()
-            } else if let Ok(s) = UdpSocket::bind("0.0.0.0:0") {
-                temp_sock = s;
-                &temp_sock
-            } else {
-                return;
-            };
 
-            let bcast_targets = get_broadcast_addresses();
-            let inst = get_process_instance_id();
-            let mut stop_pkt = Vec::with_capacity(25);
-            stop_pkt.extend_from_slice(MAGIC);
-            stop_pkt.extend_from_slice(&inst.to_be_bytes());
-            stop_pkt.push(OP_STOP);
-            stop_pkt.extend_from_slice(&cid.to_be_bytes());
-            stop_pkt.extend_from_slice(&uid.to_be_bytes());
+            // 1. Notifica imediatamente o canal de sinalização Cloudflare para fechar o stream em <50ms
+            notify_signaling_stream_state(cid, uid, false);
 
-            for _ in 0..5 {
-                for target in &bcast_targets {
-                    let _ = sock_ref.send_to(&stop_pkt, target);
-                }
-                if let Ok(peers) = self.known_peers.lock() {
-                    for (&_, &(addr, _)) in peers.iter() {
-                        let _ = sock_ref.send_to(&stop_pkt, addr);
-                    }
-                }
-                if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
-                    if let Some(map) = last_guard.as_ref() {
-                        for (&_p_uid, &addr) in map.iter() {
-                            let _ = sock_ref.send_to(&stop_pkt, addr);
+            let known_peers_clone = Arc::clone(&self.known_peers);
+            // 2. Dispara burst robusto em background thread para não travar a UI e garantir entrega sobre redes lentas/WAN
+            std::thread::Builder::new()
+                .name("p2p-stop-burst".to_string())
+                .spawn(move || {
+                    let socket_opt = get_shared_p2p_socket();
+                    let temp_sock;
+                    let sock_ref = if let Some(ref s) = socket_opt {
+                        s.as_ref()
+                    } else if let Ok(s) = UdpSocket::bind("0.0.0.0:0") {
+                        temp_sock = s;
+                        &temp_sock
+                    } else {
+                        return;
+                    };
+
+                    let bcast_targets = get_broadcast_addresses();
+                    let inst = get_process_instance_id();
+                    let mut stop_pkt = Vec::with_capacity(25);
+                    stop_pkt.extend_from_slice(MAGIC);
+                    stop_pkt.extend_from_slice(&inst.to_be_bytes());
+                    stop_pkt.push(OP_STOP);
+                    stop_pkt.extend_from_slice(&cid.to_be_bytes());
+                    stop_pkt.extend_from_slice(&uid.to_be_bytes());
+
+                    for _ in 0..10 {
+                        for target in &bcast_targets {
+                            let _ = sock_ref.send_to(&stop_pkt, target);
                         }
+                        if let Ok(peers) = known_peers_clone.lock() {
+                            for (&_, &(addr, _)) in peers.iter() {
+                                let _ = sock_ref.send_to(&stop_pkt, addr);
+                            }
+                        }
+                        if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
+                            if let Some(map) = last_guard.as_ref() {
+                                for (&_p_uid, &addr) in map.iter() {
+                                    let _ = sock_ref.send_to(&stop_pkt, addr);
+                                }
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(60));
                     }
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+                })
+                .ok();
         }
     }
 
@@ -419,6 +488,7 @@ impl ScreenCaptureManager {
             warn!("Transmissão de tela já está em execução.");
             return;
         }
+        force_signaling_broadcast();
 
         let on_local_arc: Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static> = Arc::new(on_local_frame);
         #[cfg(target_os = "linux")]
@@ -1254,6 +1324,11 @@ impl ScreenCaptureManager {
             return;
         }
 
+        let on_state_arc: Arc<dyn Fn(u64, bool) + Send + Sync + 'static> = Arc::new(on_state);
+        if let Ok(mut guard) = ON_STREAM_STATE_CB.lock() {
+            *guard = Some(Arc::clone(&on_state_arc));
+        }
+
         start_global_signaling(
             Arc::clone(&self.channel_id),
             Arc::clone(&self.my_user_id),
@@ -1762,7 +1837,11 @@ impl ScreenCaptureManager {
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
                                         if prev_state != Some(is_streaming) {
                                             info!("📡 Usuário {} alterou estado de stream: {}", pkt_uid, is_streaming);
-                                            on_state(pkt_uid, is_streaming);
+                                            if is_streaming {
+                                                on_state_arc(pkt_uid, true);
+                                            } else {
+                                                trigger_stream_stopped(pkt_uid);
+                                            }
                                         }
                                     }
                                 }
@@ -1900,7 +1979,7 @@ impl ScreenCaptureManager {
                                                     let prev_state = active_streaming_users.insert(pkt_uid, true);
                                                     if prev_state != Some(true) {
                                                         info!("📡 [AUTO-ATIVAÇÃO STREAM] Usuário {} iniciou transmissão de tela (quadro recebido)!", pkt_uid);
-                                                        on_state(pkt_uid, true);
+                                                        on_state_arc(pkt_uid, true);
                                                     }
 
                                                     let qos = qos_windows.entry(pkt_uid).or_default();
@@ -2017,7 +2096,7 @@ impl ScreenCaptureManager {
                                                     let prev_state = active_streaming_users.insert(pkt_uid, true);
                                                     if prev_state != Some(true) {
                                                         info!("📡 [AUTO-ATIVAÇÃO STREAM FEC] Usuário {} iniciou transmissão de tela (quadro recuperado via FEC)!", pkt_uid);
-                                                        on_state(pkt_uid, true);
+                                                        on_state_arc(pkt_uid, true);
                                                     }
 
                                                     let qos = qos_windows.entry(pkt_uid).or_default();
@@ -2085,15 +2164,12 @@ impl ScreenCaptureManager {
                                     if len >= 25 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
                                         if pkt_inst != my_instance_id {
-                                            info!("📡 Usuário {} encerrou a transmissão de tela.", pkt_uid);
+                                            info!("📡 Usuário {} encerrou a transmissão de tela via UDP OP_STOP.", pkt_uid);
                                             active_streaming_users.insert(pkt_uid, false);
                                             in_flight.remove(&pkt_uid);
                                             last_rendered_seq.remove(&pkt_uid);
                                             last_stream_activity.remove(&pkt_uid);
-                                            if let Ok(mut frames) = get_active_stream_frames().lock() {
-                                                frames.remove(&pkt_uid);
-                                            }
-                                            on_state(pkt_uid, false);
+                                            trigger_stream_stopped(pkt_uid);
                                         }
                                     }
                                 }
@@ -2228,28 +2304,21 @@ impl ScreenCaptureManager {
                     std::thread::sleep(Duration::from_millis(4));
                 }
 
-                // Check stream timeouts (> 1500ms sem quadros)
+                    // Check stream timeouts (> 2500ms sem quadros)
                     let now = Instant::now();
                     let mut expired = Vec::new();
                     for (&uid, &last_act) in last_stream_activity.iter() {
-                        if now.duration_since(last_act) > Duration::from_millis(8000) {
+                        if now.duration_since(last_act) > Duration::from_millis(2500) {
                             expired.push(uid);
                         }
                     }
                     for uid in expired {
                         last_stream_activity.remove(&uid);
                         if active_streaming_users.insert(uid, false) != Some(false) {
-                            info!("📡 Stream do usuário {} expirou por inatividade.", uid);
+                            info!("📡 Stream do usuário {} expirou por inatividade (2.5s sem quadros).", uid);
                             last_rendered_seq.remove(&uid);
                             in_flight.remove(&uid);
-                            let stream_ssrc: u32 = ((uid as u32) ^ 0x5354524D) | 0x8000_0000;
-                            if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
-                                queues.remove(&stream_ssrc);
-                            }
-                            if let Ok(mut frames) = get_active_stream_frames().lock() {
-                                frames.remove(&uid);
-                            }
-                            on_state(uid, false);
+                            trigger_stream_stopped(uid);
                         }
                     }
                 }
@@ -2262,62 +2331,6 @@ static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
 
 pub fn get_shared_p2p_socket() -> Option<Arc<UdpSocket>> {
     SHARED_P2P_SOCKET.lock().ok()?.clone()
-}
-
-fn encode_mqtt_string(s: &str) -> Vec<u8> {
-    let mut v = Vec::with_capacity(2 + s.len());
-    let len = s.len() as u16;
-    v.extend_from_slice(&len.to_be_bytes());
-    v.extend_from_slice(s.as_bytes());
-    v
-}
-
-fn build_mqtt_connect_pkt(client_id: &str) -> Vec<u8> {
-    let mut payload = encode_mqtt_string(client_id);
-    let mut var_header = vec![
-        0x00, 0x04, b'M', b'Q', b'T', b'T', // Protocol Name
-        0x04, // Protocol Level (3.1.1)
-        0x02, // Connect Flags (Clean Session)
-        0x00, 0x3C, // Keep Alive (60s)
-    ];
-    let mut body = Vec::new();
-    body.append(&mut var_header);
-    body.append(&mut payload);
-
-    let mut pkt = vec![0x10]; // CONNECT packet type
-    let len = body.len();
-    pkt.push(len as u8);
-    pkt.extend_from_slice(&body);
-    pkt
-}
-
-fn build_mqtt_subscribe_pkt(pkt_id: u16, topic: &str) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend_from_slice(&pkt_id.to_be_bytes());
-    body.extend_from_slice(&encode_mqtt_string(topic));
-    body.push(0); // QoS 0
-
-    let mut pkt = vec![0x82]; // SUBSCRIBE packet type
-    pkt.push(body.len() as u8);
-    pkt.extend_from_slice(&body);
-    pkt
-}
-
-fn build_mqtt_publish_pkt(topic: &str, payload: &[u8]) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend_from_slice(&encode_mqtt_string(topic));
-    body.extend_from_slice(payload);
-
-    let mut pkt = vec![0x30]; // PUBLISH packet type (QoS 0)
-    let len = body.len();
-    if len < 128 {
-        pkt.push(len as u8);
-    } else {
-        pkt.push(((len & 0x7F) | 0x80) as u8);
-        pkt.push((len >> 7) as u8);
-    }
-    pkt.extend_from_slice(&body);
-    pkt
 }
 
 fn get_local_lan_addresses(port: u16) -> Vec<SocketAddr> {
@@ -2453,16 +2466,6 @@ fn get_voice_encryption_key(cid: u64) -> [u8; 32] {
     key
 }
 
-/// Deriva um tópico MQTT anônimo e indecifrável para observadores externos
-fn get_anonymous_signaling_topic(cid: u64, key: &[u8; 32]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(key);
-    hasher.update(b"litecord_anon_topic_v1");
-    hasher.update(&cid.to_be_bytes());
-    let hash = format!("{:x}", hasher.finalize());
-    format!("litecord/sig/{}", &hash[..24])
-}
-
 static ENCRYPT_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Criptografa o payload usando AES-256-GCM com Nonce determinístico de 12 bytes ultrarrápido (0ns overhead)
@@ -2500,171 +2503,353 @@ fn decrypt_signaling_payload(key_bytes: &[u8; 32], encrypted_data: &[u8]) -> Opt
     cipher.decrypt(nonce, ciphertext).ok()
 }
 
-fn parse_and_handle_mqtt_messages(
-    buf: &[u8],
+fn process_signaling_json(
+    json_bytes: &[u8],
     current_cid: u64,
     my_inst: u32,
     peers_store: &Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
 ) {
-    if buf.is_empty() { return; }
+    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
+        let pkt_cid = val["cid"].as_u64().unwrap_or(0);
+        let pkt_uid = val["uid"].as_u64().unwrap_or(0);
+        let pkt_inst = val["inst"].as_u64().unwrap_or(0) as u32;
+
+        let my_uid = crate::gateway::get_my_user_id();
+        if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 && (my_uid == 0 || pkt_uid != my_uid) {
+            let is_streaming = val["streaming"].as_bool().unwrap_or(false);
+            info!("📡 [SIGNALING PRESENÇA] De UID={} (inst={}) | streaming={} | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, is_streaming, val["wan_ip"], val["lan_ips"]);
+
+            // Se o peer parou de transmitir tela, fecha imediatamente (<50ms) sem esperar timeout de pacotes UDP
+            if !is_streaming {
+                trigger_stream_stopped(pkt_uid);
+            }
+
+            // Negociação X25519 ECDH: computa a chave de sessão compartilhada exclusiva do peer
+            if let Some(pub_hex) = val["ecdh_pub"].as_str() {
+                if pub_hex.len() == 64 {
+                    let mut pub_bytes = [0u8; 32];
+                    let mut valid = true;
+                    for i in 0..32 {
+                        if let Ok(byte_val) = u8::from_str_radix(&pub_hex[i * 2..i * 2 + 2], 16) {
+                            pub_bytes[i] = byte_val;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid {
+                        compute_peer_shared_key(pkt_uid, &pub_bytes, current_cid);
+                    }
+                }
+            }
+
+            let mut addrs_to_punch = Vec::new();
+            let mut remote_wan_addr = None;
+
+            // 1. WAN IP (Public Internet)
+            if let Some(wan_str) = val["wan_ip"].as_str() {
+                if let Ok(addr) = wan_str.parse::<SocketAddr>() {
+                    if !is_tailscale_or_forbidden(&addr) {
+                        addrs_to_punch.push(addr);
+                        remote_wan_addr = Some(addr);
+                    }
+                }
+            }
+
+            // Atualiza imediatamente LAST_SEEN_PEER_ADDR para que o transmissor aponte para o novo IP fresco
+            if let Some(wan) = remote_wan_addr {
+                if let Ok(mut guard) = LAST_SEEN_PEER_ADDR.lock() {
+                    let map = guard.get_or_insert_with(HashMap::new);
+                    map.insert(pkt_uid, wan);
+                }
+            }
+
+            // Determina se o peer está em WAN externa (diferente da nossa WAN)
+            let is_cross_wan = if let Some(r_wan) = remote_wan_addr {
+                if let Some(my_wan) = resolve_public_stun_address() {
+                    r_wan.ip() != my_wan.ip()
+                } else {
+                    match r_wan.ip() {
+                        std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback() && !v4.is_link_local(),
+                        _ => false,
+                    }
+                }
+            } else {
+                false
+            };
+
+            // 2. LAN IPs: inclui SOMENTE se NÃO for cross-WAN (ex: ambos na mesma rede local)
+            if !is_cross_wan {
+                if let Some(lan_arr) = val["lan_ips"].as_array() {
+                    for item in lan_arr {
+                        if let Some(s) = item.as_str() {
+                            if let Ok(addr) = s.parse::<SocketAddr>() {
+                                if !is_tailscale_or_forbidden(&addr) && !addr.ip().is_loopback() && !addrs_to_punch.contains(&addr) {
+                                    addrs_to_punch.push(addr);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                info!("🌐 [P2P WAN ROTEAMENTO] Peer UID={} está em WAN externa ({:?}) - ignorando LANs internas para evitar ICMP reset!", pkt_uid, remote_wan_addr);
+            }
+
+            if !addrs_to_punch.is_empty() {
+                if let Ok(mut peers) = peers_store.lock() {
+                    if is_cross_wan {
+                        peers.retain(|&k, (a, _)| {
+                            let key_uid = (k & 0xFFFF_FFFF) as u32;
+                            if key_uid == (pkt_uid as u32) {
+                                match a.ip() {
+                                    std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback(),
+                                    _ => true,
+                                }
+                            } else {
+                                true
+                            }
+                        });
+                    }
+                    for (i, &addr) in addrs_to_punch.iter().enumerate() {
+                        let key = ((pkt_uid as u64) ^ ((pkt_inst as u64) << 32)).wrapping_add(i as u64);
+                        peers.insert(key, (addr, Instant::now()));
+                    }
+                }
+
+                // Dispara burst de UDP Hole Punch imediato pelo socket compartilhado
+                if let Some(socket) = get_shared_p2p_socket() {
+                    let mut punch_pkt = Vec::with_capacity(32);
+                    punch_pkt.extend_from_slice(MAGIC);
+                    punch_pkt.extend_from_slice(&my_inst.to_be_bytes());
+                    punch_pkt.push(OP_HEARTBEAT);
+                    punch_pkt.extend_from_slice(&current_cid.to_be_bytes());
+                    punch_pkt.extend_from_slice(&crate::gateway::get_my_user_id().to_be_bytes());
+                    punch_pkt.push(0);
+                    punch_pkt.push(2);
+                    punch_pkt.push(0);
+                    punch_pkt.extend_from_slice(&get_my_rx_port().to_be_bytes());
+
+                    for &target in &addrs_to_punch {
+                        info!("🥊 [UDP HOLE PUNCH] Enviando burst de STUN/Punch (10 pacotes) para {} a partir da sinalização", target);
+                        for _ in 0..10 {
+                            let _ = socket.send_to(&punch_pkt, target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_incoming_ws_message(
+    msg: tokio_tungstenite::tungstenite::Message,
+    current_cid: u64,
+    my_inst: u32,
+    peers_store: &Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
+) {
     let key = get_voice_encryption_key(current_cid);
 
-    let process_json = |json_bytes: &[u8]| {
-        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
-            let pkt_cid = val["cid"].as_u64().unwrap_or(0);
-            let pkt_uid = val["uid"].as_u64().unwrap_or(0);
-            let pkt_inst = val["inst"].as_u64().unwrap_or(0) as u32;
+    match msg {
+        tokio_tungstenite::tungstenite::Message::Binary(bytes) => {
+            if let Some(decrypted) = decrypt_signaling_payload(&key, &bytes) {
+                process_signaling_json(&decrypted, current_cid, my_inst, peers_store);
+            } else if let Some(json_start) = bytes.iter().position(|&b| b == b'{') {
+                if let Some(json_end) = bytes.iter().rposition(|&b| b == b'}') {
+                    if json_end >= json_start {
+                        process_signaling_json(&bytes[json_start..=json_end], current_cid, my_inst, peers_store);
+                    }
+                }
+            }
+        }
+        tokio_tungstenite::tungstenite::Message::Text(text) => {
+            let text_bytes = text.as_bytes();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                if val["op"] == "peer_leave" {
+                    let pkt_uid = val["uid"].as_u64().unwrap_or(0);
+                    if pkt_uid != 0 {
+                        info!("🚪 [SIGNALING] Peer UID={} saiu da sala de sinalização Cloudflare.", pkt_uid);
+                        trigger_stream_stopped(pkt_uid);
+                        if let Ok(mut peers) = peers_store.lock() {
+                            peers.retain(|&k, _| ((k & 0xFFFF_FFFF) as u32) != (pkt_uid as u32));
+                        }
+                        if let Ok(mut guard) = LAST_SEEN_PEER_ADDR.lock() {
+                            if let Some(map) = guard.as_mut() {
+                                map.remove(&pkt_uid);
+                            }
+                        }
+                    }
+                    return;
+                } else if val["op"] == "pong" {
+                    return;
+                }
+            }
+            process_signaling_json(text_bytes, current_cid, my_inst, peers_store);
+        }
+        tokio_tungstenite::tungstenite::Message::Ping(_) => {
+            // tungstenite responde pong automaticamente a frames ping RFC 6455
+        }
+        _ => {}
+    }
+}
 
-            let my_uid = crate::gateway::get_my_user_id();
-            if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 && (my_uid == 0 || pkt_uid != my_uid) {
-                info!("📡 [MQTT PRESENÇA RECEBIDA] De UID={} (inst={}) | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, val["wan_ip"], val["lan_ips"]);
+async fn run_cloudflare_signaling_loop(
+    channel_id: Arc<AtomicU64>,
+    my_user_id: Arc<AtomicU64>,
+    my_username: Arc<Mutex<String>>,
+    is_tx_running: Arc<AtomicBool>,
+    peers_store: Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
+) {
+    let my_inst = get_process_instance_id();
+    let cf_host = "litecord-signal.ricosgames-henrique.workers.dev";
 
-                // Negociação X25519 ECDH: computa a chave de sessão compartilhada exclusiva do peer
-                if let Some(pub_hex) = val["ecdh_pub"].as_str() {
-                    if pub_hex.len() == 64 {
-                        let mut pub_bytes = [0u8; 32];
-                        let mut valid = true;
-                        for i in 0..32 {
-                            if let Ok(byte_val) = u8::from_str_radix(&pub_hex[i * 2..i * 2 + 2], 16) {
-                                pub_bytes[i] = byte_val;
-                            } else {
-                                valid = false;
+    loop {
+        let mut cid = channel_id.load(Ordering::Relaxed);
+        if cid == 0 {
+            cid = crate::gateway::get_my_voice_channel_id();
+            if cid > 0 {
+                channel_id.store(cid, Ordering::Relaxed);
+            }
+        }
+        if cid == 0 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+
+        let mut my_uid = my_user_id.load(Ordering::Relaxed);
+        if my_uid == 0 {
+            my_uid = crate::gateway::get_my_user_id();
+        }
+
+        let ws_url = format!("wss://{}/ws?channel={}&user={}", cf_host, cid, my_uid);
+        info!("📡 [SIGNALING] Conectando ao Cloudflare Worker WebSocket em {}...", ws_url);
+
+        let mut req = match ws_url.as_str().into_client_request() {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("⚠️ [SIGNALING] Falha ao construir requisição WebSocket: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        req.headers_mut().insert("User-Agent", "Litecord/0.3.9".parse().unwrap());
+
+        let (ws_stream, _resp) = match connect_async(req).await {
+            Ok((s, r)) => {
+                info!("🛡️ [SIGNALING] Conectado com sucesso ao Cloudflare Edge Signaling (HTTP {}) para canal {}", r.status(), cid);
+                (s, r)
+            }
+            Err(e) => {
+                warn!("⚠️ [SIGNALING] Falha na conexão WebSocket com Cloudflare: {:?}. Reconectando em 2s...", e);
+                invalidate_cached_stun_address();
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+
+        let (mut ws_write, mut ws_read) = ws_stream.split();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Message>();
+        if let Ok(mut guard) = SIGNALING_OUT_TX.lock() {
+            *guard = Some(out_tx);
+        }
+
+        let mut last_pub = Instant::now() - Duration::from_secs(10);
+        let mut last_tx_state = false;
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(15));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let mut publish_ticker = tokio::time::interval(Duration::from_millis(300));
+        publish_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            if channel_id.load(Ordering::Relaxed) != cid {
+                info!("🛑 Canal de voz alterado. Reconectando sala de sinalização...");
+                break;
+            }
+
+            tokio::select! {
+                Some(msg) = out_rx.recv() => {
+                    if let Err(e) = ws_write.send(msg).await {
+                        warn!("⚠️ Falha ao enviar mensagem de sinalização no WebSocket: {:?}", e);
+                        break;
+                    }
+                }
+
+                _ = ping_interval.tick() => {
+                    if let Err(e) = ws_write.send(tokio_tungstenite::tungstenite::Message::Text("{\"op\":\"ping\"}".into())).await {
+                        warn!("⚠️ Falha ao enviar keepalive ping no WebSocket: {:?}", e);
+                        break;
+                    }
+                }
+
+                _ = publish_ticker.tick() => {
+                    let cur_tx = is_tx_running.load(Ordering::Relaxed);
+                    let force_wake = SIGNALING_FORCE_WAKE.swap(false, Ordering::Relaxed);
+
+                    let should_publish = force_wake || cur_tx != last_tx_state || last_pub.elapsed() >= Duration::from_secs(2);
+                    if should_publish {
+                        last_pub = Instant::now();
+                        last_tx_state = cur_tx;
+
+                        let mut uid = my_user_id.load(Ordering::Relaxed);
+                        if uid == 0 {
+                            uid = crate::gateway::get_my_user_id();
+                        }
+
+                        let my_rx_port = get_my_rx_port();
+                        let wan_addr = resolve_public_stun_address();
+                        let lan_addrs = get_local_lan_addresses(my_rx_port);
+
+                        let my_ecdh_pub = get_or_create_local_ecdh_keypair();
+                        let ecdh_hex: String = my_ecdh_pub.iter().map(|b| format!("{:02x}", b)).collect();
+
+                        let uname = my_username.lock().unwrap().clone();
+                        let payload = serde_json::json!({
+                            "op": "presence",
+                            "cid": cid,
+                            "uid": uid,
+                            "inst": my_inst,
+                            "uname": uname,
+                            "ecdh_pub": ecdh_hex,
+                            "streaming": cur_tx,
+                            "rx_port": my_rx_port,
+                            "lan_ips": lan_addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                            "wan_ip": wan_addr.map(|a| a.to_string()),
+                        });
+
+                        let current_key = get_voice_encryption_key(cid);
+                        if let Some(enc_payload) = encrypt_signaling_payload(&current_key, payload.to_string().as_bytes()) {
+                            if let Err(e) = ws_write.send(tokio_tungstenite::tungstenite::Message::Binary(enc_payload.into())).await {
+                                warn!("⚠️ Falha ao enviar presença no WebSocket: {:?}", e);
                                 break;
                             }
                         }
-                        if valid {
-                            compute_peer_shared_key(pkt_uid, &pub_bytes, current_cid);
-                        }
                     }
                 }
 
-                let mut addrs_to_punch = Vec::new();
-                let mut remote_wan_addr = None;
-
-                // 1. WAN IP (Public Internet)
-                if let Some(wan_str) = val["wan_ip"].as_str() {
-                    if let Ok(addr) = wan_str.parse::<SocketAddr>() {
-                        if !is_tailscale_or_forbidden(&addr) {
-                            addrs_to_punch.push(addr);
-                            remote_wan_addr = Some(addr);
+                msg_res = ws_read.next() => {
+                    match msg_res {
+                        Some(Ok(msg)) => {
+                            handle_incoming_ws_message(msg, cid, my_inst, &peers_store);
                         }
-                    }
-                }
-
-                // Determina se o peer está em WAN externa (diferente da nossa WAN)
-                let is_cross_wan = if let Some(r_wan) = remote_wan_addr {
-                    if let Some(my_wan) = resolve_public_stun_address() {
-                        r_wan.ip() != my_wan.ip()
-                    } else {
-                        match r_wan.ip() {
-                            std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback() && !v4.is_link_local(),
-                            _ => false,
+                        Some(Err(e)) => {
+                            warn!("⚠️ Erro de leitura no WebSocket da sinalização: {:?}", e);
+                            break;
                         }
-                    }
-                } else {
-                    false
-                };
-
-                // 2. LAN IPs: inclui SOMENTE se NÃO for cross-WAN (ex: ambos na mesma rede local)
-                if !is_cross_wan {
-                    if let Some(lan_arr) = val["lan_ips"].as_array() {
-                        for item in lan_arr {
-                            if let Some(s) = item.as_str() {
-                                if let Ok(addr) = s.parse::<SocketAddr>() {
-                                    if !is_tailscale_or_forbidden(&addr) && !addr.ip().is_loopback() && !addrs_to_punch.contains(&addr) {
-                                        addrs_to_punch.push(addr);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    info!("🌐 [P2P WAN ROTEAMENTO] Peer UID={} está em WAN externa ({:?}) - ignorando LANs internas para evitar ICMP reset!", pkt_uid, remote_wan_addr);
-                }
-
-                if !addrs_to_punch.is_empty() {
-                    if let Ok(mut peers) = peers_store.lock() {
-                        // Se estivermos em WAN externa, limpa qualquer IP privado anterior para este peer
-                        if is_cross_wan {
-                            peers.retain(|&k, (a, _)| {
-                                let key_uid = (k & 0xFFFF_FFFF) as u32;
-                                if key_uid == (pkt_uid as u32) {
-                                    match a.ip() {
-                                        std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback(),
-                                        _ => true,
-                                    }
-                                } else {
-                                    true
-                                }
-                            });
-                        }
-                        for (i, &addr) in addrs_to_punch.iter().enumerate() {
-                            let key = ((pkt_uid as u64) ^ ((pkt_inst as u64) << 32)).wrapping_add(i as u64);
-                            peers.insert(key, (addr, Instant::now()));
-                        }
-                    }
-
-                    // Send UDP Hole Punch burst immediately through shared socket
-                    if let Some(socket) = get_shared_p2p_socket() {
-                        let mut punch_pkt = Vec::with_capacity(32);
-                        punch_pkt.extend_from_slice(MAGIC);
-                        punch_pkt.extend_from_slice(&my_inst.to_be_bytes());
-                        punch_pkt.push(OP_HEARTBEAT);
-                        punch_pkt.extend_from_slice(&current_cid.to_be_bytes());
-                        punch_pkt.extend_from_slice(&crate::gateway::get_my_user_id().to_be_bytes());
-                        punch_pkt.push(0);
-                        punch_pkt.push(2);
-                        punch_pkt.push(0);
-                        punch_pkt.extend_from_slice(&get_my_rx_port().to_be_bytes());
-
-                        for &target in &addrs_to_punch {
-                            info!("🥊 [UDP HOLE PUNCH] Enviando burst de STUN/Punch (10 pacotes) para {} a partir do MQTT handler", target);
-                            for _ in 0..10 {
-                                let _ = socket.send_to(&punch_pkt, target);
-                            }
+                        None => {
+                            warn!("⚠️ Servidor de sinalização WebSocket fechou a conexão.");
+                            break;
                         }
                     }
                 }
             }
         }
-    };
 
-    let mut pos = 0;
-    while pos < buf.len() {
-        if (buf[pos] & 0xF0) == 0x30 { // MQTT PUBLISH
-            let qos = (buf[pos] & 0x06) >> 1;
-            pos += 1;
-            if pos >= buf.len() { break; }
-            let mut rem_len: usize = (buf[pos] & 0x7F) as usize;
-            let has_next = (buf[pos] & 0x80) != 0;
-            pos += 1;
-            if has_next && pos < buf.len() {
-                rem_len += ((buf[pos] & 0x7F) as usize) << 7;
-                pos += 1;
-            }
-            if pos + rem_len > buf.len() { break; }
-            let frame_body = &buf[pos..pos + rem_len];
-            pos += rem_len;
-
-            if frame_body.len() >= 2 {
-                let topic_len = u16::from_be_bytes([frame_body[0], frame_body[1]]) as usize;
-                let payload_offset = if qos > 0 { 2 + topic_len + 2 } else { 2 + topic_len };
-                if frame_body.len() >= payload_offset {
-                    let payload = &frame_body[payload_offset..];
-                    if let Some(decrypted) = decrypt_signaling_payload(&key, payload) {
-                        process_json(&decrypted);
-                    } else if let Some(json_start) = payload.iter().position(|&b| b == b'{') {
-                        if let Some(json_end) = payload.iter().rposition(|&b| b == b'}') {
-                            if json_end >= json_start {
-                                process_json(&payload[json_start..=json_end]);
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            pos += 1;
+        if let Ok(mut guard) = SIGNALING_OUT_TX.lock() {
+            *guard = None;
         }
+        invalidate_cached_stun_address();
+        info!("🛑 Desconectado da sala de sinalização Cloudflare para o canal {}. Reconectando...", cid);
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -2679,165 +2864,36 @@ pub fn start_global_signaling(
         .name("global-p2p-signaling".to_string())
         .spawn(move || {
             crate::cpu_profiler::set_current_thread_name("global-p2p-signaling");
-            let my_inst = get_process_instance_id();
-            let brokers = ["broker.emqx.io:1883"];
-            let mut broker_idx = 0;
-
-            loop {
-                let mut cid = channel_id.load(Ordering::Relaxed);
-                if cid == 0 {
-                    cid = crate::gateway::get_my_voice_channel_id();
-                    if cid > 0 {
-                        channel_id.store(cid, Ordering::Relaxed);
-                    }
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("Falha ao iniciar runtime Tokio para sinalização Cloudflare: {:?}", e);
+                    return;
                 }
-                if cid == 0 {
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-
-                let key = get_voice_encryption_key(cid);
-                let topic = get_anonymous_signaling_topic(cid, &key);
-
-                let broker = brokers[broker_idx % brokers.len()];
-                broker_idx = broker_idx.wrapping_add(1);
-
-                use std::io::{Read, Write};
-                let broker_addrs: Vec<SocketAddr> = match broker.to_socket_addrs() {
-                    Ok(addrs) => {
-                        let mut v: Vec<SocketAddr> = addrs.filter(|a| a.is_ipv4()).collect();
-                        if v.is_empty() {
-                            if let Ok(addrs2) = broker.to_socket_addrs() {
-                                v = addrs2.collect();
-                            }
-                        }
-                        v
-                    }
-                    Err(e) => {
-                        warn!("⚠️ Falha na resolução DNS do broker {}: {:?}", broker, e);
-                        std::thread::sleep(Duration::from_secs(1));
-                        continue;
-                    }
-                };
-
-                let mut stream_opt = None;
-                for &addr in &broker_addrs {
-                    info!("📡 [MQTT] Conectando ao broker de sinalização em {}...", addr);
-                    match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
-                        Ok(s) => {
-                            stream_opt = Some(s);
-                            break;
-                        }
-                        Err(e) => {
-                            warn!("⚠️ Falha ao conectar em {}: {:?}", addr, e);
-                        }
-                    }
-                }
-
-                let mut stream = match stream_opt {
-                    Some(s) => s,
-                    None => {
-                        std::thread::sleep(Duration::from_secs(1));
-                        continue;
-                    }
-                };
-
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let client_id = format!("litecord_{}_{}", &topic[13..], my_inst);
-                let conn_pkt = build_mqtt_connect_pkt(&client_id);
-                if stream.write_all(&conn_pkt).is_err() {
-                    continue;
-                }
-
-                let mut connack = [0u8; 4];
-                if stream.read_exact(&mut connack).is_err() || connack[0] != 0x20 || connack[3] != 0x00 {
-                    warn!("⚠️ Falha no handshake MQTT CONNACK com {}", broker);
-                    continue;
-                }
-
-                let sub_pkt = build_mqtt_subscribe_pkt(1, &topic);
-                if stream.write_all(&sub_pkt).is_err() {
-                    continue;
-                }
-
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-                info!("🛡️ Conectado à rede de sinalização P2P criptografada E2EE (AES-256-GCM) para a sala!");
-
-                let mut last_pub = Instant::now() - Duration::from_secs(10);
-                let mut last_tx_state = false;
-                let mut read_buf = vec![0u8; 4096];
-
-                while channel_id.load(Ordering::Relaxed) == cid {
-                    let cur_tx = is_tx_running.load(Ordering::Relaxed);
-                    let mut my_uid = my_user_id.load(Ordering::Relaxed);
-                    if my_uid == 0 {
-                        my_uid = crate::gateway::get_my_user_id();
-                    }
-
-                    if last_pub.elapsed() >= Duration::from_secs(2) || cur_tx != last_tx_state {
-                        last_pub = Instant::now();
-                        last_tx_state = cur_tx;
-
-                        let my_rx_port = get_my_rx_port();
-                        let wan_addr = resolve_public_stun_address();
-                        let lan_addrs = get_local_lan_addresses(my_rx_port);
-
-                        let my_ecdh_pub = get_or_create_local_ecdh_keypair();
-                        let ecdh_hex: String = my_ecdh_pub.iter().map(|b| format!("{:02x}", b)).collect();
-
-                        let uname = my_username.lock().unwrap().clone();
-                        let payload = serde_json::json!({
-                            "op": "presence",
-                            "cid": cid,
-                            "uid": my_uid,
-                            "inst": my_inst,
-                            "uname": uname,
-                            "ecdh_pub": ecdh_hex,
-                            "streaming": cur_tx,
-                            "rx_port": my_rx_port,
-                            "lan_ips": lan_addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-                            "wan_ip": wan_addr.map(|a| a.to_string()),
-                        });
-
-                        let current_key = get_voice_encryption_key(cid);
-                        if let Some(enc_payload) = encrypt_signaling_payload(&current_key, payload.to_string().as_bytes()) {
-                            let pub_pkt = build_mqtt_publish_pkt(&topic, &enc_payload);
-                            info!("📡 [MQTT ENVIANDO PRESENÇA] WAN={:?} | LAN={:?}", wan_addr, lan_addrs);
-                            if stream.write_all(&pub_pkt).is_err() {
-                                break;
-                            }
-                        }
-                    }
-
-                    match stream.read(&mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            parse_and_handle_mqtt_messages(&read_buf[..n], cid, my_inst, &peers_store);
-                        }
-                        Ok(_) => {
-                            break;
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        Err(_) => {
-                            break;
-                        }
-                    }
-                }
-
-                info!("🛑 Desconectado da sala de sinalização P2P para o canal {}", cid);
-                std::thread::sleep(Duration::from_millis(500));
-            }
+            };
+            rt.block_on(run_cloudflare_signaling_loop(
+                channel_id,
+                my_user_id,
+                my_username,
+                is_tx_running,
+                peers_store,
+            ));
         })
         .expect("Falha ao iniciar thread de sinalização global P2P");
 }
 
 static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
 
+pub fn invalidate_cached_stun_address() {
+    if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
+        *guard = None;
+    }
+}
+
 pub fn resolve_public_stun_address() -> Option<SocketAddr> {
     if let Ok(guard) = CACHED_STUN_ADDR.lock() {
         if let Some((addr, time)) = *guard {
-            if time.elapsed() < Duration::from_secs(30) {
+            if time.elapsed() < Duration::from_secs(10) {
                 return Some(addr);
             }
         }
