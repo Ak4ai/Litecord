@@ -1336,6 +1336,7 @@ export component AppWindow inherits Window {
 
     // Screen Share / Live Video Grid Properties
     in-out property <bool> is_screen_sharing: false;
+    in-out property <bool> show_self_preview_notice: false;
     in-out property <bool> show_stream_modal: false;
     in-out property <string> stream_source_tab: "screens";
     in-out property <string> stream_selected_res: "1080p";
@@ -2892,6 +2893,63 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
+                                        // Self-Preview Resource/Framerate Notice (below AO VIVO badge)
+                                        if (p.is_self && root.is_screen_sharing && root.show_self_preview_notice): Rectangle {
+                                            x: 8px;
+                                            y: 44px;
+                                            background: #111214ee;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: #5865f2cc;
+                                            drop-shadow-blur: 8px;
+                                            drop-shadow-color: #000000bb;
+
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 10px;
+                                                padding-top: 5px;
+                                                padding-bottom: 5px;
+                                                spacing: 6px;
+                                                alignment: start;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../assets/info.svg");
+                                                        width: 14px;
+                                                        height: 14px;
+                                                        colorize: #5865f2;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    spacing: 1px;
+
+                                                    Text {
+                                                        text: "Prévia com taxa reduzida";
+                                                        color: #ffffff;
+                                                        font-size: 10px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+
+                                                    Text {
+                                                        text: "Poupa recursos e não reflete a transmissão real.";
+                                                        color: #949ba4;
+                                                        font-size: 9px;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
+                                            TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.show_self_preview_notice = false; }
+                                            }
+                                        }
+
                                         // Self-Stream Discord-Style Banner Overlay
                                         if (p.is_self && root.is_screen_sharing): Rectangle {
                                             x: (parent.width - 200px) / 2;
@@ -3361,44 +3419,47 @@ export component AppWindow inherits Window {
 
                             Rectangle { horizontal-stretch: 1; }
 
-                            if root.is_in_voice: Rectangle {
-                                height: 32px;
-                                border-radius: 4px;
-                                background: btn_vroom_ta.pressed ? #4752c4 : (btn_vroom_ta.has-hover ? #5865f2 : #383a40);
-                                animate background { duration: 120ms; }
+                            if root.is_in_voice: VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_vroom_ta.pressed ? #4752c4 : (btn_vroom_ta.has-hover ? #5865f2 : #383a40);
+                                    animate background { duration: 120ms; }
 
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 12px;
-                                    spacing: 6px;
-                                    alignment: center;
-
-                                    VerticalLayout {
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 12px;
+                                        spacing: 6px;
                                         alignment: center;
-                                        Image {
-                                            source: @image-url("../assets/speaker.svg");
-                                            width: 15px;
-                                            height: 15px;
-                                            colorize: #ffffff;
-                                            image-fit: contain;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/speaker.svg");
+                                                width: 15px;
+                                                height: 15px;
+                                                colorize: #ffffff;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: root.tr_view_voice_room;
+                                                color: #ffffff;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
 
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Text {
-                                            text: root.tr_view_voice_room;
-                                            color: #ffffff;
-                                            font-size: 13px;
-                                            font-weight: 600;
-                                            vertical-alignment: center;
-                                        }
+                                    btn_vroom_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.toggle_voice_focus(); }
                                     }
-                                }
-
-                                btn_vroom_ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.toggle_voice_focus(); }
                                 }
                             }
                         }
@@ -7569,6 +7630,8 @@ export component PopoutStreamWindow inherits Window {
     in-out property <bool> is_maximized: false;
     in-out property <bool> drag_area_enabled: true;
     in-out property <bool> is_linux: false;
+    in-out property <bool> is_self: false;
+    in-out property <bool> show_self_preview_notice: false;
 
     callback toggle_pin();
     callback toggle_intangible();
@@ -7898,6 +7961,63 @@ export component PopoutStreamWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    // Self-Preview Resource/Framerate Notice in Popout (below AO VIVO badge)
+    if (root.is_self && root.show_self_preview_notice): Rectangle {
+        x: 8px;
+        y: 50px;
+        background: #111214ee;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: #5865f2cc;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #000000bb;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 10px;
+            padding-top: 5px;
+            padding-bottom: 5px;
+            spacing: 6px;
+            alignment: start;
+
+            VerticalLayout {
+                alignment: center;
+                Image {
+                    source: @image-url("../assets/info.svg");
+                    width: 14px;
+                    height: 14px;
+                    colorize: #5865f2;
+                    image-fit: contain;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+
+                Text {
+                    text: "Prévia com taxa reduzida";
+                    color: #ffffff;
+                    font-size: 10px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Poupa recursos e não reflete a transmissão real.";
+                    color: #949ba4;
+                    font-size: 9px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.show_self_preview_notice = false; }
         }
     }
 

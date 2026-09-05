@@ -2037,6 +2037,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
                 pop_win.set_stream_frame(cur_frame);
                 pop_win.set_show_controls(true);
+                pop_win.set_is_self(is_pop_self);
+                if is_pop_self {
+                    pop_win.set_show_self_preview_notice(true);
+                    let pop_w_notice = pop_w_cb.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
+                        if let Some(pop) = pop_w_notice.upgrade() {
+                            pop.set_show_self_preview_notice(false);
+                        }
+                    });
+                } else {
+                    pop_win.set_show_self_preview_notice(false);
+                }
                 let _ = pop_win.show();
                 #[cfg(target_os = "windows")]
                 if let Some(hwnd) = *pop_hwnd_cb.lock().unwrap() {
@@ -2463,12 +2475,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
+                ui.set_show_self_preview_notice(false);
                 ui.set_local_preview_fps("".into());
                 let my_uid = gateway::get_my_user_id().to_string();
                 if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == my_uid.as_str() {
                     ui.set_popped_out_stream_uid("".into());
                     if let Some(pop) = pop_w_ss.upgrade() {
                         pop.set_user_id("".into());
+                        pop.set_is_self(false);
+                        pop.set_show_self_preview_notice(false);
                         let _ = pop.hide();
                     }
                 }
@@ -2561,6 +2576,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
                 ui.set_is_screen_sharing(true);
+                ui.set_show_self_preview_notice(true);
+                let app_weak_notice = app_weak_ss.clone();
+                slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
+                    if let Some(ui) = app_weak_notice.upgrade() {
+                        ui.set_show_self_preview_notice(false);
+                    }
+                });
             }
         }
     });
@@ -3500,6 +3522,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_is_voice_focused(false);
             ui.set_current_voice_channel("".into());
             ui.set_is_screen_sharing(false);
+            ui.set_show_self_preview_notice(false);
             ui.set_local_preview_fps("".into());
             ui.set_remote_stream_fps("".into());
             ui.set_has_active_stream(false);
