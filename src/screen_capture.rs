@@ -109,6 +109,7 @@ static LAST_SEEN_PEER_ADDR: Mutex<Option<HashMap<u64, SocketAddr>>> = Mutex::new
 static ON_STREAM_STATE_CB: Mutex<Option<Arc<dyn Fn(u64, bool) + Send + Sync + 'static>>> = Mutex::new(None);
 static SIGNALING_FORCE_WAKE: AtomicBool = AtomicBool::new(false);
 static SIGNALING_OUT_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>>> = Mutex::new(None);
+static PEER_STREAMING_STATES: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
 
 pub fn force_signaling_broadcast() {
     SIGNALING_FORCE_WAKE.store(true, Ordering::Relaxed);
@@ -116,6 +117,11 @@ pub fn force_signaling_broadcast() {
 
 pub fn trigger_stream_stopped(uid: u64) {
     info!("🛑 [STREAM STOPPED] Encerrando imediatamente estado do stream UID={}", uid);
+    if let Ok(mut guard) = PEER_STREAMING_STATES.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.insert(uid, false);
+        }
+    }
     if let Ok(mut frames) = get_active_stream_frames().lock() {
         frames.remove(&uid);
     }
@@ -2517,10 +2523,17 @@ fn process_signaling_json(
         let my_uid = crate::gateway::get_my_user_id();
         if pkt_cid == current_cid && pkt_inst != my_inst && pkt_inst != 0 && (my_uid == 0 || pkt_uid != my_uid) {
             let is_streaming = val["streaming"].as_bool().unwrap_or(false);
-            info!("📡 [SIGNALING PRESENÇA] De UID={} (inst={}) | streaming={} | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, is_streaming, val["wan_ip"], val["lan_ips"]);
+            let was_streaming = {
+                let mut guard = PEER_STREAMING_STATES.lock().unwrap();
+                let map = guard.get_or_insert_with(HashMap::new);
+                let prev = map.insert(pkt_uid, is_streaming);
+                prev.unwrap_or(false)
+            };
+
+            info!("📡 [SIGNALING PRESENÇA] De UID={} (inst={}) | streaming={} (was={}) | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, is_streaming, was_streaming, val["wan_ip"], val["lan_ips"]);
 
             // Se o peer parou de transmitir tela, fecha imediatamente (<50ms) sem esperar timeout de pacotes UDP
-            if !is_streaming {
+            if !is_streaming && was_streaming {
                 trigger_stream_stopped(pkt_uid);
             }
 
@@ -2718,6 +2731,19 @@ async fn run_cloudflare_signaling_loop(
         let mut my_uid = my_user_id.load(Ordering::Relaxed);
         if my_uid == 0 {
             my_uid = crate::gateway::get_my_user_id();
+            if my_uid != 0 {
+                my_user_id.store(my_uid, Ordering::Relaxed);
+            }
+        }
+        if my_uid == 0 {
+            for _ in 0..15 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                my_uid = crate::gateway::get_my_user_id();
+                if my_uid != 0 {
+                    my_user_id.store(my_uid, Ordering::Relaxed);
+                    break;
+                }
+            }
         }
 
         let ws_url = format!("wss://{}/ws?channel={}&user={}", cf_host, cid, my_uid);
@@ -2763,6 +2789,13 @@ async fn run_cloudflare_signaling_loop(
         loop {
             if channel_id.load(Ordering::Relaxed) != cid {
                 info!("🛑 Canal de voz alterado. Reconectando sala de sinalização...");
+                break;
+            }
+
+            let fresh_uid = crate::gateway::get_my_user_id();
+            if my_uid == 0 && fresh_uid != 0 {
+                my_user_id.store(fresh_uid, Ordering::Relaxed);
+                info!("🔄 [SIGNALING] User ID autenticado ({}). Atualizando conexão com Cloudflare...", fresh_uid);
                 break;
             }
 
