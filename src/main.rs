@@ -11,6 +11,7 @@ mod updater;
 mod screen_capture;
 mod emoji_cache;
 mod attachment_cache;
+pub mod encoder;
 pub mod gpu_encoder;
 pub mod cpu_profiler;
 pub mod video_settings;
