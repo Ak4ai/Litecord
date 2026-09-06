@@ -137,25 +137,56 @@ impl FfmpegNvencEncoder {
                         continue;
                     }
                     if let Some(dir_str) = dir.to_str() {
-                        let c_dir = CString::new(dir_str).unwrap();
-                        windows_sys::Win32::System::LibraryLoader::SetDllDirectoryA(c_dir.as_ptr() as *const u8);
-                    }
-
-                    let _ = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"swresample-5.dll\0".as_ptr());
-
-                    for util_dll_name in [b"avutil-59.dll\0", b"avutil-60.dll\0", b"avutil-58.dll\0", b"avutil-57.dll\0"] {
-                        let h_util = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(util_dll_name.as_ptr());
-                        if !h_util.is_null() {
-                            avutil_dll = h_util;
-                            break;
+                        if let Ok(c_dir) = CString::new(dir_str) {
+                            windows_sys::Win32::System::LibraryLoader::SetDllDirectoryA(c_dir.as_ptr() as *const u8);
                         }
                     }
 
-                    for codec_dll_name in [b"avcodec-61.dll\0", b"avcodec-62.dll\0", b"avcodec-60.dll\0", b"avcodec-59.dll\0"] {
-                        let h_codec = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(codec_dll_name.as_ptr());
-                        if !h_codec.is_null() {
-                            avcodec_dll = h_codec;
-                            break;
+                    // Pré-carrega todas as dependências auxiliares por caminho absoluto
+                    for dep_name in ["zlib.dll", "w32-pthreads.dll", "swresample-5.dll", "swscale-8.dll"] {
+                        let dep_path = dir.join(dep_name);
+                        if dep_path.exists() {
+                            if let Ok(c_path) = CString::new(dep_path.to_str().unwrap_or_default()) {
+                                windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+                                    c_path.as_ptr() as *const u8,
+                                    std::ptr::null_mut(),
+                                    windows_sys::Win32::System::LibraryLoader::LOAD_WITH_ALTERED_SEARCH_PATH,
+                                );
+                            }
+                        }
+                    }
+
+                    for util_name in ["avutil-59.dll", "avutil-60.dll", "avutil-58.dll", "avutil-57.dll"] {
+                        let util_path = dir.join(util_name);
+                        if util_path.exists() {
+                            if let Ok(c_path) = CString::new(util_path.to_str().unwrap_or_default()) {
+                                let h_util = windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+                                    c_path.as_ptr() as *const u8,
+                                    std::ptr::null_mut(),
+                                    windows_sys::Win32::System::LibraryLoader::LOAD_WITH_ALTERED_SEARCH_PATH,
+                                );
+                                if !h_util.is_null() {
+                                    avutil_dll = h_util;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    for codec_name in ["avcodec-61.dll", "avcodec-62.dll", "avcodec-60.dll", "avcodec-59.dll"] {
+                        let codec_path = dir.join(codec_name);
+                        if codec_path.exists() {
+                            if let Ok(c_path) = CString::new(codec_path.to_str().unwrap_or_default()) {
+                                let h_codec = windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+                                    c_path.as_ptr() as *const u8,
+                                    std::ptr::null_mut(),
+                                    windows_sys::Win32::System::LibraryLoader::LOAD_WITH_ALTERED_SEARCH_PATH,
+                                );
+                                if !h_codec.is_null() {
+                                    avcodec_dll = h_codec;
+                                    break;
+                                }
+                            }
                         }
                     }
 

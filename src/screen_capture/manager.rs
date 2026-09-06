@@ -690,12 +690,7 @@ impl ScreenCaptureManager {
                                 let now = Instant::now();
                                 if now < next_cap_time {
                                     let rem = next_cap_time - now;
-                                    if rem > Duration::from_millis(3) {
-                                        std::thread::sleep(rem - Duration::from_millis(2));
-                                    }
-                                    while Instant::now() < next_cap_time {
-                                        std::hint::spin_loop();
-                                    }
+                                    std::thread::sleep(rem);
                                     next_cap_time += frame_interval;
                                 } else {
                                     if now - next_cap_time > Duration::from_millis(100) {
