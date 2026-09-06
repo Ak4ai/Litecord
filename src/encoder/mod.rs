@@ -120,8 +120,8 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
     if manual_selection != "auto" {
         info!("🎯 [VIDEO CODEC FACTORY] Codificador manual configurado pelo usuário: '{}'", manual_selection);
         match manual_selection.as_str() {
-            "nvenc" => {
-                match nvenc::FfmpegNvencEncoder::try_new_with_codec(target_fps, is_screen_content, Some("nvenc")) {
+            "nvenc" | "ffmpeg" => {
+                match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
                     Ok(enc) => {
                         info!("🚀 [VIDEO CODEC FACTORY] Codificador manual NVIDIA NVENC ativado com sucesso!");
                         return Box::new(enc);
@@ -137,24 +137,8 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
                             info!("🚀 [VIDEO CODEC FACTORY] Codificador manual AMD AMF Zero-Copy ativado com sucesso!");
                             return Box::new(enc);
                         }
-                        Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] AMF Zero-Copy manual falhou ({}), tentando h264_amf...", e),
+                        Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] AMF Zero-Copy manual falhou ({}), executando detecção automática...", e),
                     }
-                }
-                match nvenc::FfmpegNvencEncoder::try_new_with_codec(target_fps, is_screen_content, Some("amf")) {
-                    Ok(enc) => {
-                        info!("🚀 [VIDEO CODEC FACTORY] Codificador manual AMD AMF ativado com sucesso!");
-                        return Box::new(enc);
-                    }
-                    Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] AMF manual indisponível ({}), executando detecção automática...", e),
-                }
-            }
-            "ffmpeg" => {
-                match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
-                    Ok(enc) => {
-                        info!("🚀 [VIDEO CODEC FACTORY] Codificador manual FFmpeg GPU ativado com sucesso!");
-                        return Box::new(enc);
-                    }
-                    Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU manual indisponível ({}), executando detecção automática...", e),
                 }
             }
             "wmf" => {
@@ -193,19 +177,19 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
                     return Box::new(enc);
                 }
                 Err(e) => {
-                    warn!("⚠️ [VIDEO CODEC FACTORY] AMF Native indisponível ({}), usando fallback para FFmpeg h264_amf...", e);
+                    warn!("⚠️ [VIDEO CODEC FACTORY] AMF Native indisponível ({}), usando fallback...", e);
                 }
             }
         }
 
-        info!("🎯 [VIDEO CODEC FACTORY] Tentando Hardware GPU Engine via FFmpeg (NVENC / AMF / QSV)...");
+        info!("🎯 [VIDEO CODEC FACTORY] Tentando Hardware GPU NVIDIA NVENC Engine (OBS / Sunshine Grade)...");
         match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
             Ok(enc) => {
-                info!("🚀 [VIDEO CODEC FACTORY] Hardware GPU Engine via FFmpeg ativado com sucesso!");
+                info!("🚀 [VIDEO CODEC FACTORY] NVIDIA NVENC Engine ativado com sucesso!");
                 return Box::new(enc);
             }
             Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU indisponível ({}), usando fallback OpenH264 SIMD...", e);
+                warn!("⚠️ [VIDEO CODEC FACTORY] NVIDIA NVENC indisponível ({}), usando fallback OpenH264 SIMD...", e);
             }
         }
     }

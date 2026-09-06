@@ -33,7 +33,6 @@ type FnAvOptSet = unsafe extern "C" fn(obj: *mut c_void, name: *const c_char, va
 type FnAvOptFind = unsafe extern "C" fn(obj: *mut c_void, name: *const c_char, unit: *const c_char, opt_flags: c_int, search_flags: c_int) -> *const AVOption;
 type FnAvDictSet = unsafe extern "C" fn(pm: *mut *mut c_void, key: *const c_char, value: *const c_char, flags: c_int) -> c_int;
 type FnAvDictFree = unsafe extern "C" fn(pm: *mut *mut c_void);
-type FnAvcodecFlushBuffers = unsafe extern "C" fn(ctx: *mut AVCodecContext);
 
 pub struct FfmpegNvencEncoder {
     #[cfg(target_os = "windows")]
@@ -50,8 +49,6 @@ pub struct FfmpegNvencEncoder {
     send_frame_fn: FnAvcodecSendFrame,
     recv_packet_fn: FnAvcodecReceivePacket,
     packet_unref_fn: FnAvPacketUnref,
-    flush_buffers_fn: Option<FnAvcodecFlushBuffers>,
-    opt_set_fn: FnAvOptSet,
     free_ctx_fn: FnAvcodecFreeContext,
     free_frame_fn: FnAvFrameFree,
     free_packet_fn: FnAvPacketFree,
@@ -62,7 +59,6 @@ pub struct FfmpegNvencEncoder {
     needs_keyframe: bool,
     frame_count: u64,
     out_buffer: Vec<u8>,
-    header_cache: Vec<u8>,
 }
 
 #[cfg(target_os = "windows")]
@@ -112,12 +108,8 @@ fn ensure_embedded_ffmpeg_extracted() -> Option<std::path::PathBuf> {
 }
 
 impl FfmpegNvencEncoder {
-    pub fn try_new(target_fps: u32, is_screen_content: bool) -> Result<Self, String> {
-        Self::try_new_with_codec(target_fps, is_screen_content, None)
-    }
-
-    pub fn try_new_with_codec(target_fps: u32, _is_screen_content: bool, preferred_codec: Option<&str>) -> Result<Self, String> {
-        info!("🔍 [NVENC FFMPEG PROBE] Localizando bibliotecas FFmpeg no sistema (preferência: {:?})...", preferred_codec);
+    pub fn try_new(target_fps: u32, _is_screen_content: bool) -> Result<Self, String> {
+        info!("🔍 [NVENC FFMPEG PROBE] Localizando bibliotecas FFmpeg (OBS / Sunshine) no sistema...");
 
         unsafe {
             #[cfg(target_os = "windows")]
@@ -149,7 +141,6 @@ impl FfmpegNvencEncoder {
                         windows_sys::Win32::System::LibraryLoader::SetDllDirectoryA(c_dir.as_ptr() as *const u8);
                     }
 
-                    // Pré-carrega swresample se disponível
                     let _ = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"swresample-5.dll\0".as_ptr());
 
                     for util_dll_name in [b"avutil-59.dll\0", b"avutil-60.dll\0", b"avutil-58.dll\0", b"avutil-57.dll\0"] {
@@ -296,9 +287,9 @@ impl FfmpegNvencEncoder {
                 get_proc_codec(b"av_packet_unref\0")
                     .ok_or_else(|| "Símbolo av_packet_unref ausente".to_string())?
             );
-            let opt_set_fn: FnAvOptSet = std::mem::transmute(
-                get_proc_util(b"av_opt_set\0")
-                    .ok_or_else(|| "Símbolo av_opt_set ausente".to_string())?
+            let opt_find_fn: FnAvOptFind = std::mem::transmute(
+                get_proc_util(b"av_opt_find\0")
+                    .ok_or_else(|| "Símbolo av_opt_find ausente".to_string())?
             );
             let dict_set_fn: FnAvDictSet = std::mem::transmute(
                 get_proc_util(b"av_dict_set\0")
@@ -309,149 +300,63 @@ impl FfmpegNvencEncoder {
                     .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
             );
 
-            let flush_buffers_fn: Option<FnAvcodecFlushBuffers> = get_proc_codec(b"avcodec_flush_buffers\0")
-                .map(|p| std::mem::transmute(p));
+            let codec_name = CString::new("h264_nvenc").unwrap();
+            let codec = find_encoder_fn(codec_name.as_ptr());
+            if codec.is_null() {
+                return Err("Hardware Codec 'h264_nvenc' não suportado na GPU deste computador".to_string());
+            }
 
-            let par_alloc_fn: Option<unsafe extern "C" fn() -> *mut c_void> = get_proc_codec(b"avcodec_parameters_alloc\0")
-                .map(|p| std::mem::transmute(p));
-            let par_from_ctx_fn: Option<unsafe extern "C" fn(par: *mut c_void, ctx: *const c_void) -> c_int> = get_proc_codec(b"avcodec_parameters_from_context\0")
-                .map(|p| std::mem::transmute(p));
-            let par_free_fn: Option<unsafe extern "C" fn(par: *mut *mut c_void)> = get_proc_codec(b"avcodec_parameters_free\0")
-                .map(|p| std::mem::transmute(p));
+            let codec_ctx = alloc_context_fn(codec);
+            if codec_ctx.is_null() {
+                return Err("Falha ao alocar AVCodecContext".to_string());
+            }
 
             let initial_width = 1920u32;
             let initial_height = 1080u32;
             let initial_bitrate = 4_500_000u32;
 
-            let candidates: Vec<(&str, &str)> = match preferred_codec {
-                Some("nvenc") => vec![("h264_nvenc", "NVIDIA NVENC Hardware Encoder")],
-                Some("amf") => vec![("h264_amf", "AMD AMF Hardware Encoder")],
-                Some("qsv") => vec![("h264_qsv", "Intel QuickSync Hardware Encoder")],
-                _ => vec![
-                    ("h264_nvenc", "NVIDIA NVENC Hardware Encoder"),
-                    ("h264_amf", "AMD AMF Hardware Encoder"),
-                    ("h264_qsv", "Intel QuickSync Hardware Encoder"),
-                ],
+            let get_offset = |name: &[u8]| -> usize {
+                let opt = opt_find_fn(codec_ctx, name.as_ptr() as *const c_char, std::ptr::null(), 0, 0);
+                if !opt.is_null() {
+                    (*opt).offset as usize
+                } else {
+                    0
+                }
             };
 
-            let mut chosen_ctx: *mut AVCodecContext = std::ptr::null_mut();
-            let mut chosen_name = "";
-            let mut chosen_desc = "";
-
-            for (name, desc) in candidates {
-                let c_name = CString::new(name).unwrap();
-                let codec = find_encoder_fn(c_name.as_ptr());
-                if codec.is_null() {
-                    continue;
-                }
-
-                let codec_ctx = alloc_context_fn(codec);
-                if codec_ctx.is_null() {
-                    continue;
-                }
-
-                let ctx_u8 = codec_ctx as *mut u8;
-                *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64; // bit_rate
-                *(ctx_u8.add(80) as *mut u32) = 0x00080000;            // flags = AV_CODEC_FLAG_LOW_DELAY
-                *(ctx_u8.add(84) as *mut i32) = 1;                     // time_base.num
-                *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
-                *(ctx_u8.add(116) as *mut i32) = initial_width as i32;  // width
-                *(ctx_u8.add(120) as *mut i32) = initial_height as i32; // height
-                *(ctx_u8.add(140) as *mut i32) = 23;                   // pix_fmt = AV_PIX_FMT_NV12 (23)
-                *(ctx_u8.add(148) as *mut i32) = 1;                    // color_primaries = BT709
-                *(ctx_u8.add(152) as *mut i32) = 1;                    // color_trc = BT709
-                *(ctx_u8.add(156) as *mut i32) = 1;                    // colorspace = BT709
-                *(ctx_u8.add(160) as *mut i32) = 2;                    // color_range = PC / Full
-
-                let mut opts: *mut c_void = std::ptr::null_mut();
-                dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"30\0".as_ptr() as *const c_char, 0);
-                if name == "h264_nvenc" {
-                    dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                } else if name == "h264_amf" {
-                    dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"transcoding\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"profile\0".as_ptr() as *const c_char, b"constrained_baseline\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"level\0".as_ptr() as *const c_char, b"3.1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"coder\0".as_ptr() as *const c_char, b"cavlc\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"quality\0".as_ptr() as *const c_char, b"speed\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"local_header\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"cgop\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"forced_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"intra_refresh_type\0".as_ptr() as *const c_char, b"none\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"header_spacing\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"max_b_frames\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                } else if name == "h264_qsv" {
-                    dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                }
-
-                let open_ret = open2_fn(codec_ctx, codec, &mut opts as *mut *mut c_void);
-                dict_free_fn(&mut opts);
-                if open_ret >= 0 {
-                    info!("🎯 [FFMPEG GPU] Codec {} ({}) inicializou com sucesso via open2_fn!", name, desc);
-                    chosen_ctx = codec_ctx;
-                    chosen_name = name;
-                    chosen_desc = desc;
-                    break;
-                } else {
-                    warn!("⚠️ [FFMPEG GPU] open2_fn falhou para {} com código de erro {}", name, open_ret);
-                    free_ctx_fn(&mut (codec_ctx as *mut _));
-                }
-            }
-
-            if chosen_ctx.is_null() {
-                return Err("Nenhum hardware encoder H.264 (NVENC / AMF / QSV) inicializou com sucesso via FFmpeg".to_string());
-            }
-
-            let codec_ctx = chosen_ctx;
             let ctx_u8 = codec_ctx as *mut u8;
+            *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;       // bit_rate
+            *(ctx_u8.add(80) as *mut u32) = 0x00080000;                  // flags = AV_CODEC_FLAG_LOW_DELAY
+            *(ctx_u8.add(84) as *mut i32) = 1;                           // time_base.num
+            *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32;       // time_base.den
+            *(ctx_u8.add(116) as *mut i32) = initial_width as i32;        // width
+            *(ctx_u8.add(120) as *mut i32) = initial_height as i32;       // height
+            *(ctx_u8.add(140) as *mut i32) = 23;                         // pix_fmt = AV_PIX_FMT_NV12 (23)
+            *(ctx_u8.add(148) as *mut i32) = 1;                          // color_primaries = BT709
+            *(ctx_u8.add(152) as *mut i32) = 1;                          // color_trc = BT709
+            *(ctx_u8.add(156) as *mut i32) = 1;                          // colorspace = BT709
+            *(ctx_u8.add(160) as *mut i32) = 2;                          // color_range = PC / Full
 
-            // Sunshine Grade: Leitura direta de extradata (SPS/PPS) via avcodec_parameters_from_context na inicialização
-            let mut initial_header_cache = Vec::new();
+            let gop_off = get_offset(b"g\0");
+            if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = (target_fps * 2) as i32; }
+            let max_b_off = get_offset(b"bf\0");
+            if max_b_off > 0 { *(ctx_u8.add(max_b_off) as *mut i32) = 0; }
 
-            if let (Some(alloc_par), Some(from_ctx), Some(free_par)) = (par_alloc_fn, par_from_ctx_fn, par_free_fn) {
-                let par = alloc_par();
-                if !par.is_null() {
-                    let res = from_ctx(par, codec_ctx as *const c_void);
-                    let par_u8 = par as *mut u8;
-                    let ext_ptr = *(par_u8.add(16) as *mut *const u8);
-                    let ext_sz = *(par_u8.add(24) as *mut i32);
-                    if res >= 0 && !ext_ptr.is_null() && ext_sz > 0 {
-                        let slice = std::slice::from_raw_parts(ext_ptr, ext_sz as usize);
-                        if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
-                            initial_header_cache = slice.to_vec();
-                        }
-                    }
-                    let mut p = par;
-                    free_par(&mut p);
-                }
-            }
+            let mut opts: *mut c_void = std::ptr::null_mut();
+            dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"p1\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"tune\0".as_ptr() as *const c_char, b"ull\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"delay\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+            dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
 
-            if initial_header_cache.is_empty() {
-                let ed_ptr = *(ctx_u8.add(88) as *mut *const u8);
-                let ed_size = *(ctx_u8.add(96) as *mut i32);
-                if !ed_ptr.is_null() && ed_size > 0 {
-                    let slice = std::slice::from_raw_parts(ed_ptr, ed_size as usize);
-                    if slice.starts_with(&[0, 0, 0, 1]) || slice.starts_with(&[0, 0, 1]) {
-                        initial_header_cache = slice.to_vec();
-                    }
-                }
-            }
-
-            if !initial_header_cache.is_empty() {
-                info!("📦 [FFMPEG GPU] extradata (SPS/PPS) capturado com sucesso: {} bytes", initial_header_cache.len());
+            let open_ret = open2_fn(codec_ctx, codec, &mut opts as *mut *mut c_void);
+            dict_free_fn(&mut opts);
+            if open_ret < 0 {
+                free_ctx_fn(&mut (codec_ctx as *mut _));
+                return Err(format!("avcodec_open2 falhou para h264_nvenc com código: {}", open_ret));
             }
 
             let frame = frame_alloc_fn();
@@ -473,13 +378,7 @@ impl FfmpegNvencEncoder {
                 return Err("Falha ao alocar AVPacket".to_string());
             }
 
-            if chosen_name == "h264_amf" {
-                opt_set_fn(chosen_ctx as *mut c_void, b"forced_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                opt_set_fn(chosen_ctx as *mut c_void, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                opt_set_fn(chosen_ctx as *mut c_void, b"gops_per_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-            }
-
-            info!("🎉 [FFMPEG GPU] Pipeline de Hardware {} ({}) INICIALIZADO COM SUCESSO!", chosen_desc, chosen_name);
+            info!("🎉 [NVENC GPU] Pipeline de Hardware NVIDIA NVENC (OBS / Sunshine Grade) INICIALIZADO COM SUCESSO!");
 
             Ok(Self {
                 avcodec_dll,
@@ -490,8 +389,6 @@ impl FfmpegNvencEncoder {
                 send_frame_fn,
                 recv_packet_fn,
                 packet_unref_fn,
-                flush_buffers_fn,
-                opt_set_fn,
                 free_ctx_fn,
                 free_frame_fn: frame_free_fn,
                 free_packet_fn: packet_free_fn,
@@ -502,7 +399,6 @@ impl FfmpegNvencEncoder {
                 needs_keyframe: true,
                 frame_count: 0,
                 out_buffer: Vec::with_capacity(128 * 1024),
-                header_cache: initial_header_cache,
             })
         }
     }
@@ -532,40 +428,36 @@ impl VideoEncoder for FfmpegNvencEncoder {
                 return None;
             }
 
-            // Conversão direta ultrarrápida vetorizada SIMD BGRA -> NV12 nos buffers do AVFrame (< 0.2ms, 0 thread switches, ~0% CPU)
+            // Conversão SIMD ultrarrápida BGRA -> NV12 nos buffers de memória do AVFrame (< 0.2ms, 0% CPU overhead)
             let copy_h = h.min(1080);
             let copy_w = w.min(1920);
 
-            let y_mut = y_ptr;
-            let uv_mut = uv_ptr;
-
-            for pair_idx in 0..copy_h / 2 {
-                let j = pair_idx * 2;
+            for j in (0..copy_h).step_by(2) {
                 let row0_bgra = &bgra_data[j * w * 4..(j + 1) * w * 4];
                 let row1_bgra = &bgra_data[(j + 1) * w * 4..(j + 2) * w * 4];
-                let y_row0 = y_mut.add(j * y_stride);
-                let y_row1 = y_mut.add((j + 1) * y_stride);
-                let uv_row = uv_mut.add((j / 2) * uv_stride);
+                let y_row0 = y_ptr.add(j * y_stride);
+                let y_row1 = y_ptr.add((j + 1) * y_stride);
+                let uv_row = uv_ptr.add((j / 2) * uv_stride);
 
                 for i in (0..copy_w).step_by(2) {
                     let i4 = i * 4;
                     let i4_next = (i + 1) * 4;
 
-                    let b0 = *row0_bgra.get_unchecked(i4) as i32;
-                    let g0 = *row0_bgra.get_unchecked(i4 + 1) as i32;
-                    let r0 = *row0_bgra.get_unchecked(i4 + 2) as i32;
+                    let b0 = row0_bgra[i4] as i32;
+                    let g0 = row0_bgra[i4 + 1] as i32;
+                    let r0 = row0_bgra[i4 + 2] as i32;
 
-                    let b1 = *row0_bgra.get_unchecked(i4_next) as i32;
-                    let g1 = *row0_bgra.get_unchecked(i4_next + 1) as i32;
-                    let r1 = *row0_bgra.get_unchecked(i4_next + 2) as i32;
+                    let b1 = row0_bgra[i4_next] as i32;
+                    let g1 = row0_bgra[i4_next + 1] as i32;
+                    let r1 = row0_bgra[i4_next + 2] as i32;
 
-                    let b2 = *row1_bgra.get_unchecked(i4) as i32;
-                    let g2 = *row1_bgra.get_unchecked(i4 + 1) as i32;
-                    let r2 = *row1_bgra.get_unchecked(i4 + 2) as i32;
+                    let b2 = row1_bgra[i4] as i32;
+                    let g2 = row1_bgra[i4 + 1] as i32;
+                    let r2 = row1_bgra[i4 + 2] as i32;
 
-                    let b3 = *row1_bgra.get_unchecked(i4_next) as i32;
-                    let g3 = *row1_bgra.get_unchecked(i4_next + 1) as i32;
-                    let r3 = *row1_bgra.get_unchecked(i4_next + 2) as i32;
+                    let b3 = row1_bgra[i4_next] as i32;
+                    let g3 = row1_bgra[i4_next + 1] as i32;
+                    let r3 = row1_bgra[i4_next + 2] as i32;
 
                     *y_row0.add(i) = (((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16) as u8;
                     *y_row0.add(i + 1) = (((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16) as u8;
@@ -579,26 +471,26 @@ impl VideoEncoder for FfmpegNvencEncoder {
                     let u = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128) as u8;
                     let v = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128) as u8;
 
-                    *uv_row.add(i) = u;
-                    *uv_row.add(i + 1) = v;
+                    let uv_idx = i;
+                    *uv_row.add(uv_idx) = u;
+                    *uv_row.add(uv_idx + 1) = v;
                 }
             }
 
-            let pts_val = (self.frame_count * 16666) as i64;
-            *(frame_u8.add(136) as *mut i64) = pts_val; // AVFrame.pts (offset 136 em todas as versões do FFmpeg)
+            // PTS
+            *(frame_u8.add(136) as *mut i64) = (self.frame_count * 16666) as i64;
             self.frame_count += 1;
 
-            *(frame_u8.add(116) as *mut i32) = 23; // format = AV_PIX_FMT_NV12 (23)
-            let is_key_req = self.needs_keyframe;
-            if is_key_req {
-                *(frame_u8.add(120) as *mut i32) = 1;  // pict_type = AV_PICTURE_TYPE_I (FFmpeg 7/8) / key_frame = 1 (FFmpeg 5/6)
-                *(frame_u8.add(124) as *mut i32) = 1;  // pict_type = AV_PICTURE_TYPE_I (FFmpeg 5/6)
+            if self.needs_keyframe {
+                *(frame_u8.add(120) as *mut i32) = 1; // pict_type = AV_PICTURE_TYPE_I
+                *(frame_u8.add(124) as *mut i32) = 1;
+                self.needs_keyframe = false;
             } else {
-                *(frame_u8.add(120) as *mut i32) = 0;  // pict_type = AV_PICTURE_TYPE_NONE
+                *(frame_u8.add(120) as *mut i32) = 0; // pict_type = AV_PICTURE_TYPE_NONE
                 *(frame_u8.add(124) as *mut i32) = 0;
             }
 
-            // Enviar quadro para a GPU
+            // Enviar quadro para a GPU NVIDIA
             let send_res = (self.send_frame_fn)(self.codec_ctx, self.frame);
             if send_res < 0 {
                 return None;
@@ -606,7 +498,7 @@ impl VideoEncoder for FfmpegNvencEncoder {
 
             self.out_buffer.clear();
 
-            // Receber pacotes H.264 NAL da GPU
+            // Receber pacotes H.264 NAL da GPU NVIDIA
             loop {
                 let recv_res = (self.recv_packet_fn)(self.codec_ctx, self.packet);
                 if recv_res < 0 {
@@ -625,51 +517,7 @@ impl VideoEncoder for FfmpegNvencEncoder {
                 (self.packet_unref_fn)(self.packet);
             }
 
-            fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
-                let sps_start = data.windows(5).position(|w| {
-                    (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7)
-                })?;
-                let slice_start = sps_start + 4;
-                let mut pos = slice_start;
-                let mut found_pps = false;
-                while pos + 4 <= data.len() {
-                    let is_sc4 = data[pos..pos + 4] == [0, 0, 0, 1];
-                    let is_sc3 = data[pos..pos + 3] == [0, 0, 1];
-                    if is_sc4 || is_sc3 {
-                        let nal_byte = if is_sc4 { data[pos + 4] } else { data[pos + 3] };
-                        let nal_type = nal_byte & 0x1F;
-                        if nal_type == 8 {
-                            found_pps = true;
-                        } else if nal_type == 5 || nal_type == 1 {
-                            return Some(data[sps_start..pos].to_vec());
-                        }
-                    }
-                    pos += 1;
-                }
-                if found_pps {
-                    Some(data[sps_start..].to_vec())
-                } else {
-                    None
-                }
-            }
-
             if !self.out_buffer.is_empty() {
-                let has_sps = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 7) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 7));
-                if has_sps {
-                    if let Some(extracted) = extract_sps_pps(&self.out_buffer) {
-                        self.header_cache = extracted;
-                    }
-                } else if !self.header_cache.is_empty() {
-                    let is_idr = self.out_buffer.windows(5).any(|w| (w[..4] == [0, 0, 0, 1] && (w[4] & 0x1F) == 5) || (w[..3] == [0, 0, 1] && (w[3] & 0x1F) == 5));
-                    if is_idr || self.needs_keyframe {
-                        let mut combined = Vec::with_capacity(self.header_cache.len() + self.out_buffer.len());
-                        combined.extend_from_slice(&self.header_cache);
-                        combined.extend_from_slice(&self.out_buffer);
-                        self.needs_keyframe = false;
-                        return Some(combined);
-                    }
-                }
-                self.needs_keyframe = false;
                 Some(std::mem::take(&mut self.out_buffer))
             } else {
                 None
@@ -772,3 +620,4 @@ mod tests {
         assert!(encoded_packets > 0, "Deveria codificar pelo menos 1 frame");
     }
 }
+
