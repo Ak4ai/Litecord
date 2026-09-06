@@ -287,6 +287,8 @@ impl ScreenCaptureManager {
                 #[cfg(windows)]
                 unsafe {
                     windows_sys::Win32::Media::timeBeginPeriod(1);
+                    use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+                    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 }
                 crate::cpu_profiler::set_current_thread_name("screen-capture-tx");
 
@@ -307,52 +309,65 @@ impl ScreenCaptureManager {
                 });
 
                 let camera_handle = if let Some(cam_idx) = camera_index {
-                    if let Ok(devs) = cameras::devices() {
-                        if let Some(dev) = devs.into_iter().nth(cam_idx as usize) {
-                            let cam_w = target_w.min(1280);
-                            let cam_h = target_h.min(720);
-                            let cam_fps = (target_fps as u32).min(60);
-                            let mut opened = None;
-                            let formats = [
-                                cameras::PixelFormat::Mjpeg,
-                                cameras::PixelFormat::Bgra8,
-                                cameras::PixelFormat::Rgba8,
-                                cameras::PixelFormat::Yuyv,
-                                cameras::PixelFormat::Rgb8,
-                            ];
-                            let resolutions = [
-                                cameras::Resolution { width: cam_w, height: cam_h },
-                                cameras::Resolution { width: 1280, height: 720 },
-                                cameras::Resolution { width: 640, height: 480 },
-                                cameras::Resolution { width: 640, height: 360 },
-                                cameras::Resolution { width: 1920, height: 1080 },
-                            ];
-                            let framerates = [cam_fps, 30, 15, 10];
-                            'outer: for fmt in formats {
-                                for res_test in resolutions {
-                                    for fps_test in framerates {
-                                        let config = cameras::StreamConfig {
-                                            resolution: res_test,
-                                            framerate: fps_test,
-                                            pixel_format: fmt,
-                                        };
-                                        if let Ok(cam) = cameras::open(&dev, config) {
-                                            info!("📷 Câmera '{}' aberta com sucesso ({}x{} @ {} FPS, {:?})!", dev.name, res_test.width, res_test.height, fps_test, fmt);
-                                            opened = Some(cam);
-                                            break 'outer;
+                    info!("📷 [CAMERA INIT] Buscando câmeras disponíveis para inicialização (índice selecionado: {})...", cam_idx);
+                    match cameras::devices() {
+                        Ok(devs) => {
+                            info!("📷 [CAMERA INIT] {} dispositivo(s) de câmera encontrado(s) no sistema", devs.len());
+                            for (i, d) in devs.iter().enumerate() {
+                                info!("📷 [CAMERA INIT] Dev #{}: '{}' (id: '{:?}')", i, d.name, d.id);
+                            }
+                            if let Some(dev) = devs.into_iter().nth(cam_idx as usize) {
+                                let cam_w = target_w.min(1280);
+                                let cam_h = target_h.min(720);
+                                let cam_fps = (target_fps as u32).min(60);
+                                let mut opened = None;
+                                let formats = [
+                                    cameras::PixelFormat::Mjpeg,
+                                    cameras::PixelFormat::Bgra8,
+                                    cameras::PixelFormat::Rgba8,
+                                    cameras::PixelFormat::Yuyv,
+                                    cameras::PixelFormat::Rgb8,
+                                ];
+                                let resolutions = [
+                                    cameras::Resolution { width: cam_w, height: cam_h },
+                                    cameras::Resolution { width: 1280, height: 720 },
+                                    cameras::Resolution { width: 640, height: 480 },
+                                    cameras::Resolution { width: 640, height: 360 },
+                                    cameras::Resolution { width: 1920, height: 1080 },
+                                ];
+                                let framerates = [cam_fps, 30, 15, 10];
+                                'outer: for fmt in formats {
+                                    for res_test in resolutions {
+                                        for fps_test in framerates {
+                                            let config = cameras::StreamConfig {
+                                                resolution: res_test,
+                                                framerate: fps_test,
+                                                pixel_format: fmt,
+                                            };
+                                            match cameras::open(&dev, config) {
+                                                Ok(cam) => {
+                                                    info!("📷 Câmera '{}' aberta com sucesso ({}x{} @ {} FPS, {:?})!", dev.name, res_test.width, res_test.height, fps_test, fmt);
+                                                    opened = Some(cam);
+                                                    break 'outer;
+                                                }
+                                                Err(_e) => {}
+                                            }
                                         }
                                     }
                                 }
+                                if opened.is_none() {
+                                    warn!("⚠️ Falha ao abrir câmera '{}' em todos os formatos de pixel testados.", dev.name);
+                                }
+                                opened
+                            } else {
+                                warn!("⚠️ Câmera índice {} fora do alcance de dispositivos disponíveis", cam_idx);
+                                None
                             }
-                            if opened.is_none() {
-                                warn!("Falha ao abrir câmera '{}' em todos os formatos de pixel testados.", dev.name);
-                            }
-                            opened
-                        } else {
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Erro ao listar dispositivos de câmera: {:?}", e);
                             None
                         }
-                    } else {
-                        None
                     }
                 } else {
                     None
@@ -631,6 +646,8 @@ impl ScreenCaptureManager {
                             #[cfg(windows)]
                             unsafe {
                                 windows_sys::Win32::Media::timeBeginPeriod(1);
+                                use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+                                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                             }
 
                             let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));

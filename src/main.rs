@@ -867,6 +867,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_is_screen_sharing(false);
                 ui.set_show_self_preview_notice(false);
                 ui.set_local_preview_fps("".into());
+                ui.set_active_stream_frame(Image::default());
                 let my_uid = gateway::get_my_user_id().to_string();
                 if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == my_uid.as_str() {
                     ui.set_popped_out_stream_uid("".into());
@@ -888,6 +889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
+                ui.set_active_stream_frame(Image::default());
                 let my_uid = gateway::get_my_user_id();
                 let my_uname = gateway::get_my_username();
                 let cid = gateway::get_my_voice_channel_id();
