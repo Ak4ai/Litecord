@@ -315,17 +315,17 @@ impl ScreenCaptureManager {
                             let mut opened = None;
                             let formats = [
                                 cameras::PixelFormat::Mjpeg,
-                                cameras::PixelFormat::Yuyv,
-                                cameras::PixelFormat::Nv12,
                                 cameras::PixelFormat::Bgra8,
-                                cameras::PixelFormat::Rgb8,
                                 cameras::PixelFormat::Rgba8,
+                                cameras::PixelFormat::Yuyv,
+                                cameras::PixelFormat::Rgb8,
                             ];
                             let resolutions = [
                                 cameras::Resolution { width: cam_w, height: cam_h },
                                 cameras::Resolution { width: 1280, height: 720 },
                                 cameras::Resolution { width: 640, height: 480 },
                                 cameras::Resolution { width: 640, height: 360 },
+                                cameras::Resolution { width: 1920, height: 1080 },
                             ];
                             let framerates = [cam_fps, 30, 15, 10];
                             'outer: for fmt in formats {
@@ -641,9 +641,12 @@ impl ScreenCaptureManager {
 
                                 let cap_res = if camera_index.is_some() {
                                     if let Some(ref cam) = camera_handle {
-                                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(50)) {
+                                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(150)) {
                                             let (w, h) = (frame.width, frame.height);
-                                            if let Ok(mut rgba_bytes) = cameras::to_rgba8(&frame) {
+                                            let converted = std::panic::catch_unwind(|| {
+                                                cameras::to_rgba8(&frame)
+                                            });
+                                            if let Ok(Ok(mut rgba_bytes)) = converted {
                                                 for chunk in rgba_bytes.chunks_exact_mut(4) {
                                                     chunk.swap(0, 2); // RGBA -> BGRA
                                                 }

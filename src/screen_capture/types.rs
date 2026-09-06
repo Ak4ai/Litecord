@@ -208,28 +208,12 @@ pub fn list_cameras() -> Vec<CameraItemInfo> {
     let mut result = Vec::new();
     if let Ok(devs) = cameras::devices() {
         for (i, dev) in devs.into_iter().enumerate() {
-            let test_config_mjpeg = cameras::StreamConfig {
-                resolution: cameras::Resolution { width: 640, height: 480 },
-                framerate: 30,
-                pixel_format: cameras::PixelFormat::Mjpeg,
-            };
-            let can_open = cameras::open(&dev, test_config_mjpeg).is_ok() || {
-                let test_config_yuyv = cameras::StreamConfig {
-                    resolution: cameras::Resolution { width: 640, height: 480 },
-                    framerate: 30,
-                    pixel_format: cameras::PixelFormat::Yuyv,
-                };
-                cameras::open(&dev, test_config_yuyv).is_ok()
-            };
-
-            if can_open || cfg!(windows) {
-                let name = dev.name.clone();
-                result.push(CameraItemInfo {
-                    id: format!("{}", i),
-                    name,
-                    index: i as u32,
-                });
-            }
+            let name = dev.name.clone();
+            result.push(CameraItemInfo {
+                id: format!("{}", i),
+                name,
+                index: i as u32,
+            });
         }
     }
     result
