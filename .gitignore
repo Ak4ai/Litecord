@@ -4,6 +4,12 @@
 *.old.exe
 *.rs.bk
 *.dll
+!avcodec-61.dll
+!avutil-59.dll
+!swresample-5.dll
+!swscale-8.dll
+!w32-pthreads.dll
+!zlib.dll
 
 # Litecord user sessions, caches & configs
 .litecord_*
