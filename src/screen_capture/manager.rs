@@ -641,7 +641,7 @@ impl ScreenCaptureManager {
 
                                 let cap_res = if camera_index.is_some() {
                                     if let Some(ref cam) = camera_handle {
-                                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(150)) {
+                                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(200)) {
                                             let (w, h) = (frame.width, frame.height);
                                             let converted = std::panic::catch_unwind(|| {
                                                 cameras::to_rgba8(&frame)
@@ -650,8 +650,10 @@ impl ScreenCaptureManager {
                                                 for chunk in rgba_bytes.chunks_exact_mut(4) {
                                                     chunk.swap(0, 2); // RGBA -> BGRA
                                                 }
-                                                cur_buf = rgba_bytes;
-                                                Some((w, h, 0u128, 0u128))
+                                                let total_canvas_bytes = (target_w * target_h * 4) as usize;
+                                                cur_buf.resize(total_canvas_bytes, 0);
+                                                fit_bgra_to_canvas(&rgba_bytes, w, h, target_w, target_h, &mut cur_buf);
+                                                Some((target_w, target_h, 0u128, 0u128))
                                             } else {
                                                 None
                                             }
