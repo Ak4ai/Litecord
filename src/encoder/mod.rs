@@ -205,18 +205,7 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
                 return Box::new(enc);
             }
             Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU indisponível ({}), tentando Windows Media Foundation...", e);
-            }
-        }
-
-        info!("🎯 [VIDEO CODEC FACTORY] Inicializando Direct3D 11 + Windows Media Foundation GPU Engine...");
-        match wmf::WmfGpuEncoder::try_new(target_fps, is_screen_content) {
-            Ok(enc) => {
-                info!("🚀 [VIDEO CODEC FACTORY] Direct3D 11 + WMF GPU Engine ativado com sucesso (Hardware: {})!", enc.gpu_name);
-                return Box::new(enc);
-            }
-            Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] WMF GPU Engine indisponível ({}), acionando fallback de segurança...", e);
+                warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU indisponível ({}), usando fallback OpenH264 SIMD...", e);
             }
         }
     }

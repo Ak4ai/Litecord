@@ -3,6 +3,7 @@
 *.pdb
 *.old.exe
 *.rs.bk
+*.dll
 
 # Litecord user sessions, caches & configs
 .litecord_*

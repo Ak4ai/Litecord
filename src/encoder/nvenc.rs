@@ -65,6 +65,52 @@ pub struct FfmpegNvencEncoder {
     header_cache: Vec<u8>,
 }
 
+#[cfg(target_os = "windows")]
+fn ensure_embedded_ffmpeg_extracted() -> Option<std::path::PathBuf> {
+    const AVCODEC_61_BYTES: &[u8] = include_bytes!("../../avcodec-61.dll");
+    const AVUTIL_59_BYTES: &[u8] = include_bytes!("../../avutil-59.dll");
+    const SWRESAMPLE_5_BYTES: &[u8] = include_bytes!("../../swresample-5.dll");
+    const SWSCALE_8_BYTES: &[u8] = include_bytes!("../../swscale-8.dll");
+    const W32_PTHREADS_BYTES: &[u8] = include_bytes!("../../w32-pthreads.dll");
+    const ZLIB_BYTES: &[u8] = include_bytes!("../../zlib.dll");
+
+    let base_dir = std::env::var("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+
+    let target_dir = base_dir.join("Litecord").join("bin");
+    if let Err(e) = std::fs::create_dir_all(&target_dir) {
+        warn!("⚠️ [EMBEDDED FFMPEG] Falha ao criar diretório {}: {}", target_dir.display(), e);
+        return None;
+    }
+
+    let files: &[(&str, &[u8])] = &[
+        ("zlib.dll", ZLIB_BYTES),
+        ("w32-pthreads.dll", W32_PTHREADS_BYTES),
+        ("swresample-5.dll", SWRESAMPLE_5_BYTES),
+        ("swscale-8.dll", SWSCALE_8_BYTES),
+        ("avutil-59.dll", AVUTIL_59_BYTES),
+        ("avcodec-61.dll", AVCODEC_61_BYTES),
+    ];
+
+    for (name, bytes) in files {
+        let dest = target_dir.join(name);
+        let need_write = match std::fs::metadata(&dest) {
+            Ok(meta) => meta.len() != bytes.len() as u64,
+            Err(_) => true,
+        };
+        if need_write {
+            if let Err(e) = std::fs::write(&dest, bytes) {
+                warn!("⚠️ [EMBEDDED FFMPEG] Falha ao extrair {}: {}", dest.display(), e);
+                return None;
+            }
+        }
+    }
+
+    info!("📦 [EMBEDDED FFMPEG] Dependências FFmpeg autônomas verificadas em: {}", target_dir.display());
+    Some(target_dir)
+}
+
 impl FfmpegNvencEncoder {
     pub fn try_new(target_fps: u32, is_screen_content: bool) -> Result<Self, String> {
         Self::try_new_with_codec(target_fps, is_screen_content, None)
@@ -76,20 +122,42 @@ impl FfmpegNvencEncoder {
         unsafe {
             #[cfg(target_os = "windows")]
             let (avcodec_dll, avutil_dll, get_proc_codec, get_proc_util) = {
-                let candidate_dirs = [
-                    "", // App directory / PATH
-                    r"C:\Program Files\obs-studio\bin\64bit",
-                    r"C:\Users\Henrique\.scrcpy\scrcpy-win64-v3.1",
-                    r"C:\Program Files\ldplayer9box",
-                ];
+                let mut candidate_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+                if let Some(embedded_dir) = ensure_embedded_ffmpeg_extracted() {
+                    candidate_dirs.push(embedded_dir);
+                }
+
+                if let Ok(exe_path) = std::env::current_exe() {
+                    if let Some(parent) = exe_path.parent() {
+                        candidate_dirs.push(parent.to_path_buf());
+                    }
+                }
+                candidate_dirs.push(std::path::PathBuf::from(r"C:\Program Files\obs-studio\bin\64bit"));
+                candidate_dirs.push(std::path::PathBuf::from(r"C:\Users\Henrique\.scrcpy\scrcpy-win64-v3.1"));
+                candidate_dirs.push(std::path::PathBuf::from(r"C:\Program Files\ldplayer9box"));
 
                 let mut avcodec_dll: windows_sys::Win32::Foundation::HMODULE = std::ptr::null_mut();
                 let mut avutil_dll: windows_sys::Win32::Foundation::HMODULE = std::ptr::null_mut();
 
-                for dir in candidate_dirs {
-                    if !dir.is_empty() {
-                        let c_dir = CString::new(dir).unwrap();
+                for dir in &candidate_dirs {
+                    if !dir.exists() {
+                        continue;
+                    }
+                    if let Some(dir_str) = dir.to_str() {
+                        let c_dir = CString::new(dir_str).unwrap();
                         windows_sys::Win32::System::LibraryLoader::SetDllDirectoryA(c_dir.as_ptr() as *const u8);
+                    }
+
+                    // Pré-carrega swresample se disponível
+                    let _ = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"swresample-5.dll\0".as_ptr());
+
+                    for util_dll_name in [b"avutil-59.dll\0", b"avutil-60.dll\0", b"avutil-58.dll\0", b"avutil-57.dll\0"] {
+                        let h_util = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(util_dll_name.as_ptr());
+                        if !h_util.is_null() {
+                            avutil_dll = h_util;
+                            break;
+                        }
                     }
 
                     for codec_dll_name in [b"avcodec-61.dll\0", b"avcodec-62.dll\0", b"avcodec-60.dll\0", b"avcodec-59.dll\0"] {
@@ -100,16 +168,8 @@ impl FfmpegNvencEncoder {
                         }
                     }
 
-                    for util_dll_name in [b"avutil-59.dll\0", b"avutil-60.dll\0", b"avutil-58.dll\0", b"avutil-57.dll\0"] {
-                        let h_util = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(util_dll_name.as_ptr());
-                        if !h_util.is_null() {
-                            avutil_dll = h_util;
-                            break;
-                        }
-                    }
-
                     if !avcodec_dll.is_null() && !avutil_dll.is_null() {
-                        info!("✅ [NVENC FFMPEG] Bibliotecas carregadas a partir de: '{}'", if dir.is_empty() { "Sistema/App" } else { dir });
+                        info!("✅ [NVENC FFMPEG] Bibliotecas carregadas com sucesso a partir de: '{}'", dir.display());
                         break;
                     }
                 }
@@ -240,10 +300,6 @@ impl FfmpegNvencEncoder {
                 get_proc_util(b"av_opt_set\0")
                     .ok_or_else(|| "Símbolo av_opt_set ausente".to_string())?
             );
-            let opt_find_fn: FnAvOptFind = std::mem::transmute(
-                get_proc_util(b"av_opt_find\0")
-                    .ok_or_else(|| "Símbolo av_opt_find ausente".to_string())?
-            );
             let dict_set_fn: FnAvDictSet = std::mem::transmute(
                 get_proc_util(b"av_dict_set\0")
                     .ok_or_else(|| "Símbolo av_dict_set ausente".to_string())?
@@ -252,15 +308,6 @@ impl FfmpegNvencEncoder {
                 get_proc_util(b"av_dict_free\0")
                     .ok_or_else(|| "Símbolo av_dict_free ausente".to_string())?
             );
-
-            let get_offset = |ctx: *mut c_void, name: &[u8]| -> usize {
-                let opt = opt_find_fn(ctx, name.as_ptr() as *const c_char, std::ptr::null(), 0, 0);
-                if !opt.is_null() {
-                    (*opt).offset as usize
-                } else {
-                    0
-                }
-            };
 
             let flush_buffers_fn: Option<FnAvcodecFlushBuffers> = get_proc_codec(b"avcodec_flush_buffers\0")
                 .map(|p| std::mem::transmute(p));
@@ -304,52 +351,17 @@ impl FfmpegNvencEncoder {
                 }
 
                 let ctx_u8 = codec_ctx as *mut u8;
-                let video_size_off = get_offset(codec_ctx as *mut c_void, b"video_size\0");
-                let pix_fmt_off = get_offset(codec_ctx as *mut c_void, b"pixel_format\0");
-                let flags_off = get_offset(codec_ctx as *mut c_void, b"flags\0");
-                let time_base_off = get_offset(codec_ctx as *mut c_void, b"time_base\0");
-                let b_off = get_offset(codec_ctx as *mut c_void, b"b\0");
-
-                if b_off > 0 {
-                    *(ctx_u8.add(b_off) as *mut i64) = initial_bitrate as i64;
-                } else {
-                    *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64;
-                }
-
-                if flags_off > 0 {
-                    *(ctx_u8.add(flags_off) as *mut u32) |= 0x00080000; // flags = AV_CODEC_FLAG_LOW_DELAY
-                } else {
-                    *(ctx_u8.add(80) as *mut u32) = 0x00080000;
-                }
-
-                if time_base_off > 0 {
-                    *(ctx_u8.add(time_base_off) as *mut i32) = 1;          // time_base.num
-                    *(ctx_u8.add(time_base_off + 4) as *mut i32) = target_fps.max(1) as i32; // time_base.den
-                } else {
-                    *(ctx_u8.add(84) as *mut i32) = 1;
-                    *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32;
-                }
-
-                if video_size_off > 0 {
-                    *(ctx_u8.add(video_size_off) as *mut i32) = initial_width as i32;
-                    *(ctx_u8.add(video_size_off + 4) as *mut i32) = initial_height as i32;
-                } else {
-                    *(ctx_u8.add(116) as *mut i32) = initial_width as i32;
-                    *(ctx_u8.add(120) as *mut i32) = initial_height as i32;
-                }
-
-                if pix_fmt_off > 0 {
-                    *(ctx_u8.add(pix_fmt_off) as *mut i32) = 23;        // pix_fmt = AV_PIX_FMT_NV12 (23)
-                } else {
-                    *(ctx_u8.add(140) as *mut i32) = 23;
-                }
-                *(ctx_u8.add(148) as *mut i32) = 1;         // color_primaries = BT709
-                *(ctx_u8.add(152) as *mut i32) = 1;         // color_trc = BT709
-                *(ctx_u8.add(156) as *mut i32) = 1;         // colorspace = BT709
-                *(ctx_u8.add(160) as *mut i32) = 2;         // color_range = PC / Full
-
-                opt_set_fn(codec_ctx as *mut c_void, b"g\0".as_ptr() as *const c_char, b"30\0".as_ptr() as *const c_char, 0);
-                opt_set_fn(codec_ctx as *mut c_void, b"bf\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
+                *(ctx_u8.add(56) as *mut i64) = initial_bitrate as i64; // bit_rate
+                *(ctx_u8.add(80) as *mut u32) = 0x00080000;            // flags = AV_CODEC_FLAG_LOW_DELAY
+                *(ctx_u8.add(84) as *mut i32) = 1;                     // time_base.num
+                *(ctx_u8.add(88) as *mut i32) = target_fps.max(1) as i32; // time_base.den
+                *(ctx_u8.add(116) as *mut i32) = initial_width as i32;  // width
+                *(ctx_u8.add(120) as *mut i32) = initial_height as i32; // height
+                *(ctx_u8.add(140) as *mut i32) = 23;                   // pix_fmt = AV_PIX_FMT_NV12 (23)
+                *(ctx_u8.add(148) as *mut i32) = 1;                    // color_primaries = BT709
+                *(ctx_u8.add(152) as *mut i32) = 1;                    // color_trc = BT709
+                *(ctx_u8.add(156) as *mut i32) = 1;                    // colorspace = BT709
+                *(ctx_u8.add(160) as *mut i32) = 2;                    // color_range = PC / Full
 
                 let mut opts: *mut c_void = std::ptr::null_mut();
                 dict_set_fn(&mut opts, b"g\0".as_ptr() as *const c_char, b"30\0".as_ptr() as *const c_char, 0);
@@ -360,6 +372,7 @@ impl FfmpegNvencEncoder {
                     dict_set_fn(&mut opts, b"zerolatency\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"rc\0".as_ptr() as *const c_char, b"cbr\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
+                    dict_set_fn(&mut opts, b"repeat-headers\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                 } else if name == "h264_amf" {
                     dict_set_fn(&mut opts, b"usage\0".as_ptr() as *const c_char, b"transcoding\0".as_ptr() as *const c_char, 0);
@@ -371,7 +384,6 @@ impl FfmpegNvencEncoder {
                     dict_set_fn(&mut opts, b"local_header\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"header_insertion_mode\0".as_ptr() as *const c_char, b"gop\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"cgop\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"flags\0".as_ptr() as *const c_char, b"+cgop\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"forced_idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"forced-idr\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"intra_refresh_type\0".as_ptr() as *const c_char, b"none\0".as_ptr() as *const c_char, 0);
@@ -380,7 +392,6 @@ impl FfmpegNvencEncoder {
                     dict_set_fn(&mut opts, b"filler_data\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"aud\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"max_b_frames\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
-                    dict_set_fn(&mut opts, b"b_frame_delta_qp\0".as_ptr() as *const c_char, b"0\0".as_ptr() as *const c_char, 0);
                 } else if name == "h264_qsv" {
                     dict_set_fn(&mut opts, b"preset\0".as_ptr() as *const c_char, b"veryfast\0".as_ptr() as *const c_char, 0);
                     dict_set_fn(&mut opts, b"async_depth\0".as_ptr() as *const c_char, b"1\0".as_ptr() as *const c_char, 0);
@@ -731,3 +742,34 @@ impl Drop for FfmpegNvencEncoder {
 }
 
 unsafe impl Send for FfmpegNvencEncoder {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedded_nvenc_encoder() {
+        let mut encoder = match FfmpegNvencEncoder::try_new(60, false) {
+            Ok(enc) => enc,
+            Err(e) => {
+                println!("⚠️ NVENC indisponível no ambiente de teste: {}", e);
+                return;
+            }
+        };
+
+        let width = 1920;
+        let height = 1080;
+        let frame_data = vec![128u8; width * height * 4];
+
+        let mut encoded_packets = 0;
+        for _ in 0..10 {
+            if let Some(packet) = encoder.encode(&frame_data, width as u32, height as u32) {
+                assert!(!packet.is_empty(), "Packet não pode ser vazio");
+                encoded_packets += 1;
+            }
+        }
+
+        println!("🎉 [TESTE NVENC] {} frames codificados com sucesso via {}", encoded_packets, encoder.name());
+        assert!(encoded_packets > 0, "Deveria codificar pelo menos 1 frame");
+    }
+}
