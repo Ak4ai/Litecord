@@ -905,7 +905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let source_tab = ui.get_stream_source_tab().to_string();
                 let (target_hwnd, screen_index, camera_index, include_audio) = if source_tab == "cameras" {
                     let cam_id_str = ui.get_stream_selected_camera_id().to_string();
-                    let cam_idx: Option<u32> = cam_id_str.parse().ok();
+                    let cam_idx: Option<u32> = cam_id_str.parse().ok().or(Some(0));
                     (0, 0, cam_idx, false)
                 } else if source_tab == "windows" {
                     let hwnd: isize = ui.get_stream_selected_window_id().to_string().parse().unwrap_or(0);

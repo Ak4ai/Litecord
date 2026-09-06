@@ -781,24 +781,28 @@ impl ScreenCaptureManager {
                         }
                     }
 
-                    // Se nenhum quadro chegou ainda, aguarda até 20ms ou usa fallback GDI imediato (vital para notebooks com GPUs híbridas)
+                    // Se nenhum quadro chegou ainda, aguarda até 20ms ou usa fallback GDI imediato para captura de tela (vital para notebooks com GPUs híbridas)
                     if latest_cached_frame.is_none() {
                         match rx_frame.recv_timeout(Duration::from_millis(20)) {
                             Ok(first_frame) => {
                                 latest_cached_frame = Some(first_frame);
                             }
                             Err(_) => {
-                                #[cfg(windows)]
-                                {
-                                    let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
-                                    if let Some((blt, pix)) = capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf) {
-                                        latest_cached_frame = Some((cur_buf, target_w, target_h, blt, pix));
-                                    } else {
-                                        continue;
+                                if camera_index.is_none() {
+                                    #[cfg(windows)]
+                                    {
+                                        let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
+                                        if let Some((blt, pix)) = capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf) {
+                                            latest_cached_frame = Some((cur_buf, target_w, target_h, blt, pix));
+                                        } else {
+                                            continue;
+                                        }
                                     }
+                                    #[cfg(not(windows))]
+                                    continue;
+                                } else {
+                                    continue;
                                 }
-                                #[cfg(not(windows))]
-                                continue;
                             }
                         }
                     }
