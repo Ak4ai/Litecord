@@ -2901,7 +2901,7 @@ export component AppWindow inherits Window {
                                         if (p.is_self && root.is_screen_sharing && root.show_self_preview_notice): Rectangle {
                                             x: 8px;
                                             y: 38px;
-                                            max-width: parent.width - 16px;
+                                            width: parent.width > 230px ? 215px : (parent.width - 16px > 0px ? parent.width - 16px : 0px);
                                             height: 20px;
                                             background: #111214ee;
                                             border-radius: 4px;
@@ -2910,9 +2910,10 @@ export component AppWindow inherits Window {
                                             clip: true;
 
                                             HorizontalLayout {
+                                                width: 100%;
                                                 padding-left: 6px;
-                                                padding-right: 8px;
-                                                spacing: 5px;
+                                                padding-right: 6px;
+                                                spacing: 4px;
                                                 alignment: start;
 
                                                 VerticalLayout {
@@ -2933,6 +2934,7 @@ export component AppWindow inherits Window {
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                     overflow: elide;
+                                                    horizontal-stretch: 1;
                                                 }
                                             }
 
@@ -8390,7 +8392,7 @@ export component PopoutStreamWindow inherits Window {
     if (root.is_self && root.show_self_preview_notice): Rectangle {
         x: 8px;
         y: 44px;
-        max-width: parent.width - 16px;
+        width: parent.width > 230px ? 215px : (parent.width - 16px > 0px ? parent.width - 16px : 0px);
         height: 20px;
         background: #111214ee;
         border-radius: 4px;
@@ -8399,9 +8401,10 @@ export component PopoutStreamWindow inherits Window {
         clip: true;
 
         HorizontalLayout {
+            width: 100%;
             padding-left: 6px;
-            padding-right: 8px;
-            spacing: 5px;
+            padding-right: 6px;
+            spacing: 4px;
             alignment: start;
 
             VerticalLayout {
@@ -8422,6 +8425,7 @@ export component PopoutStreamWindow inherits Window {
                 font-weight: 600;
                 vertical-alignment: center;
                 overflow: elide;
+                horizontal-stretch: 1;
             }
         }
 
