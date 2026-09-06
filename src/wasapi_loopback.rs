@@ -1,4 +1,5 @@
 #![cfg(target_os = "windows")]
+#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -189,7 +190,7 @@ unsafe extern "system" fn ch_activate_completed(this: *mut c_void, operation: *m
         let mut unk: *mut c_void = std::ptr::null_mut();
         let hr = ((*op_vtbl).GetActivateResult)(operation as *mut c_void, &mut hr_res, &mut unk);
         if hr == 0 && hr_res == 0 && !unk.is_null() {
-            *handler.client_slot.lock().unwrap() = Some(unk);
+            *handler.client_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(unk);
         } else {
             warn!("⚠️ [WASAPI LOOPBACK] ActivateCompleted falhou: hr=0x{:08x}, hr_res=0x{:08x}", hr, hr_res);
         }
@@ -351,7 +352,7 @@ pub fn start_wasapi_isolated_loopback(
             return Err(format!("Timeout aguardando ativação assíncrona do WASAPI (wait=0x{:08x})", wait_res));
         }
 
-        let client_ptr = match client_slot.lock().unwrap().take() {
+        let client_ptr = match client_slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
             Some(p) => p as *mut IAudioClient,
             None => return Err("Ponteiro IAudioClient não foi recebido no callback de ativação".to_string()),
         };
@@ -432,71 +433,69 @@ pub fn start_wasapi_isolated_loopback(
         std::thread::Builder::new()
             .name("wasapi-isolated-loopback".to_string())
             .spawn(move || {
-                unsafe {
-                    windows_sys::Win32::System::Com::CoInitializeEx(
-                        std::ptr::null_mut(),
-                        windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32,
-                    );
-                    crate::cpu_profiler::set_current_thread_name("wasapi-isolated-loopback");
+                windows_sys::Win32::System::Com::CoInitializeEx(
+                    std::ptr::null_mut(),
+                    windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32,
+                );
+                crate::cpu_profiler::set_current_thread_name("wasapi-isolated-loopback");
 
-                    let client = client_addr as *mut IAudioClient;
-                    let capture = capture_addr as *mut IAudioCaptureClient;
-                    let event_handle = event_handle_addr as *mut c_void;
-                    let client_vtbl = (*client).vtbl;
-                    let capture_vtbl = (*capture).vtbl;
+                let client = client_addr as *mut IAudioClient;
+                let capture = capture_addr as *mut IAudioCaptureClient;
+                let event_handle = event_handle_addr as *mut c_void;
+                let client_vtbl = (*client).vtbl;
+                let capture_vtbl = (*capture).vtbl;
 
-                    while is_running_thread.load(Ordering::Relaxed) {
-                        let wait_res = windows_sys::Win32::System::Threading::WaitForSingleObject(event_handle, 20);
-                        if wait_res != 0 && wait_res != 258 {
+                while is_running_thread.load(Ordering::Relaxed) {
+                    let wait_res = windows_sys::Win32::System::Threading::WaitForSingleObject(event_handle, 20);
+                    if wait_res != 0 && wait_res != 258 {
+                        break;
+                    }
+
+                    loop {
+                        let mut p_data: *mut u8 = std::ptr::null_mut();
+                        let mut num_frames: u32 = 0;
+                        let mut flags: u32 = 0;
+                        let mut dev_pos: u64 = 0;
+                        let mut qpc_pos: u64 = 0;
+
+                        let hr_buf = ((*capture_vtbl).GetBuffer)(
+                            capture as *mut c_void,
+                            &mut p_data,
+                            &mut num_frames,
+                            &mut flags,
+                            &mut dev_pos,
+                            &mut qpc_pos,
+                        );
+
+                        if hr_buf != 0 || num_frames == 0 || p_data.is_null() {
                             break;
                         }
 
-                        loop {
-                            let mut p_data: *mut u8 = std::ptr::null_mut();
-                            let mut num_frames: u32 = 0;
-                            let mut flags: u32 = 0;
-                            let mut dev_pos: u64 = 0;
-                            let mut qpc_pos: u64 = 0;
+                        let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                        let mut buf = pcm_buf.lock().unwrap_or_else(|e| e.into_inner());
 
-                            let hr_buf = ((*capture_vtbl).GetBuffer)(
-                                capture as *mut c_void,
-                                &mut p_data,
-                                &mut num_frames,
-                                &mut flags,
-                                &mut dev_pos,
-                                &mut qpc_pos,
-                            );
-
-                            if hr_buf != 0 || num_frames == 0 || p_data.is_null() {
-                                break;
+                        if silent {
+                            let new_len = buf.len() + (num_frames as usize);
+                            buf.resize(new_len, 0);
+                        } else {
+                            let total_samples = (num_frames as usize) * 2;
+                            let i16_slice = std::slice::from_raw_parts(p_data as *const i16, total_samples);
+                            for chunk in i16_slice.chunks_exact(2) {
+                                let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
+                                buf.push(mono);
                             }
-
-                            let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-                            let mut buf = pcm_buf.lock().unwrap();
-
-                            if silent {
-                                let new_len = buf.len() + (num_frames as usize);
-                                buf.resize(new_len, 0);
-                            } else {
-                                let total_samples = (num_frames as usize) * 2;
-                                let i16_slice = std::slice::from_raw_parts(p_data as *const i16, total_samples);
-                                for chunk in i16_slice.chunks_exact(2) {
-                                    let mono = ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16;
-                                    buf.push(mono);
-                                }
-                            }
-
-                            let _ = ((*capture_vtbl).ReleaseBuffer)(capture as *mut c_void, num_frames);
                         }
-                    }
 
-                    info!("🔇 [WASAPI LOOPBACK] Parando captura isolada...");
-                    let _ = ((*client_vtbl).Stop)(client as *mut c_void);
-                    let _ = ((*capture_vtbl).Release)(capture as *mut c_void);
-                    let _ = ((*client_vtbl).Release)(client as *mut c_void);
-                    windows_sys::Win32::Foundation::CloseHandle(event_handle);
-                    info!("🔇 [WASAPI LOOPBACK] Stream isolado finalizado com sucesso.");
+                        let _ = ((*capture_vtbl).ReleaseBuffer)(capture as *mut c_void, num_frames);
+                    }
                 }
+
+                info!("🔇 [WASAPI LOOPBACK] Parando captura isolada...");
+                let _ = ((*client_vtbl).Stop)(client as *mut c_void);
+                let _ = ((*capture_vtbl).Release)(capture as *mut c_void);
+                let _ = ((*client_vtbl).Release)(client as *mut c_void);
+                windows_sys::Win32::Foundation::CloseHandle(event_handle);
+                info!("🔇 [WASAPI LOOPBACK] Stream isolado finalizado com sucesso.");
             })
             .ok();
 

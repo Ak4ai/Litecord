@@ -1835,6 +1835,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "windows")]
     unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{SetDefaultDllDirectories, LOAD_LIBRARY_SEARCH_SYSTEM32};
+        let _ = SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
         use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
     }
@@ -5269,7 +5271,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
     let app_weak_gw_events = app_weak.clone();
-    let last_token_gw_save = Arc::clone(&last_token);
     let active_guild_gw_events = Arc::clone(&active_guild_id);
     let active_channel_gw_events = Arc::clone(&active_channel_id);
     let guilds_map_gw_events = Arc::clone(&guilds_map);
@@ -5278,7 +5279,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             let app_weak_inner = app_weak_gw_events.clone();
-            let last_token_inner = Arc::clone(&last_token_gw_save);
             let active_guild_inner = Arc::clone(&active_guild_gw_events);
             let active_channel_inner = Arc::clone(&active_channel_gw_events);
             let guilds_map_inner = Arc::clone(&guilds_map_gw_events);
@@ -5627,7 +5627,10 @@ fn dpapi_protect(data: &[u8]) -> Option<Vec<u8>> {
     if res != 0 && !out_blob.pbData.is_null() {
         let slice = unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) };
         let result = slice.to_vec();
-        unsafe { LocalFree(out_blob.pbData as _) };
+        unsafe {
+            std::ptr::write_bytes(out_blob.pbData, 0, out_blob.cbData as usize);
+            LocalFree(out_blob.pbData as _);
+        };
         Some(result)
     } else {
         None
@@ -5666,7 +5669,10 @@ fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
     if res != 0 && !out_blob.pbData.is_null() {
         let slice = unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) };
         let result = slice.to_vec();
-        unsafe { LocalFree(out_blob.pbData as _) };
+        unsafe {
+            std::ptr::write_bytes(out_blob.pbData, 0, out_blob.cbData as usize);
+            LocalFree(out_blob.pbData as _);
+        };
         Some(result)
     } else {
         None
@@ -5927,8 +5933,18 @@ pub fn remove_single_account(user_id_or_token: &str) -> AccountVault {
 
 pub fn delete_secure_token() {
     let (primary_path, fallback_path) = get_secure_token_paths();
-    let _ = std::fs::remove_file(primary_path);
-    let _ = std::fs::remove_file(fallback_path);
+    for path in [&primary_path, &fallback_path] {
+        if path.exists() {
+            if let Ok(metadata) = std::fs::metadata(path) {
+                let len = metadata.len() as usize;
+                if len > 0 {
+                    let zeroes = vec![0u8; len];
+                    let _ = std::fs::write(path, &zeroes);
+                }
+            }
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 pub fn sync_ui_saved_accounts(app_weak: &slint::Weak<AppWindow>, vault: &AccountVault) {
@@ -6301,7 +6317,11 @@ fn set_linux_window_keep_above(is_pinned: bool) {
         pin_val
     );
 
-    let script_path = format!("/tmp/litecord_pin_{}.js", std::process::id());
+    let temp_base = std::env::var("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let script_path_buf = temp_base.join(format!("litecord_pin_{}.js", std::process::id()));
+    let script_path = script_path_buf.to_string_lossy().to_string();
     if std::fs::write(&script_path, script_code).is_ok() {
         let plugin_name = format!("litecord_pin_{}", std::process::id());
         let output = std::process::Command::new("busctl")

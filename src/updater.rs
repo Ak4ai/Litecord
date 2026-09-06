@@ -235,6 +235,27 @@ pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<Deta
     })
 }
 
+fn get_secure_update_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            let path = PathBuf::from(runtime_dir).join("litecord_update");
+            let _ = std::fs::create_dir_all(&path);
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+            return path;
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let path = PathBuf::from(home).join(".cache").join("litecord").join("update");
+            let _ = std::fs::create_dir_all(&path);
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+            return path;
+        }
+    }
+    std::env::temp_dir()
+}
+
 /// Downloads the release file and launches the updater/installer
 pub async fn download_and_install_update(
     download_url: String,
@@ -261,7 +282,7 @@ pub async fn download_and_install_update(
     }
 
     let total_size = response.content_length().unwrap_or(0);
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = get_secure_update_dir();
 
     if cfg!(target_os = "windows") {
         let installer_path = temp_dir.join("Litecord-Update-Setup.exe");
@@ -285,8 +306,17 @@ pub async fn download_and_install_update(
             .map_err(|e| format!("Erro no flush do arquivo: {:?}", e))?;
         drop(file);
 
+        if total_size > 0 && downloaded != total_size {
+            let _ = tokio::fs::remove_file(&installer_path).await;
+            return Err(format!("Download incompleto (recebidos {} de {} bytes). O instalador não foi executado.", downloaded, total_size));
+        }
+        if downloaded < 500_000 {
+            let _ = tokio::fs::remove_file(&installer_path).await;
+            return Err(format!("Download truncado ou corrompido (apenas {} bytes recebidos).", downloaded));
+        }
+
         let _ = progress_tx.try_send(1.0);
-        info!("Download concluído! Executando instalador: {:?}", installer_path);
+        info!("Download concluído e validado ({} bytes)! Executando instalador: {:?}", downloaded, installer_path);
 
         // Run installer and terminate current application cleanly
         #[cfg(target_os = "windows")]
@@ -361,8 +391,17 @@ pub async fn download_and_install_update(
             .map_err(|e| format!("Erro no flush do arquivo: {:?}", e))?;
         drop(file);
 
+        if total_size > 0 && downloaded != total_size {
+            let _ = tokio::fs::remove_file(&tar_path).await;
+            return Err(format!("Download incompleto (recebidos {} de {} bytes). A extração foi cancelada.", downloaded, total_size));
+        }
+        if downloaded < 500_000 {
+            let _ = tokio::fs::remove_file(&tar_path).await;
+            return Err(format!("Download truncado ou corrompido (apenas {} bytes recebidos).", downloaded));
+        }
+
         let _ = progress_tx.try_send(1.0);
-        info!("Download concluído! Atualizando binário Linux...");
+        info!("Download concluído e validado ({} bytes)! Atualizando binário Linux...", downloaded);
 
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let install_bin_dir = PathBuf::from(&home).join(".local/bin");

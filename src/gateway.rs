@@ -18,6 +18,7 @@ use std::num::NonZeroU16;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ChannelData {
     pub id: String,
     pub name: String,
@@ -2628,7 +2629,7 @@ pub async fn connect_voice_gateway(
     token: &str,
     channel_id: &str,
     self_mute_state: Arc<std::sync::Mutex<bool>>,
-    event_tx: mpsc::Sender<GatewayEvent>,
+    _event_tx: mpsc::Sender<GatewayEvent>,
 ) {
     let clean_endpoint = raw_endpoint.trim();
     let voice_url = if clean_endpoint.starts_with("wss://") || clean_endpoint.starts_with("ws://") {
@@ -2671,7 +2672,6 @@ pub async fn connect_voice_gateway(
                 let session_id = session_id.to_string();
                 let token = token.to_string();
                 let channel_id_str = channel_id.to_string();
-                let event_tx_vclose = event_tx.clone();
                 sync_voice_channel_participants(&channel_id_str);
                 let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
                 let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));

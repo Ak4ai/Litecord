@@ -78,8 +78,34 @@ Durante a auditoria foram identificados e mitigados os seguintes pontos de aten�
       log::warn!("URL recusada por esquema inseguro: {}", url);
       return;
   }
-  ```
-  Isso bloqueia qualquer tentativa de exploração de handlers do sistema operacional.
+### 3.5. Proteção contra DLL Hijacking / Side-Loading no Windows
+- **Arquivo**: `src/main.rs` (`main`)
+- **Cenário**: Execução do aplicativo a partir de pastas de download contendo DLLs manipuladas por terceiros poderia induzir o Windows a carregar bibliotecas não confiáveis.
+- **Ação Implementada**: Chamada explícita a `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` logo na primeira instrução da `main()` no Windows, forçando a resolução exclusiva de DLLs nativas a partir do diretório de sistema protegido `System32`.
+
+### 3.6. Isolamento Estrito de Diretórios Temporários e Prevenção de Symlink Race
+- **Arquivo**: `src/updater.rs` e `src/main.rs`
+- **Cenário**: O uso do diretório compartilhado `/tmp` em distribuições Linux permitia riscos de concorrência ou symlink race por outros usuários locais da mesma máquina.
+- **Ação Implementada**: Implementada a função `get_secure_update_dir()`, priorizando `$XDG_RUNTIME_DIR/litecord_update` ou `~/.cache/litecord/update` com permissões POSIX estritas `0700` (`rwx------`).
+
+### 3.7. Eliminação de Subshell e Injeção de Comandos em Áudio Nativo
+- **Arquivo**: `src/screen_capture.rs` (`AudioLoopbackIsolation`)
+- **Cenário**: Comandos utilitários de manipulação do PulseAudio/PipeWire anteriormente usavam `sh -c` com interpolação de strings para invocar `awk` e `pactl`.
+- **Ação Implementada**: Substituído por rotinas nativas em Rust (`std::process::Command::args`), analisando a saída do `pactl` diretamente em memória e invocando subcomandos com argumentos vetoriais estritos, eliminando qualquer invocação de subshell shell (`/bin/sh`).
+
+### 3.8. Purga Segura de Memória e Sobrescrita de Tokens em Disco
+- **Arquivo**: `src/main.rs` (`dpapi_protect`, `dpapi_unprotect`, `delete_secure_token`)
+- **Ação Implementada**:
+  - Zeragem explícita de memória (`std::ptr::write_bytes`) nos buffers de decifragem DPAPI antes de devolver os blocos de memória ao sistema via `LocalFree`.
+  - Sobrescrita de arquivos de token com zeros antes da exclusão (`fs::remove_file`), prevenindo recuperação de dados residuais em clusters não alocados.
+
+### 3.9. Blindagem de Privacidade P2P: Validação Estrita de Canal, Criptografia de Áudio e Unicast
+- **Arquivo**: `src/screen_capture.rs`
+- **Cenário**: Transmissões P2P em redes locais (LAN) anteriormente utilizavam broadcast (`255.255.255.255`) e fallback autônomo de reprodução de áudio, permitindo que outros dispositivos na mesma rede local ou fora da chamada de voz pudessem receber áudio e vídeo de transmissões não destinadas a eles.
+- **Ação Implementada**:
+  - **Validação Estrita de Canal**: Inserida checagem no receptor (`screen-capture-rx`) que descarta imediatamente qualquer pacote (`OP_AUDIO_FRAME`, `OP_VIDEO_CHUNK`, `OP_FEC_PARITY`, `OP_ANNOUNCE`, `OP_HEARTBEAT`, `OP_STOP`) se o usuário não estiver conectado exatamente no mesmo canal de voz ativo (`pkt_cid != my_current_cid` ou `my_current_cid == 0`).
+  - **Criptografia Obrigatória com AES-256-GCM**: Todos os pacotes de áudio de loopback agora são cifrados com a chave da sala de voz (`get_voice_encryption_key`) antes da transmissão, e o receptor rejeita pacotes que não puderem ser autenticados com a chave da sala.
+  - **Substituição de Broadcast por Unicast**: Eliminado o envio de mídia para endereços de broadcast universal (`255.255.255.255`). Os pacotes de áudio e vídeo agora são despachados estritamente via Unicast direto aos endereços IP verificados dos participantes da chamada (`peers_store` / `LAST_SEEN_PEER_ADDR`).
 
 ---
 
@@ -100,22 +126,20 @@ Durante a auditoria foram identificados e mitigados os seguintes pontos de aten�
 ## 5. Mecanismo de Atualização (Self-Updater)
 
 - **Validação de Origem**: O instalador e auto-updater conferem a URL de download antes de qualquer requisição. Somente assets provenientes do repositório oficial no GitHub (`https://github.com/Ak4ai/Litecord/releases/download/...`) são aceitos.
-- **Integridade de Execução**: Não há execução de scripts externos não assinados ou injeção de comandos via shell para atualização.
+- **Integridade de Execução**: Não há execução de scripts externos não assinados ou injeção de comandos via shell para atualização. O download ocorre em diretório seguro e isolado com permissões de usuário único (`0700`).
 
 ---
 
 ## 6. Recomendações de Hardening Contínuo (Próximos Passos)
 
-Para versões futuras após o lançamento desta release, recomenda-se:
-1. **Isolamento de Diretório Temporário no Linux**:
-   - Mudar o download temporário de atualizações de `/tmp` para o diretório de execução exclusivo do usuário (`$XDG_RUNTIME_DIR/litecord` ou via `mkdtemp` com permissões `0700`), prevenindo ataques de corrida de links simbólicos (symlink race) em sistemas multiusuário compartilhados.
-2. **Windows DLL Search Order**:
-   - Chamar `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` logo na inicialização (`main`) no Windows para anular qualquer possibilidade de DLL Side-Loading ou DLL Hijacking caso o executável seja rodado de diretórios de download não confiáveis.
-3. **Invocação de Utilitários de Som**:
-   - Garantir que todas as chamadas ao `pactl` ou utilitários de áudio passem argumentos como fatias isoladas (`std::process::Command::args`) e nunca através de subshell (`sh -c`).
+Para versões futuras e roadmap de segurança contínua:
+1. **Validação Criptográfica de Checksum / Assinatura de Releases**:
+   - Incorporação de verificação de hash SHA-256 ou assinatura digital de binários baixados via auto-updater antes da substituição de executável.
+2. **Auditoria Contínua Automatizada no CI/CD**:
+   - Integração de `cargo audit` e `cargo deny` nas pipelines do GitHub Actions para monitoramento contínuo de CVEs em dependências de terceiros.
 
 ---
 
 ## 7. Conclusão da Auditoria
 
-O Litecord apresenta uma arquitetura sólida, segura e moderna. As proteções implementadas eliminam vetores comuns de negação de serviço e manipulação de memória. O código em `dev` está aprovado e pronto para a preparação de release.
+O Litecord apresenta uma arquitetura blindada, segura e de altíssimo desempenho. Todas as recomendações prioritárias de mitigação foram implementadas com sucesso e validadas nos testes de compilação e unidade. O código em `dev` está aprovado e pronto para release.

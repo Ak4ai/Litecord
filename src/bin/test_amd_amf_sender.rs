@@ -4,12 +4,20 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
-#[path = "../gpu_encoder.rs"]
-mod gpu_encoder;
+use litecord::gpu_encoder::VideoEncoder;
 #[cfg(windows)]
-use gpu_encoder::VideoEncoder;
+use litecord::gpu_encoder::amd_amf::AmdAmfZeroCopyEncoder;
+
 #[cfg(windows)]
-use gpu_encoder::amd_amf::AmdAmfZeroCopyEncoder;
+const MAGIC: &[u8; 4] = b"LTPV";
+#[cfg(windows)]
+const OP_ANNOUNCE: u8 = 1;
+#[cfg(windows)]
+const OP_VIDEO_CHUNK: u8 = 2;
+#[cfg(windows)]
+const OP_KEYFRAME_REQ: u8 = 6;
+#[cfg(windows)]
+const MAX_UDP_PAYLOAD: usize = 1200;
 
 #[cfg(not(windows))]
 fn main() {

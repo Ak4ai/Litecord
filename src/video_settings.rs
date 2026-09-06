@@ -44,47 +44,47 @@ pub fn save_video_settings(settings: &VideoSettings) {
 }
 
 pub fn get_video_encoder() -> String {
-    get_video_settings_store().lock().unwrap().video_encoder.clone()
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).video_encoder.clone()
 }
 
 pub fn set_video_encoder(val: String) {
-    let mut store = get_video_settings_store().lock().unwrap();
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.video_encoder = val;
     save_video_settings(&store);
 }
 
 pub fn get_video_capture_backend() -> String {
-    get_video_settings_store().lock().unwrap().video_capture_backend.clone()
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).video_capture_backend.clone()
 }
 
 pub fn set_video_capture_backend(val: String) {
-    let mut store = get_video_settings_store().lock().unwrap();
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.video_capture_backend = val;
     save_video_settings(&store);
 }
 
 pub fn get_audio_loopback_backend() -> String {
-    get_video_settings_store().lock().unwrap().audio_loopback_backend.clone()
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).audio_loopback_backend.clone()
 }
 
 pub fn set_audio_loopback_backend(val: String) {
-    let mut store = get_video_settings_store().lock().unwrap();
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.audio_loopback_backend = val;
     save_video_settings(&store);
 }
 
 pub fn get_enable_self_preview_notice() -> bool {
-    get_video_settings_store().lock().unwrap().enable_self_preview_notice
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).enable_self_preview_notice
 }
 
 pub fn set_enable_self_preview_notice(val: bool) {
-    let mut store = get_video_settings_store().lock().unwrap();
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.enable_self_preview_notice = val;
     save_video_settings(&store);
 }
 
 pub fn toggle_enable_self_preview_notice() -> bool {
-    let mut store = get_video_settings_store().lock().unwrap();
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.enable_self_preview_notice = !store.enable_self_preview_notice;
     let new_val = store.enable_self_preview_notice;
     save_video_settings(&store);

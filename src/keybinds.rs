@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, Ordering}};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use log::info;
 
 pub const KEYBINDS_CONFIG_FILE: &str = ".litecord_keybinds.json";
@@ -234,12 +234,12 @@ impl KeybindManager {
     }
 
     pub fn get_config(&self) -> KeybindsConfig {
-        self.config.lock().unwrap().clone()
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn update_config(&self, new_cfg: KeybindsConfig) {
         save_persisted_keybinds_config(&new_cfg);
-        *self.config.lock().unwrap() = new_cfg;
+        *self.config.lock().unwrap_or_else(|e| e.into_inner()) = new_cfg;
     }
 
     pub fn start_global_listener<FMute, FDeaf, FRecordDone>(
@@ -323,7 +323,7 @@ impl KeybindManager {
 
                                     // Save new combo
                                     {
-                                        let mut cfg = config_arc.lock().unwrap();
+                                        let mut cfg = config_arc.lock().unwrap_or_else(|e| e.into_inner());
                                         if rec_target == 1 {
                                             cfg.mute_shortcut = combo_str.clone();
                                         } else if rec_target == 2 {
@@ -347,7 +347,7 @@ impl KeybindManager {
 
                         // Normal hotkey detection mode
                         let (mute_combo, deaf_combo) = {
-                            let cfg = config_arc.lock().unwrap();
+                            let cfg = config_arc.lock().unwrap_or_else(|e| e.into_inner());
                             (
                                 KeyCombo::parse(&cfg.mute_shortcut),
                                 KeyCombo::parse(&cfg.deafen_shortcut),
@@ -499,7 +499,7 @@ impl KeybindManager {
                                         info!("⌨️ [KEYBINDS] Gravado com sucesso para target {}: {}", rec_target, combo_str);
 
                                         {
-                                            let mut cfg = config_arc.lock().unwrap();
+                                            let mut cfg = config_arc.lock().unwrap_or_else(|e| e.into_inner());
                                             if rec_target == 1 {
                                                 cfg.mute_shortcut = combo_str.clone();
                                             } else if rec_target == 2 {
@@ -544,7 +544,7 @@ impl KeybindManager {
 
                         // Normal hotkey detection mode
                         let (mute_combo, deaf_combo) = {
-                            let cfg = config_arc.lock().unwrap();
+                            let cfg = config_arc.lock().unwrap_or_else(|e| e.into_inner());
                             (
                                 KeyCombo::parse(&cfg.mute_shortcut),
                                 KeyCombo::parse(&cfg.deafen_shortcut),
