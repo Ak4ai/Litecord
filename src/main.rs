@@ -1,43 +1,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(ambiguous_glob_reexports, unused_imports)]
 
-mod gateway;
-mod http;
-mod tray;
-mod i18n;
-mod keybinds;
-mod sound_effects;
-mod remote_auth;
-mod updater;
-mod screen_capture;
-mod emoji_cache;
-mod attachment_cache;
-pub mod logger;
-pub mod audio_engine;
-pub mod vault;
-pub mod ui_helpers;
-pub mod data_loader;
-
+pub mod auth;
+pub mod audio;
+pub mod ui;
+pub mod utils;
+pub mod gateway;
+pub mod http;
 pub mod encoder;
-pub mod gpu_encoder;
-pub mod cpu_profiler;
-pub mod video_settings;
-#[cfg(target_os = "windows")]
-pub mod wasapi_loopback;
+pub mod screen_capture;
 
-use gateway::{GatewayClient, GatewayEvent, GatewayCommand, GuildData, format_discord_author, format_discord_message_parts};
-use http::DiscordHttpClient;
-use tray::SystemTrayManager;
-use remote_auth::RemoteAuthEvent;
-use screen_capture::ScreenCaptureManager;
-use logger::init_logger;
-use audio_engine::*;
-use vault::*;
-use ui_helpers::*;
-use data_loader::*;
+// Convenient re-exports for modules and root scope
+pub use auth::*;
+pub use audio::*;
+pub use ui::*;
+pub use utils::*;
+pub use gateway::*;
+pub use http::*;
+pub use encoder::*;
+pub use screen_capture::*;
 
 use slint::{SharedString, Model, Image, SharedPixelBuffer, Rgba8Pixel};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use log::{info, warn, error};
 
@@ -51,7 +36,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 slint::include_modules!();
-
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

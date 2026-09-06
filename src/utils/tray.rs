@@ -11,7 +11,7 @@ pub struct SystemTrayManager {
 }
 
 fn create_default_icon() -> Icon {
-    let icon_bytes = include_bytes!("../assets/app_icon.png");
+    let icon_bytes = include_bytes!("../../assets/app_icon.png");
     if let Ok(img) = image::load_from_memory(icon_bytes) {
         let rgba_img = img.into_rgba8();
         let (width, height) = rgba_img.dimensions();

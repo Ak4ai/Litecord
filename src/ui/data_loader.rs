@@ -10,10 +10,10 @@ use crate::{
 };
 use crate::gateway::{self, GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use crate::http::DiscordHttpClient;
-use crate::ui_helpers::*;
-use crate::vault::*;
-use crate::updater;
-use crate::emoji_cache;
+use crate::ui::helpers::*;
+use crate::auth::vault::*;
+use crate::utils::updater;
+use crate::utils::emoji_cache;
 use slint::{Image, Model};
 
 #[derive(Clone, Debug, Default)]

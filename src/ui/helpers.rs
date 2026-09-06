@@ -10,10 +10,10 @@ use crate::{
 };
 use crate::http::DiscordHttpClient;
 use crate::gateway::{self, ChannelData};
-use crate::i18n;
-use crate::video_settings;
-use crate::emoji_cache;
-use crate::attachment_cache;
+use crate::utils::i18n;
+use crate::utils::video_settings;
+use crate::utils::emoji_cache;
+use crate::utils::attachment_cache;
 
 pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -52,14 +52,6 @@ pub static NEED_UI_REFRESH: AtomicBool = AtomicBool::new(false);
 /// Number of messages received while the window was hidden.
 /// Cleared when the window is restored and a REST refresh is triggered.
 pub static PENDING_MESSAGES: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Clone)]
-pub struct RawGuildItem {
-    id: String,
-    name: String,
-    icon: String,
-    icon_path: Option<String>,
-}
 
 pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     let resolved = match lang {
