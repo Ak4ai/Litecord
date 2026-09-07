@@ -15,7 +15,7 @@
   <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>&lt; 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
 </p>
 
-[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [🇧🇷 Versão em Português](README_PT.md) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](SECURITY.md) • [🛠️ Build from Source](#-building-from-source)
+[🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📚 Docs & Wiki](docs/README.md) • [🇧🇷 Versão em Português](README_PT.md) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](SECURITY.md) • [🛠️ Build from Source](#-building-from-source)
 
 <br/>
 

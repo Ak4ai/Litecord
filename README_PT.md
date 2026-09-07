@@ -15,7 +15,7 @@
   <b>Litecord</b> é um cliente desktop nativo para Discord criado do zero em <b>Rust</b> e <b>Slint</b> para <b>gamers, streamers e jogadores competitivos</b>. Rodando com <b>&lt; 0.1% de CPU</b> e <b>~32 MB de RAM</b>, ele elimina micro-travamentos e não perde nenhum FPS enquanto entrega <b>Transmissão Full HD 1080p 60 FPS</b>, <b>Prioridade de Fala / Ducking Inteligente</b>, <b>Janelas Flutuantes (PiP)</b>, <b>Login via QR Code</b> e <b>Comandos Slash Inteligentes</b>.
 </p>
 
-[🌐 Site Oficial](https://ak4ai.github.io/Litecord/) • [📦 Downloads](#-downloads--instalação) • [🎮 Recursos](#-por-que-gamers-usam-o-litecord) • [⚡ Benchmarks](#-benchmarks-vs-discord-oficial) • [🛡️ Segurança](#-segurança-e-privacidade) • [🛠️ Compilar do Código](#-compilando-do-código-fonte)
+[🌐 Site Oficial](https://ak4ai.github.io/Litecord/) • [📚 Docs & Wiki](docs/README.md) • [📦 Downloads](#-downloads--instalação) • [🎮 Recursos](#-por-que-gamers-usam-o-litecord) • [⚡ Benchmarks](#-benchmarks-vs-discord-oficial) • [🛡️ Segurança](#-segurança-e-privacidade) • [🛠️ Compilar do Código](#-compilando-do-código-fonte)
 
 <br/>
 
