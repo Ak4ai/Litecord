@@ -31,12 +31,15 @@
 - 📺 **Full HD 1080p 60 FPS Screen Sharing**: Direct hardware framebuffer capture (DXGI / Direct3D11) with WASAPI loopback audio and sub-20ms glass-to-glass latency.
 - 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 (`[ - ] P:2 [ + ]`) so critical tactical callouts automatically duck background chatter and music bots during clutch moments.
 - 🪟 **Detached Video & Stream Popouts (PiP)**: Pop out live screen shares and video streams into a dedicated floating Picture-in-Picture window down to 180px with an always-on-top pin, responsive controls hierarchy, and click-through ghost mode.
-- 📱 **QR Code Mobile Login & Encrypted Vaults**: Log in instantly by scanning a QR code with the official Discord mobile app—no manual token extraction. Encrypted at rest via Linux hardware-bound vault (`0700`/`0600`) and Windows DPAPI.
+- 🌐 **Native Proxy Support & Censorship Bypass**: Built-in routing for HTTP/HTTPS proxies, SOCKS5 (Tor, Shadowsocks, V2Ray), and OS System Proxy, featuring real-time ping/latency diagnostics and proactive offline detection.
+- 📱 **QR Code Login & 1-Click Refresh**: Log in instantly by scanning a QR code with the official Discord mobile app—no manual token extraction. Includes 1-click re-generation for expired QR sessions.
+- 🔒 **Encrypted Multi-Account Vault**: Securely stores multiple Discord accounts simultaneously with instant 1-click account switching (encrypted via Windows DPAPI and Linux AES-256-GCM).
 - ⌨️ **Smart Slash Commands Autocomplete**: Real-time suggestion indexing for `/play`, `/skip`, and server bot commands with keyboard navigation (Up/Down + Enter) and interactive parameter chips.
 - 🖼️ **On-Demand Ephemeral Image Attachments**: Minecraft-style pixel-art placeholders (~500 bytes) with dynamic proportional height and zero-residue temp downloads.
 - 🎨 **Unified Emoji System (Twemoji + Discord CDN)**: Zero missing tofu squares (`□`). Full support for Discord custom animated/static emojis and Unicode emojis across chat, embeds, and bot buttons.
 - ⚡ **Sub-5 MB DeepSleep RAM**: Drops physical memory footprint down to **~3 MB – 5 MB** when minimized to the system tray, freeing maximum RAM for games.
 - 🎙️ **Opus PLC (Packet Loss Concealment)**: Prevents robotic voice stuttering and audio crackles even under 100% CPU/GPU load.
+- ⚙️ **Anywhere Settings Access**: Titlebar gear icon accessible even from the login screen, with auto-routing to proxy settings on network failure.
 - 🌐 **7 Built-in Languages**: Automatic OS language detection with English, Portuguese, Spanish, German, French, Russian, and Japanese.
 
 ---

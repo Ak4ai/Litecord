@@ -31,11 +31,13 @@
 - 📺 **Transmissão Full HD 1080p 60 FPS**: Captura direta de hardware (DXGI / Direct3D11) com áudio in-game por loopback WASAPI e latência sub-20ms.
 - 👑 **Prioridade de Fala e Ducking para Capitães/IGL**: Defina prioridades (`[ - ] P:2 [ + ]`) para que chamadas táticas em momentos clutch atenuem automaticamente o áudio de bots de música e conversa de fundo.
 - 🪟 **Janela Flutuante Desanexada (PiP)**: Desanexe transmissões em uma janela flutuante com pin para fixar no topo, controles responsivos e modo fantasma clique-através.
-- 📱 **Login Rápido por QR Code**: Faça login escaneando o QR Code direto pelo aplicativo do Discord no celular—sem precisar extrair token manualmente.
-- 🔒 **Cofres Criptografados de Sessão**: Credenciais protegidas por **AES-256-GCM** atrelado ao hardware no Linux (`~/.config/litecord/session.vault`) e **DPAPI** no Windows.
+- 🌐 **Suporte Nativo a Proxy & Bypass de Censura**: Roteamento integrado por Proxy HTTP/HTTPS, SOCKS5 (Tor, Shadowsocks, V2Ray) e Proxy do Sistema, com teste de ping/latência e diagnóstico inteligente de falhas.
+- 📱 **Login Rápido por QR Code & Re-geração**: Faça login escaneando o QR Code direto pelo aplicativo do Discord no celular, com botão de re-geração em 1 clique sem precisar reiniciar o app.
+- 🔒 **Cofres Criptografados & Múltiplas Contas**: Credenciais protegidas por **AES-256-GCM** no Linux e **DPAPI** no Windows, com troca instantânea entre múltiplas contas.
 - ⌨️ **Comandos Slash Inteligentes**: Autocomplete em tempo real para bots (`/play`, `/skip`, etc.) com navegação por teclado e chips interativos.
 - ⚡ **Modo DeepSleep (Sub-5 MB RAM)**: Reduz o consumo de RAM para **~3 MB a 5 MB** quando minimizado na bandeja.
 - 🎙️ **Opus PLC (Ocultação de Perda de Pacotes)**: Evita vozes robóticas e estalos mesmo sob 100% de uso de CPU/GPU.
+- ⚙️ **Configurações Acessíveis em Qualquer Lugar**: Ícone de engrenagem na barra de título acessível a qualquer momento, inclusive na tela de login.
 - 🌐 **7 Idiomas Nativos**: Detecção automática do idioma do sistema (Português, Inglês, Espanhol, Alemão, Francês, Russo e Japonês).
 
 ---

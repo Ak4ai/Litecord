@@ -46,6 +46,12 @@ scratch_*
 test_*.py
 __pycache__/
 *.pyc
+!scripts/
+!scripts/**
+
+# Binaries & Executables
+*.exe
+
 
 # Archives & Packages
 *.tar.gz

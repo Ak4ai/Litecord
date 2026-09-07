@@ -9,6 +9,11 @@ Este diretório contém as especificações técnicas, planos arquiteturais, rel
 ## 📑 Índice de Documentação
 
 ### 🚀 Arquitetura & Pipelines de Alta Performance
+* **[Rede & Proxy de Alta Performance](NETWORK_AND_PROXY.md)**:
+  * Suporte nativo a Proxy HTTP/HTTPS, SOCKS5 e Proxy do Sistema Operacional.
+  * Injeção dinâmica no cliente `reqwest` e túneis HTTPS `CONNECT`.
+  * Sistema inteligente de proteção contra falhas e timeout com atalhos de 1 clique na tela de login.
+  * Diagnóstico de latência (ping em tempo real para o Gateway do Discord).
 * **[P2P Video Streaming Architecture](P2P_VIDEO_STREAMING_PLAN.md)**:
   * Diagnóstico do sistema de transmissão Full HD (1080p @ 60 FPS).
   * Protocolo de sinalização via Gateway Discord e NAT Hole Punching (STUN RFC 5389 / Google / Cloudflare).

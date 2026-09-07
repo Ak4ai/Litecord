@@ -5,6 +5,36 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.10] - 2026-09-07
+
+### 🌐 Suporte a Proxy & Roteamento de Rede
+- **Proxy HTTP/HTTPS, SOCKS5 e Proxy do Sistema**:
+  - Motor nativo em Rust que injeta proxies dinamicamente no `reqwest::Client` (`apply_proxy_to_builder`).
+  - Suporte completo a túneis HTTPS `CONNECT` e credenciais de autenticação Basic Auth para proxies corporativos.
+  - Opção de roteamento seletivo de mídias (`route_media`) para economia de banda em proxies limitados.
+  - Recarregamento a quente (*zero downtime*): salvar configurações de proxy reconstrói o cliente HTTP em tempo real sem fechar o aplicativo.
+  - Layout da aba de configurações comprimido e responsivo, eliminando qualquer rolagem horizontal.
+
+### 🛡️ Diagnóstico Inteligente & Proteção de Login
+- **Aviso Dinâmico de Falha de Proxy**:
+  - Distinção clara entre falhas de rede/proxy (`10061`, recusa TCP, timeout, resolução DNS) e credenciais rejeitadas pelo Discord (`401 Unauthorized`).
+  - Verificação proativa de conectividade no início da aplicação em segundo plano.
+  - Banner de alerta visual elástico (`min-height: 38px`, `word-wrap`) na tela de login com atalho interativo: um clique no banner abre imediatamente a aba de Proxy para desativá-lo.
+  - Limpeza automática do banner de alerta vermelho ao selecionar o modo "Desativado".
+
+### 📱 Experiência na Tela de Login & Barra de Título
+- **Acesso Global às Configurações**:
+  - Botão com ícone de engrenagem ⚙️ integrado à barra de título personalizada, permitindo acesso irrestrito às configurações mesmo na tela de login.
+- **Re-geração de QR Code em 1 Clique**:
+  - Botão "Re-gerar QR Code" adicionado à interface para reiniciar sessões de QR Code expiradas sem reiniciar o aplicativo.
+  - Card de login expandido para 400px com alinhamento vertical dos botões e ícones.
+
+### 🧪 Ferramentas de Teste
+- **Servidor Proxy Local de Testes (`scripts/test_proxy_server.py`)**:
+  - Script Python leve, sem dependências externas, para emulação de proxies locais na porta 8080 com suporte a túneis HTTPS do Discord.
+
+---
+
 ## [v0.3.9] - 2026-08-30
 
 ### 👥 Multi-Account Vault & Instant Account Switching
