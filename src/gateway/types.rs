@@ -172,14 +172,21 @@ const GLOBAL_AUDIO_CONFIG_FILE: &str = ".litecord_audio_config.json";
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GlobalAudioConfig {
     pub vad_threshold: f32,
+    #[serde(default = "default_mic_volume")]
+    pub mic_volume: f32,
     pub input_device: String,
     pub output_device: String,
+}
+
+fn default_mic_volume() -> f32 {
+    1.0
 }
 
 impl Default for GlobalAudioConfig {
     fn default() -> Self {
         Self {
             vad_threshold: 0.05,
+            mic_volume: 1.0,
             input_device: String::new(),
             output_device: String::new(),
         }
@@ -212,6 +219,27 @@ pub fn set_persisted_output_device(name: String) {
     cfg.output_device = name.clone();
     save_persisted_audio_config(&cfg);
     set_selected_output_device(name);
+}
+
+static MIC_VOLUME: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
+
+fn get_mic_volume_atomic() -> &'static std::sync::atomic::AtomicU32 {
+    MIC_VOLUME.get_or_init(|| {
+        let cfg = load_persisted_audio_config();
+        std::sync::atomic::AtomicU32::new(cfg.mic_volume.clamp(0.0, 2.0).to_bits())
+    })
+}
+
+pub fn set_mic_volume(val: f32) {
+    let clamped = val.clamp(0.0, 2.0);
+    get_mic_volume_atomic().store(clamped.to_bits(), Ordering::Relaxed);
+    let mut cfg = load_persisted_audio_config();
+    cfg.mic_volume = clamped;
+    save_persisted_audio_config(&cfg);
+}
+
+pub fn get_mic_volume() -> f32 {
+    f32::from_bits(get_mic_volume_atomic().load(Ordering::Relaxed))
 }
 
 fn get_vad_threshold_atomic() -> &'static std::sync::atomic::AtomicU32 {

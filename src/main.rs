@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let saved_audio_cfg = gateway::load_persisted_audio_config();
     app.set_vad_threshold(saved_audio_cfg.vad_threshold);
+    app.set_mic_volume(saved_audio_cfg.mic_volume);
     app.set_app_version(updater::get_local_version_string().into());
 
     let initial_keybinds = keybinds::load_persisted_keybinds_config();
@@ -1632,6 +1633,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 1. Instantly display modal without blocking GUI thread!
             ui.set_show_settings_modal(true);
             ui.set_vad_threshold(gateway::get_vad_threshold());
+            ui.set_mic_volume(gateway::get_mic_volume());
             ui.set_is_testing_mic(gateway::is_testing_mic());
 
             let current_lang = i18n::load_persisted_language_config();
@@ -1790,6 +1792,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     app.on_set_vad_threshold(move |threshold: f32| {
         gateway::set_vad_threshold(threshold);
+    });
+
+    app.on_set_mic_volume(move |vol: f32| {
+        gateway::set_mic_volume(vol);
     });
 
     let app_weak_test_mic = app_weak.clone();

@@ -1119,6 +1119,7 @@ export component AppWindow inherits Window {
     callback open_link(string /* url */);
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
     callback set_vad_threshold(float /* threshold */);
+    callback set_mic_volume(float /* volume */);
     callback toggle_test_mic();
     callback logout();
     callback switch_account(string /* account_id */);
@@ -1354,6 +1355,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected_input_device: "Microfone Padrão do Sistema";
     in-out property <string> selected_output_device: "Alto-falantes Padrão do Sistema";
     in-out property <float> mic_level: 0.0; // Real-time mic volume level (0.0 to 1.0)
+    in-out property <float> mic_volume: 1.0; // Microphone Input Gain Volume (0.0 to 2.0, 100% = 1.0)
     in-out property <float> vad_threshold: 0.05; // Voice Activity Detection Threshold (0.0 to 1.0)
     in-out property <bool> is_testing_mic: false; // Mic loopback ("Se ouvir") test active
 
@@ -4448,6 +4450,140 @@ export component AppWindow inherits Window {
 
                                                 Text {
                                                     text: "Selecione o microfone principal ou headset. Recomendamos usar o dispositivo padrão ou o microfone dedicado com cancelamento de ruído.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
+                                        // --- ROW 1.5: MICROPHONE INPUT VOLUME (GAIN / AMPLIFICATION 0% TO 200%) + GUIDE ---
+                                        HorizontalLayout {
+                                            spacing: 0px;
+
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                padding-right: 16px;
+                                                spacing: 8px;
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #2563eb;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "VOLUME DE ENTRADA (GANHO DO MICROFONE)";
+                                                        color: #b5bac1;
+                                                        font-size: 11px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+
+                                                    Rectangle { horizontal-stretch: 1; }
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            background: root.mic_volume > 1.05 ? #23a55a : #2563eb;
+                                                            border-radius: 4px;
+                                                            height: 18px;
+                                                            width: 48px;
+
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Text {
+                                                                    text: Math.round(root.mic_volume * 100) + "%";
+                                                                    color: #ffffff;
+                                                                    font-size: 11px;
+                                                                    font-weight: 700;
+                                                                    vertical-alignment: center;
+                                                                    horizontal-alignment: center;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                HorizontalLayout {
+                                                    spacing: 10px;
+
+                                                    Text {
+                                                        text: "0%";
+                                                        color: #80848e;
+                                                        font-size: 11px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+
+                                                    Slider {
+                                                        horizontal-stretch: 1;
+                                                        minimum: 0.0;
+                                                        maximum: 2.0;
+                                                        value: root.mic_volume;
+                                                        changed(val) => {
+                                                            root.mic_volume = val;
+                                                            root.set_mic_volume(val);
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: "200%";
+                                                        color: #80848e;
+                                                        font-size: 11px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
+
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #2563eb;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "Volume de Entrada";
+                                                        color: #2563eb;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Ajuste o ganho do seu microfone. Valores acima de 100% (até 200%) amplificam o sinal da sua voz para os outros usuários na sala.";
                                                     color: #949ba4;
                                                     font-size: 11px;
                                                     wrap: word-wrap;

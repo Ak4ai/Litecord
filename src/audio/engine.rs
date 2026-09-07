@@ -117,11 +117,12 @@ pub fn start_mic_capture(
                     let frames = data.len() / num_channels;
                     if frames == 0 { return; }
 
+                    let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
                     let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
-                        let s = frame.iter().sum::<f32>() / num_channels as f32;
+                        let s = (frame.iter().sum::<f32>() / num_channels as f32) * mic_gain;
                         sum_sq += s * s;
                         mono_samples.push(s);
                     }
@@ -166,11 +167,12 @@ pub fn start_mic_capture(
                     let frames = data.len() / num_channels;
                     if frames == 0 { return; }
 
+                    let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
                     let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
-                        let s = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / num_channels as f32;
+                        let s = (frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / num_channels as f32) * mic_gain;
                         sum_sq += s * s;
                         mono_samples.push(s);
                     }
@@ -215,11 +217,12 @@ pub fn start_mic_capture(
                     let frames = data.len() / num_channels;
                     if frames == 0 { return; }
 
+                    let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
                     let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
-                        let s = frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / num_channels as f32;
+                        let s = (frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / num_channels as f32) * mic_gain;
                         sum_sq += s * s;
                         mono_samples.push(s);
                     }
