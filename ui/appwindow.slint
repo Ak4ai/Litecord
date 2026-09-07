@@ -1505,13 +1505,39 @@ export component AppWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
             }
 
-            // Custom Window Control Buttons (Minimize, Maximize, Close)
+            // Custom Window Control Buttons (Settings, Minimize, Maximize, Close)
             HorizontalLayout {
-                x: parent.width - 138px;
+                x: parent.width - 176px;
                 y: 0px;
-                width: 138px;
+                width: 176px;
                 height: 32px;
                 spacing: 0px;
+
+                // Settings (Accessible on login and main window)
+                Rectangle {
+                    width: 38px;
+                    height: 32px;
+                    background: sett_title_touch.has-hover ? #2b2d31 : transparent;
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/settings.svg");
+                                width: 14px;
+                                height: 14px;
+                                colorize: sett_title_touch.has-hover ? #ffffff : #949ba4;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+
+                    sett_title_touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open_settings(); }
+                    }
+                }
 
                 // Minimize
                 Rectangle {
