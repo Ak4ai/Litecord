@@ -6423,7 +6423,7 @@ export component AppWindow inherits Window {
 
                                                             for opt in root.proxy_mode_options: Rectangle {
                                                                 height: 44px;
-                                                                background: opt.is_selected ? #35373c : (opt_proxy_ta.has-hover ? #2b2d31 : transparent);
+                                                                background: (opt.id == root.selected_proxy_mode) ? #35373c : (opt_proxy_ta.has-hover ? #2b2d31 : transparent);
                                                                 border-radius: 6px;
                                                                 animate background { duration: 120ms; }
 
@@ -6435,7 +6435,7 @@ export component AppWindow inherits Window {
                                                                     VerticalLayout {
                                                                         alignment: center;
                                                                         Image {
-                                                                            source: opt.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                            source: (opt.id == root.selected_proxy_mode) ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
                                                                             width: 16px;
                                                                             height: 16px;
                                                                             image-fit: contain;
@@ -6448,14 +6448,14 @@ export component AppWindow inherits Window {
 
                                                                         Text {
                                                                             text: opt.name;
-                                                                            color: opt.is_selected ? #ffffff : #dbdee1;
+                                                                            color: (opt.id == root.selected_proxy_mode) ? #ffffff : #dbdee1;
                                                                             font-size: 12px;
-                                                                            font-weight: opt.is_selected ? 700 : 500;
+                                                                            font-weight: (opt.id == root.selected_proxy_mode) ? 700 : 500;
                                                                         }
 
                                                                         Text {
                                                                             text: opt.desc;
-                                                                            color: opt.is_selected ? #949ba4 : #80848e;
+                                                                            color: (opt.id == root.selected_proxy_mode) ? #949ba4 : #80848e;
                                                                             font-size: 10px;
                                                                         }
                                                                     }
@@ -6465,7 +6465,10 @@ export component AppWindow inherits Window {
 
                                                                 opt_proxy_ta := TouchArea {
                                                                     mouse-cursor: pointer;
-                                                                    clicked => { root.select_proxy_mode(opt.id); }
+                                                                    clicked => {
+                                                                        root.selected_proxy_mode = opt.id;
+                                                                        root.select_proxy_mode(opt.id);
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -6516,7 +6519,7 @@ export component AppWindow inherits Window {
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
-                                                                border-color: proxy_host_ta.has-hover ? #06b6d4 : #383a40;
+                                                                border-color: proxy_host_input_box.has-focus ? #06b6d4 : #383a40;
 
                                                                 HorizontalLayout {
                                                                     padding-left: 10px;
@@ -6529,7 +6532,6 @@ export component AppWindow inherits Window {
                                                                         single-line: true;
                                                                     }
                                                                 }
-                                                                proxy_host_ta := TouchArea {}
                                                             }
                                                         }
 
@@ -6548,7 +6550,7 @@ export component AppWindow inherits Window {
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
-                                                                border-color: proxy_port_ta.has-hover ? #06b6d4 : #383a40;
+                                                                border-color: proxy_port_input_box.has-focus ? #06b6d4 : #383a40;
 
                                                                 HorizontalLayout {
                                                                     padding-left: 10px;
@@ -6561,7 +6563,6 @@ export component AppWindow inherits Window {
                                                                         single-line: true;
                                                                     }
                                                                 }
-                                                                proxy_port_ta := TouchArea {}
                                                             }
                                                         }
                                                     }
@@ -6585,7 +6586,7 @@ export component AppWindow inherits Window {
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
-                                                                border-color: proxy_user_ta.has-hover ? #06b6d4 : #383a40;
+                                                                border-color: proxy_user_input_box.has-focus ? #06b6d4 : #383a40;
 
                                                                 HorizontalLayout {
                                                                     padding-left: 10px;
@@ -6598,7 +6599,6 @@ export component AppWindow inherits Window {
                                                                         single-line: true;
                                                                     }
                                                                 }
-                                                                proxy_user_ta := TouchArea {}
                                                             }
                                                         }
 
@@ -6617,7 +6617,7 @@ export component AppWindow inherits Window {
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
-                                                                border-color: proxy_pass_ta.has-hover ? #06b6d4 : #383a40;
+                                                                border-color: proxy_pass_input_box.has-focus ? #06b6d4 : #383a40;
 
                                                                 HorizontalLayout {
                                                                     padding-left: 10px;
@@ -6630,7 +6630,6 @@ export component AppWindow inherits Window {
                                                                         single-line: true;
                                                                     }
                                                                 }
-                                                                proxy_pass_ta := TouchArea {}
                                                             }
                                                         }
                                                     }
@@ -6653,12 +6652,15 @@ export component AppWindow inherits Window {
                                                         HorizontalLayout {
                                                             alignment: center;
                                                             spacing: 6px;
-                                                            Image {
-                                                                source: @image-url("../assets/lightning.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #06b6d4;
-                                                                image-fit: contain;
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: @image-url("../assets/lightning.svg");
+                                                                    width: 14px;
+                                                                    height: 14px;
+                                                                    colorize: #06b6d4;
+                                                                    image-fit: contain;
+                                                                }
                                                             }
                                                             Text {
                                                                 text: root.proxy_is_testing ? "Testando..." : "Testar Proxy";

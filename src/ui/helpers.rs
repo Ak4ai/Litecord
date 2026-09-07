@@ -348,10 +348,14 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
 pub fn populate_network_proxy_settings(ui: &AppWindow) {
     let settings = crate::utils::get_network_settings();
     ui.set_selected_proxy_mode(settings.proxy_mode.clone().into());
-    ui.set_proxy_host_input(settings.proxy_host.clone().into());
-    ui.set_proxy_port_input(settings.proxy_port.to_string().into());
-    ui.set_proxy_username_input(settings.proxy_username.clone().into());
-    ui.set_proxy_password_input(settings.proxy_password.clone().into());
+    let cur_host = ui.get_proxy_host_input();
+    if cur_host.trim().is_empty() {
+        ui.set_proxy_host_input(settings.proxy_host.clone().into());
+    }
+    let cur_port = ui.get_proxy_port_input();
+    if cur_port.trim().is_empty() {
+        ui.set_proxy_port_input(settings.proxy_port.to_string().into());
+    }
     ui.set_proxy_route_media_enabled(settings.route_media);
 
     let mode_items = vec![
