@@ -142,9 +142,9 @@ impl AttachmentCache {
         };
 
         tokio::spawn(async move {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(4))
-                .build();
+            let builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(4));
+            let client = crate::utils::apply_proxy_to_builder(builder).build();
 
             if let Ok(client) = client {
                 if let Ok(resp) = client.get(&thumb_url).send().await {
@@ -233,9 +233,9 @@ impl AttachmentCache {
         });
 
         tokio::spawn(async move {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build();
+            let builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30));
+            let client = crate::utils::apply_proxy_to_builder(builder).build();
 
             if let Ok(client) = client {
                 if let Ok(resp) = client.get(&url_str).send().await {

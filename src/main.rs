@@ -142,6 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let keybind_mgr = Arc::new(keybinds::KeybindManager::new(initial_keybinds));
     sound_effects::init_sound_effects();
     populate_video_interface_settings(&app);
+    populate_network_proxy_settings(&app);
 
     let app_weak = app.as_weak();
 
@@ -1648,6 +1649,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }).collect();
             ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
             populate_video_interface_settings(&ui);
+            populate_network_proxy_settings(&ui);
 
             // 2. Populate devices immediately from cache if available
             let cur_input = selected_input_open.lock().unwrap().clone();
@@ -1933,6 +1935,129 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_notice.upgrade() {
             ui.set_enable_self_preview_notice(new_val);
         }
+    });
+
+    // Network & Proxy Settings Callbacks
+    let app_weak_proxy_mode = app_weak.clone();
+    app.on_select_proxy_mode(move |id: SharedString| {
+        let mut curr = network_settings::get_network_settings();
+        curr.proxy_mode = id.to_string();
+        network_settings::save_network_settings(&curr);
+        if let Some(ui) = app_weak_proxy_mode.upgrade() {
+            populate_network_proxy_settings(&ui);
+        }
+    });
+
+    let app_weak_proxy_media = app_weak.clone();
+    app.on_toggle_proxy_route_media(move || {
+        let mut curr = network_settings::get_network_settings();
+        curr.route_media = !curr.route_media;
+        network_settings::save_network_settings(&curr);
+        if let Some(ui) = app_weak_proxy_media.upgrade() {
+            ui.set_proxy_route_media_enabled(curr.route_media);
+        }
+    });
+
+    let app_weak_proxy_save = app_weak.clone();
+    let http_client_proxy_save = Arc::clone(&http_client);
+    let last_token_proxy_save = Arc::clone(&last_token);
+    app.on_save_proxy_settings(move |mode: SharedString, host: SharedString, port_str: SharedString, user: SharedString, pass: SharedString, route_media: bool| {
+        let port = port_str.trim().parse::<u16>().unwrap_or(8080);
+        network_settings::update_network_settings(
+            mode.to_string(),
+            host.to_string(),
+            port,
+            user.to_string(),
+            pass.to_string(),
+            route_media,
+        );
+
+        // Re-instantiate http_client with new proxy settings if logged in
+        let tok = last_token_proxy_save.lock().unwrap().clone();
+        if !tok.is_empty() {
+            let mut client_guard = http_client_proxy_save.lock().unwrap();
+            *client_guard = Some(DiscordHttpClient::new(tok));
+        }
+
+        if let Some(ui) = app_weak_proxy_save.upgrade() {
+            populate_network_proxy_settings(&ui);
+            ui.set_proxy_test_status_text("Configurações de proxy salvas com sucesso!".into());
+            ui.set_proxy_test_is_success(true);
+        }
+    });
+
+    let app_weak_proxy_test = app_weak.clone();
+    app.on_test_proxy_requested(move |mode: SharedString, host: SharedString, port_str: SharedString, user: SharedString, pass: SharedString| {
+        let port = port_str.trim().parse::<u16>().unwrap_or(8080);
+        let mode_str = mode.to_string();
+        let host_str = host.to_string();
+        let user_str = user.to_string();
+        let pass_str = pass.to_string();
+
+        if let Some(ui) = app_weak_proxy_test.upgrade() {
+            ui.set_proxy_is_testing(true);
+            ui.set_proxy_test_status_text("Testando conexão via proxy...".into());
+            ui.set_proxy_test_is_success(true);
+        }
+
+        let app_weak_test_task = app_weak_proxy_test.clone();
+        tokio::spawn(async move {
+            // Temporarily build a client with these explicit settings to test
+            let mut builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(6))
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9000 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36");
+
+            match mode_str.as_str() {
+                "http" | "https" => {
+                    let url = format!("http://{}:{}", host_str.trim(), port);
+                    if let Ok(mut p) = reqwest::Proxy::all(&url) {
+                        if !user_str.is_empty() {
+                            p = p.basic_auth(&user_str, &pass_str);
+                        }
+                        builder = builder.proxy(p);
+                    }
+                }
+                "socks5" => {
+                    let url = format!("socks5://{}:{}", host_str.trim(), port);
+                    if let Ok(mut p) = reqwest::Proxy::all(&url) {
+                        if !user_str.is_empty() {
+                            p = p.basic_auth(&user_str, &pass_str);
+                        }
+                        builder = builder.proxy(p);
+                    }
+                }
+                "system" => {}
+                _ => {
+                    builder = builder.no_proxy();
+                }
+            }
+
+            let client = builder.build().unwrap_or_default();
+            let start = std::time::Instant::now();
+            let test_res = client.get("https://discord.com/api/v10/gateway").send().await;
+
+            let (msg, is_success) = match test_res {
+                Ok(resp) => {
+                    let ms = start.elapsed().as_millis();
+                    if resp.status().is_success() {
+                        (format!("Sucesso! Conectado aos servidores Discord via proxy em {}ms (Status {})", ms, resp.status()), true)
+                    } else {
+                        (format!("Proxy respondeu em {}ms, mas com status HTTP {}", ms, resp.status()), false)
+                    }
+                }
+                Err(e) => {
+                    (format!("Erro ao conectar via proxy: {}", e), false)
+                }
+            };
+
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_weak_test_task.upgrade() {
+                    ui.set_proxy_is_testing(false);
+                    ui.set_proxy_test_status_text(msg.into());
+                    ui.set_proxy_test_is_success(is_success);
+                }
+            });
+        });
     });
 
     // Leave Voice Callback

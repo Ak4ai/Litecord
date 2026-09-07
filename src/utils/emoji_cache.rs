@@ -172,9 +172,9 @@ impl EmojiCache {
                 format!("https://cdn.discordapp.com/emojis/{}.png?size=48&quality=lossless", id_str)
             };
 
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build();
+            let builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5));
+            let client = crate::utils::apply_proxy_to_builder(builder).build();
 
             if let Ok(client) = client {
                 if let Ok(resp) = client.get(&url).send().await {

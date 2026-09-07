@@ -16,9 +16,10 @@ impl DiscordHttpClient {
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&clean_token).unwrap_or(HeaderValue::from_static("")));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .default_headers(headers)
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9000 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36")
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9000 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36");
+        let client = crate::utils::apply_proxy_to_builder(builder)
             .build()
             .unwrap_or_default();
 

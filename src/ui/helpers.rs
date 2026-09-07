@@ -149,6 +149,7 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_tr_settings_tab_language(tr.settings_tab_language.into());
     ui.set_tr_settings_tab_keybinds(tr.settings_tab_keybinds.into());
     ui.set_tr_settings_tab_security(tr.settings_tab_security.into());
+    ui.set_tr_settings_tab_network_proxy(tr.settings_tab_network_proxy.into());
     ui.set_tr_settings_tab_updates(tr.settings_tab_updates.into());
     ui.set_tr_keybind_mute_title(tr.keybind_mute_title.into());
     ui.set_tr_keybind_mute_desc(tr.keybind_mute_desc.into());
@@ -342,6 +343,45 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     ui.set_video_encoder_options(std::rc::Rc::new(slint::VecModel::from(enc_items)).into());
     ui.set_video_capture_options(std::rc::Rc::new(slint::VecModel::from(vcap_items)).into());
     ui.set_audio_loopback_options(std::rc::Rc::new(slint::VecModel::from(aloop_items)).into());
+}
+
+pub fn populate_network_proxy_settings(ui: &AppWindow) {
+    let settings = crate::utils::get_network_settings();
+    ui.set_selected_proxy_mode(settings.proxy_mode.clone().into());
+    ui.set_proxy_host_input(settings.proxy_host.clone().into());
+    ui.set_proxy_port_input(settings.proxy_port.to_string().into());
+    ui.set_proxy_username_input(settings.proxy_username.clone().into());
+    ui.set_proxy_password_input(settings.proxy_password.clone().into());
+    ui.set_proxy_route_media_enabled(settings.route_media);
+
+    let mode_items = vec![
+        SettingOptionItem {
+            id: "off".into(),
+            name: "Desativado (Conexão Direta)".into(),
+            desc: "Conexão direta aos servidores do Discord sem intermediários (Padrão).".into(),
+            is_selected: settings.proxy_mode == "off",
+        },
+        SettingOptionItem {
+            id: "http".into(),
+            name: "Proxy HTTP / HTTPS".into(),
+            desc: "Túnel HTTP CONNECT ideal para redes corporativas, faculdades e Burp Suite / Fiddler.".into(),
+            is_selected: settings.proxy_mode == "http" || settings.proxy_mode == "https",
+        },
+        SettingOptionItem {
+            id: "socks5".into(),
+            name: "Proxy SOCKS5".into(),
+            desc: "Túnel SOCKS5 completo compatível com Tor (127.0.0.1:9050), Shadowsocks e SSH.".into(),
+            is_selected: settings.proxy_mode == "socks5",
+        },
+        SettingOptionItem {
+            id: "system".into(),
+            name: "Proxy do Sistema".into(),
+            desc: "Detecta e utiliza automaticamente as variáveis e proxy global do Windows/Linux.".into(),
+            is_selected: settings.proxy_mode == "system",
+        },
+    ];
+
+    ui.set_proxy_mode_options(std::rc::Rc::new(slint::VecModel::from(mode_items)).into());
 }
 
 

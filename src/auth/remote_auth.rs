@@ -219,7 +219,7 @@ async fn handle_auth_steps(
     event_tx: mpsc::Sender<RemoteAuthEvent>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let http_client = reqwest::Client::new();
+    let http_client = crate::utils::build_generic_http_client();
 
     while let Some(msg_res) = read.next().await {
         if cancel_flag.load(Ordering::SeqCst) {

@@ -1290,6 +1290,7 @@ export component AppWindow inherits Window {
     in-out property <string> tr_settings_tab_keybinds: "Atalhos";
     in-out property <string> tr_settings_tab_video_interface: "Vídeo e Interface";
     in-out property <string> tr_settings_tab_security: "Segurança & E2EE";
+    in-out property <string> tr_settings_tab_network_proxy: "Rede & Proxy";
     in-out property <string> tr_settings_tab_updates: "Atualizações & Sobre";
     in-out property <string> tr_keybind_mute_title: "Mutar / Desmutar Microfone";
     in-out property <string> tr_keybind_mute_desc: "Atalho global para mutar ou desmutar seu microfone durante chamadas.";
@@ -1318,6 +1319,23 @@ export component AppWindow inherits Window {
     callback select_video_capture_backend(string);
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
+
+    // Network & Proxy Settings Properties
+    in-out property <string> selected_proxy_mode: "off";
+    in-out property <string> proxy_host_input: "127.0.0.1";
+    in-out property <string> proxy_port_input: "8080";
+    in-out property <string> proxy_username_input: "";
+    in-out property <string> proxy_password_input: "";
+    in-out property <bool> proxy_route_media_enabled: false;
+    in-out property <string> proxy_test_status_text: "";
+    in-out property <bool> proxy_is_testing: false;
+    in-out property <bool> proxy_test_is_success: true;
+    in-out property <[SettingOptionItem]> proxy_mode_options: [];
+
+    callback select_proxy_mode(string);
+    callback save_proxy_settings(string, string, string, string, string, bool);
+    callback test_proxy_requested(string, string, string, string, string);
+    callback toggle_proxy_route_media();
 
     // QR Code Login Properties
     in-out property <image> qr_code_image;
@@ -4214,6 +4232,53 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            // Tab 6: Rede & Proxy / Network & Proxy
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 6px;
+                                background: root.settings_active_tab == 6 ? #35373c : tab6_touch.has-hover ? #2b2d31 : #0000;
+
+                                if root.settings_active_tab == 6: Rectangle {
+                                    x: 0px;
+                                    y: 10px;
+                                    width: 3px;
+                                    height: 18px;
+                                    background: #06b6d4;
+                                    border-radius: 2px;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image {
+                                            source: @image-url("../assets/globe.svg");
+                                            width: 16px;
+                                            height: 16px;
+                                            colorize: root.settings_active_tab == 6 ? #06b6d4 : #949ba4;
+                                            image-fit: contain;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.tr_settings_tab_network_proxy;
+                                        color: root.settings_active_tab == 6 ? #f2f3f5 : #dbdee1;
+                                        font-size: 13px;
+                                        font-weight: root.settings_active_tab == 6 ? 700 : 500;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+
+                                tab6_touch := TouchArea {
+                                    clicked => { root.settings_active_tab = 6; }
+                                }
+                            }
+
                             // Tab 4: Atualizações & Sistema
                             Rectangle {
                                 height: 38px;
@@ -6295,6 +6360,528 @@ export component AppWindow inherits Window {
                                                     color: #949ba4;
                                                     font-size: 11px;
                                                     wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Generous Bottom Spacer
+                                        Rectangle { height: 16px; }
+                                    }
+
+                                    // =============================================================
+                                    // TAB 6: REDE & PROXY (OPTIONS AND GUIDES)
+                                    // =============================================================
+                                    if root.settings_active_tab == 6: VerticalLayout {
+                                        spacing: 16px;
+
+                                        HorizontalLayout {
+                                            spacing: 0px;
+
+                                            // Options Block (Left - Col 2)
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                padding-right: 16px;
+                                                spacing: 14px;
+
+                                                // Section 1: Proxy Mode Selector
+                                                VerticalLayout {
+                                                    spacing: 8px;
+
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/globe.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #06b6d4;
+                                                                image-fit: contain;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: "Modo de Conexão Proxy";
+                                                            color: #f2f3f5;
+                                                            font-size: 13px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    Rectangle {
+                                                        background: #1e1f22;
+                                                        border-radius: 8px;
+                                                        border-width: 1px;
+                                                        border-color: #2b2d31;
+
+                                                        VerticalLayout {
+                                                            padding-top: 6px;
+                                                            padding-bottom: 6px;
+                                                            padding-left: 6px;
+                                                            padding-right: 6px;
+                                                            spacing: 4px;
+
+                                                            for opt in root.proxy_mode_options: Rectangle {
+                                                                height: 44px;
+                                                                background: opt.is_selected ? #35373c : (opt_proxy_ta.has-hover ? #2b2d31 : transparent);
+                                                                border-radius: 6px;
+                                                                animate background { duration: 120ms; }
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 12px;
+                                                                    spacing: 10px;
+
+                                                                    VerticalLayout {
+                                                                        alignment: center;
+                                                                        Image {
+                                                                            source: opt.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                            width: 16px;
+                                                                            height: 16px;
+                                                                            image-fit: contain;
+                                                                        }
+                                                                    }
+
+                                                                    VerticalLayout {
+                                                                        alignment: center;
+                                                                        spacing: 2px;
+
+                                                                        Text {
+                                                                            text: opt.name;
+                                                                            color: opt.is_selected ? #ffffff : #dbdee1;
+                                                                            font-size: 12px;
+                                                                            font-weight: opt.is_selected ? 700 : 500;
+                                                                        }
+
+                                                                        Text {
+                                                                            text: opt.desc;
+                                                                            color: opt.is_selected ? #949ba4 : #80848e;
+                                                                            font-size: 10px;
+                                                                        }
+                                                                    }
+
+                                                                    Rectangle { horizontal-stretch: 1; }
+                                                                }
+
+                                                                opt_proxy_ta := TouchArea {
+                                                                    mouse-cursor: pointer;
+                                                                    clicked => { root.select_proxy_mode(opt.id); }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Section 2: Host / Port / Credentials Inputs (only when HTTP or SOCKS5)
+                                                if root.selected_proxy_mode == "http" || root.selected_proxy_mode == "socks5": VerticalLayout {
+                                                    spacing: 10px;
+
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/settings.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #06b6d4;
+                                                                image-fit: contain;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: "Endereço e Autenticação do Proxy";
+                                                            color: #f2f3f5;
+                                                            font-size: 13px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    // Host & Port Row
+                                                    HorizontalLayout {
+                                                        spacing: 8px;
+
+                                                        // Host Field
+                                                        VerticalLayout {
+                                                            horizontal-stretch: 1;
+                                                            spacing: 4px;
+                                                            Text {
+                                                                text: "Servidor / IP Host:";
+                                                                color: #949ba4;
+                                                                font-size: 11px;
+                                                                font-weight: 600;
+                                                            }
+                                                            Rectangle {
+                                                                height: 36px;
+                                                                background: #1e1f22;
+                                                                border-radius: 6px;
+                                                                border-width: 1px;
+                                                                border-color: proxy_host_ta.has-hover ? #06b6d4 : #383a40;
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 10px;
+                                                                    proxy_host_input_box := TextInput {
+                                                                        text <=> root.proxy_host_input;
+                                                                        color: #f2f3f5;
+                                                                        font-size: 12px;
+                                                                        vertical-alignment: center;
+                                                                        single-line: true;
+                                                                    }
+                                                                }
+                                                                proxy_host_ta := TouchArea {}
+                                                            }
+                                                        }
+
+                                                        // Port Field
+                                                        VerticalLayout {
+                                                            width: 90px;
+                                                            spacing: 4px;
+                                                            Text {
+                                                                text: "Porta:";
+                                                                color: #949ba4;
+                                                                font-size: 11px;
+                                                                font-weight: 600;
+                                                            }
+                                                            Rectangle {
+                                                                height: 36px;
+                                                                background: #1e1f22;
+                                                                border-radius: 6px;
+                                                                border-width: 1px;
+                                                                border-color: proxy_port_ta.has-hover ? #06b6d4 : #383a40;
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 10px;
+                                                                    proxy_port_input_box := TextInput {
+                                                                        text <=> root.proxy_port_input;
+                                                                        color: #f2f3f5;
+                                                                        font-size: 12px;
+                                                                        vertical-alignment: center;
+                                                                        single-line: true;
+                                                                    }
+                                                                }
+                                                                proxy_port_ta := TouchArea {}
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Username & Password Row
+                                                    HorizontalLayout {
+                                                        spacing: 8px;
+
+                                                        // Username Field
+                                                        VerticalLayout {
+                                                            horizontal-stretch: 1;
+                                                            spacing: 4px;
+                                                            Text {
+                                                                text: "Usuário (Opcional):";
+                                                                color: #949ba4;
+                                                                font-size: 11px;
+                                                                font-weight: 600;
+                                                            }
+                                                            Rectangle {
+                                                                height: 36px;
+                                                                background: #1e1f22;
+                                                                border-radius: 6px;
+                                                                border-width: 1px;
+                                                                border-color: proxy_user_ta.has-hover ? #06b6d4 : #383a40;
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 10px;
+                                                                    proxy_user_input_box := TextInput {
+                                                                        text <=> root.proxy_username_input;
+                                                                        color: #f2f3f5;
+                                                                        font-size: 12px;
+                                                                        vertical-alignment: center;
+                                                                        single-line: true;
+                                                                    }
+                                                                }
+                                                                proxy_user_ta := TouchArea {}
+                                                            }
+                                                        }
+
+                                                        // Password Field
+                                                        VerticalLayout {
+                                                            horizontal-stretch: 1;
+                                                            spacing: 4px;
+                                                            Text {
+                                                                text: "Senha (Opcional):";
+                                                                color: #949ba4;
+                                                                font-size: 11px;
+                                                                font-weight: 600;
+                                                            }
+                                                            Rectangle {
+                                                                height: 36px;
+                                                                background: #1e1f22;
+                                                                border-radius: 6px;
+                                                                border-width: 1px;
+                                                                border-color: proxy_pass_ta.has-hover ? #06b6d4 : #383a40;
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 10px;
+                                                                    proxy_pass_input_box := TextInput {
+                                                                        text <=> root.proxy_password_input;
+                                                                        color: #f2f3f5;
+                                                                        font-size: 12px;
+                                                                        vertical-alignment: center;
+                                                                        single-line: true;
+                                                                    }
+                                                                }
+                                                                proxy_pass_ta := TouchArea {}
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Action Buttons & Status Feedback
+                                                HorizontalLayout {
+                                                    spacing: 10px;
+                                                    alignment: start;
+
+                                                    // Test Button
+                                                    Rectangle {
+                                                        height: 34px;
+                                                        width: 130px;
+                                                        background: test_btn_ta.has-hover ? #2b2d31 : #1e1f22;
+                                                        border-radius: 6px;
+                                                        border-width: 1px;
+                                                        border-color: #383a40;
+
+                                                        HorizontalLayout {
+                                                            alignment: center;
+                                                            spacing: 6px;
+                                                            Image {
+                                                                source: @image-url("../assets/lightning.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #06b6d4;
+                                                                image-fit: contain;
+                                                            }
+                                                            Text {
+                                                                text: root.proxy_is_testing ? "Testando..." : "Testar Proxy";
+                                                                color: #f2f3f5;
+                                                                font-size: 12px;
+                                                                font-weight: 600;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        test_btn_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.test_proxy_requested(
+                                                                    root.selected_proxy_mode,
+                                                                    root.proxy_host_input,
+                                                                    root.proxy_port_input,
+                                                                    root.proxy_username_input,
+                                                                    root.proxy_password_input
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Save & Apply Button
+                                                    Rectangle {
+                                                        height: 34px;
+                                                        width: 140px;
+                                                        background: save_btn_ta.has-hover ? #1d4ed8 : #2563eb;
+                                                        border-radius: 6px;
+
+                                                        HorizontalLayout {
+                                                            alignment: center;
+                                                            spacing: 6px;
+                                                            Text {
+                                                                text: "Salvar e Aplicar";
+                                                                color: #ffffff;
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        save_btn_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.save_proxy_settings(
+                                                                    root.selected_proxy_mode,
+                                                                    root.proxy_host_input,
+                                                                    root.proxy_port_input,
+                                                                    root.proxy_username_input,
+                                                                    root.proxy_password_input,
+                                                                    root.proxy_route_media_enabled
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Test Status Message
+                                                if root.proxy_test_status_text != "": Rectangle {
+                                                    background: root.proxy_test_is_success ? #0f3822 : #3f1515;
+                                                    border-radius: 6px;
+                                                    border-width: 1px;
+                                                    border-color: root.proxy_test_is_success ? #23a55a : #f23f43;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 10px;
+                                                        padding-right: 10px;
+                                                        padding-top: 8px;
+                                                        padding-bottom: 8px;
+                                                        spacing: 8px;
+                                                        Text {
+                                                            text: root.proxy_test_status_text;
+                                                            color: root.proxy_test_is_success ? #23a55a : #f23f43;
+                                                            font-size: 11px;
+                                                            font-weight: 600;
+                                                            wrap: word-wrap;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 14px;
+
+                                                // Guide 1: Burlar Bloqueios
+                                                VerticalLayout {
+                                                    spacing: 4px;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/shield.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #06b6d4;
+                                                                image-fit: contain;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: "Burlar Firewalls & Bloqueios";
+                                                            color: #06b6d4;
+                                                            font-size: 12px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                        Rectangle { horizontal-stretch: 1; }
+                                                    }
+                                                    Text {
+                                                        text: "Permite conectar em colégios, universidades e redes corporativas que bloqueiam o Discord via DNS ou portas padrão.";
+                                                        color: #949ba4;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
+                                                    }
+                                                }
+
+                                                // Guide 2: Tor e SOCKS5
+                                                VerticalLayout {
+                                                    spacing: 4px;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/key.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #2563eb;
+                                                                image-fit: contain;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: "Privacidade com Tor / SOCKS5";
+                                                            color: #2563eb;
+                                                            font-size: 12px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                        Rectangle { horizontal-stretch: 1; }
+                                                    }
+                                                    Text {
+                                                        text: "Compatível com a porta 9050 do Tor e túneis SSH/Shadowsocks locais para anonimizar seu endereço IP real.";
+                                                        color: #949ba4;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
+                                                    }
+                                                }
+
+                                                // Guide 3: Burp Suite & Devs
+                                                VerticalLayout {
+                                                    spacing: 4px;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/terminal.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #f0b232;
+                                                                image-fit: contain;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: "Debugging & Burp Suite";
+                                                            color: #f0b232;
+                                                            font-size: 12px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                        Rectangle { horizontal-stretch: 1; }
+                                                    }
+                                                    Text {
+                                                        text: "Aponte para 127.0.0.1:8080 para inspecionar requisições da API REST durante desenvolvimento de bots e análises de rede.";
+                                                        color: #949ba4;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
+                                                    }
+                                                }
+
+                                                // Guide 4: Latência em Jogos
+                                                VerticalLayout {
+                                                    spacing: 4px;
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            Image {
+                                                                source: @image-url("../assets/lightning.svg");
+                                                                width: 14px;
+                                                                height: 14px;
+                                                                colorize: #23a55a;
+                                                                image-fit: contain;
+                                                            }
+                                                        }
+                                                        Text {
+                                                            text: "Desempenho Nativo em Jogos";
+                                                            color: #23a55a;
+                                                            font-size: 12px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                        Rectangle { horizontal-stretch: 1; }
+                                                    }
+                                                    Text {
+                                                        text: "Com o proxy desativado, o impacto é 0%. Quando ativado, áudio e vídeo mantêm rotas UDP diretas para latência mínima.";
+                                                        color: #949ba4;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
+                                                    }
                                                 }
                                             }
                                         }

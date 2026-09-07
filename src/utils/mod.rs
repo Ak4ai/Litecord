@@ -10,6 +10,7 @@ pub mod attachment_cache;
 pub mod cpu_profiler;
 pub mod video_settings;
 pub mod gpu_encoder;
+pub mod network_settings;
 
 pub use logger::*;
 pub use i18n::*;
@@ -21,3 +22,4 @@ pub use attachment_cache::*;
 pub use cpu_profiler::*;
 pub use video_settings::*;
 pub use gpu_encoder::*;
+pub use network_settings::*;
