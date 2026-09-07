@@ -784,7 +784,7 @@ pub fn format_decimal_color(color_val: &Value) -> String {
         let b = dec & 0xFF;
         format!("#{:02X}{:02X}{:02X}", r, g, b)
     } else {
-        "#5865f2".to_string() // Default blurple
+        "#2563eb".to_string() // Default sapphire
     }
 }
 
@@ -952,7 +952,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("color"))
         .map(|c| format_decimal_color(c))
-        .unwrap_or_else(|| "#5865f2".to_string());
+        .unwrap_or_else(|| "#2563eb".to_string());
 
     // Handle reply context (type 19)
     if msg_type == 19 {

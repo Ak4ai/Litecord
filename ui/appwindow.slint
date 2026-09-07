@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
+﻿import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
 
 component IconButton inherits Rectangle {
     in property <image> icon;
@@ -244,14 +244,14 @@ component ChatMessagesView inherits Rectangle {
                                 source: @image-url("../assets/arrow-up.svg");
                                 width: 12px;
                                 height: 12px;
-                                colorize: #5865f2;
+                                colorize: #2563eb;
                                 image-fit: contain;
                             }
                         }
 
                         Text {
                             text: root.is_loading_older_messages ? "Carregando mensagens anteriores..." : "Carregar mensagens mais antigas";
-                            color: #5865f2;
+                            color: #2563eb;
                             font-size: 11px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -318,10 +318,10 @@ component ChatMessagesView inherits Rectangle {
 
                                 if msg.reply-command != "": Rectangle {
                                     height: 18px;
-                                    background: rep_cmd_ta.has-hover ? #4752c4 : #5865f233;
+                                    background: rep_cmd_ta.has-hover ? #1d4ed8 : #3b82f633;
                                     border-radius: 3px;
                                     border-width: 1px;
-                                    border-color: #5865f2;
+                                    border-color: #2563eb;
                                     HorizontalLayout {
                                         padding-left: 5px;
                                         padding-right: 5px;
@@ -355,7 +355,7 @@ component ChatMessagesView inherits Rectangle {
                         spacing: 8px;
                         Text {
                             text: msg.author;
-                            color: #5865f2;
+                            color: #2563eb;
                             font-size: 13px;
                             font-weight: 700;
                             vertical-alignment: center;
@@ -445,10 +445,10 @@ component ChatMessagesView inherits Rectangle {
                                 alignment: start;
                                 Rectangle {
                                     height: 20px;
-                                    background: cmd_ta_single.has-hover ? #4752c4 : #5865f233;
+                                    background: cmd_ta_single.has-hover ? #1d4ed8 : #3b82f633;
                                     border-radius: 3px;
                                     border-width: 1px;
-                                    border-color: #5865f2;
+                                    border-color: #2563eb;
                                     HorizontalLayout {
                                         padding-left: 5px;
                                         padding-right: 5px;
@@ -496,10 +496,10 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: center;
                                         Rectangle {
                                             height: 20px;
-                                            background: cmd_ta_mix.has-hover ? #4752c4 : #5865f233;
+                                            background: cmd_ta_mix.has-hover ? #1d4ed8 : #3b82f633;
                                             border-radius: 3px;
                                             border-width: 1px;
-                                            border-color: #5865f2;
+                                            border-color: #2563eb;
                                             HorizontalLayout {
                                                 padding-left: 5px;
                                                 padding-right: 5px;
@@ -680,10 +680,10 @@ component ChatMessagesView inherits Rectangle {
                                             alignment: start;
                                             Rectangle {
                                                 height: 19px;
-                                                background: ecmd_ta_single.has-hover ? #4752c4 : #5865f233;
+                                                background: ecmd_ta_single.has-hover ? #1d4ed8 : #3b82f633;
                                                 border-radius: 3px;
                                                 border-width: 1px;
-                                                border-color: #5865f2;
+                                                border-color: #2563eb;
                                                 HorizontalLayout {
                                                     padding-left: 5px;
                                                     padding-right: 5px;
@@ -716,10 +716,10 @@ component ChatMessagesView inherits Rectangle {
                                                     alignment: center;
                                                     Rectangle {
                                                         height: 19px;
-                                                        background: ecmd_ta_mix.has-hover ? #4752c4 : #5865f233;
+                                                        background: ecmd_ta_mix.has-hover ? #1d4ed8 : #3b82f633;
                                                         border-radius: 3px;
                                                         border-width: 1px;
-                                                        border-color: #5865f2;
+                                                        border-color: #2563eb;
                                                         HorizontalLayout {
                                                             padding-left: 5px;
                                                             padding-right: 5px;
@@ -831,13 +831,13 @@ component ChatMessagesView inherits Rectangle {
                         for btn in msg.buttons: Rectangle {
                             height: 32px;
                             background: btn.is_disabled ? #2b2d31 : (btn_ta.has-hover ? (
-                                btn.style_type == 1 ? #4752c4 : (
+                                btn.style_type == 1 ? #1d4ed8 : (
                                 btn.style_type == 3 ? #1f8b4c : (
                                 btn.style_type == 4 ? #c0353b : (
                                 #3b3e45
                                 )))
                             ) : (
-                                btn.style_type == 1 ? #5865f2 : (
+                                btn.style_type == 1 ? #2563eb : (
                                 btn.style_type == 3 ? #23a55a : (
                                 btn.style_type == 4 ? #da373c : (
                                 btn.style_type == 5 ? #35373c : (
@@ -951,10 +951,10 @@ component ChatMessagesView inherits Rectangle {
                                     alignment: center;
                                     Rectangle {
                                         height: 38px;
-                                        background: dl_ta.has-hover ? #4752c4 : #1e1f22ee;
+                                        background: dl_ta.has-hover ? #1d4ed8 : #1e1f22ee;
                                         border-radius: 8px;
                                         border-width: 1px;
-                                        border-color: #5865f2;
+                                        border-color: #2563eb;
 
                                         HorizontalLayout {
                                             padding-left: 16px;
@@ -1588,10 +1588,10 @@ export component AppWindow inherits Window {
                         // Alert / Status Banner on Login Screen
                         if root.login_alert_message != "": Rectangle {
                             height: 38px;
-                            background: root.login_alert_is_error ? #da373c22 : #5865f222;
+                            background: root.login_alert_is_error ? #da373c22 : #3b82f622;
                             border-radius: 8px;
                             border-width: 1px;
-                            border-color: root.login_alert_is_error ? #da373c88 : #5865f288;
+                            border-color: root.login_alert_is_error ? #da373c88 : #3b82f688;
                             clip: true;
 
                             HorizontalLayout {
@@ -1606,7 +1606,7 @@ export component AppWindow inherits Window {
                                         source: root.login_alert_is_error ? @image-url("../assets/alert-triangle.svg") : @image-url("../assets/info.svg");
                                         width: 14px;
                                         height: 14px;
-                                        colorize: root.login_alert_is_error ? #f23f43 : #5865f2;
+                                        colorize: root.login_alert_is_error ? #f23f43 : #2563eb;
                                     }
                                 }
 
@@ -1741,7 +1741,7 @@ export component AppWindow inherits Window {
                                                     source: @image-url("../assets/qr.svg");
                                                     width: 32px;
                                                     height: 32px;
-                                                    colorize: #5865f2;
+                                                    colorize: #2563eb;
                                                 }
                                             }
 
@@ -1856,7 +1856,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         height: 48px;
                                         width: 48px;
-                                        background: (guild.id == root.active_guild_id) ? #5865f2 : (guild_ta.has-hover ? #5865f2 : #313338);
+                                        background: (guild.id == root.active_guild_id) ? #2563eb : (guild_ta.has-hover ? #2563eb : #313338);
                                         border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 14px : 16px;
                                         clip: true;
                                         animate border-radius, background { duration: 150ms; easing: ease-out; }
@@ -2004,7 +2004,7 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/speaker.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: (channel.id == root.active_channel_id) ? #93c5fd : #5865f2;
+                                                colorize: (channel.id == root.active_channel_id) ? #93c5fd : #2563eb;
                                                 image-fit: contain;
                                             }
                                         }
@@ -2076,7 +2076,7 @@ export component AppWindow inherits Window {
                     // Active Voice Channel Banner
                     if root.is_in_voice: Rectangle {
                         height: 44px;
-                        background: root.is_voice_connecting ? #d97706 : #5865f2;
+                        background: root.is_voice_connecting ? #d97706 : #2563eb;
                         border-radius: 6px;
 
                         HorizontalLayout {
@@ -2187,7 +2187,7 @@ export component AppWindow inherits Window {
 
                                     Text {
                                         text: root.user_tag;
-                                        color: user_tag_touch.has-hover ? #5865f2 : #f2f3f5;
+                                        color: user_tag_touch.has-hover ? #2563eb : #f2f3f5;
                                         font-size: 12px;
                                         font-weight: 700;
                                         vertical-alignment: center;
@@ -2437,13 +2437,13 @@ export component AppWindow inherits Window {
                                     border-radius: 34px;
                                     background: #2b2d31;
                                     border-width: 2px;
-                                    border-color: #5865f2;
+                                    border-color: #2563eb;
 
                                     Image {
                                         source: @image-url("../assets/speaker.svg");
                                         width: 28px;
                                         height: 28px;
-                                        colorize: #5865f2;
+                                        colorize: #2563eb;
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;
                                     }
@@ -2521,7 +2521,7 @@ export component AppWindow inherits Window {
                                         background: #111214;
                                         border-radius: 8px;
                                         border-width: p.is_speaking ? 3px : ((p.is_self && root.is_screen_sharing) ? 2px : 1px);
-                                        border-color: p.is_speaking ? #23a55a : ((p.is_self && root.is_screen_sharing) ? #5865f2 : #383a40);
+                                        border-color: p.is_speaking ? #23a55a : ((p.is_self && root.is_screen_sharing) ? #2563eb : #383a40);
                                         clip: true;
 
                                         // Video Canvas (Independent dual buffers: active_stream_frame for self transmitter, remote_stream_frame for remote peer)
@@ -2671,7 +2671,7 @@ export component AppWindow inherits Window {
                                                                             y: 0;
                                                                             width: parent.width * (root.stream_remote_volume.clamp(0.0, 1.0));
                                                                             height: 100%;
-                                                                            background: root.stream_remote_volume <= 0.01 ? #f23f43 : #5865f2;
+                                                                            background: root.stream_remote_volume <= 0.01 ? #f23f43 : #2563eb;
                                                                             border-radius: 2.5px;
                                                                         }
 
@@ -2745,7 +2745,7 @@ export component AppWindow inherits Window {
                                                                 background: #000000aa;
                                                                 border-radius: 4px;
                                                                 border-width: 1px;
-                                                                border-color: p.priority > 0 ? #5865f2 : #383a40;
+                                                                border-color: p.priority > 0 ? #2563eb : #383a40;
 
                                                                 HorizontalLayout {
                                                                     padding: 1px;
@@ -2768,7 +2768,7 @@ export component AppWindow inherits Window {
                                                                         alignment: center;
                                                                         Text {
                                                                             text: p.priority == 0 ? "Normal" : ("P" + p.priority);
-                                                                            color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                            color: p.priority > 0 ? #2563eb : #949ba4;
                                                                             font-size: 9px;
                                                                             font-weight: 700;
                                                                             horizontal-alignment: center;
@@ -2813,7 +2813,7 @@ export component AppWindow inherits Window {
                                                                     source: is_this_stream_focused ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
                                                                     width: 10px;
                                                                     height: 10px;
-                                                                    colorize: is_this_stream_focused ? #5865f2 : #ffffff;
+                                                                    colorize: is_this_stream_focused ? #2563eb : #ffffff;
                                                                     image-fit: contain;
                                                                 }
                                                             }
@@ -2906,7 +2906,7 @@ export component AppWindow inherits Window {
                                             background: #111214ee;
                                             border-radius: 4px;
                                             border-width: 1px;
-                                            border-color: #5865f2aa;
+                                            border-color: #3b82f6aa;
                                             clip: true;
 
                                             HorizontalLayout {
@@ -2922,7 +2922,7 @@ export component AppWindow inherits Window {
                                                         source: @image-url("../assets/info.svg");
                                                         width: 11px;
                                                         height: 11px;
-                                                        colorize: #5865f2;
+                                                        colorize: #2563eb;
                                                         image-fit: contain;
                                                     }
                                                 }
@@ -2953,7 +2953,7 @@ export component AppWindow inherits Window {
                                             background: #000000cc;
                                             border-radius: 13px;
                                             border-width: 1px;
-                                            border-color: #5865f2;
+                                            border-color: #2563eb;
 
                                             HorizontalLayout {
                                                 alignment: center;
@@ -2964,7 +2964,7 @@ export component AppWindow inherits Window {
                                                         source: @image-url("../assets/monitor.svg");
                                                         width: 12px;
                                                         height: 12px;
-                                                        colorize: #5865f2;
+                                                        colorize: #2563eb;
                                                         image-fit: contain;
                                                     }
                                                 }
@@ -2983,10 +2983,10 @@ export component AppWindow inherits Window {
                                     if !is_streaming_attached: Rectangle {
                                         y: 4px;
                                         height: 68px;
-                                        background: p.is_self ? #232738 : #2b2d31;
+                                        background: p.is_self ? #1e293b : #2b2d31;
                                         border-radius: 8px;
                                         border-width: p.is_speaking ? 2px : (p.is_self ? 1px : 0px);
-                                        border-color: p.is_speaking ? #23a55a : (p.is_self ? #5865f2 : #00000000);
+                                        border-color: p.is_speaking ? #23a55a : (p.is_self ? #2563eb : #00000000);
 
                                         HorizontalBox {
                                              padding-left: 12px;
@@ -3000,9 +3000,9 @@ export component AppWindow inherits Window {
                                                      width: 42px;
                                                      height: 42px;
                                                      border-radius: 21px;
-                                                     background: p.is_speaking ? #23a55a : (p.is_self ? #5865f2 : #383a40);
+                                                     background: p.is_speaking ? #23a55a : (p.is_self ? #2563eb : #383a40);
                                                      border-width: p.is_speaking ? 3px : (p.is_self ? 2px : 0px);
-                                                     border-color: p.is_speaking ? #23a55a : (p.is_self ? #7983f5 : #00000000);
+                                                     border-color: p.is_speaking ? #23a55a : (p.is_self ? #60a5fa : #00000000);
 
                                                      Text {
                                                          text: p.avatar_text;
@@ -3027,14 +3027,14 @@ export component AppWindow inherits Window {
                                                      spacing: 8px;
                                                      Text {
                                                          text: p.username;
-                                                         color: p.is_self ? #7983f5 : (p.is_speaking ? #ffffff : #dbdee1);
+                                                         color: p.is_self ? #60a5fa : (p.is_speaking ? #ffffff : #dbdee1);
                                                          font-weight: 700;
                                                          font-size: 14px;
                                                          vertical-alignment: center;
                                                      }
 
                                                      if p.is_self: Rectangle {
-                                                         background: #5865f2;
+                                                         background: #2563eb;
                                                          border-radius: 4px;
                                                          height: 16px;
                                                          HorizontalLayout {
@@ -3051,17 +3051,17 @@ export component AppWindow inherits Window {
                                                      }
 
                                                      if (root.popped_out_stream_uid == p.user_id || (p.is_self && root.popped_out_stream_uid == "self")): Rectangle {
-                                                         background: #5865f233;
+                                                         background: #3b82f633;
                                                          border-radius: 4px;
                                                          border-width: 1px;
-                                                         border-color: #5865f2;
+                                                         border-color: #2563eb;
                                                          height: 16px;
                                                          HorizontalLayout {
                                                              padding-left: 6px;
                                                              padding-right: 6px;
                                                              Text {
                                                                  text: "DESANEXADO";
-                                                                 color: #5865f2;
+                                                                 color: #2563eb;
                                                                  font-size: 9px;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
@@ -3102,18 +3102,25 @@ export component AppWindow inherits Window {
                                                      if p.is_muted: HorizontalLayout {
                                                          spacing: 4px;
                                                          alignment: start;
-                                                         Image {
-                                                             source: @image-url("../assets/volume-x.svg");
-                                                             width: 12px;
-                                                             height: 12px;
-                                                             colorize: #f23f43;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/volume-x.svg");
+                                                                 width: 12px;
+                                                                 height: 12px;
+                                                                 colorize: #f23f43;
+                                                                 image-fit: contain;
+                                                             }
                                                          }
-                                                         Text {
-                                                             text: "MUTED";
-                                                             color: #f23f43;
-                                                             font-size: 11px;
-                                                             font-weight: 700;
-                                                             vertical-alignment: center;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Text {
+                                                                 text: "MUTED";
+                                                                 color: #f23f43;
+                                                                 font-size: 11px;
+                                                                 font-weight: 700;
+                                                                 vertical-alignment: center;
+                                                             }
                                                          }
                                                      }
 
@@ -3163,7 +3170,7 @@ export component AppWindow inherits Window {
                                                          width: 26px;
                                                          height: 22px;
                                                          border-radius: 4px;
-                                                         background: unhide_stream_ta.has-hover ? #5865f2 : #35373c;
+                                                         background: unhide_stream_ta.has-hover ? #2563eb : #35373c;
 
                                                          VerticalLayout {
                                                              alignment: center;
@@ -3206,7 +3213,7 @@ export component AppWindow inherits Window {
                                                                  y: 0px;
                                                                  height: 8px;
                                                                  width: p.audio_level * parent.width;
-                                                                 background: p.is_speaking ? #23a55a : #5865f2;
+                                                                 background: p.is_speaking ? #23a55a : #2563eb;
                                                                  border-radius: 4px;
                                                              }
                                                          }
@@ -3242,7 +3249,7 @@ export component AppWindow inherits Window {
                                                                  y: 0px;
                                                                  height: 8px;
                                                                  width: p.audio_level * parent.width;
-                                                                 background: p.is_speaking ? #23a55a : #5865f2;
+                                                                 background: p.is_speaking ? #23a55a : #2563eb;
                                                                  border-radius: 4px;
                                                              }
                                                          }
@@ -3290,7 +3297,7 @@ export component AppWindow inherits Window {
                                                               background: #2b2d31;
                                                               border-radius: 6px;
                                                               border-width: 1px;
-                                                              border-color: p.priority > 0 ? #5865f2 : #383a40;
+                                                              border-color: p.priority > 0 ? #2563eb : #383a40;
 
                                                               HorizontalLayout {
                                                                   padding: 2px;
@@ -3327,7 +3334,7 @@ export component AppWindow inherits Window {
                                                                       alignment: center;
                                                                       Text {
                                                                           text: p.priority == 0 ? "Normal" : ("Prio " + p.priority);
-                                                                          color: p.priority > 0 ? #5865f2 : #949ba4;
+                                                                          color: p.priority > 0 ? #2563eb : #949ba4;
                                                                           font-size: 10px;
                                                                           font-weight: 700;
                                                                           horizontal-alignment: center;
@@ -3418,7 +3425,7 @@ export component AppWindow inherits Window {
                                 Rectangle {
                                     height: 32px;
                                     border-radius: 4px;
-                                    background: btn_vroom_ta.pressed ? #4752c4 : (btn_vroom_ta.has-hover ? #5865f2 : #383a40);
+                                    background: btn_vroom_ta.pressed ? #1d4ed8 : (btn_vroom_ta.has-hover ? #2563eb : #383a40);
                                     animate background { duration: 120ms; }
 
                                     HorizontalLayout {
@@ -3512,7 +3519,7 @@ export component AppWindow inherits Window {
                                         source: @image-url("../assets/terminal.svg");
                                         width: 13px;
                                         height: 13px;
-                                        colorize: #5865f2;
+                                        colorize: #2563eb;
                                         image-fit: contain;
                                     }
                                 }
@@ -3526,7 +3533,7 @@ export component AppWindow inherits Window {
                                 Rectangle { horizontal-stretch: 1; }
                                 Text {
                                     text: "Clique para autocompletar";
-                                    color: #5865f2;
+                                    color: #2563eb;
                                     font-size: 10px;
                                     vertical-alignment: center;
                                 }
@@ -3541,7 +3548,7 @@ export component AppWindow inherits Window {
                                         background: (idx == root.active_suggestion_index || cmd_sug_ta.has-hover) ? #35373c : #1e1f22;
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: (idx == root.active_suggestion_index) ? #5865f2 : (cmd_sug_ta.has-hover ? #5865f288 : transparent);
+                                        border-color: (idx == root.active_suggestion_index) ? #2563eb : (cmd_sug_ta.has-hover ? #3b82f688 : transparent);
 
                                          HorizontalLayout {
                                             padding-left: 10px;
@@ -3575,17 +3582,17 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Rectangle {
                                                     height: 18px;
-                                                    background: (idx == root.active_suggestion_index) ? #5865f255 : #5865f222;
+                                                    background: (idx == root.active_suggestion_index) ? #3b82f655 : #3b82f622;
                                                     border-radius: 3px;
                                                     border-width: 1px;
-                                                    border-color: (idx == root.active_suggestion_index) ? #5865f2aa : #5865f255;
+                                                    border-color: (idx == root.active_suggestion_index) ? #3b82f6aa : #3b82f655;
                                                     HorizontalLayout {
                                                         padding-left: 5px;
                                                         padding-right: 5px;
                                                         alignment: center;
                                                         Text {
                                                             text: cmd.app_name;
-                                                            color: (idx == root.active_suggestion_index) ? #ffffff : #a5b4fc;
+                                                            color: (idx == root.active_suggestion_index) ? #ffffff : #93c5fd;
                                                             font-size: 10px;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
@@ -3646,10 +3653,10 @@ export component AppWindow inherits Window {
 
                                 // Command Pill (e.g. /play or /247)
                                 Rectangle {
-                                    background: #5865f233;
+                                    background: #3b82f633;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: #5865f2;
+                                    border-color: #2563eb;
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -3713,14 +3720,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/param.svg");
                                                 width: 11px;
                                                 height: 11px;
-                                                colorize: #5865f2;
+                                                colorize: #2563eb;
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.active_param_name + ":";
-                                            color: #5865f2;
+                                            color: #2563eb;
                                             font-size: 12px;
                                             font-weight: 700;
                                             vertical-alignment: center;
@@ -3753,7 +3760,7 @@ export component AppWindow inherits Window {
                                 background: #1e1f22;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: chat_text_input.has-focus ? #5865f2 : #383a40;
+                                border-color: chat_text_input.has-focus ? #2563eb : #383a40;
                                 clip: true;
 
                                 if root.chat_input_text == "" : Text {
@@ -3892,7 +3899,7 @@ export component AppWindow inherits Window {
                                 source: @image-url("../assets/settings.svg");
                                 width: 18px;
                                 height: 18px;
-                                colorize: #5865f2;
+                                colorize: #2563eb;
                                 image-fit: contain;
                             }
                         }
@@ -3981,7 +3988,7 @@ export component AppWindow inherits Window {
                                     y: 10px;
                                     width: 3px;
                                     height: 18px;
-                                    background: #5865f2;
+                                    background: #2563eb;
                                     border-radius: 2px;
                                 }
 
@@ -3996,7 +4003,7 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/microphone.svg");
                                             width: 16px;
                                             height: 16px;
-                                            colorize: root.settings_active_tab == 0 ? #5865f2 : #949ba4;
+                                            colorize: root.settings_active_tab == 0 ? #2563eb : #949ba4;
                                             image-fit: contain;
                                         }
                                     }
@@ -4028,7 +4035,7 @@ export component AppWindow inherits Window {
                                     y: 10px;
                                     width: 3px;
                                     height: 18px;
-                                    background: #5865f2;
+                                    background: #2563eb;
                                     border-radius: 2px;
                                 }
 
@@ -4043,7 +4050,7 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/globe.svg");
                                             width: 16px;
                                             height: 16px;
-                                            colorize: root.settings_active_tab == 1 ? #5865f2 : #949ba4;
+                                            colorize: root.settings_active_tab == 1 ? #2563eb : #949ba4;
                                             image-fit: contain;
                                         }
                                     }
@@ -4075,7 +4082,7 @@ export component AppWindow inherits Window {
                                     y: 10px;
                                     width: 3px;
                                     height: 18px;
-                                    background: #5865f2;
+                                    background: #2563eb;
                                     border-radius: 2px;
                                 }
 
@@ -4090,7 +4097,7 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/key.svg");
                                             width: 16px;
                                             height: 16px;
-                                            colorize: root.settings_active_tab == 2 ? #5865f2 : #949ba4;
+                                            colorize: root.settings_active_tab == 2 ? #2563eb : #949ba4;
                                             image-fit: contain;
                                         }
                                     }
@@ -4122,7 +4129,7 @@ export component AppWindow inherits Window {
                                     y: 10px;
                                     width: 3px;
                                     height: 18px;
-                                    background: #5865f2;
+                                    background: #2563eb;
                                     border-radius: 2px;
                                 }
 
@@ -4137,7 +4144,7 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/monitor.svg");
                                             width: 16px;
                                             height: 16px;
-                                            colorize: root.settings_active_tab == 5 ? #5865f2 : #949ba4;
+                                            colorize: root.settings_active_tab == 5 ? #2563eb : #949ba4;
                                             image-fit: contain;
                                         }
                                     }
@@ -4333,7 +4340,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/microphone.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -4387,7 +4394,7 @@ export component AppWindow inherits Window {
 
                                                                     Text {
                                                                         text: dev.name;
-                                                                        color: dev.is_selected ? #5865f2 : #dbdee1;
+                                                                        color: dev.is_selected ? #2563eb : #dbdee1;
                                                                         font-size: 12px;
                                                                         font-weight: dev.is_selected ? 700 : 400;
                                                                         vertical-alignment: center;
@@ -4427,13 +4434,13 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/microphone.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
                                                     Text {
                                                         text: "Dispositivo de Entrada";
-                                                        color: #5865f2;
+                                                        color: #2563eb;
                                                         font-size: 12px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -4471,7 +4478,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/headphones.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -4525,7 +4532,7 @@ export component AppWindow inherits Window {
 
                                                                     Text {
                                                                         text: dev.name;
-                                                                        color: dev.is_selected ? #5865f2 : #dbdee1;
+                                                                        color: dev.is_selected ? #2563eb : #dbdee1;
                                                                         font-size: 12px;
                                                                         font-weight: dev.is_selected ? 700 : 400;
                                                                         vertical-alignment: center;
@@ -4565,13 +4572,13 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/headphones.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
                                                     Text {
                                                         text: "Dispositivo de Saída";
-                                                        color: #5865f2;
+                                                        color: #2563eb;
                                                         font-size: 12px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -4609,7 +4616,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/microphone.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -4626,7 +4633,7 @@ export component AppWindow inherits Window {
                                                     VerticalLayout {
                                                         alignment: center;
                                                         Rectangle {
-                                                            background: #5865f2;
+                                                            background: #2563eb;
                                                             border-radius: 4px;
                                                             height: 18px;
                                                             width: 44px;
@@ -4743,7 +4750,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/speaker.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -4948,13 +4955,13 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/rocket.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
                                                     Text {
                                                         text: "Vantagem Competitiva";
-                                                        color: #5865f2;
+                                                        color: #2563eb;
                                                         font-size: 12px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -4998,7 +5005,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/globe.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -5047,7 +5054,7 @@ export component AppWindow inherits Window {
 
                                                                 Text {
                                                                     text: lang.name;
-                                                                    color: lang.is_selected ? #5865f2 : #dbdee1;
+                                                                    color: lang.is_selected ? #2563eb : #dbdee1;
                                                                     font-size: 13px;
                                                                     font-weight: lang.is_selected ? 700 : 500;
                                                                     vertical-alignment: center;
@@ -5094,13 +5101,13 @@ export component AppWindow inherits Window {
                                                                 source: @image-url("../assets/globe.svg");
                                                                 width: 14px;
                                                                 height: 14px;
-                                                                colorize: #5865f2;
+                                                                colorize: #2563eb;
                                                                 image-fit: contain;
                                                             }
                                                         }
                                                         Text {
                                                             text: "Troca Instantânea";
-                                                            color: #5865f2;
+                                                            color: #2563eb;
                                                             font-size: 12px;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
@@ -5179,7 +5186,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/microphone.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -5232,7 +5239,7 @@ export component AppWindow inherits Window {
                                                     Rectangle {
                                                         width: 120px;
                                                         height: 36px;
-                                                        background: root.recording_keybind_for == 1 ? #f0b232 : (btn_rec_mute_touch.has-hover ? #4752c4 : #5865f2);
+                                                        background: root.recording_keybind_for == 1 ? #f0b232 : (btn_rec_mute_touch.has-hover ? #1d4ed8 : #2563eb);
                                                         border-radius: 4px;
 
                                                         HorizontalLayout {
@@ -5303,13 +5310,13 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/key.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
                                                     Text {
                                                         text: root.tr_keybind_guide_title;
-                                                        color: #5865f2;
+                                                        color: #2563eb;
                                                         font-size: 12px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -5516,7 +5523,7 @@ export component AppWindow inherits Window {
                                                         source: @image-url("../assets/monitor.svg");
                                                         width: 15px;
                                                         height: 15px;
-                                                        colorize: #5865f2;
+                                                        colorize: #2563eb;
                                                         image-fit: contain;
                                                     }
                                                 }
@@ -5612,7 +5619,7 @@ export component AppWindow inherits Window {
                                                         source: @image-url("../assets/window.svg");
                                                         width: 15px;
                                                         height: 15px;
-                                                        colorize: #5865f2;
+                                                        colorize: #2563eb;
                                                         image-fit: contain;
                                                     }
                                                 }
@@ -5708,7 +5715,7 @@ export component AppWindow inherits Window {
                                                         source: @image-url("../assets/speaker.svg");
                                                         width: 15px;
                                                         height: 15px;
-                                                        colorize: #5865f2;
+                                                        colorize: #2563eb;
                                                         image-fit: contain;
                                                     }
                                                 }
@@ -5804,7 +5811,7 @@ export component AppWindow inherits Window {
                                                         source: @image-url("../assets/info.svg");
                                                         width: 15px;
                                                         height: 15px;
-                                                        colorize: #5865f2;
+                                                        colorize: #2563eb;
                                                         image-fit: contain;
                                                     }
                                                 }
@@ -5854,7 +5861,7 @@ export component AppWindow inherits Window {
                                                             width: 42px;
                                                             height: 24px;
                                                             border-radius: 12px;
-                                                            background: root.enable_self_preview_notice ? #5865f2 : #4e5058;
+                                                            background: root.enable_self_preview_notice ? #2563eb : #4e5058;
                                                             animate background { duration: 150ms; }
 
                                                             Rectangle {
@@ -5997,7 +6004,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/key.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -6011,7 +6018,7 @@ export component AppWindow inherits Window {
                                                     Rectangle { horizontal-stretch: 1; }
                                                     Text {
                                                         text: "PROTEGIDO";
-                                                        color: #5865f2;
+                                                        color: #2563eb;
                                                         font-size: 10px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -6046,13 +6053,13 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/shield.svg");
                                                             width: 14px;
                                                             height: 14px;
-                                                            colorize: #5865f2;
+                                                            colorize: #2563eb;
                                                             image-fit: contain;
                                                         }
                                                     }
                                                     Text {
                                                         text: "Imunidade a Stealers";
-                                                        color: #5865f2;
+                                                        color: #2563eb;
                                                         font-size: 12px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -6197,7 +6204,7 @@ export component AppWindow inherits Window {
 
                                                         Text {
                                                             text: root.app_version;
-                                                            color: #5865f2;
+                                                            color: #2563eb;
                                                             font-size: 12px;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
@@ -6478,7 +6485,7 @@ export component AppWindow inherits Window {
                                 background: acc.is_active ? #1e1f22 : (card_info_touch.has-hover ? #35373c : #232428);
                                 border-radius: 8px;
                                 border-width: 1px;
-                                border-color: acc.is_active ? #5865f2 : #383a40;
+                                border-color: acc.is_active ? #2563eb : #383a40;
 
                                 HorizontalLayout {
                                     padding-left: 10px;
@@ -6497,7 +6504,7 @@ export component AppWindow inherits Window {
                                                 width: 34px;
                                                 height: 34px;
                                                 border-radius: 17px;
-                                                background: acc.is_active ? #5865f2 : #4e5058;
+                                                background: acc.is_active ? #2563eb : #4e5058;
                                                 VerticalLayout {
                                                     alignment: center;
                                                     Text {
@@ -6571,7 +6578,7 @@ export component AppWindow inherits Window {
                                             Rectangle {
                                                 width: 62px;
                                                 height: 28px;
-                                                background: sw_btn.has-hover ? #4752c4 : #5865f2;
+                                                background: sw_btn.has-hover ? #1d4ed8 : #2563eb;
                                                 border-radius: 4px;
 
                                                 VerticalLayout {
@@ -6641,7 +6648,7 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 Text {
                                     text: "+ Adicionar Outra Conta";
-                                    color: #5865f2;
+                                    color: #2563eb;
                                     font-size: 12px;
                                     font-weight: 700;
                                     vertical-alignment: center;
@@ -6856,7 +6863,7 @@ export component AppWindow inherits Window {
                                 width: 40px;
                                 height: 40px;
                                 border-radius: 20px;
-                                background: #5865f222;
+                                background: #3b82f622;
 
                                 Image {
                                     x: (parent.width - self.width) / 2;
@@ -6864,7 +6871,7 @@ export component AppWindow inherits Window {
                                     source: @image-url("../assets/rocket.svg");
                                     width: 20px;
                                     height: 20px;
-                                    colorize: #5865f2;
+                                    colorize: #2563eb;
                                 }
                             }
 
@@ -6979,7 +6986,7 @@ export component AppWindow inherits Window {
                             Rectangle {
                                 height: 36px;
                                 horizontal-stretch: 1;
-                                background: accept_touch.has-hover ? #4752c4 : #5865f2;
+                                background: accept_touch.has-hover ? #1d4ed8 : #2563eb;
                                 border-radius: 6px;
 
                                 HorizontalLayout {
@@ -7124,7 +7131,7 @@ export component AppWindow inherits Window {
                                         y: parent.height - 2px;
                                         height: 2px;
                                         width: 100%;
-                                        background: #5865f2;
+                                        background: #2563eb;
                                         border-radius: 1px;
                                     }
 
@@ -7167,7 +7174,7 @@ export component AppWindow inherits Window {
                                         y: parent.height - 2px;
                                         height: 2px;
                                         width: 100%;
-                                        background: #5865f2;
+                                        background: #2563eb;
                                         border-radius: 1px;
                                     }
 
@@ -7212,7 +7219,7 @@ export component AppWindow inherits Window {
                                         y: parent.height - 2px;
                                         height: 2px;
                                         width: 100%;
-                                        background: #5865f2;
+                                        background: #2563eb;
                                         border-radius: 1px;
                                     }
 
@@ -7255,10 +7262,10 @@ export component AppWindow inherits Window {
                                     for scr[idx] in root.available_screens: Rectangle {
                                         width: 140px;
                                         height: 110px;
-                                        background: root.stream_selected_source_index == idx ? #5865f222 : #2b2d31;
+                                        background: root.stream_selected_source_index == idx ? #3b82f622 : #2b2d31;
                                         border-radius: 8px;
                                         border-width: 2px;
-                                        border-color: root.stream_selected_source_index == idx ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_source_index == idx ? #2563eb : #383a40;
                                         clip: true;
 
                                         VerticalBox {
@@ -7272,7 +7279,7 @@ export component AppWindow inherits Window {
                                                 background: #1e1f22;
                                                 border-radius: 4px;
                                                 border-width: 1px;
-                                                border-color: root.stream_selected_source_index == idx ? #5865f288 : #383a40;
+                                                border-color: root.stream_selected_source_index == idx ? #3b82f688 : #383a40;
 
                                                 VerticalLayout {
                                                     alignment: center;
@@ -7282,7 +7289,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/monitor.svg");
                                                             width: 24px;
                                                             height: 24px;
-                                                            colorize: root.stream_selected_source_index == idx ? #5865f2 : #80848e;
+                                                            colorize: root.stream_selected_source_index == idx ? #2563eb : #80848e;
                                                         }
                                                     }
                                                 }
@@ -7330,10 +7337,10 @@ export component AppWindow inherits Window {
                                     for win[idx] in root.available_windows: Rectangle {
                                         width: 140px;
                                         height: 110px;
-                                        background: root.stream_selected_source_index == idx ? #5865f222 : #2b2d31;
+                                        background: root.stream_selected_source_index == idx ? #3b82f622 : #2b2d31;
                                         border-radius: 8px;
                                         border-width: 2px;
-                                        border-color: root.stream_selected_source_index == idx ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_source_index == idx ? #2563eb : #383a40;
                                         clip: true;
 
                                         VerticalBox {
@@ -7346,7 +7353,7 @@ export component AppWindow inherits Window {
                                                 background: #1e1f22;
                                                 border-radius: 4px;
                                                 border-width: 1px;
-                                                border-color: root.stream_selected_source_index == idx ? #5865f288 : #383a40;
+                                                border-color: root.stream_selected_source_index == idx ? #3b82f688 : #383a40;
 
                                                 VerticalLayout {
                                                     alignment: center;
@@ -7356,7 +7363,7 @@ export component AppWindow inherits Window {
                                                             source: win.has_icon ? win.icon_image : (win.app_name == "Litecord" ? @image-url("../assets/app_icon.png") : (win.app_name == "Google Chrome" ? @image-url("../assets/globe.svg") : @image-url("../assets/window.svg")));
                                                             width: 28px;
                                                             height: 28px;
-                                                            colorize: win.has_icon || win.app_name == "Litecord" ? transparent : (root.stream_selected_source_index == idx ? #5865f2 : #80848e);
+                                                            colorize: win.has_icon || win.app_name == "Litecord" ? transparent : (root.stream_selected_source_index == idx ? #2563eb : #80848e);
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -7405,10 +7412,10 @@ export component AppWindow inherits Window {
                                     for cam[idx] in root.available_cameras: Rectangle {
                                         width: 140px;
                                         height: 110px;
-                                        background: root.stream_selected_source_index == idx ? #5865f222 : #2b2d31;
+                                        background: root.stream_selected_source_index == idx ? #3b82f622 : #2b2d31;
                                         border-radius: 8px;
                                         border-width: 2px;
-                                        border-color: root.stream_selected_source_index == idx ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_source_index == idx ? #2563eb : #383a40;
                                         clip: true;
 
                                         VerticalBox {
@@ -7421,7 +7428,7 @@ export component AppWindow inherits Window {
                                                 background: #1e1f22;
                                                 border-radius: 4px;
                                                 border-width: 1px;
-                                                border-color: root.stream_selected_source_index == idx ? #5865f288 : #383a40;
+                                                border-color: root.stream_selected_source_index == idx ? #3b82f688 : #383a40;
 
                                                 VerticalLayout {
                                                     alignment: center;
@@ -7431,7 +7438,7 @@ export component AppWindow inherits Window {
                                                             source: @image-url("../assets/camera.svg");
                                                             width: 24px;
                                                             height: 24px;
-                                                            colorize: root.stream_selected_source_index == idx ? #5865f2 : #80848e;
+                                                            colorize: root.stream_selected_source_index == idx ? #2563eb : #80848e;
                                                         }
                                                     }
                                                 }
@@ -7511,10 +7518,10 @@ export component AppWindow inherits Window {
                                     // 1080p (1920x1080)
                                     Rectangle {
                                         horizontal-stretch: 1;
-                                        background: root.stream_selected_res == "1080p" ? #5865f2 : (res_1080_ta.has-hover ? #35373c : #2b2d31);
+                                        background: root.stream_selected_res == "1080p" ? #2563eb : (res_1080_ta.has-hover ? #35373c : #2b2d31);
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: root.stream_selected_res == "1080p" ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_res == "1080p" ? #2563eb : #383a40;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -7537,10 +7544,10 @@ export component AppWindow inherits Window {
                                     // 720p (1280x720)
                                     Rectangle {
                                         horizontal-stretch: 1;
-                                        background: root.stream_selected_res == "720p" ? #5865f2 : (res_720_ta.has-hover ? #35373c : #2b2d31);
+                                        background: root.stream_selected_res == "720p" ? #2563eb : (res_720_ta.has-hover ? #35373c : #2b2d31);
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: root.stream_selected_res == "720p" ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_res == "720p" ? #2563eb : #383a40;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -7563,10 +7570,10 @@ export component AppWindow inherits Window {
                                     // 480p (854x480)
                                     Rectangle {
                                         horizontal-stretch: 1;
-                                        background: root.stream_selected_res == "480p" ? #5865f2 : (res_480_ta.has-hover ? #35373c : #2b2d31);
+                                        background: root.stream_selected_res == "480p" ? #2563eb : (res_480_ta.has-hover ? #35373c : #2b2d31);
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: root.stream_selected_res == "480p" ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_res == "480p" ? #2563eb : #383a40;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -7607,10 +7614,10 @@ export component AppWindow inherits Window {
                                     // 60 FPS
                                     Rectangle {
                                         horizontal-stretch: 1;
-                                        background: root.stream_selected_fps == 60 ? #5865f2 : (fps_60_ta.has-hover ? #35373c : #2b2d31);
+                                        background: root.stream_selected_fps == 60 ? #2563eb : (fps_60_ta.has-hover ? #35373c : #2b2d31);
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: root.stream_selected_fps == 60 ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_fps == 60 ? #2563eb : #383a40;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -7633,10 +7640,10 @@ export component AppWindow inherits Window {
                                     // 30 FPS
                                     Rectangle {
                                         horizontal-stretch: 1;
-                                        background: root.stream_selected_fps == 30 ? #5865f2 : (fps_30_ta.has-hover ? #35373c : #2b2d31);
+                                        background: root.stream_selected_fps == 30 ? #2563eb : (fps_30_ta.has-hover ? #35373c : #2b2d31);
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: root.stream_selected_fps == 30 ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_fps == 30 ? #2563eb : #383a40;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -7659,10 +7666,10 @@ export component AppWindow inherits Window {
                                     // 15 FPS
                                     Rectangle {
                                         horizontal-stretch: 1;
-                                        background: root.stream_selected_fps == 15 ? #5865f2 : (fps_15_ta.has-hover ? #35373c : #2b2d31);
+                                        background: root.stream_selected_fps == 15 ? #2563eb : (fps_15_ta.has-hover ? #35373c : #2b2d31);
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: root.stream_selected_fps == 15 ? #5865f2 : #383a40;
+                                        border-color: root.stream_selected_fps == 15 ? #2563eb : #383a40;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -7704,7 +7711,7 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/camera.svg");
                                             width: 18px;
                                             height: 18px;
-                                            colorize: #5865f2;
+                                            colorize: #2563eb;
                                             image-fit: contain;
                                         }
                                     }
@@ -7743,7 +7750,7 @@ export component AppWindow inherits Window {
                                                 source: root.stream_include_audio ? @image-url("../assets/speaker.svg") : @image-url("../assets/volume-x.svg");
                                                 width: 18px;
                                                 height: 18px;
-                                                colorize: root.stream_include_audio ? #5865f2 : #80848e;
+                                                colorize: root.stream_include_audio ? #2563eb : #80848e;
                                                 image-fit: contain;
                                             }
                                         }
@@ -7821,7 +7828,7 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/globe.svg");
                                                 width: 18px;
                                                 height: 18px;
-                                                colorize: #5865f2;
+                                                colorize: #2563eb;
                                                 image-fit: contain;
                                             }
                                         }
@@ -7851,7 +7858,7 @@ export component AppWindow inherits Window {
                                         Rectangle {
                                             height: 32px;
                                             border-radius: 4px;
-                                            background: stream_browser_ta.has-hover ? #4752c4 : #5865f2;
+                                            background: stream_browser_ta.has-hover ? #1d4ed8 : #2563eb;
 
                                             HorizontalLayout {
                                                 padding-left: 12px;
@@ -7909,7 +7916,7 @@ export component AppWindow inherits Window {
                                             source: @image-url("../assets/camera.svg");
                                             width: 18px;
                                             height: 18px;
-                                            colorize: #5865f2;
+                                            colorize: #2563eb;
                                             image-fit: contain;
                                         }
                                     }
@@ -7978,7 +7985,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         height: 38px;
                                         border-radius: 4px;
-                                        background: modal_start_ta.has-hover ? #4752c4 : #5865f2;
+                                        background: modal_start_ta.has-hover ? #1d4ed8 : #2563eb;
 
                                         HorizontalLayout {
                                             alignment: center;
@@ -8225,7 +8232,7 @@ export component PopoutStreamWindow inherits Window {
                                 y: 0;
                                 width: parent.width * (root.stream_volume.clamp(0.0, 1.0));
                                 height: 100%;
-                                background: root.stream_volume <= 0.01 ? #f23f43 : #5865f2;
+                                background: root.stream_volume <= 0.01 ? #f23f43 : #2563eb;
                                 border-radius: 3px;
                             }
 
@@ -8296,7 +8303,7 @@ export component PopoutStreamWindow inherits Window {
                         width: 26px;
                         height: 26px;
                         border-radius: 4px;
-                        background: root.is_pinned ? #5865f2 : (pop_pin_ta.has-hover ? #35373c : transparent);
+                        background: root.is_pinned ? #2563eb : (pop_pin_ta.has-hover ? #35373c : transparent);
 
                         Image {
                             source: @image-url("../assets/pin.svg");
@@ -8397,7 +8404,7 @@ export component PopoutStreamWindow inherits Window {
         background: #111214ee;
         border-radius: 4px;
         border-width: 1px;
-        border-color: #5865f2aa;
+        border-color: #3b82f6aa;
         clip: true;
 
         HorizontalLayout {
@@ -8413,7 +8420,7 @@ export component PopoutStreamWindow inherits Window {
                     source: @image-url("../assets/info.svg");
                     width: 11px;
                     height: 11px;
-                    colorize: #5865f2;
+                    colorize: #2563eb;
                     image-fit: contain;
                 }
             }
