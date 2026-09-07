@@ -1668,7 +1668,7 @@ export component AppWindow inherits Window {
                         }
 
                         Rectangle {
-                            height: 380px;
+                            height: 400px;
                             background: #2b2d31;
                             border-radius: 12px;
                             border-width: 1px;
@@ -1757,23 +1757,23 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 alignment: center;
-                                spacing: 12px;
+                                spacing: 10px;
 
                                 // QR Code Card Container
                                 HorizontalLayout {
                                     alignment: center;
 
                                     Rectangle {
-                                        width: 160px;
-                                        height: 160px;
+                                        width: 155px;
+                                        height: 155px;
                                         background: #ffffff;
                                         border-radius: 8px;
                                         clip: true;
 
                                         if root.has_qr_code: Image {
                                             source: root.qr_code_image;
-                                            width: 160px;
-                                            height: 160px;
+                                            width: 155px;
+                                            height: 155px;
                                             image-fit: contain;
                                         }
 
@@ -1836,7 +1836,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.tr_qr_title;
                                     color: #f2f3f5;
-                                    font-size: 15px;
+                                    font-size: 14px;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                 }
@@ -1847,6 +1847,47 @@ export component AppWindow inherits Window {
                                     font-size: 11px;
                                     horizontal-alignment: center;
                                     wrap: word-wrap;
+                                }
+
+                                // Botão Re-gerar QR Code
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 30px;
+                                        width: 150px;
+                                        background: re_qr_ta.has-hover ? #35373c : #1e1f22;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: re_qr_ta.has-hover ? #06b6d4 : #383a40;
+                                        animate background { duration: 120ms; }
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 6px;
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Image {
+                                                    source: @image-url("../assets/qr.svg");
+                                                    width: 13px;
+                                                    height: 13px;
+                                                    colorize: #06b6d4;
+                                                    image-fit: contain;
+                                                }
+                                            }
+                                            Text {
+                                                text: "Re-gerar QR Code";
+                                                color: #f2f3f5;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        re_qr_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.refresh_qr_code(); }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -6751,26 +6792,43 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
 
-                                                // Test Status Message
+                                                // Test Status Message (Flexible auto-expanding container for multi-line error/success)
                                                 if root.proxy_test_status_text != "": Rectangle {
                                                     background: root.proxy_test_is_success ? #0f3822 : #3f1515;
                                                     border-radius: 6px;
                                                     border-width: 1px;
                                                     border-color: root.proxy_test_is_success ? #23a55a : #f23f43;
 
-                                                    HorizontalLayout {
+                                                    VerticalLayout {
                                                         padding-left: 10px;
                                                         padding-right: 10px;
-                                                        padding-top: 6px;
-                                                        padding-bottom: 6px;
-                                                        spacing: 8px;
-                                                        Text {
-                                                            text: root.proxy_test_status_text;
-                                                            color: root.proxy_test_is_success ? #23a55a : #f23f43;
-                                                            font-size: 11px;
-                                                            font-weight: 600;
-                                                            wrap: word-wrap;
-                                                            vertical-alignment: center;
+                                                        padding-top: 8px;
+                                                        padding-bottom: 8px;
+
+                                                        HorizontalLayout {
+                                                            spacing: 8px;
+                                                            alignment: start;
+
+                                                            VerticalLayout {
+                                                                alignment: start;
+                                                                padding-top: 1px;
+                                                                Image {
+                                                                    source: root.proxy_test_is_success ? @image-url("../assets/lightning.svg") : @image-url("../assets/alert-triangle.svg");
+                                                                    width: 13px;
+                                                                    height: 13px;
+                                                                    colorize: root.proxy_test_is_success ? #23a55a : #f23f43;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+
+                                                            Text {
+                                                                text: root.proxy_test_status_text;
+                                                                color: root.proxy_test_is_success ? #23a55a : #f23f43;
+                                                                font-size: 11px;
+                                                                font-weight: 600;
+                                                                wrap: word-wrap;
+                                                                horizontal-stretch: 1;
+                                                            }
                                                         }
                                                     }
                                                 }

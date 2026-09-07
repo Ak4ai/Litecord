@@ -2040,13 +2040,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(resp) => {
                     let ms = start.elapsed().as_millis();
                     if resp.status().is_success() {
-                        (format!("Sucesso! Conectado aos servidores Discord via proxy em {}ms (Status {})", ms, resp.status()), true)
+                        (format!("Sucesso! Conectado ao Discord via proxy em {}ms (Status {})", ms, resp.status()), true)
                     } else {
-                        (format!("Proxy respondeu em {}ms, mas com status HTTP {}", ms, resp.status()), false)
+                        (format!("Proxy respondeu em {}ms, mas retornou status HTTP {}", ms, resp.status()), false)
                     }
                 }
                 Err(e) => {
-                    (format!("Erro ao conectar via proxy: {}", e), false)
+                    let friendly = if e.is_connect() {
+                        "Falha de conexão: o proxy recusou a conexão ou está offline.".to_string()
+                    } else if e.is_timeout() {
+                        "Tempo esgotado: o servidor proxy demorou para responder.".to_string()
+                    } else {
+                        format!("Erro ao conectar via proxy: {}", e)
+                    };
+                    (friendly, false)
                 }
             };
 
