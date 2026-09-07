@@ -1945,6 +1945,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         network_settings::save_network_settings(&curr);
         if let Some(ui) = app_weak_proxy_mode.upgrade() {
             populate_network_proxy_settings(&ui);
+            if curr.proxy_mode == "off" {
+                ui.set_login_alert_message("".into());
+            }
         }
     });
 
@@ -1981,6 +1984,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ui) = app_weak_proxy_save.upgrade() {
             populate_network_proxy_settings(&ui);
+            if mode == "off" {
+                ui.set_login_alert_message("".into());
+            }
             ui.set_proxy_test_status_text("Configurações de proxy salvas com sucesso!".into());
             ui.set_proxy_test_is_success(true);
         }
@@ -2461,7 +2467,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_has_qr_code(false);
-                            if err_clone.contains("captcha-required") || err_clone.contains("captcha") {
+                            if crate::utils::is_proxy_error(&err_clone) {
+                                ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
+                                ui.set_login_alert_is_error(true);
+                            } else if err_clone.contains("captcha-required") || err_clone.contains("captcha") {
                                 ui.set_login_alert_message("O Discord exigiu verificação por Captcha para o QR Code. Por favor, cole seu Token ao lado para conectar imediatamente.".into());
                                 ui.set_login_alert_is_error(true);
                             } else {
@@ -2827,8 +2836,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let err_clone = err_msg.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
-                            ui.set_connection_status(format!("❌ {}", err_clone).into());
-                            ui.set_login_alert_message(format!("Token recusado pelo Discord: {}", err_clone).into());
+                            if crate::utils::is_proxy_error(&err_clone) {
+                                ui.set_connection_status(format!("❌ Falha de conexão via Proxy ({})", crate::utils::get_network_settings().proxy_mode.to_uppercase()).into());
+                                ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
+                            } else {
+                                ui.set_connection_status(format!("❌ {}", err_clone).into());
+                                ui.set_login_alert_message(format!("Token recusado pelo Discord: {}", err_clone).into());
+                            }
                             ui.set_login_alert_is_error(true);
                         }
                     });
@@ -2895,12 +2909,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let app_w_ui = app_w.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w_ui.upgrade() {
-                            ui.set_connection_status("⚠️ Nenhum dos tokens encontrados foi aceito pelo Discord.".into());
+                            let net = crate::utils::get_network_settings();
+                            if net.proxy_mode != "off" {
+                                ui.set_connection_status(format!("⚠️ Falha de conexão via Proxy ({})", net.proxy_mode.to_uppercase()).into());
+                                ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
+                                ui.set_login_alert_is_error(true);
+                            } else {
+                                ui.set_connection_status("⚠️ Nenhum dos tokens encontrados foi aceito pelo Discord.".into());
+                            }
                         }
                     });
                 }
             }
         });
+    });
+
+    // Proactive Proxy Health Check at Startup
+    let app_weak_proxy_check = app_weak.clone();
+    tokio::spawn(async move {
+        let net = crate::utils::get_network_settings();
+        if net.proxy_mode != "off" {
+            info!("🌐 Verificando conectividade do proxy configurado ({}: {}:{})...", net.proxy_mode, net.proxy_host, net.proxy_port);
+            if let Err(e) = crate::utils::test_proxy_connection().await {
+                warn!("⚠️ Proxy ativo ({}) inacessível no início da aplicação: {}", net.proxy_mode, e);
+                let proxy_msg = crate::utils::format_proxy_alert_message();
+                let app_w = app_weak_proxy_check.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w.upgrade() {
+                        if !ui.get_is_logged_in() {
+                            ui.set_login_alert_message(proxy_msg.into());
+                            ui.set_login_alert_is_error(true);
+                        }
+                    }
+                });
+            }
+        }
     });
 
     // Auto-Login if saved token file exists or if auto-detectable from Discord Desktop

@@ -1633,8 +1633,8 @@ export component AppWindow inherits Window {
 
                         // Alert / Status Banner on Login Screen
                         if root.login_alert_message != "": Rectangle {
-                            height: 38px;
-                            background: root.login_alert_is_error ? #da373c22 : #3b82f622;
+                            min-height: 38px;
+                            background: alert_ta.has-hover ? (root.login_alert_is_error ? #da373c38 : #3b82f638) : (root.login_alert_is_error ? #da373c22 : #3b82f622);
                             border-radius: 8px;
                             border-width: 1px;
                             border-color: root.login_alert_is_error ? #da373c88 : #3b82f688;
@@ -1643,7 +1643,9 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 padding-left: 12px;
                                 padding-right: 12px;
-                                spacing: 8px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                spacing: 10px;
                                 alignment: center;
 
                                 VerticalLayout {
@@ -1657,15 +1659,37 @@ export component AppWindow inherits Window {
                                 }
 
                                 Text {
+                                    horizontal-stretch: 1;
                                     text: root.login_alert_message;
                                     color: root.login_alert_is_error ? #f23f43 : #dbdee1;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
-                                    overflow: elide;
+                                    horizontal-alignment: left;
+                                    wrap: word-wrap;
+                                }
+
+                                if root.login_alert_is_error : VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../assets/settings.svg");
+                                        width: 13px;
+                                        height: 13px;
+                                        colorize: #f23f43;
+                                        opacity: alert_ta.has-hover ? 1.0 : 0.75;
+                                    }
+                                }
+                            }
+
+                            alert_ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.settings_active_tab = 6;
+                                    root.open_settings();
                                 }
                             }
                         }
+
 
                         Rectangle {
                             height: 400px;

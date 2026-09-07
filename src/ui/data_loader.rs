@@ -645,6 +645,16 @@ pub async fn try_login_with_candidates(
             }
             Err(err_msg) => {
                 info!("Candidato a token recusado pelo Discord ({}). Testando próximo candidato...", err_msg);
+                if crate::utils::is_proxy_error(&err_msg) {
+                    let app_w = app_weak.clone();
+                    let proxy_msg = crate::utils::format_proxy_alert_message();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            ui.set_login_alert_message(proxy_msg.into());
+                            ui.set_login_alert_is_error(true);
+                        }
+                    });
+                }
             }
         }
     }
