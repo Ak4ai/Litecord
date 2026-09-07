@@ -1,4 +1,4 @@
-﻿import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
 
 component IconButton inherits Rectangle {
     in property <image> icon;
@@ -4355,58 +4355,56 @@ export component AppWindow inherits Window {
                                                 }
 
                                                 Rectangle {
-                                                    height: 95px;
                                                     background: #1e1f22;
                                                     border-radius: 8px;
                                                     border-width: 1px;
                                                     border-color: #383a40;
 
-                                                    ScrollView {
-                                                        height: 100%;
-                                                        width: 100%;
+                                                    VerticalLayout {
+                                                        padding-top: 6px;
+                                                        padding-bottom: 6px;
+                                                        padding-left: 6px;
+                                                        padding-right: 6px;
+                                                        spacing: 4px;
 
-                                                        VerticalLayout {
-                                                            padding-top: 6px;
-                                                            padding-bottom: 6px;
-                                                            padding-left: 6px;
-                                                            padding-right: 6px;
-                                                            spacing: 4px;
+                                                        for dev in root.input_devices: Rectangle {
+                                                            height: 38px;
+                                                            background: dev.is_selected ? #35373c : (dev_in_ta.has-hover ? #2b2d31 : transparent);
+                                                            border-radius: 6px;
+                                                            animate background { duration: 120ms; }
 
-                                                            for dev in root.input_devices: Rectangle {
-                                                                height: 32px;
-                                                                background: dev.is_selected ? #35373c : #2b2d31;
-                                                                border-radius: 6px;
+                                                            HorizontalLayout {
+                                                                padding-left: 10px;
+                                                                padding-right: 12px;
+                                                                spacing: 10px;
 
-                                                                HorizontalLayout {
-                                                                    padding-left: 10px;
-                                                                    padding-right: 10px;
-                                                                    spacing: 8px;
-
-                                                                    VerticalLayout {
-                                                                        alignment: center;
-                                                                        Image {
-                                                                            source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
-                                                                            width: 14px;
-                                                                            height: 14px;
-                                                                            image-fit: contain;
-                                                                        }
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Image {
+                                                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                        width: 16px;
+                                                                        height: 16px;
+                                                                        image-fit: contain;
                                                                     }
+                                                                }
 
+                                                                VerticalLayout {
+                                                                    alignment: center;
                                                                     Text {
                                                                         text: dev.name;
-                                                                        color: dev.is_selected ? #2563eb : #dbdee1;
+                                                                        color: dev.is_selected ? #ffffff : #dbdee1;
                                                                         font-size: 12px;
-                                                                        font-weight: dev.is_selected ? 700 : 400;
-                                                                        vertical-alignment: center;
+                                                                        font-weight: dev.is_selected ? 700 : 500;
                                                                         overflow: elide;
                                                                     }
-
-                                                                    Rectangle { horizontal-stretch: 1; }
                                                                 }
 
-                                                                TouchArea {
-                                                                    clicked => { root.select_input_device(dev.name); }
-                                                                }
+                                                                Rectangle { horizontal-stretch: 1; }
+                                                            }
+
+                                                            dev_in_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.select_input_device(dev.name); }
                                                             }
                                                         }
                                                     }
@@ -4493,58 +4491,56 @@ export component AppWindow inherits Window {
                                                 }
 
                                                 Rectangle {
-                                                    height: 95px;
                                                     background: #1e1f22;
                                                     border-radius: 8px;
                                                     border-width: 1px;
                                                     border-color: #383a40;
 
-                                                    ScrollView {
-                                                        height: 100%;
-                                                        width: 100%;
+                                                    VerticalLayout {
+                                                        padding-top: 6px;
+                                                        padding-bottom: 6px;
+                                                        padding-left: 6px;
+                                                        padding-right: 6px;
+                                                        spacing: 4px;
 
-                                                        VerticalLayout {
-                                                            padding-top: 6px;
-                                                            padding-bottom: 6px;
-                                                            padding-left: 6px;
-                                                            padding-right: 6px;
-                                                            spacing: 4px;
+                                                        for dev in root.output_devices: Rectangle {
+                                                            height: 38px;
+                                                            background: dev.is_selected ? #35373c : (dev_out_ta.has-hover ? #2b2d31 : transparent);
+                                                            border-radius: 6px;
+                                                            animate background { duration: 120ms; }
 
-                                                            for dev in root.output_devices: Rectangle {
-                                                                height: 32px;
-                                                                background: dev.is_selected ? #35373c : #2b2d31;
-                                                                border-radius: 6px;
+                                                            HorizontalLayout {
+                                                                padding-left: 10px;
+                                                                padding-right: 12px;
+                                                                spacing: 10px;
 
-                                                                HorizontalLayout {
-                                                                    padding-left: 10px;
-                                                                    padding-right: 10px;
-                                                                    spacing: 8px;
-
-                                                                    VerticalLayout {
-                                                                        alignment: center;
-                                                                        Image {
-                                                                            source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
-                                                                            width: 14px;
-                                                                            height: 14px;
-                                                                            image-fit: contain;
-                                                                        }
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Image {
+                                                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                        width: 16px;
+                                                                        height: 16px;
+                                                                        image-fit: contain;
                                                                     }
+                                                                }
 
+                                                                VerticalLayout {
+                                                                    alignment: center;
                                                                     Text {
                                                                         text: dev.name;
-                                                                        color: dev.is_selected ? #2563eb : #dbdee1;
+                                                                        color: dev.is_selected ? #ffffff : #dbdee1;
                                                                         font-size: 12px;
-                                                                        font-weight: dev.is_selected ? 700 : 400;
-                                                                        vertical-alignment: center;
+                                                                        font-weight: dev.is_selected ? 700 : 500;
                                                                         overflow: elide;
                                                                     }
-
-                                                                    Rectangle { horizontal-stretch: 1; }
                                                                 }
 
-                                                                TouchArea {
-                                                                    clicked => { root.select_output_device(dev.name); }
-                                                                }
+                                                                Rectangle { horizontal-stretch: 1; }
+                                                            }
+
+                                                            dev_out_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.select_output_device(dev.name); }
                                                             }
                                                         }
                                                     }
