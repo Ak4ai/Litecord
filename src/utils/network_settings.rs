@@ -48,6 +48,10 @@ pub fn get_network_settings() -> NetworkSettings {
 }
 
 pub fn save_network_settings(settings: &NetworkSettings) {
+    {
+        let mut store = get_network_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+        *store = settings.clone();
+    }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
         let _ = std::fs::write(NETWORK_SETTINGS_FILE, json);
     }
@@ -61,15 +65,16 @@ pub fn update_network_settings(
     pass: String,
     route_media: bool,
 ) {
-    let mut store = get_network_settings_store().lock().unwrap_or_else(|e| e.into_inner());
-    store.proxy_mode = mode;
-    store.proxy_host = host;
-    store.proxy_port = port;
-    store.proxy_username = user;
-    store.proxy_password = pass;
-    store.route_media = route_media;
-    save_network_settings(&store);
-    info!("🌐 Configurações de Proxy salvas: modo={}, host={}:{}", store.proxy_mode, store.proxy_host, store.proxy_port);
+    let settings = NetworkSettings {
+        proxy_mode: mode,
+        proxy_host: host,
+        proxy_port: port,
+        proxy_username: user,
+        proxy_password: pass,
+        route_media,
+    };
+    save_network_settings(&settings);
+    info!("🌐 Configurações de Proxy salvas: modo={}, host={}:{}", settings.proxy_mode, settings.proxy_host, settings.proxy_port);
 }
 
 /// Aplica a configuração de proxy ativa a qualquer `reqwest::ClientBuilder`

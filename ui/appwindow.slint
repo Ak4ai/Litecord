@@ -6380,12 +6380,13 @@ export component AppWindow inherits Window {
                                             // Options Block (Left - Col 2)
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
-                                                padding-right: 16px;
-                                                spacing: 14px;
+                                                min-width: 240px;
+                                                padding-right: 12px;
+                                                spacing: 12px;
 
                                                 // Section 1: Proxy Mode Selector
                                                 VerticalLayout {
-                                                    spacing: 8px;
+                                                    spacing: 6px;
 
                                                     HorizontalLayout {
                                                         spacing: 6px;
@@ -6415,22 +6416,22 @@ export component AppWindow inherits Window {
                                                         border-color: #2b2d31;
 
                                                         VerticalLayout {
-                                                            padding-top: 6px;
-                                                            padding-bottom: 6px;
-                                                            padding-left: 6px;
-                                                            padding-right: 6px;
-                                                            spacing: 4px;
+                                                            padding-top: 4px;
+                                                            padding-bottom: 4px;
+                                                            padding-left: 4px;
+                                                            padding-right: 4px;
+                                                            spacing: 3px;
 
                                                             for opt in root.proxy_mode_options: Rectangle {
-                                                                height: 44px;
+                                                                height: 40px;
                                                                 background: (opt.id == root.selected_proxy_mode) ? #35373c : (opt_proxy_ta.has-hover ? #2b2d31 : transparent);
                                                                 border-radius: 6px;
                                                                 animate background { duration: 120ms; }
 
                                                                 HorizontalLayout {
-                                                                    padding-left: 10px;
-                                                                    padding-right: 12px;
-                                                                    spacing: 10px;
+                                                                    padding-left: 8px;
+                                                                    padding-right: 10px;
+                                                                    spacing: 8px;
 
                                                                     VerticalLayout {
                                                                         alignment: center;
@@ -6444,23 +6445,24 @@ export component AppWindow inherits Window {
 
                                                                     VerticalLayout {
                                                                         alignment: center;
-                                                                        spacing: 2px;
+                                                                        spacing: 1px;
+                                                                        horizontal-stretch: 1;
 
                                                                         Text {
                                                                             text: opt.name;
                                                                             color: (opt.id == root.selected_proxy_mode) ? #ffffff : #dbdee1;
-                                                                            font-size: 12px;
+                                                                            font-size: 11px;
                                                                             font-weight: (opt.id == root.selected_proxy_mode) ? 700 : 500;
+                                                                            overflow: elide;
                                                                         }
 
                                                                         Text {
                                                                             text: opt.desc;
                                                                             color: (opt.id == root.selected_proxy_mode) ? #949ba4 : #80848e;
                                                                             font-size: 10px;
+                                                                            overflow: elide;
                                                                         }
                                                                     }
-
-                                                                    Rectangle { horizontal-stretch: 1; }
                                                                 }
 
                                                                 opt_proxy_ta := TouchArea {
@@ -6477,7 +6479,7 @@ export component AppWindow inherits Window {
 
                                                 // Section 2: Host / Port / Credentials Inputs (only when HTTP or SOCKS5)
                                                 if root.selected_proxy_mode == "http" || root.selected_proxy_mode == "socks5": VerticalLayout {
-                                                    spacing: 10px;
+                                                    spacing: 8px;
 
                                                     HorizontalLayout {
                                                         spacing: 6px;
@@ -6507,6 +6509,7 @@ export component AppWindow inherits Window {
                                                         // Host Field
                                                         VerticalLayout {
                                                             horizontal-stretch: 1;
+                                                            min-width: 130px;
                                                             spacing: 4px;
                                                             Text {
                                                                 text: "Servidor / IP Host:";
@@ -6515,7 +6518,7 @@ export component AppWindow inherits Window {
                                                                 font-weight: 600;
                                                             }
                                                             Rectangle {
-                                                                height: 36px;
+                                                                height: 34px;
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
@@ -6537,7 +6540,7 @@ export component AppWindow inherits Window {
 
                                                         // Port Field
                                                         VerticalLayout {
-                                                            width: 90px;
+                                                            width: 80px;
                                                             spacing: 4px;
                                                             Text {
                                                                 text: "Porta:";
@@ -6546,7 +6549,7 @@ export component AppWindow inherits Window {
                                                                 font-weight: 600;
                                                             }
                                                             Rectangle {
-                                                                height: 36px;
+                                                                height: 34px;
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
@@ -6574,6 +6577,7 @@ export component AppWindow inherits Window {
                                                         // Username Field
                                                         VerticalLayout {
                                                             horizontal-stretch: 1;
+                                                            min-width: 100px;
                                                             spacing: 4px;
                                                             Text {
                                                                 text: "Usuário (Opcional):";
@@ -6582,7 +6586,7 @@ export component AppWindow inherits Window {
                                                                 font-weight: 600;
                                                             }
                                                             Rectangle {
-                                                                height: 36px;
+                                                                height: 34px;
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
@@ -6605,6 +6609,7 @@ export component AppWindow inherits Window {
                                                         // Password Field
                                                         VerticalLayout {
                                                             horizontal-stretch: 1;
+                                                            min-width: 100px;
                                                             spacing: 4px;
                                                             Text {
                                                                 text: "Senha (Opcional):";
@@ -6613,7 +6618,7 @@ export component AppWindow inherits Window {
                                                                 font-weight: 600;
                                                             }
                                                             Rectangle {
-                                                                height: 36px;
+                                                                height: 34px;
                                                                 background: #1e1f22;
                                                                 border-radius: 6px;
                                                                 border-width: 1px;
@@ -6637,13 +6642,13 @@ export component AppWindow inherits Window {
 
                                                 // Action Buttons & Status Feedback
                                                 HorizontalLayout {
-                                                    spacing: 10px;
+                                                    spacing: 8px;
                                                     alignment: start;
 
                                                     // Test Button
                                                     Rectangle {
-                                                        height: 34px;
-                                                        width: 130px;
+                                                        height: 32px;
+                                                        width: 115px;
                                                         background: test_btn_ta.has-hover ? #2b2d31 : #1e1f22;
                                                         border-radius: 6px;
                                                         border-width: 1px;
@@ -6656,8 +6661,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: @image-url("../assets/lightning.svg");
-                                                                    width: 14px;
-                                                                    height: 14px;
+                                                                    width: 13px;
+                                                                    height: 13px;
                                                                     colorize: #06b6d4;
                                                                     image-fit: contain;
                                                                 }
@@ -6665,7 +6670,7 @@ export component AppWindow inherits Window {
                                                             Text {
                                                                 text: root.proxy_is_testing ? "Testando..." : "Testar Proxy";
                                                                 color: #f2f3f5;
-                                                                font-size: 12px;
+                                                                font-size: 11px;
                                                                 font-weight: 600;
                                                                 vertical-alignment: center;
                                                             }
@@ -6687,8 +6692,8 @@ export component AppWindow inherits Window {
 
                                                     // Save & Apply Button
                                                     Rectangle {
-                                                        height: 34px;
-                                                        width: 140px;
+                                                        height: 32px;
+                                                        width: 125px;
                                                         background: save_btn_ta.has-hover ? #1d4ed8 : #2563eb;
                                                         border-radius: 6px;
 
@@ -6698,7 +6703,7 @@ export component AppWindow inherits Window {
                                                             Text {
                                                                 text: "Salvar e Aplicar";
                                                                 color: #ffffff;
-                                                                font-size: 12px;
+                                                                font-size: 11px;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
                                                             }
@@ -6730,8 +6735,8 @@ export component AppWindow inherits Window {
                                                     HorizontalLayout {
                                                         padding-left: 10px;
                                                         padding-right: 10px;
-                                                        padding-top: 8px;
-                                                        padding-bottom: 8px;
+                                                        padding-top: 6px;
+                                                        padding-bottom: 6px;
                                                         spacing: 8px;
                                                         Text {
                                                             text: root.proxy_test_status_text;
@@ -6753,136 +6758,136 @@ export component AppWindow inherits Window {
 
                                             // Guide Block (Right - Col 3)
                                             VerticalLayout {
-                                                width: 270px;
-                                                padding-left: 16px;
-                                                padding-right: 16px;
+                                                width: 220px;
+                                                padding-left: 12px;
+                                                padding-right: 10px;
                                                 padding-top: 2px;
-                                                spacing: 14px;
+                                                spacing: 12px;
 
                                                 // Guide 1: Burlar Bloqueios
                                                 VerticalLayout {
-                                                    spacing: 4px;
+                                                    spacing: 3px;
                                                     HorizontalLayout {
                                                         spacing: 6px;
                                                         VerticalLayout {
                                                              alignment: center;
                                                              Image {
                                                                  source: @image-url("../assets/shield.svg");
-                                                                 width: 14px;
-                                                                 height: 14px;
+                                                                 width: 13px;
+                                                                 height: 13px;
                                                                  colorize: #06b6d4;
                                                                  image-fit: contain;
                                                              }
                                                          }
                                                          Text {
-                                                             text: "Burlar Firewalls & Bloqueios";
+                                                             text: "Burlar Bloqueios";
                                                              color: #06b6d4;
-                                                             font-size: 12px;
+                                                             font-size: 11px;
                                                              font-weight: 700;
                                                              wrap: word-wrap;
                                                              vertical-alignment: center;
                                                          }
                                                      }
                                                      Text {
-                                                         text: "Permite conectar em colégios, universidades e redes corporativas que bloqueiam o Discord via DNS ou portas padrão.";
+                                                         text: "Permite contornar firewalls e bloqueios de DNS em colégios ou empresas.";
                                                          color: #949ba4;
-                                                         font-size: 11px;
+                                                         font-size: 10px;
                                                          wrap: word-wrap;
                                                      }
                                                  }
 
                                                  // Guide 2: Tor e SOCKS5
                                                  VerticalLayout {
-                                                     spacing: 4px;
+                                                     spacing: 3px;
                                                      HorizontalLayout {
                                                          spacing: 6px;
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Image {
                                                                  source: @image-url("../assets/key.svg");
-                                                                 width: 14px;
-                                                                 height: 14px;
+                                                                 width: 13px;
+                                                                 height: 13px;
                                                                  colorize: #2563eb;
                                                                  image-fit: contain;
                                                              }
                                                          }
                                                          Text {
-                                                             text: "Privacidade com Tor / SOCKS5";
+                                                             text: "Tor & SOCKS5";
                                                              color: #2563eb;
-                                                             font-size: 12px;
+                                                             font-size: 11px;
                                                              font-weight: 700;
                                                              wrap: word-wrap;
                                                              vertical-alignment: center;
                                                          }
                                                      }
                                                      Text {
-                                                         text: "Compatível com a porta 9050 do Tor e túneis SSH/Shadowsocks locais para anonimizar seu endereço IP real.";
+                                                         text: "Compatível com a porta 9050 do Tor e túneis SSH locais para anonimizar seu IP.";
                                                          color: #949ba4;
-                                                         font-size: 11px;
+                                                         font-size: 10px;
                                                          wrap: word-wrap;
                                                      }
                                                  }
 
                                                  // Guide 3: Burp Suite & Devs
                                                  VerticalLayout {
-                                                     spacing: 4px;
+                                                     spacing: 3px;
                                                      HorizontalLayout {
                                                          spacing: 6px;
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Image {
                                                                  source: @image-url("../assets/terminal.svg");
-                                                                 width: 14px;
-                                                                 height: 14px;
+                                                                 width: 13px;
+                                                                 height: 13px;
                                                                  colorize: #f0b232;
                                                                  image-fit: contain;
                                                              }
                                                          }
                                                          Text {
-                                                             text: "Debugging & Burp Suite";
+                                                             text: "Debugging & Burp";
                                                              color: #f0b232;
-                                                             font-size: 12px;
+                                                             font-size: 11px;
                                                              font-weight: 700;
                                                              wrap: word-wrap;
                                                              vertical-alignment: center;
                                                          }
                                                      }
                                                      Text {
-                                                         text: "Aponte para 127.0.0.1:8080 para inspecionar requisições da API REST durante desenvolvimento de bots e análises de rede.";
+                                                         text: "Aponte para 127.0.0.1:8080 para inspecionar requisições da API REST.";
                                                          color: #949ba4;
-                                                         font-size: 11px;
+                                                         font-size: 10px;
                                                          wrap: word-wrap;
                                                      }
                                                  }
 
                                                  // Guide 4: Latência em Jogos
                                                  VerticalLayout {
-                                                     spacing: 4px;
+                                                     spacing: 3px;
                                                      HorizontalLayout {
                                                          spacing: 6px;
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Image {
                                                                  source: @image-url("../assets/lightning.svg");
-                                                                 width: 14px;
-                                                                 height: 14px;
+                                                                 width: 13px;
+                                                                 height: 13px;
                                                                  colorize: #23a55a;
                                                                  image-fit: contain;
                                                              }
                                                          }
                                                          Text {
-                                                             text: "Desempenho Nativo em Jogos";
+                                                             text: "Desempenho em Jogos";
                                                              color: #23a55a;
-                                                             font-size: 12px;
+                                                             font-size: 11px;
                                                              font-weight: 700;
                                                              wrap: word-wrap;
                                                              vertical-alignment: center;
                                                          }
                                                      }
                                                      Text {
-                                                         text: "Com o proxy desativado, o impacto é 0%. Quando ativado, áudio e vídeo mantêm rotas UDP diretas para latência mínima.";
+                                                         text: "Com proxy desativado, o impacto é 0%. Voz e vídeo mantêm rotas UDP diretas.";
                                                          color: #949ba4;
-                                                         font-size: 11px;
+                                                         font-size: 10px;
                                                          wrap: word-wrap;
                                                      }
                                                  }

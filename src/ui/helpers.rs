@@ -362,25 +362,25 @@ pub fn populate_network_proxy_settings(ui: &AppWindow) {
         SettingOptionItem {
             id: "off".into(),
             name: "Desativado (Conexão Direta)".into(),
-            desc: "Conexão direta aos servidores do Discord sem intermediários (Padrão).".into(),
+            desc: "Conexão direta aos servidores do Discord (Padrão).".into(),
             is_selected: settings.proxy_mode == "off",
         },
         SettingOptionItem {
             id: "http".into(),
             name: "Proxy HTTP / HTTPS".into(),
-            desc: "Túnel HTTP CONNECT ideal para redes corporativas, faculdades e Burp Suite / Fiddler.".into(),
+            desc: "Túnel HTTP CONNECT para redes restritas e proxies.".into(),
             is_selected: settings.proxy_mode == "http" || settings.proxy_mode == "https",
         },
         SettingOptionItem {
             id: "socks5".into(),
             name: "Proxy SOCKS5".into(),
-            desc: "Túnel SOCKS5 completo compatível com Tor (127.0.0.1:9050), Shadowsocks e SSH.".into(),
+            desc: "Túnel SOCKS5 compatível com Tor, Shadowsocks e SSH.".into(),
             is_selected: settings.proxy_mode == "socks5",
         },
         SettingOptionItem {
             id: "system".into(),
             name: "Proxy do Sistema".into(),
-            desc: "Detecta e utiliza automaticamente as variáveis e proxy global do Windows/Linux.".into(),
+            desc: "Detecta automaticamente o proxy global do sistema.".into(),
             is_selected: settings.proxy_mode == "system",
         },
     ];
