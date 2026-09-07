@@ -6753,8 +6753,9 @@ export component AppWindow inherits Window {
 
                                             // Guide Block (Right - Col 3)
                                             VerticalLayout {
-                                                width: 290px;
+                                                width: 270px;
                                                 padding-left: 16px;
+                                                padding-right: 16px;
                                                 padding-top: 2px;
                                                 spacing: 14px;
 
@@ -6764,128 +6765,128 @@ export component AppWindow inherits Window {
                                                     HorizontalLayout {
                                                         spacing: 6px;
                                                         VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/shield.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #06b6d4;
-                                                                image-fit: contain;
-                                                            }
-                                                        }
-                                                        Text {
-                                                            text: "Burlar Firewalls & Bloqueios";
-                                                            color: #06b6d4;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    Text {
-                                                        text: "Permite conectar em colégios, universidades e redes corporativas que bloqueiam o Discord via DNS ou portas padrão.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
-                                                }
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/shield.svg");
+                                                                 width: 14px;
+                                                                 height: 14px;
+                                                                 colorize: #06b6d4;
+                                                                 image-fit: contain;
+                                                             }
+                                                         }
+                                                         Text {
+                                                             text: "Burlar Firewalls & Bloqueios";
+                                                             color: #06b6d4;
+                                                             font-size: 12px;
+                                                             font-weight: 700;
+                                                             wrap: word-wrap;
+                                                             vertical-alignment: center;
+                                                         }
+                                                     }
+                                                     Text {
+                                                         text: "Permite conectar em colégios, universidades e redes corporativas que bloqueiam o Discord via DNS ou portas padrão.";
+                                                         color: #949ba4;
+                                                         font-size: 11px;
+                                                         wrap: word-wrap;
+                                                     }
+                                                 }
 
-                                                // Guide 2: Tor e SOCKS5
-                                                VerticalLayout {
-                                                    spacing: 4px;
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/key.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #2563eb;
-                                                                image-fit: contain;
-                                                            }
-                                                        }
-                                                        Text {
-                                                            text: "Privacidade com Tor / SOCKS5";
-                                                            color: #2563eb;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    Text {
-                                                        text: "Compatível com a porta 9050 do Tor e túneis SSH/Shadowsocks locais para anonimizar seu endereço IP real.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
-                                                }
+                                                 // Guide 2: Tor e SOCKS5
+                                                 VerticalLayout {
+                                                     spacing: 4px;
+                                                     HorizontalLayout {
+                                                         spacing: 6px;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/key.svg");
+                                                                 width: 14px;
+                                                                 height: 14px;
+                                                                 colorize: #2563eb;
+                                                                 image-fit: contain;
+                                                             }
+                                                         }
+                                                         Text {
+                                                             text: "Privacidade com Tor / SOCKS5";
+                                                             color: #2563eb;
+                                                             font-size: 12px;
+                                                             font-weight: 700;
+                                                             wrap: word-wrap;
+                                                             vertical-alignment: center;
+                                                         }
+                                                     }
+                                                     Text {
+                                                         text: "Compatível com a porta 9050 do Tor e túneis SSH/Shadowsocks locais para anonimizar seu endereço IP real.";
+                                                         color: #949ba4;
+                                                         font-size: 11px;
+                                                         wrap: word-wrap;
+                                                     }
+                                                 }
 
-                                                // Guide 3: Burp Suite & Devs
-                                                VerticalLayout {
-                                                    spacing: 4px;
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/terminal.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #f0b232;
-                                                                image-fit: contain;
-                                                            }
-                                                        }
-                                                        Text {
-                                                            text: "Debugging & Burp Suite";
-                                                            color: #f0b232;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    Text {
-                                                        text: "Aponte para 127.0.0.1:8080 para inspecionar requisições da API REST durante desenvolvimento de bots e análises de rede.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
-                                                }
+                                                 // Guide 3: Burp Suite & Devs
+                                                 VerticalLayout {
+                                                     spacing: 4px;
+                                                     HorizontalLayout {
+                                                         spacing: 6px;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/terminal.svg");
+                                                                 width: 14px;
+                                                                 height: 14px;
+                                                                 colorize: #f0b232;
+                                                                 image-fit: contain;
+                                                             }
+                                                         }
+                                                         Text {
+                                                             text: "Debugging & Burp Suite";
+                                                             color: #f0b232;
+                                                             font-size: 12px;
+                                                             font-weight: 700;
+                                                             wrap: word-wrap;
+                                                             vertical-alignment: center;
+                                                         }
+                                                     }
+                                                     Text {
+                                                         text: "Aponte para 127.0.0.1:8080 para inspecionar requisições da API REST durante desenvolvimento de bots e análises de rede.";
+                                                         color: #949ba4;
+                                                         font-size: 11px;
+                                                         wrap: word-wrap;
+                                                     }
+                                                 }
 
-                                                // Guide 4: Latência em Jogos
-                                                VerticalLayout {
-                                                    spacing: 4px;
-                                                    HorizontalLayout {
-                                                        spacing: 6px;
-                                                        VerticalLayout {
-                                                            alignment: center;
-                                                            Image {
-                                                                source: @image-url("../assets/lightning.svg");
-                                                                width: 14px;
-                                                                height: 14px;
-                                                                colorize: #23a55a;
-                                                                image-fit: contain;
-                                                            }
-                                                        }
-                                                        Text {
-                                                            text: "Desempenho Nativo em Jogos";
-                                                            color: #23a55a;
-                                                            font-size: 12px;
-                                                            font-weight: 700;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        Rectangle { horizontal-stretch: 1; }
-                                                    }
-                                                    Text {
-                                                        text: "Com o proxy desativado, o impacto é 0%. Quando ativado, áudio e vídeo mantêm rotas UDP diretas para latência mínima.";
-                                                        color: #949ba4;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
-                                                }
-                                            }
+                                                 // Guide 4: Latência em Jogos
+                                                 VerticalLayout {
+                                                     spacing: 4px;
+                                                     HorizontalLayout {
+                                                         spacing: 6px;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/lightning.svg");
+                                                                 width: 14px;
+                                                                 height: 14px;
+                                                                 colorize: #23a55a;
+                                                                 image-fit: contain;
+                                                             }
+                                                         }
+                                                         Text {
+                                                             text: "Desempenho Nativo em Jogos";
+                                                             color: #23a55a;
+                                                             font-size: 12px;
+                                                             font-weight: 700;
+                                                             wrap: word-wrap;
+                                                             vertical-alignment: center;
+                                                         }
+                                                     }
+                                                     Text {
+                                                         text: "Com o proxy desativado, o impacto é 0%. Quando ativado, áudio e vídeo mantêm rotas UDP diretas para latência mínima.";
+                                                         color: #949ba4;
+                                                         font-size: 11px;
+                                                         wrap: word-wrap;
+                                                     }
+                                                 }
+                                             }
                                         }
 
                                         // Generous Bottom Spacer
