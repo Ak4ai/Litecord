@@ -4324,277 +4324,7 @@ export component AppWindow inherits Window {
                                     if root.settings_active_tab == 0: VerticalLayout {
                                         spacing: 16px;
 
-                                        // --- ROW 1: INPUT DEVICE (MICROPHONE) + GUIDE ---
-                                        HorizontalLayout {
-                                            spacing: 0px;
-
-                                            // Option Block (Left - Col 2)
-                                            VerticalLayout {
-                                                horizontal-stretch: 1;
-                                                padding-right: 16px;
-                                                spacing: 8px;
-
-                                                HorizontalLayout {
-                                                    spacing: 8px;
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        Image {
-                                                            source: @image-url("../assets/microphone.svg");
-                                                            width: 14px;
-                                                            height: 14px;
-                                                            colorize: #2563eb;
-                                                            image-fit: contain;
-                                                        }
-                                                    }
-                                                    Text {
-                                                        text: root.tr_settings_input_device;
-                                                        color: #b5bac1;
-                                                        font-size: 11px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-                                                    Rectangle { horizontal-stretch: 1; }
-                                                }
-
-                                                Rectangle {
-                                                    background: #1e1f22;
-                                                    border-radius: 8px;
-                                                    border-width: 1px;
-                                                    border-color: #383a40;
-
-                                                    VerticalLayout {
-                                                        padding-top: 6px;
-                                                        padding-bottom: 6px;
-                                                        padding-left: 6px;
-                                                        padding-right: 6px;
-                                                        spacing: 4px;
-
-                                                        for dev in root.input_devices: Rectangle {
-                                                            height: 38px;
-                                                            background: dev.is_selected ? #35373c : (dev_in_ta.has-hover ? #2b2d31 : transparent);
-                                                            border-radius: 6px;
-                                                            animate background { duration: 120ms; }
-
-                                                            HorizontalLayout {
-                                                                padding-left: 10px;
-                                                                padding-right: 12px;
-                                                                spacing: 10px;
-
-                                                                VerticalLayout {
-                                                                    alignment: center;
-                                                                    Image {
-                                                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
-                                                                        width: 16px;
-                                                                        height: 16px;
-                                                                        image-fit: contain;
-                                                                    }
-                                                                }
-
-                                                                VerticalLayout {
-                                                                    alignment: center;
-                                                                    Text {
-                                                                        text: dev.name;
-                                                                        color: dev.is_selected ? #ffffff : #dbdee1;
-                                                                        font-size: 12px;
-                                                                        font-weight: dev.is_selected ? 700 : 500;
-                                                                        overflow: elide;
-                                                                    }
-                                                                }
-
-                                                                Rectangle { horizontal-stretch: 1; }
-                                                            }
-
-                                                            dev_in_ta := TouchArea {
-                                                                mouse-cursor: pointer;
-                                                                clicked => { root.select_input_device(dev.name); }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Vertical Separator Line between Col 2 and Col 3
-                                            Rectangle {
-                                                width: 1px;
-                                                background: #383a40;
-                                            }
-
-                                            // Guide Block (Right - Col 3, clean without card)
-                                            VerticalLayout {
-                                                width: 290px;
-                                                padding-left: 16px;
-                                                padding-top: 2px;
-                                                spacing: 6px;
-
-                                                HorizontalLayout {
-                                                    spacing: 6px;
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        Image {
-                                                            source: @image-url("../assets/microphone.svg");
-                                                            width: 14px;
-                                                            height: 14px;
-                                                            colorize: #2563eb;
-                                                            image-fit: contain;
-                                                        }
-                                                    }
-                                                    Text {
-                                                        text: "Dispositivo de Entrada";
-                                                        color: #2563eb;
-                                                        font-size: 12px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-                                                    Rectangle { horizontal-stretch: 1; }
-                                                }
-
-                                                Text {
-                                                    text: "Selecione o microfone principal ou headset. Recomendamos usar o dispositivo padrão ou o microfone dedicado com cancelamento de ruído.";
-                                                    color: #949ba4;
-                                                    font-size: 11px;
-                                                    wrap: word-wrap;
-                                                }
-                                            }
-                                        }
-
-                                        // Horizontal Row Separator
-                                        Rectangle { height: 1px; background: #282a2e; }
-
-                                        // --- ROW 1.5: MICROPHONE INPUT VOLUME (GAIN / AMPLIFICATION 0% TO 200%) + GUIDE ---
-                                        HorizontalLayout {
-                                            spacing: 0px;
-
-                                            // Option Block (Left - Col 2)
-                                            VerticalLayout {
-                                                horizontal-stretch: 1;
-                                                padding-right: 16px;
-                                                spacing: 8px;
-
-                                                HorizontalLayout {
-                                                    spacing: 8px;
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        Image {
-                                                            source: @image-url("../assets/microphone.svg");
-                                                            width: 14px;
-                                                            height: 14px;
-                                                            colorize: #2563eb;
-                                                            image-fit: contain;
-                                                        }
-                                                    }
-                                                    Text {
-                                                        text: "VOLUME DE ENTRADA (GANHO DO MICROFONE)";
-                                                        color: #b5bac1;
-                                                        font-size: 11px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-
-                                                    Rectangle { horizontal-stretch: 1; }
-
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        Rectangle {
-                                                            background: root.mic_volume > 1.05 ? #23a55a : #2563eb;
-                                                            border-radius: 4px;
-                                                            height: 18px;
-                                                            width: 48px;
-
-                                                            HorizontalLayout {
-                                                                alignment: center;
-                                                                Text {
-                                                                    text: Math.round(root.mic_volume * 100) + "%";
-                                                                    color: #ffffff;
-                                                                    font-size: 11px;
-                                                                    font-weight: 700;
-                                                                    vertical-alignment: center;
-                                                                    horizontal-alignment: center;
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                HorizontalLayout {
-                                                    spacing: 10px;
-
-                                                    Text {
-                                                        text: "0%";
-                                                        color: #80848e;
-                                                        font-size: 11px;
-                                                        font-weight: 600;
-                                                        vertical-alignment: center;
-                                                    }
-
-                                                    Slider {
-                                                        horizontal-stretch: 1;
-                                                        minimum: 0.0;
-                                                        maximum: 2.0;
-                                                        value: root.mic_volume;
-                                                        changed(val) => {
-                                                            root.mic_volume = val;
-                                                            root.set_mic_volume(val);
-                                                        }
-                                                    }
-
-                                                    Text {
-                                                        text: "200%";
-                                                        color: #80848e;
-                                                        font-size: 11px;
-                                                        font-weight: 600;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
-                                            }
-
-                                            // Vertical Separator Line between Col 2 and Col 3
-                                            Rectangle {
-                                                width: 1px;
-                                                background: #383a40;
-                                            }
-
-                                            // Guide Block (Right - Col 3, clean without card)
-                                            VerticalLayout {
-                                                width: 290px;
-                                                padding-left: 16px;
-                                                padding-top: 2px;
-                                                spacing: 6px;
-
-                                                HorizontalLayout {
-                                                    spacing: 6px;
-                                                    VerticalLayout {
-                                                        alignment: center;
-                                                        Image {
-                                                            source: @image-url("../assets/microphone.svg");
-                                                            width: 14px;
-                                                            height: 14px;
-                                                            colorize: #2563eb;
-                                                            image-fit: contain;
-                                                        }
-                                                    }
-                                                    Text {
-                                                        text: "Volume de Entrada";
-                                                        color: #2563eb;
-                                                        font-size: 12px;
-                                                        font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-                                                    Rectangle { horizontal-stretch: 1; }
-                                                }
-
-                                                Text {
-                                                    text: "Ajuste o ganho do seu microfone. Valores acima de 100% (até 200%) amplificam o sinal da sua voz para os outros usuários na sala.";
-                                                    color: #949ba4;
-                                                    font-size: 11px;
-                                                    wrap: word-wrap;
-                                                }
-                                            }
-                                        }
-
-                                        // Horizontal Row Separator
-                                        Rectangle { height: 1px; background: #282a2e; }
-
-                                        // --- ROW 2: OUTPUT DEVICE (SPEAKERS / HEADPHONES) + GUIDE ---
+                                        // --- ROW 1: OUTPUT DEVICE (SPEAKERS / HEADPHONES) + GUIDE ---
                                         HorizontalLayout {
                                             spacing: 0px;
 
@@ -4730,7 +4460,277 @@ export component AppWindow inherits Window {
                                         // Horizontal Row Separator
                                         Rectangle { height: 1px; background: #282a2e; }
 
-                                        // --- ROW 3: VAD THRESHOLD SLIDER + GUIDE ---
+                                        // --- ROW 2: INPUT DEVICE (MICROPHONE) + GUIDE ---
+                                        HorizontalLayout {
+                                            spacing: 0px;
+
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                padding-right: 16px;
+                                                spacing: 8px;
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #2563eb;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: root.tr_settings_input_device;
+                                                        color: #b5bac1;
+                                                        font-size: 11px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Rectangle {
+                                                    background: #1e1f22;
+                                                    border-radius: 8px;
+                                                    border-width: 1px;
+                                                    border-color: #383a40;
+
+                                                    VerticalLayout {
+                                                        padding-top: 6px;
+                                                        padding-bottom: 6px;
+                                                        padding-left: 6px;
+                                                        padding-right: 6px;
+                                                        spacing: 4px;
+
+                                                        for dev in root.input_devices: Rectangle {
+                                                            height: 38px;
+                                                            background: dev.is_selected ? #35373c : (dev_in_ta.has-hover ? #2b2d31 : transparent);
+                                                            border-radius: 6px;
+                                                            animate background { duration: 120ms; }
+
+                                                            HorizontalLayout {
+                                                                padding-left: 10px;
+                                                                padding-right: 12px;
+                                                                spacing: 10px;
+
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Image {
+                                                                        source: dev.is_selected ? @image-url("../assets/radio-selected.svg") : @image-url("../assets/radio-unselected.svg");
+                                                                        width: 16px;
+                                                                        height: 16px;
+                                                                        image-fit: contain;
+                                                                    }
+                                                                }
+
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Text {
+                                                                        text: dev.name;
+                                                                        color: dev.is_selected ? #ffffff : #dbdee1;
+                                                                        font-size: 12px;
+                                                                        font-weight: dev.is_selected ? 700 : 500;
+                                                                        overflow: elide;
+                                                                    }
+                                                                }
+
+                                                                Rectangle { horizontal-stretch: 1; }
+                                                            }
+
+                                                            dev_in_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.select_input_device(dev.name); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
+
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #2563eb;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "Dispositivo de Entrada";
+                                                        color: #2563eb;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Selecione o microfone principal ou headset. Recomendamos usar o dispositivo padrão ou o microfone dedicado com cancelamento de ruído.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
+                                        // --- ROW 3: MICROPHONE INPUT VOLUME (GAIN / AMPLIFICATION 0% TO 200%) + GUIDE ---
+                                        HorizontalLayout {
+                                            spacing: 0px;
+
+                                            // Option Block (Left - Col 2)
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                padding-right: 16px;
+                                                spacing: 8px;
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #2563eb;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "VOLUME DE ENTRADA (GANHO DO MICROFONE)";
+                                                        color: #b5bac1;
+                                                        font-size: 11px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+
+                                                    Rectangle { horizontal-stretch: 1; }
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            background: root.mic_volume > 1.05 ? #23a55a : #2563eb;
+                                                            border-radius: 4px;
+                                                            height: 18px;
+                                                            width: 48px;
+
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Text {
+                                                                    text: Math.round(root.mic_volume * 100) + "%";
+                                                                    color: #ffffff;
+                                                                    font-size: 11px;
+                                                                    font-weight: 700;
+                                                                    vertical-alignment: center;
+                                                                    horizontal-alignment: center;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                HorizontalLayout {
+                                                    spacing: 10px;
+
+                                                    Text {
+                                                        text: "0%";
+                                                        color: #80848e;
+                                                        font-size: 11px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+
+                                                    Slider {
+                                                        horizontal-stretch: 1;
+                                                        minimum: 0.0;
+                                                        maximum: 2.0;
+                                                        value: root.mic_volume;
+                                                        changed(val) => {
+                                                            root.mic_volume = val;
+                                                            root.set_mic_volume(val);
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: "200%";
+                                                        color: #80848e;
+                                                        font-size: 11px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
+                                            // Vertical Separator Line between Col 2 and Col 3
+                                            Rectangle {
+                                                width: 1px;
+                                                background: #383a40;
+                                            }
+
+                                            // Guide Block (Right - Col 3, clean without card)
+                                            VerticalLayout {
+                                                width: 290px;
+                                                padding-left: 16px;
+                                                padding-top: 2px;
+                                                spacing: 6px;
+
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Image {
+                                                            source: @image-url("../assets/microphone.svg");
+                                                            width: 14px;
+                                                            height: 14px;
+                                                            colorize: #2563eb;
+                                                            image-fit: contain;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: "Ganho do Microfone";
+                                                        color: #2563eb;
+                                                        font-size: 12px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    Rectangle { horizontal-stretch: 1; }
+                                                }
+
+                                                Text {
+                                                    text: "Ajuste o ganho do seu microfone. Valores acima de 100% (até 200%) amplificam o sinal da sua voz para os outros usuários na sala.";
+                                                    color: #949ba4;
+                                                    font-size: 11px;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Horizontal Row Separator
+                                        Rectangle { height: 1px; background: #282a2e; }
+
+                                        // --- ROW 4: VAD THRESHOLD SLIDER + GUIDE ---
                                         HorizontalLayout {
                                             spacing: 0px;
 
@@ -4864,7 +4864,7 @@ export component AppWindow inherits Window {
                                         // Horizontal Row Separator
                                         Rectangle { height: 1px; background: #282a2e; }
 
-                                        // --- ROW 4: VU METER & TEST MIC + GUIDE ---
+                                        // --- ROW 5: VU METER & TEST MIC + GUIDE ---
                                         HorizontalLayout {
                                             spacing: 0px;
 
