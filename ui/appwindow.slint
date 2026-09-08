@@ -1522,67 +1522,53 @@ export component AppWindow inherits Window {
                 height: 32px;
                 spacing: 0px;
 
-                // Hardware Monitor HUD (CPU / RAM / GPU) - Only shown if enabled
-                if root.show_hardware_monitor: HorizontalLayout {
-                    width: 214px;
-                    height: 32px;
+                // Hardware Monitor HUD (CPU / RAM / GPU) - Centered vertically & matching app theme
+                if root.show_hardware_monitor: VerticalLayout {
                     alignment: center;
-                    spacing: 6px;
-                    padding-right: 6px;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        padding-right: 8px;
 
-                    Rectangle {
-                        height: 22px;
-                        background: #111214;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: #2b2d31;
+                        // CPU
+                        Text {
+                            text: root.hardware_cpu_text;
+                            color: root.hardware_cpu_val > 85 ? #f23f43 : #949ba4;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
 
-                        HorizontalLayout {
-                            alignment: center;
-                            spacing: 8px;
-                            padding-left: 8px;
-                            padding-right: 8px;
+                        Text {
+                            text: "•";
+                            color: #4e5058;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
 
-                            // CPU
-                            Text {
-                                text: root.hardware_cpu_text;
-                                color: root.hardware_cpu_val > 85 ? #f23f43 : root.hardware_cpu_val > 60 ? #f0b232 : #23a55a;
-                                font-size: 11px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
+                        // RAM
+                        Text {
+                            text: root.hardware_ram_text;
+                            color: root.hardware_ram_val > 90 ? #f23f43 : #949ba4;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
 
-                            Text {
-                                text: "•";
-                                color: #4e5058;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                            }
+                        Text {
+                            text: "•";
+                            color: #4e5058;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
 
-                            // RAM
-                            Text {
-                                text: root.hardware_ram_text;
-                                color: root.hardware_ram_val > 85 ? #f23f43 : root.hardware_ram_val > 70 ? #f0b232 : #3b82f6;
-                                font-size: 11px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
-
-                            Text {
-                                text: "•";
-                                color: #4e5058;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                            }
-
-                            // GPU
-                            Text {
-                                text: root.hardware_gpu_text;
-                                color: root.hardware_gpu_val > 85 ? #f23f43 : root.hardware_gpu_val > 60 ? #f0b232 : #a855f7;
-                                font-size: 11px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
+                        // GPU
+                        Text {
+                            text: root.hardware_gpu_text;
+                            color: root.hardware_gpu_val > 90 ? #f23f43 : #949ba4;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
                         }
                     }
                 }

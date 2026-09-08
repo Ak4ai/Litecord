@@ -145,13 +145,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_network_proxy_settings(&app);
 
     let app_weak = app.as_weak();
-    utils::start_hardware_monitor_loop(app_weak.clone());
 
     let popout_window = PopoutStreamWindow::new()?;
     let popout_weak = popout_window.as_weak();
     let popout_hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
+    utils::start_hardware_monitor_loop(app_weak.clone(), Arc::clone(&hwnd_store));
+
 
     use i_slint_backend_winit::WinitWindowAccessor;
     let app_weak_init = app_weak.clone();
@@ -261,66 +262,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let show_id = tray.show_item_id.clone();
     let quit_id = tray.quit_item_id.clone();
 
+    let tray_icon_holder = tray.tray_icon;
+    let tooltip_rx = tray.tooltip_rx;
+
+    if let (Some(icon), Some(rx)) = (tray_icon_holder, tooltip_rx) {
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(500), move || {
+            let mut latest: Option<String> = None;
+            while let Ok(tip) = rx.try_recv() {
+                latest = Some(tip);
+            }
+            if let Some(tip) = latest {
+                let _ = icon.set_tooltip(Some(tip));
+            }
+        });
+        // Prevent timer from dropping
+        Box::leak(Box::new(timer));
+    }
+
     // Spawn tray event listener thread
     let hwnd_store_tray = Arc::clone(&hwnd_store);
     let app_weak_tray = app_weak.clone();
     let show_id_c = show_id.clone();
     let quit_id_c = quit_id.clone();
-    tokio::task::spawn_blocking(move || {
-        let menu_rx = MenuEvent::receiver();
-        let tray_rx = TrayIconEvent::receiver();
+    std::thread::Builder::new()
+        .name("tray-listener".into())
+        .spawn(move || {
+            let menu_rx = MenuEvent::receiver();
+            let tray_rx = TrayIconEvent::receiver();
 
-        loop {
-            let mut should_restore = false;
+            loop {
 
-            while let Ok(event) = menu_rx.try_recv() {
-                info!("Tray MenuEvent recebido: {:?}", event);
-                if event.id == show_id_c {
-                    should_restore = true;
-                } else if event.id == quit_id_c {
-                    #[cfg(target_os = "linux")]
-                    screen_capture::kill_portal_child();
-                    std::process::exit(0);
-                }
-            }
 
-            while let Ok(event) = tray_rx.try_recv() {
-                info!("TrayIconEvent recebido: {:?}", event);
-                if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
-                    should_restore = true;
-                }
-            }
+                let mut should_restore = false;
 
-            if should_restore {
-                APP_IS_VISIBLE.store(true, Ordering::Relaxed);
-                NEED_UI_REFRESH.store(true, Ordering::Relaxed);
-                info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
-
-                let app_weak_inner = app_weak_tray.clone();
-                let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui_inner) = app_weak_inner.upgrade() {
-                        let _ = ui_inner.window().with_winit_window(|winit_win| {
-                            winit_win.set_visible(true);
-                            winit_win.set_minimized(false);
-                            winit_win.focus_window();
-                        });
+                while let Ok(event) = menu_rx.try_recv() {
+                    info!("Tray MenuEvent recebido: {:?}", event);
+                    if event.id == show_id_c {
+                        should_restore = true;
+                    } else if event.id == quit_id_c {
+                        #[cfg(target_os = "linux")]
+                        screen_capture::kill_portal_child();
+                        std::process::exit(0);
                     }
-                    #[cfg(target_os = "windows")]
-                    if let Some(hwnd) = *_hwnd_store_inner.lock().unwrap() {
-                        unsafe {
-                            ShowWindow(hwnd as _, SW_SHOW);
-                            ShowWindow(hwnd as _, SW_RESTORE);
-                            SetForegroundWindow(hwnd as _);
-                            SetWindowPos(hwnd as _, HWND_TOP as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                }
+
+                while let Ok(event) = tray_rx.try_recv() {
+                    info!("TrayIconEvent recebido: {:?}", event);
+                    if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
+                        should_restore = true;
+                    }
+                }
+
+                if should_restore {
+                    APP_IS_VISIBLE.store(true, Ordering::Relaxed);
+                    NEED_UI_REFRESH.store(true, Ordering::Relaxed);
+                    info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
+
+                    let app_weak_inner = app_weak_tray.clone();
+                    let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui_inner) = app_weak_inner.upgrade() {
+                            let _ = ui_inner.window().with_winit_window(|winit_win| {
+                                winit_win.set_visible(true);
+                                winit_win.set_minimized(false);
+                                winit_win.focus_window();
+                            });
                         }
-                    }
-                });
-            }
+                        #[cfg(target_os = "windows")]
+                        if let Some(hwnd) = *_hwnd_store_inner.lock().unwrap() {
+                            unsafe {
+                                ShowWindow(hwnd as _, SW_SHOW);
+                                ShowWindow(hwnd as _, SW_RESTORE);
+                                SetForegroundWindow(hwnd as _);
+                                SetWindowPos(hwnd as _, HWND_TOP as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                            }
+                        }
+                    });
+                }
 
-            std::thread::sleep(std::time::Duration::from_millis(120));
-        }
-    });
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+        })
+        .expect("Failed to spawn tray listener thread");
+
+
 
     let http_client: Arc<Mutex<Option<DiscordHttpClient>>> = Arc::new(Mutex::new(None));
     let active_channel_id: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));

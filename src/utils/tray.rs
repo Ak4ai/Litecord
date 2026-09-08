@@ -1,14 +1,25 @@
+use std::sync::OnceLock;
 use tray_icon::{
     menu::{Menu, MenuItem, MenuId},
     Icon, TrayIcon, TrayIconBuilder,
 };
 use log::{info, warn};
 
+static TRAY_TOOLTIP_TX: OnceLock<std::sync::mpsc::Sender<String>> = OnceLock::new();
+
+pub fn update_tray_tooltip(tooltip: &str) {
+    if let Some(tx) = TRAY_TOOLTIP_TX.get() {
+        let _ = tx.send(tooltip.to_string());
+    }
+}
+
 pub struct SystemTrayManager {
-    _tray_icon: Option<TrayIcon>,
+    pub tray_icon: Option<TrayIcon>,
+    pub tooltip_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub show_item_id: MenuId,
     pub quit_item_id: MenuId,
 }
+
 
 fn create_default_icon() -> Icon {
     let icon_bytes = include_bytes!("../../assets/app_icon.png");
@@ -74,10 +85,16 @@ impl SystemTrayManager {
             }
         };
 
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let _ = TRAY_TOOLTIP_TX.set(tx);
+
         Self {
-            _tray_icon: tray_icon,
+            tray_icon,
+            tooltip_rx: Some(rx),
             show_item_id: show_id,
             quit_item_id: quit_id,
         }
     }
 }
+
+

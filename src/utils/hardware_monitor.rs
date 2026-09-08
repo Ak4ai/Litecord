@@ -12,7 +12,10 @@ pub struct HardwareMetrics {
     pub gpu_percent: u8,
 }
 
-pub fn start_hardware_monitor_loop(app_weak: slint::Weak<AppWindow>) {
+pub fn start_hardware_monitor_loop(
+    app_weak: slint::Weak<AppWindow>,
+    hwnd_store: std::sync::Arc<std::sync::Mutex<Option<isize>>>,
+) {
     if MONITOR_RUNNING.swap(true, Ordering::SeqCst) {
         return; // Already running
     }
@@ -27,6 +30,30 @@ pub fn start_hardware_monitor_loop(app_weak: slint::Weak<AppWindow>) {
 
                 let metrics = sampler.sample();
 
+                // Format tooltip and window title
+                let status_line = format!(
+                    "Litecord - CPU {}% | RAM {}% | GPU {}%",
+                    metrics.cpu_percent, metrics.ram_percent, metrics.gpu_percent
+                );
+
+                // 1. Update System Tray Tooltip
+                crate::utils::tray::update_tray_tooltip(&status_line);
+
+                // 2. Update Windows Taskbar Application Title
+                #[cfg(windows)]
+                {
+                    if let Ok(guard) = hwnd_store.lock() {
+                        if let Some(hwnd) = *guard {
+                            use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                            let wide_title: Vec<u16> = status_line.encode_utf16().chain(std::iter::once(0)).collect();
+                            unsafe {
+                                SetWindowTextW(hwnd as _, wide_title.as_ptr());
+                            }
+                        }
+                    }
+                }
+
+                // 3. Update Slint UI properties
                 let app_opt = app_weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(app) = app_opt.upgrade() {
@@ -46,6 +73,7 @@ pub fn start_hardware_monitor_loop(app_weak: slint::Weak<AppWindow>) {
         })
         .expect("Failed to spawn hardware-monitor thread");
 }
+
 
 #[cfg(windows)]
 struct PlatformHardwareSampler {
