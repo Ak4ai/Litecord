@@ -37,8 +37,8 @@ pub fn start_hardware_monitor_loop(
                 );
 
                 let taskbar_title = format!(
-                    "{}% / {}MB / {}%",
-                    metrics.cpu_percent, metrics.ram_mb, metrics.gpu_percent
+                    "Litecord - {}%/{}MB",
+                    metrics.cpu_percent, metrics.ram_mb
                 );
 
                 // 1. Update System Tray Tooltip
