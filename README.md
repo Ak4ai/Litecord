@@ -243,59 +243,41 @@ The optimized executable will be located at `target/release/litecord.exe` (Windo
 
 ```text
 Litecord/
-├── .github/
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.yml
-│   │   ├── feature_request.yml
-│   │   └── config.yml
-│   ├── workflows/
-│   │   ├── build.yml
-│   │   └── ci.yml
-│   ├── dependabot.yml
-│   └── pull_request_template.md
-├── assets/
-│   ├── app_icon.ico
-│   ├── app_icon.png
-│   └── (svg icons & demo media)
-├── src/
-│   ├── main.rs
-│   ├── gateway.rs
-│   ├── http.rs
-│   ├── remote_auth.rs
-│   ├── screen_capture.rs
-│   ├── attachment_cache.rs
-│   ├── emoji_cache.rs
-│   ├── updater.rs
-│   ├── i18n.rs
-│   └── tray.rs
-├── ui/
-│   └── appwindow.slint
-├── build.rs
-├── Cargo.toml
-├── CHANGELOG.md
-├── CODE_OF_CONDUCT.md
-├── CONTRIBUTING.md
-├── LICENSE
-├── README.md
-├── README_PT.md
-└── SECURITY.md
+├── assets/                   # Vector SVG icons, app branding, and audio assets
+├── docs/                     # Technical specifications, security audits, and Wiki mirror
+│   └── wiki/                 # Mirror of GitHub Wiki technical documentation
+├── src/                      # Native Rust core implementation
+│   ├── audio/                # CPAL audio engine, sound effects, and loopback handlers
+│   ├── auth/                 # Multi-account vault (Windows DPAPI / Linux AES-256-GCM) & QR Auth
+│   ├── bin/                  # Benchmarks, encoder stress-tests, and standalone verification tools
+│   ├── encoder/              # Multi-codec hardware video encoding (NVENC, AMF, WMF, OpenH264)
+│   ├── gateway/              # Discord Gateway client, Voice Gateway, DAVE E2EE & rich-text parser
+│   ├── screen_capture/       # 1080p 60 FPS DXGI/PrintWindow/BitBlt capture, LTPV UDP protocol, P2P E2EE
+│   ├── ui/                   # Async Slint data loader, state synchronization, and helpers
+│   ├── utils/                # Hardware monitor HUD, proxy manager, keybinds, i18n, and auto-updater
+│   └── main.rs               # Application entrypoint, Tokio runtime, and Slint window orchestration
+├── ui/                       # Declarative Slint UI definitions (compiled to native machine code)
+│   └── appwindow.slint       # AppWindow, PopoutWindow (PiP), settings modal, and voice stage
+├── Cargo.toml                # Rust project manifest and dependencies
+├── CHANGELOG.md              # Semantic version history and release notes
+├── installer.iss             # Official Windows Inno Setup installer script
+└── README.md                 # Project documentation
 ```
 
-### 🧩 Module Breakdown
+### 🧩 Subsystem Breakdown
 
-| Module | Purpose & Core Responsibilities |
-| :--- | :--- |
-| **`src/main.rs`** | Application lifecycle, Slint UI bindings, system tray event loop, chat rendering, message dispatch. |
-| **`src/gateway.rs`** | Discord Gateway v9 WebSocket, CPAL/Opus voice pipeline, DAVE E2EE protocol, Speech Priority Ducking, and VAD. |
-| **`src/screen_capture.rs`** | 1080p 60 FPS DXGI/D3D11 hardware screen capture, WASAPI audio loopback, LTPV UDP streaming, and PiP Popout. |
-| **`src/http.rs`** | Discord HTTP REST client for fetching guilds, channels, messages, member lists, and slash command schemas. |
-| **`src/remote_auth.rs`** | Secure QR Code remote authentication with Discord Mobile App cryptographic handshake. |
-| **`src/attachment_cache.rs`** | Ephemeral image downloader, Minecraft pixel-art placeholder generator, and `%TEMP%` cleanup manager. |
-| **`src/emoji_cache.rs`** | Multi-tier memory/disk cache for Discord custom emojis and Twemoji Unicode vector rasterization. |
-| **`src/updater.rs`** | Background GitHub release version checker and update notifier. |
-| **`src/i18n.rs`** | Multi-language localization engine supporting 7 languages with automatic OS locale detection. |
-| **`src/tray.rs`** | Native Windows System Tray integration with context menu and DeepSleep background suspension hooks. |
-| **`ui/appwindow.slint`** | Declarative GPU-accelerated UI with `AppWindow` and floating `PopoutWindow` components. |
+| Subsystem | Key Modules | Core Responsibilities |
+| :--- | :--- | :--- |
+| **Orchestration & Runtime** | `src/main.rs` | Application lifecycle, Tokio async runtime, Slint UI event loop bridge, and background worker threads. |
+| **Voice & Audio Pipeline** | `src/gateway/voice.rs`, `src/audio/` | 48kHz stereo CPAL stream, Opus PLC, Voice Activity Detection (VAD), Dynamic Speaker Device Switching, IGL Ducking, and Discord DAVE E2EE. |
+| **Screen Share & Video** | `src/screen_capture/` | Direct3D 11 / DXGI Desktop Duplication, LTPV UDP packetizer (1350B MTU) with XOR Forward Error Correction (FEC), and PiP popout window. |
+| **Hardware GPU Encoding** | `src/encoder/` | Silicon-accelerated video compression: NVIDIA NVENC, AMD AMF Direct3D 11, Windows Media Foundation (WMF) MFT, and OpenH264 SIMD. |
+| **Hardware Performance HUD** | `src/utils/hardware_monitor.rs` | Real-time process-specific CPU% (`GetProcessTimes`), physical RAM in MB (`K32GetProcessMemoryInfo`), PDH GPU engine counter, Taskbar title (`Litecord - x%/ymb`), and Tray tooltip. |
+| **Credential & Vault Security** | `src/auth/vault.rs`, `src/auth/remote_auth.rs` | Multi-Account Vault (Windows DPAPI / Linux AES-256-GCM), 1-click account switching, and Discord mobile QR Code authentication. |
+| **Discord Gateway & API** | `src/gateway/client.rs`, `src/gateway/types.rs` | WebSocket connection to Gateway v9/v10, REST API v9 interaction, channel message synchronization, and slash command indexing. |
+| **Network & Proxy Manager** | `src/utils/network_settings.rs` | Support for HTTP/HTTPS, SOCKS5 (Tor/Shadowsocks/V2Ray), and System Proxy with live Gateway ping diagnostics and zero-downtime hot reloading. |
+| **User Interface & Theme** | `ui/appwindow.slint`, `src/ui/` | Native GPU-accelerated Slint UI, Discord dark palette, unified Twemoji/Discord CDN emojis, and vector SVG action buttons. |
+| **Localization & Keybinds** | `src/utils/i18n.rs`, `src/utils/keybinds.rs` | 7 built-in languages with auto-detection, global hotkey listener (Win32 / Linux evdev) for instant mute/deafen. |
 
 ---
 

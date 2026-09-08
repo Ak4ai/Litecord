@@ -88,6 +88,33 @@ cargo build --release --bin litecord
 
 ---
 
+## 📂 Arquitetura do Projeto
+
+```text
+Litecord/
+├── assets/                   # Ícones vetoriais SVG, assets visuais e branding
+├── docs/                     # Especificações técnicas, auditorias e espelho da Wiki
+│   └── wiki/                 # Artigos completos da Wiki oficial do Litecord
+├── src/                      # Código-fonte nativo em Rust
+│   ├── audio/                # Motor de áudio CPAL, efeitos sonoros e loopback
+│   ├── auth/                 # Cofre multi-contas (Windows DPAPI / Linux AES-GCM) e QR Auth
+│   ├── bin/                  # Benchmarks, testes de estresse de encoders e ferramentas
+│   ├── encoder/              # Codificadores GPU por hardware (NVENC, AMF, WMF, OpenH264)
+│   ├── gateway/              # Cliente Gateway Discord, Voice Gateway, DAVE E2EE e formatador
+│   ├── screen_capture/       # Captura 1080p 60 FPS DXGI/BitBlt, protocolo UDP LTPV e criptografia
+│   ├── ui/                   # Carregador assíncrono Slint, sincronização e helpers
+│   ├── utils/                # Monitor HUD de hardware, proxy, atalhos globais, i18n e updater
+│   └── main.rs               # Ponto de entrada, runtime Tokio e ciclo de janelas Slint
+├── ui/                       # Interfaces declarativas Slint (compiladas para código de máquina)
+│   └── appwindow.slint       # AppWindow, PopoutWindow (PiP), configurações e palco de voz
+├── Cargo.toml                # Manifesto do projeto e dependências Rust
+├── CHANGELOG.md              # Histórico de versões e notas de lançamento
+├── installer.iss             # Script oficial do instalador Windows Inno Setup
+└── README.md                 # Documentação em inglês
+```
+
+---
+
 ## 📄 Licença
 
 Distribuído sob a licença **MIT**. Veja o arquivo [`LICENSE`](LICENSE) para mais detalhes.
