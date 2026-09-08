@@ -5,6 +5,41 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.0.0-beta] - 2026-09-08 — Litecord Beta 1.0.0
+
+### 🚀 Transição Oficial para Fase Beta
+- **Marco de Estabilidade & Confiabilidade**:
+  - Consolidação da arquitetura nativa Rust + Slint após o ciclo de testes Alfa (v0.1.0 até v0.3.9).
+  - Renomeação histórica das versões prévias como lançamentos Alfa.
+
+### 📊 Monitor de Hardware em Tempo Real & HUD
+- **Métricas Específicas do Processo (Consumo Real do Litecord)**:
+  - **CPU**: Coleta o tempo de kernel e usuário do processo do Litecord via `GetProcessTimes` em relação ao tempo total decorrido do sistema (`GetSystemTimes`), correspondendo fielmente ao cálculo do Gerenciador de Tarefas do Windows.
+  - **RAM (em MB)**: Coleta do Working Set real consumido pelo Litecord via `K32GetProcessMemoryInfo` (retorna em MB, ex.: `42 MB`), sem porcentagem global confusa.
+  - **GPU**: Coleta via PDH (`\GPU Engine(*)\Utilization Percentage`) filtrando estritamente pelas instâncias de engines pertencentes ao PID atual (`pid_<PID>_...`), isolando o uso do app.
+- **Integração com Barra de Tarefas e Bandeja**:
+  - Título dinâmico e compacto na Barra de Tarefas do Windows: `Litecord - x%/ymb` (ex: `Litecord - 2%/45MB`), sem cortar na barra.
+  - Tooltip vivo na bandeja do sistema (System Tray): `Litecord - CPU x% | RAM y MB | GPU z%`.
+  - HUD minimalista e elegante integrado à barra superior ao lado do ícone de configurações, com suporte a toggle nas configurações.
+
+### 🔊 Troca Dinâmica de Dispositivo de Saída de Áudio
+- **Reconfiguração em Tempo Real no Voice Gateway**:
+  - Alterne entre fones de ouvido, caixas de som e DACs USB no meio de uma chamada sem desconectar, sem derrubar a sala e sem precisar reiniciar o aplicativo.
+  - Recriação atômica da stream CPAL de reprodução no canal de voz, preservando o estado do buffer de jitter e a sessão DAVE E2EE.
+
+### 🎨 Padronização de Ícones SVG & Saneamento de Glifos
+- **Eliminação de Glifos Quebrados (Quadrados / Tofus)**:
+  - Substituição de emojis não-suportados em fontes de botões do Windows por ícones vetoriais SVG nítidos (`microphone.svg`, `headphones.svg`, `rocket.svg`).
+  - O botão de teste de microfone agora alterna dinamicamente seu ícone vetorial entre estado parado e testando.
+  - Saneamento de caracteres nas abas de idiomas, status de atualizações e mensagens do sistema.
+
+### 🧹 Otimização de Armazenamento & Compilação
+- **Limpeza do Ambiente de Desenvolvimento**:
+  - Limpeza profunda de artefatos de debug liberando mais de 28 GB de disco no ambiente de compilação.
+  - Preservação dos caches otimizados de release para compilações ultra-rápidas.
+
+---
+
 ## [v0.3.10] - 2026-09-07
 
 ### 🌐 Suporte a Proxy & Roteamento de Rede

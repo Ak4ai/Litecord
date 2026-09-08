@@ -379,7 +379,7 @@ pub async fn run_cloudflare_signaling_loop(
                 continue;
             }
         };
-        req.headers_mut().insert("User-Agent", "Litecord/0.3.9".parse().unwrap());
+        req.headers_mut().insert("User-Agent", "Litecord/1.0.0-beta".parse().unwrap());
 
         let (ws_stream, _resp) = match connect_async(req).await {
             Ok((s, r)) => {

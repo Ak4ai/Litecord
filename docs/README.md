@@ -41,7 +41,7 @@ Este diretório contém as especificações técnicas, planos arquiteturais, rel
 
 ## 🏗️ Estrutura do Repositório
 
-`	ext
+```text
 Litecord/
 ├── src/                      # Código-fonte Rust nativo
 │   ├── encoder/              # Motores de aceleração por hardware (NVENC, AMF, WMF, FFmpeg)
@@ -55,4 +55,4 @@ Litecord/
 ├── assets/                   # Ícones vetoriais SVG, assets gráficos e fontes
 ├── docs/                     # Documentação técnica e artigos da Wiki
 └── Cargo.toml                # Dependências e manifesto do projeto
-`
+```

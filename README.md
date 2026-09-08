@@ -37,7 +37,9 @@
 - ⌨️ **Smart Slash Commands Autocomplete**: Real-time suggestion indexing for `/play`, `/skip`, and server bot commands with keyboard navigation (Up/Down + Enter) and interactive parameter chips.
 - 🖼️ **On-Demand Ephemeral Image Attachments**: Minecraft-style pixel-art placeholders (~500 bytes) with dynamic proportional height and zero-residue temp downloads.
 - 🎨 **Unified Emoji System (Twemoji + Discord CDN)**: Zero missing tofu squares (`□`). Full support for Discord custom animated/static emojis and Unicode emojis across chat, embeds, and bot buttons.
-- ⚡ **Sub-5 MB DeepSleep RAM**: Drops physical memory footprint down to **~3 MB – 5 MB** when minimized to the system tray, freeing maximum RAM for games.
+- 📊 **Real-Time Hardware Performance HUD**: Shows process-specific CPU usage, physical RAM in MB, and GPU load right in the titlebar HUD, with live Windows Taskbar updates (`Litecord - x%/ymb`) and System Tray tooltips.
+- 🔊 **Dynamic Audio Output Switching**: Switch output audio devices (headphones/speakers) mid-call on the fly with automatic playback thread re-binding, without leaving the voice room or restarting the application.
+- 🎯 **Multi-Codec GPU Acceleration**: Choose your preferred video encoder in Settings (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware, or Cisco OpenH264 SIMD).
 - 🎙️ **Opus PLC (Packet Loss Concealment)**: Prevents robotic voice stuttering and audio crackles even under 100% CPU/GPU load.
 - ⚙️ **Anywhere Settings Access**: Titlebar gear icon accessible even from the login screen, with auto-routing to proxy settings on network failure.
 - 🌐 **7 Built-in Languages**: Automatic OS language detection with English, Portuguese, Spanish, German, French, Russian, and Japanese.
@@ -193,9 +195,9 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (v0.3.9)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (v0.3.9)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux Standalone (v0.3.9)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (Beta 1.0.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (Beta 1.0.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux Standalone (Beta 1.0.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ---
 

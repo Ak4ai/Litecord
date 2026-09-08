@@ -1,6 +1,6 @@
 ; Inno Setup Script for Litecord Windows Installer
 #define MyAppName "Litecord"
-#define MyAppVersion "0.3.9"
+#define MyAppVersion "1.0.0-beta"
 #define MyAppPublisher "Litecord Project"
 #define MyAppURL "https://github.com/Ak4ai/Litecord"
 #define MyAppExeName "litecord.exe"

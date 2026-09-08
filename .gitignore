@@ -56,6 +56,10 @@ __pycache__/
 # Archives & Packages
 *.tar.gz
 *.zip
+*.tar
+*.patch
+*.diff
+*.bundle
 release-pkg/
 
 # IDE & OS files

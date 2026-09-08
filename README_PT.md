@@ -35,7 +35,9 @@
 - 📱 **Login Rápido por QR Code & Re-geração**: Faça login escaneando o QR Code direto pelo aplicativo do Discord no celular, com botão de re-geração em 1 clique sem precisar reiniciar o app.
 - 🔒 **Cofres Criptografados & Múltiplas Contas**: Credenciais protegidas por **AES-256-GCM** no Linux e **DPAPI** no Windows, com troca instantânea entre múltiplas contas.
 - ⌨️ **Comandos Slash Inteligentes**: Autocomplete em tempo real para bots (`/play`, `/skip`, etc.) com navegação por teclado e chips interativos.
-- ⚡ **Modo DeepSleep (Sub-5 MB RAM)**: Reduz o consumo de RAM para **~3 MB a 5 MB** quando minimizado na bandeja.
+- 📊 **Monitor de Hardware em Tempo Real**: Mostra o uso de CPU do app, RAM física em MB e GPU no HUD da barra superior, com atualização ao vivo na Barra de Tarefas do Windows (`Litecord - x%/ymb`) e tooltip na bandeja.
+- 🔊 **Troca Dinâmica de Dispositivo de Saída**: Alterne entre fones de ouvido e caixas de som no meio de chamadas ativas instantaneamente, sem sair da sala de voz nem reiniciar a aplicação.
+- 🎯 **Aceleração Multi-Codec por GPU**: Escolha seu codificador de vídeo preferido nas Configurações (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware ou OpenH264 SIMD).
 - 🎙️ **Opus PLC (Ocultação de Perda de Pacotes)**: Evita vozes robóticas e estalos mesmo sob 100% de uso de CPU/GPU.
 - ⚙️ **Configurações Acessíveis em Qualquer Lugar**: Ícone de engrenagem na barra de título acessível a qualquer momento, inclusive na tela de login.
 - 🌐 **7 Idiomas Nativos**: Detecção automática do idioma do sistema (Português, Inglês, Espanhol, Alemão, Francês, Russo e Japonês).
