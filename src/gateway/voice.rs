@@ -661,40 +661,50 @@ pub async fn connect_voice_gateway(
                                                 let ssrc_to_userid_speaker = Arc::clone(&ssrc_to_userid_audio);
                                                 let out_session_id = my_session_id;
                                                 std::thread::spawn(move || {
-                                                    use cpal::traits::{HostTrait, DeviceTrait};
-                                                    let host = cpal::default_host();
+                                                    use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
+                                                    let mut current_target_dev = get_selected_output_device_store().lock().unwrap().clone();
 
-                                                    let target_dev_name = get_selected_output_device_store().lock().unwrap().clone();
-                                                    let device = if let Ok(devices) = host.output_devices() {
-                                                        let dev_list: Vec<_> = devices.into_iter().collect();
-                                                        if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
-                                                            dev_list.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
-                                                                .or_else(|| host.default_output_device())
+                                                    while CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) == out_session_id {
+                                                        let host = cpal::default_host();
+                                                        let target_dev_name = current_target_dev.clone();
+                                                        let device = if let Ok(devices) = host.output_devices() {
+                                                            let dev_list: Vec<_> = devices.into_iter().collect();
+                                                            if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+                                                                dev_list.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
+                                                                    .or_else(|| host.default_output_device())
+                                                            } else {
+                                                                dev_list.into_iter().find(|d| {
+                                                                    let n = d.name().unwrap_or_default();
+                                                                    !n.contains("Litecord") && !n.contains("Virtual") && !n.contains("Null") && !n.contains("Steam")
+                                                                }).or_else(|| host.default_output_device())
+                                                            }
                                                         } else {
-                                                            dev_list.into_iter().find(|d| {
-                                                                let n = d.name().unwrap_or_default();
-                                                                !n.contains("Litecord") && !n.contains("Virtual") && !n.contains("Null") && !n.contains("Steam")
-                                                            }).or_else(|| host.default_output_device())
-                                                        }
-                                                    } else {
-                                                        host.default_output_device()
-                                                    };
+                                                            host.default_output_device()
+                                                        };
 
-                                                    let device = match device {
-                                                        Some(d) => d,
-                                                        None => { warn!("Nenhum dispositivo de saída de áudio encontrado!"); return; }
-                                                    };
+                                                        let device = match device {
+                                                            Some(d) => d,
+                                                            None => {
+                                                                warn!("Nenhum dispositivo de saída de áudio encontrado! Aguardando...");
+                                                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                                                continue;
+                                                            }
+                                                        };
 
-                                                    let config = match device.default_output_config() {
-                                                        Ok(c) => c,
-                                                        Err(e) => { warn!("Falha ao obter config de saída: {:?}", e); return; }
-                                                    };
-                                                    let out_sample_rate = config.sample_rate().0;
-                                                    let out_channels = config.channels() as usize;
-                                                    info!("Saída de Áudio (Speaker): {}Hz, {} canal(is), formato={:?}",
-                                                        out_sample_rate, out_channels, config.sample_format());
+                                                        let config = match device.default_output_config() {
+                                                            Ok(c) => c,
+                                                            Err(e) => {
+                                                                warn!("Falha ao obter config de saída: {:?}", e);
+                                                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                                                continue;
+                                                            }
+                                                        };
+                                                        let out_sample_rate = config.sample_rate().0;
+                                                        let out_channels = config.channels() as usize;
+                                                        info!("Saída de Áudio (Speaker): {}Hz, {} canal(is), formato={:?} (Dispositivo: {})",
+                                                            out_sample_rate, out_channels, config.sample_format(), target_dev_name);
 
-                                                    let sq = speaker_queues_out;
+                                                    let sq = Arc::clone(&speaker_queues_out);
                                                     let ssrc_to_userid_spk = Arc::clone(&ssrc_to_userid_speaker);
                                                     let mut started_ssrcs = std::collections::HashSet::new();
                                                     let mut inactive_ticks = std::collections::HashMap::new();
@@ -1022,30 +1032,42 @@ pub async fn connect_voice_gateway(
                                                         }
                                                         _ => {
                                                             warn!("Formato de saída não suportado: {:?}", config.sample_format());
-                                                            return;
+                                                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                                                            continue;
                                                         }
                                                     };
 
                                                     match stream_res {
                                                         Ok(stream) => {
-                                                            use cpal::traits::StreamTrait;
                                                             if let Err(e) = stream.play() {
                                                                 warn!("Falha ao iniciar stream de saída: {:?}", e);
-                                                                return;
+                                                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                                                continue;
                                                             }
                                                             info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
-                                                            // Keep stream alive until voice session ends (dropping stream stops playback)
+                                                            // Keep stream alive until voice session ends OR user selects another output device!
                                                             loop {
                                                                 std::thread::sleep(std::time::Duration::from_millis(100));
                                                                 if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
                                                                     info!("Stream de saída encerrado (sessão expirada).");
-                                                                    break;
+                                                                    return;
+                                                                }
+                                                                let new_target = get_selected_output_device_store().lock().unwrap().clone();
+                                                                if new_target != current_target_dev {
+                                                                    info!("🔄 Dispositivo de saída alterado de '{}' para '{}' durante a chamada! Reconfigurando alto-falante...", current_target_dev, new_target);
+                                                                    current_target_dev = new_target;
+                                                                    break; // Sai do loop interno, dropa o stream atual e o while externo reconstrói no novo dispositivo!
                                                                 }
                                                             }
                                                         }
-                                                        Err(e) => { warn!("Falha ao criar stream de saída: {:?}", e); }
+                                                        Err(e) => {
+                                                            warn!("Falha ao criar stream de saída: {:?}", e);
+                                                            std::thread::sleep(std::time::Duration::from_millis(500));
+                                                        }
                                                     }
-                                                });
+                                                }
+                                                info!("Loop principal de áudio de saída encerrado.");
+                                            });
 
                                                 tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();

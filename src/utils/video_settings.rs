@@ -10,6 +10,12 @@ pub struct VideoSettings {
     pub video_capture_backend: String,     // "auto", "printwindow", "bitblt" (Win) / "auto", "portal", "x11" (Linux)
     pub audio_loopback_backend: String,    // "auto", "wasapi_isolated", "cpal" (Win) / "auto", "pulsesrc", "cpal" (Linux)
     pub enable_self_preview_notice: bool, // default true
+    #[serde(default = "default_true")]
+    pub show_hardware_monitor: bool,      // default true
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for VideoSettings {
@@ -19,6 +25,7 @@ impl Default for VideoSettings {
             video_capture_backend: "auto".to_string(),
             audio_loopback_backend: "auto".to_string(),
             enable_self_preview_notice: true,
+            show_hardware_monitor: true,
         }
     }
 }
@@ -90,3 +97,23 @@ pub fn toggle_enable_self_preview_notice() -> bool {
     save_video_settings(&store);
     new_val
 }
+
+
+pub fn get_show_hardware_monitor() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).show_hardware_monitor
+}
+
+pub fn set_show_hardware_monitor(val: bool) {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.show_hardware_monitor = val;
+    save_video_settings(&store);
+}
+
+pub fn toggle_show_hardware_monitor() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.show_hardware_monitor = !store.show_hardware_monitor;
+    let new_val = store.show_hardware_monitor;
+    save_video_settings(&store);
+    new_val
+}
+

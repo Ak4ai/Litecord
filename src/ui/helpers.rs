@@ -178,11 +178,13 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let vcap = video_settings::get_video_capture_backend();
     let aloop = video_settings::get_audio_loopback_backend();
     let notice = video_settings::get_enable_self_preview_notice();
+    let show_hw = video_settings::get_show_hardware_monitor();
 
     ui.set_selected_video_encoder(enc.clone().into());
     ui.set_selected_video_capture_backend(vcap.clone().into());
     ui.set_selected_audio_loopback_backend(aloop.clone().into());
     ui.set_enable_self_preview_notice(notice);
+    ui.set_show_hardware_monitor(show_hw);
 
     #[cfg(target_os = "windows")]
     let enc_items = vec![

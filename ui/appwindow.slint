@@ -1310,6 +1310,13 @@ export component AppWindow inherits Window {
     in-out property <string> selected_video_capture_backend: "auto";
     in-out property <string> selected_audio_loopback_backend: "auto";
     in-out property <bool> enable_self_preview_notice: true;
+    in-out property <bool> show_hardware_monitor: true;
+    in-out property <string> hardware_cpu_text: "CPU --%";
+    in-out property <string> hardware_ram_text: "RAM --%";
+    in-out property <string> hardware_gpu_text: "GPU --%";
+    in-out property <int> hardware_cpu_val: 0;
+    in-out property <int> hardware_ram_val: 0;
+    in-out property <int> hardware_gpu_val: 0;
 
     in-out property <[SettingOptionItem]> video_encoder_options: [];
     in-out property <[SettingOptionItem]> video_capture_options: [];
@@ -1319,6 +1326,8 @@ export component AppWindow inherits Window {
     callback select_video_capture_backend(string);
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
+    callback toggle_hardware_monitor();
+
 
     // Network & Proxy Settings Properties
     in-out property <string> selected_proxy_mode: "off";
@@ -1505,13 +1514,78 @@ export component AppWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
             }
 
-            // Custom Window Control Buttons (Settings, Minimize, Maximize, Close)
+            // Custom Window Control Buttons (Hardware Monitor HUD, Settings, Minimize, Maximize, Close)
             HorizontalLayout {
-                x: parent.width - 176px;
+                x: parent.width - (root.show_hardware_monitor ? 390px : 176px);
                 y: 0px;
-                width: 176px;
+                width: root.show_hardware_monitor ? 390px : 176px;
                 height: 32px;
                 spacing: 0px;
+
+                // Hardware Monitor HUD (CPU / RAM / GPU) - Only shown if enabled
+                if root.show_hardware_monitor: HorizontalLayout {
+                    width: 214px;
+                    height: 32px;
+                    alignment: center;
+                    spacing: 6px;
+                    padding-right: 6px;
+
+                    Rectangle {
+                        height: 22px;
+                        background: #111214;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #2b2d31;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 8px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+
+                            // CPU
+                            Text {
+                                text: root.hardware_cpu_text;
+                                color: root.hardware_cpu_val > 85 ? #f23f43 : root.hardware_cpu_val > 60 ? #f0b232 : #23a55a;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: "•";
+                                color: #4e5058;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
+
+                            // RAM
+                            Text {
+                                text: root.hardware_ram_text;
+                                color: root.hardware_ram_val > 85 ? #f23f43 : root.hardware_ram_val > 70 ? #f0b232 : #3b82f6;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: "•";
+                                color: #4e5058;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
+
+                            // GPU
+                            Text {
+                                text: root.hardware_gpu_text;
+                                color: root.hardware_gpu_val > 85 ? #f23f43 : root.hardware_gpu_val > 60 ? #f0b232 : #a855f7;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
 
                 // Settings (Accessible on login and main window)
                 Rectangle {
@@ -6165,6 +6239,65 @@ export component AppWindow inherits Window {
                                                             notice_sw_ta := TouchArea {
                                                                 mouse-cursor: pointer;
                                                                 clicked => { root.toggle_enable_self_preview_notice(); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Hardware Performance HUD Toggle
+                                            Rectangle {
+                                                background: #1e1f22;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: #383a40;
+
+                                                HorizontalLayout {
+                                                    padding: 14px;
+                                                    spacing: 12px;
+                                                    alignment: space-between;
+
+                                                    VerticalLayout {
+                                                        spacing: 4px;
+                                                        horizontal-stretch: 1;
+
+                                                        Text {
+                                                            text: "Monitor de Desempenho (CPU / RAM / GPU)";
+                                                            color: #f2f3f5;
+                                                            font-size: 13px;
+                                                            font-weight: 700;
+                                                        }
+
+                                                        Text {
+                                                            text: "Exibe em tempo real o percentual de uso de RAM, CPU e GPU na barra de título do aplicativo ao lado das configurações.";
+                                                            color: #949ba4;
+                                                            font-size: 11px;
+                                                            wrap: word-wrap;
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            width: 42px;
+                                                            height: 24px;
+                                                            border-radius: 12px;
+                                                            background: root.show_hardware_monitor ? #2563eb : #4e5058;
+                                                            animate background { duration: 150ms; }
+
+                                                            Rectangle {
+                                                                x: root.show_hardware_monitor ? 20px : 2px;
+                                                                y: 2px;
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: #ffffff;
+                                                                animate x { duration: 150ms; easing: ease-out; }
+                                                            }
+
+                                                            hw_sw_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.toggle_hardware_monitor(); }
                                                             }
                                                         }
                                                     }

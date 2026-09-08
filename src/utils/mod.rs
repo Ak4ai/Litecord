@@ -11,6 +11,7 @@ pub mod cpu_profiler;
 pub mod video_settings;
 pub mod gpu_encoder;
 pub mod network_settings;
+pub mod hardware_monitor;
 
 pub use logger::*;
 pub use i18n::*;
@@ -23,3 +24,5 @@ pub use cpu_profiler::*;
 pub use video_settings::*;
 pub use gpu_encoder::*;
 pub use network_settings::*;
+pub use hardware_monitor::*;
+

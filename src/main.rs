@@ -145,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_network_proxy_settings(&app);
 
     let app_weak = app.as_weak();
+    utils::start_hardware_monitor_loop(app_weak.clone());
 
     let popout_window = PopoutStreamWindow::new()?;
     let popout_weak = popout_window.as_weak();
@@ -1936,6 +1937,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_enable_self_preview_notice(new_val);
         }
     });
+
+    let app_weak_hw = app_weak.clone();
+    app.on_toggle_hardware_monitor(move || {
+        let new_val = video_settings::toggle_show_hardware_monitor();
+        if let Some(ui) = app_weak_hw.upgrade() {
+            ui.set_show_hardware_monitor(new_val);
+        }
+    });
+
 
     // Network & Proxy Settings Callbacks
     let app_weak_proxy_mode = app_weak.clone();
