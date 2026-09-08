@@ -76,7 +76,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_System_Variant",
 ] }
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
