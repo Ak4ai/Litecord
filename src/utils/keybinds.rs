@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, Ordering}};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::info;
 
 pub const KEYBINDS_CONFIG_FILE: &str = ".litecord_keybinds.json";
