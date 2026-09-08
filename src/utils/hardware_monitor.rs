@@ -8,7 +8,7 @@ static MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HardwareMetrics {
     pub cpu_percent: u8,
-    pub ram_percent: u8,
+    pub ram_mb: u32,
     pub gpu_percent: u8,
 }
 
@@ -30,14 +30,19 @@ pub fn start_hardware_monitor_loop(
 
                 let metrics = sampler.sample();
 
-                // Format tooltip and window title
-                let status_line = format!(
-                    "Litecord - CPU {}% | RAM {}% | GPU {}%",
-                    metrics.cpu_percent, metrics.ram_percent, metrics.gpu_percent
+                // Format tray tooltip (full detail) and taskbar window title (compact to fit)
+                let tooltip_text = format!(
+                    "Litecord - CPU {}% | RAM {} MB | GPU {}%",
+                    metrics.cpu_percent, metrics.ram_mb, metrics.gpu_percent
+                );
+
+                let taskbar_title = format!(
+                    "{}% / {}MB / {}%",
+                    metrics.cpu_percent, metrics.ram_mb, metrics.gpu_percent
                 );
 
                 // 1. Update System Tray Tooltip
-                crate::utils::tray::update_tray_tooltip(&status_line);
+                crate::utils::tray::update_tray_tooltip(&tooltip_text);
 
                 // 2. Update Windows Taskbar Application Title
                 #[cfg(windows)]
@@ -45,7 +50,7 @@ pub fn start_hardware_monitor_loop(
                     if let Ok(guard) = hwnd_store.lock() {
                         if let Some(hwnd) = *guard {
                             use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW;
-                            let wide_title: Vec<u16> = status_line.encode_utf16().chain(std::iter::once(0)).collect();
+                            let wide_title: Vec<u16> = taskbar_title.encode_utf16().chain(std::iter::once(0)).collect();
                             unsafe {
                                 SetWindowTextW(hwnd as _, wide_title.as_ptr());
                             }
@@ -58,14 +63,14 @@ pub fn start_hardware_monitor_loop(
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(app) = app_opt.upgrade() {
                         let cpu_str = format!("CPU {}%", metrics.cpu_percent);
-                        let ram_str = format!("RAM {}%", metrics.ram_percent);
+                        let ram_str = format!("RAM {} MB", metrics.ram_mb);
                         let gpu_str = format!("GPU {}%", metrics.gpu_percent);
 
                         app.set_hardware_cpu_text(cpu_str.into());
                         app.set_hardware_ram_text(ram_str.into());
                         app.set_hardware_gpu_text(gpu_str.into());
                         app.set_hardware_cpu_val(metrics.cpu_percent as i32);
-                        app.set_hardware_ram_val(metrics.ram_percent as i32);
+                        app.set_hardware_ram_val(metrics.ram_mb as i32);
                         app.set_hardware_gpu_val(metrics.gpu_percent as i32);
                     }
                 });
@@ -77,9 +82,9 @@ pub fn start_hardware_monitor_loop(
 
 #[cfg(windows)]
 struct PlatformHardwareSampler {
-    last_idle_time: u64,
-    last_kernel_time: u64,
-    last_user_time: u64,
+    pid_needle: Vec<u16>,
+    last_proc_total: u64,
+    last_sys_total: u64,
     has_prev_cpu: bool,
     pdh_query: isize,
     pdh_counter: isize,
@@ -87,12 +92,30 @@ struct PlatformHardwareSampler {
 }
 
 #[cfg(windows)]
+unsafe fn wide_contains(p: *const u16, needle: &[u16]) -> bool {
+    if p.is_null() || needle.is_empty() {
+        return false;
+    }
+    let mut len = 0;
+    while *p.add(len) != 0 {
+        len += 1;
+        if len > 512 {
+            break;
+        }
+    }
+    let hay = std::slice::from_raw_parts(p, len);
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+#[cfg(windows)]
 impl PlatformHardwareSampler {
     fn new() -> Self {
+        let pid = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() };
+        let pid_needle: Vec<u16> = format!("pid_{}_", pid).encode_utf16().collect();
         let mut s = Self {
-            last_idle_time: 0,
-            last_kernel_time: 0,
-            last_user_time: 0,
+            pid_needle,
+            last_proc_total: 0,
+            last_sys_total: 0,
             has_prev_cpu: false,
             pdh_query: 0,
             pdh_counter: 0,
@@ -136,73 +159,79 @@ impl PlatformHardwareSampler {
 
     fn sample_cpu(&mut self) -> u8 {
         use windows_sys::Win32::Foundation::FILETIME;
-        use windows_sys::Win32::System::Threading::GetSystemTimes;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes};
 
-        let mut idle_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-        let mut kernel_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-        let mut user_time = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut sys_idle = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut sys_kernel = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut sys_user = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
 
-        let ok = unsafe {
-            GetSystemTimes(&mut idle_time, &mut kernel_time, &mut user_time)
+        let mut proc_creation = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut proc_exit = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut proc_kernel = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut proc_user = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+
+        let sys_ok = unsafe { GetSystemTimes(&mut sys_idle, &mut sys_kernel, &mut sys_user) };
+        let proc_ok = unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &mut proc_creation,
+                &mut proc_exit,
+                &mut proc_kernel,
+                &mut proc_user,
+            )
         };
 
-        if ok == 0 {
+        if sys_ok == 0 || proc_ok == 0 {
             return 0;
         }
 
-        let idle = ((idle_time.dwHighDateTime as u64) << 32) | (idle_time.dwLowDateTime as u64);
-        let kernel = ((kernel_time.dwHighDateTime as u64) << 32) | (kernel_time.dwLowDateTime as u64);
-        let user = ((user_time.dwHighDateTime as u64) << 32) | (user_time.dwLowDateTime as u64);
+        let sys_k = ((sys_kernel.dwHighDateTime as u64) << 32) | (sys_kernel.dwLowDateTime as u64);
+        let sys_u = ((sys_user.dwHighDateTime as u64) << 32) | (sys_user.dwLowDateTime as u64);
+        let sys_total = sys_k + sys_u;
+
+        let proc_k = ((proc_kernel.dwHighDateTime as u64) << 32) | (proc_kernel.dwLowDateTime as u64);
+        let proc_u = ((proc_user.dwHighDateTime as u64) << 32) | (proc_user.dwLowDateTime as u64);
+        let proc_total = proc_k + proc_u;
 
         if !self.has_prev_cpu {
-            self.last_idle_time = idle;
-            self.last_kernel_time = kernel;
-            self.last_user_time = user;
+            self.last_proc_total = proc_total;
+            self.last_sys_total = sys_total;
             self.has_prev_cpu = true;
             return 0;
         }
 
-        let idle_delta = idle.saturating_sub(self.last_idle_time);
-        let kernel_delta = kernel.saturating_sub(self.last_kernel_time);
-        let user_delta = user.saturating_sub(self.last_user_time);
+        let proc_delta = proc_total.saturating_sub(self.last_proc_total);
+        let sys_delta = sys_total.saturating_sub(self.last_sys_total);
 
-        self.last_idle_time = idle;
-        self.last_kernel_time = kernel;
-        self.last_user_time = user;
+        self.last_proc_total = proc_total;
+        self.last_sys_total = sys_total;
 
-        let total_system = kernel_delta + user_delta;
-        if total_system == 0 {
+        if sys_delta == 0 {
             return 0;
         }
 
-        let total_busy = total_system.saturating_sub(idle_delta);
-        let pct = (total_busy * 100) / total_system;
-        pct.min(100) as u8
+        let pct = ((proc_delta as f64 * 100.0) / (sys_delta as f64)).round() as u8;
+        pct.min(100)
     }
 
-    fn sample_ram(&mut self) -> u8 {
-        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    fn sample_ram(&mut self) -> u32 {
+        use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-        let mut mem = MEMORYSTATUSEX {
-            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
-            dwMemoryLoad: 0,
-            ullTotalPhys: 0,
-            ullAvailPhys: 0,
-            ullTotalPageFile: 0,
-            ullAvailPageFile: 0,
-            ullTotalVirtual: 0,
-            ullAvailVirtual: 0,
-            ullAvailExtendedVirtual: 0,
-        };
+        unsafe {
+            let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let ok = K32GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut pmc,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            );
 
-        let ok = unsafe {
-            GlobalMemoryStatusEx(&mut mem)
-        };
-
-        if ok != 0 {
-            mem.dwMemoryLoad.min(100) as u8
-        } else {
-            0
+            if ok != 0 {
+                (pmc.WorkingSetSize / (1024 * 1024)) as u32
+            } else {
+                0
+            }
         }
     }
 
@@ -279,7 +308,9 @@ impl PlatformHardwareSampler {
                         let mut total_gpu = 0.0f64;
                         for item in items_slice {
                             if item.fmt_value.status == 0 && item.fmt_value.double_val > 0.0 {
-                                total_gpu += item.fmt_value.double_val;
+                                if !item.sz_name.is_null() && wide_contains(item.sz_name, &self.pid_needle) {
+                                    total_gpu += item.fmt_value.double_val;
+                                }
                             }
                         }
                         return (total_gpu.round() as u64).min(100) as u8;
@@ -294,7 +325,7 @@ impl PlatformHardwareSampler {
     fn sample(&mut self) -> HardwareMetrics {
         HardwareMetrics {
             cpu_percent: self.sample_cpu(),
-            ram_percent: self.sample_ram(),
+            ram_mb: self.sample_ram(),
             gpu_percent: self.sample_gpu(),
         }
     }
@@ -311,23 +342,15 @@ impl PlatformHardwareSampler {
 
     fn sample(&mut self) -> HardwareMetrics {
         let mut metrics = HardwareMetrics::default();
-
-        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-            let mut total_kb: u64 = 0;
-            let mut avail_kb: u64 = 0;
+        if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
             for line in content.lines() {
-                if line.starts_with("MemTotal:") {
-                    total_kb = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-                } else if line.starts_with("MemAvailable:") {
-                    avail_kb = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                if line.starts_with("VmRSS:") {
+                    let kb: u32 = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    metrics.ram_mb = kb / 1024;
+                    break;
                 }
             }
-            if total_kb > 0 {
-                let used_kb = total_kb.saturating_sub(avail_kb);
-                metrics.ram_percent = ((used_kb * 100) / total_kb).min(100) as u8;
-            }
         }
-
         metrics
     }
 }
