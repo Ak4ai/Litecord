@@ -37,7 +37,7 @@ mimalloc = { version = "0.1", default-features = false }
 cameras = "0.1"
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 zune-jpeg = "0.4"
-openh264 = "0.6"
+openh264 = "0.9"
 socket2 = "0.5"
 rayon = "1.10"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
