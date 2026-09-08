@@ -7,66 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v1.0.0-beta] - 2026-09-08 — Litecord Beta 1.0.0
 
-### 🚀 Transição Oficial para Fase Beta
-- **Marco de Estabilidade & Confiabilidade**:
-  - Consolidação da arquitetura nativa Rust + Slint após o ciclo de testes Alfa (v0.1.0 até v0.3.9).
-  - Renomeação histórica das versões prévias como lançamentos Alfa.
-
-### 📊 Monitor de Hardware em Tempo Real & HUD
-- **Métricas Específicas do Processo (Consumo Real do Litecord)**:
-  - **CPU**: Coleta o tempo de kernel e usuário do processo do Litecord via `GetProcessTimes` em relação ao tempo total decorrido do sistema (`GetSystemTimes`), correspondendo fielmente ao cálculo do Gerenciador de Tarefas do Windows.
-  - **RAM (em MB)**: Coleta do Working Set real consumido pelo Litecord via `K32GetProcessMemoryInfo` (retorna em MB, ex.: `42 MB`), sem porcentagem global confusa.
-  - **GPU**: Coleta via PDH (`\GPU Engine(*)\Utilization Percentage`) filtrando estritamente pelas instâncias de engines pertencentes ao PID atual (`pid_<PID>_...`), isolando o uso do app.
-- **Integração com Barra de Tarefas e Bandeja**:
-  - Título dinâmico e compacto na Barra de Tarefas do Windows: `Litecord - x%/ymb` (ex: `Litecord - 2%/45MB`), sem cortar na barra.
-  - Tooltip vivo na bandeja do sistema (System Tray): `Litecord - CPU x% | RAM y MB | GPU z%`.
-  - HUD minimalista e elegante integrado à barra superior ao lado do ícone de configurações, com suporte a toggle nas configurações.
-
-### 🔊 Troca Dinâmica de Dispositivo de Saída de Áudio
-- **Reconfiguração em Tempo Real no Voice Gateway**:
-  - Alterne entre fones de ouvido, caixas de som e DACs USB no meio de uma chamada sem desconectar, sem derrubar a sala e sem precisar reiniciar o aplicativo.
-  - Recriação atômica da stream CPAL de reprodução no canal de voz, preservando o estado do buffer de jitter e a sessão DAVE E2EE.
-
-### 🎨 Padronização de Ícones SVG & Saneamento de Glifos
-- **Eliminação de Glifos Quebrados (Quadrados / Tofus)**:
-  - Substituição de emojis não-suportados em fontes de botões do Windows por ícones vetoriais SVG nítidos (`microphone.svg`, `headphones.svg`, `rocket.svg`).
-  - O botão de teste de microfone agora alterna dinamicamente seu ícone vetorial entre estado parado e testando.
-  - Saneamento de caracteres nas abas de idiomas, status de atualizações e mensagens do sistema.
-
-### 🧹 Otimização de Armazenamento & Compilação
-- **Limpeza do Ambiente de Desenvolvimento**:
-  - Limpeza profunda de artefatos de debug liberando mais de 28 GB de disco no ambiente de compilação.
-  - Preservação dos caches otimizados de release para compilações ultra-rápidas.
+Esta versão marca a **transição oficial do ciclo Alfa (v0.1.0 – v0.3.9) para a fase Beta 1.0.0**, consolidando uma reestruturação profunda da arquitetura do aplicativo, um novo motor de streaming de tela por hardware de latência zero (padrão Sunshine / Moonlight), isolamento de áudio de processos, suporte nativo a proxies, atalhos globais e monitor de consumo real em tempo real.
 
 ---
 
-## [v0.3.10] - 2026-09-07
+### 🚀 Arquitetura Modular & Motor de Vídeo por Hardware (Padrão Sunshine / Moonlight)
+- **Reestruturação Arquitetural em Módulos de Domínio**:
+  - Código-fonte completamente modularizado a partir de módulos monolíticos para diretórios de domínio coesos: `src/audio/`, `src/auth/`, `src/encoder/`, `src/gateway/`, `src/screen_capture/`, `src/ui/` e `src/utils/`.
+  - Bibliotecas de runtime do FFmpeg/NVENC embutidas diretamente para compilação autônoma e execução sem dependências externas instaladas.
+- **Aceleração Universal de Vídeo por GPU**:
+  - Motores de codificação nativos por hardware: **NVIDIA NVENC** (via Direct3D 11 e bibliotecas dedicadas), **AMD AMF** (com sintonia de baixa latência), **Intel QuickSync (QSV)**, **Windows Media Foundation (WMF)** e fallback otimizado via **OpenH264 SIMD AVX2**.
+  - **Sintonia de Latência Zero (Padrão Sunshine / OBS)**:
+    - Configuração de perfil *Constrained Baseline* com `max_b_frames = 0`, `filler_data = 0` e desativação de AUDs.
+    - Intervalo de quadro-chave (IDR/GOP) ajustado para 30 quadros (500ms a 1s), eliminando artefatos de imagem acumulados.
+    - Normalização estrita de NALs Annex B com extração em duas pontas, cache persistente de cabeçalhos SPS/PPS e injeção atômica **exclusivamente em quadros IDR** (preservando a integridade das referências DPB em quadros P).
+    - Mecanismo instantâneo de recuperação via Picture Loss Indication (PLI) e Full Intra Request (FIR) através de `OP_KEYFRAME_REQ` roteado aos pares ativos.
+    - Decodificador de vídeo tolerante a falhas que sobrevive a oscilações de rede e quedas de quadros sem travamentos de tela ou reinicializações destrutivas.
+    - Pacer contínuo de 60 FPS (CFR - *Constant Frame Rate*) e taxa de bits dinâmica adaptativa (padrão 4.5 Mbps com micro-pacing).
+    - Conversão paralela de espaço de cor BGRA para NV12 vetorizada com Rayon/SIMD.
 
-### 🌐 Suporte a Proxy & Roteamento de Rede
-- **Proxy HTTP/HTTPS, SOCKS5 e Proxy do Sistema**:
-  - Motor nativo em Rust que injeta proxies dinamicamente no `reqwest::Client` (`apply_proxy_to_builder`).
-  - Suporte completo a túneis HTTPS `CONNECT` e credenciais de autenticação Basic Auth para proxies corporativos.
-  - Opção de roteamento seletivo de mídias (`route_media`) para economia de banda em proxies limitados.
-  - Recarregamento a quente (*zero downtime*): salvar configurações de proxy reconstrói o cliente HTTP em tempo real sem fechar o aplicativo.
-  - Layout da aba de configurações comprimido e responsivo, eliminando qualquer rolagem horizontal.
+---
 
-### 🛡️ Diagnóstico Inteligente & Proteção de Login
-- **Aviso Dinâmico de Falha de Proxy**:
-  - Distinção clara entre falhas de rede/proxy (`10061`, recusa TCP, timeout, resolução DNS) e credenciais rejeitadas pelo Discord (`401 Unauthorized`).
-  - Verificação proativa de conectividade no início da aplicação em segundo plano.
-  - Banner de alerta visual elástico (`min-height: 38px`, `word-wrap`) na tela de login com atalho interativo: um clique no banner abre imediatamente a aba de Proxy para desativá-lo.
-  - Limpeza automática do banner de alerta vermelho ao selecionar o modo "Desativado".
+### 🌐 Streaming P2P WAN de Alta Performance & Nova Sinalização
+- **Migração para Sinalização Cloudflare Worker WebSocket**:
+  - Substituição da sinalização MQTT tradicional por WebSockets de ultra-baixa latência em Cloudflare Workers, eliminando sobrecarga de brokers, desconexões e *ghost streams*.
+- **Descoberta Dinâmica de WAN via STUN & Conectividade P2P**:
+  - Descoberta precisa de endereços públicos e portas mapeadas por NAT via STUN dinâmico, eliminando adivinhação de portas e sobreposições indevidas.
+  - Enforce de MTU seguro em 1200 bytes por pacote UDP para evitar fragmentação em roteadores WAN e VPNs.
+  - Filtragem proativa de adaptadores de rede virtuais (VPN, Hyper-V, WSL) e descarte de pacotes de loopback com o próprio UID no receptor P2P mesh.
+  - Criptografia autenticada ponta a ponta (E2EE) com chaves efêmeras X25519 ECDH + AES-256-GCM gerando sobrecarga inferior a 0.07ms por quadro.
 
-### 📱 Experiência na Tela de Login & Barra de Título
-- **Acesso Global às Configurações**:
-  - Botão com ícone de engrenagem ⚙️ integrado à barra de título personalizada, permitindo acesso irrestrito às configurações mesmo na tela de login.
-- **Re-geração de QR Code em 1 Clique**:
-  - Botão "Re-gerar QR Code" adicionado à interface para reiniciar sessões de QR Code expiradas sem reiniciar o aplicativo.
-  - Card de login expandido para 400px com alinhamento vertical dos botões e ícones.
+---
 
-### 🧪 Ferramentas de Teste
-- **Servidor Proxy Local de Testes (`scripts/test_proxy_server.py`)**:
-  - Script Python leve, sem dependências externas, para emulação de proxies locais na porta 8080 com suporte a túneis HTTPS do Discord.
+### 🔊 Subsistema de Áudio Avançado & Isolamento de Som (Loopback)
+- **Isolamento de Áudio de Compartilhamento no Windows (WASAPI Process Loopback)**:
+  - Captura nativa de áudio de jogos e janelas compartilhadas isolando processos específicos via WASAPI Process Loopback: transmite o som do jogo/vídeo sem capturar a chamada de voz ou o próprio microfone (zero eco).
+- **Roteamento de Áudio no Linux (PipeWire / ALSA Virtual Sink)**:
+  - Isolamento de áudio do sistema desktop em transmissões de tela via criação de virtual sink dinâmico, separando o monitor de áudio da reprodução de voz do aplicativo.
+  - Roteamento direto dos fluxos ALSA do Litecord para a saída física (`PIPEWIRE_NODE`).
+- **Troca Dinâmica de Alto-falante em Chamada**:
+  - Alterne entre fones de ouvido, caixas de som e DACs USB no meio de uma chamada sem desconectar, sem derrubar a sala e sem precisar reiniciar o aplicativo.
+  - Recriação atômica da stream CPAL de reprodução no canal de voz, preservando o estado do buffer de jitter e a sessão DAVE E2EE.
+- **Ganho de Microfone & Calibração de Sensibilidade**:
+  - Controle deslizante de ganho de software de microfone em tempo real ajustável de 0% a 200%.
+  - Reorganização intuitiva da aba de Voz e Áudio nas configurações com monitor VU ao vivo e sensibilidade VAD.
+- **Feedback Sonoro Tátil (Sound Effects)**:
+  - Motor de síntese sonora tátil (`sound_effects.rs`) operando em thread dedicada de baixa latência via CPAL (com fallback nativo no Windows):
+    - **Mute**: bipe harmônico descendente (440 Hz → 220 Hz) confirmando silenciamento.
+    - **Unmute**: bipe harmônico ascendente (330 Hz → 660 Hz) confirmando reativação do microfone.
+    - **Deafen / Undeafen**: sequências sonoras dedicadas para ensurdecimento e restauração de áudio.
+    - **Entrada e Saída de Chamada**: alertas sonoros ao ingressar ou deixar salas de voz.
+
+---
+
+### ⌨️ Atalhos Globais de Teclado (Global Keybinds)
+- **Captura Global com Foco em Jogos (Win32 / Linux evdev)**:
+  - Módulo `src/utils/keybinds.rs` com listener em segundo plano funcional no Windows (hooks Win32 e `GetAsyncKeyState`) e no Linux (`evdev`), respondendo mesmo com jogos rodando em tela cheia exclusiva.
+  - Atalhos padrão: **`Ctrl + Shift + M`** (Alternar Microfone) e **`Ctrl + Shift + D`** (Alternar Áudio).
+  - Gravador interativo de atalhos e persistência de combinações personalizadas em `.litecord_keybinds.json`.
+  - Sincronização em tempo real entre o estado da UI, confirmação sonora e despacho para o Discord Voice Gateway (`GatewayCommand::UpdateVoiceState`).
+
+---
+
+### 🌐 Suporte Nativo a Proxy HTTP/HTTPS, SOCKS5 & Sistema
+- **Motor de Rede com Suporte a Múltiplos Protocolos**:
+  - Injeção dinâmica de proxy em Rust no `reqwest::Client` com suporte a **HTTP/HTTPS** (túnel `CONNECT`), **SOCKS5** (compatível com Shadowsocks, V2Ray, Xray, Tor) e **Proxy do Sistema**.
+  - Autenticação Basic Auth (usuário e senha) para proxies corporativos e privados.
+  - Botão **"Testar Conexão"** integrado nas configurações com verificação em tempo real de latência e conectividade ao endpoint de gateway do Discord (`discord.com/api/v10/gateway`).
+  - Recarregamento a quente (*zero downtime*): salvar configurações reconstrói o cliente HTTP instantaneamente sem fechar a aplicação.
+- **Diagnóstico Inteligente de Conexão na Tela de Login**:
+  - Banner elástico de aviso de falha de proxy com diferenciação clara entre falhas de rede (`10061`, recusa de conexão, DNS) e rejeição de credenciais (`401 Unauthorized`).
+  - Atalho de 1 clique no banner direcionando diretamente à aba de Rede & Proxy nas configurações.
+
+---
+
+### 📊 Monitor de Hardware em Tempo Real & HUD Compacto
+- **Métricas Fidedignas do Processo (Consumo Real do Litecord)**:
+  - **CPU**: Coleta o tempo de kernel e usuário do processo do Litecord via `GetProcessTimes` em relação ao tempo total decorrido do sistema (`GetSystemTimes`), correspondendo fielmente ao cálculo do Gerenciador de Tarefas do Windows.
+  - **RAM (em MB)**: Coleta do Working Set real consumido pelo Litecord via `K32GetProcessMemoryInfo` (retorna em MB, ex.: `42 MB`), sem porcentagem global confusa.
+  - **GPU**: Coleta via PDH (`\GPU Engine(*)\Utilization Percentage`) filtrando estritamente pelas instâncias de engines pertencentes ao PID atual (`pid_<PID>_...`), isolando o uso real do app.
+- **Integração com Barra de Tarefas e Bandeja**:
+  - Título dinâmico e compacto na Barra de Tarefas do Windows: `Litecord - x%/ymb` (ex: `Litecord - 2%/45MB`), sem cortar na barra de tarefas.
+  - Tooltip vivo na bandeja do sistema (System Tray): `Litecord - CPU x% | RAM y MB | GPU z%`.
+  - HUD minimalista e elegante integrado à barra superior ao lado do ícone de configurações, com suporte a toggle liga/desliga nas configurações.
+
+---
+
+### 🧹 Gerenciamento Avançado de Memória & Paridade Linux
+- **Rotina Multiplataforma `trim_process_memory()`**:
+  - No Windows: esvaziamento do working set via `K32EmptyWorkingSet()`, derrubando o uso de RAM para menos de 5 MB ao minimizar para a bandeja ou entrar em repouso.
+  - No Linux: chamadas a `malloc_trim(0)` e `mi_collect(true)` para forçar a devolução imediata de páginas de memória desfragmentadas do heap à `glibc`.
+  - Desativação de timers de segundo plano no Slint ao fechar janelas popout e minimizar, permitindo que a aplicação hiberne no `epoll_wait()`.
+
+---
+
+### 📹 Pipeline de Câmera em Thread Isolada
+- **Inicialização Segura de Webcam**:
+  - Dispositivos de câmera inicializados em worker thread isolada com contexto COM próprio, prevenindo colisões de modelo de apartamento com a thread principal.
+  - Dimensionamento dinâmico de buffer para o canvas de exibição, timeouts seguros e prevenção de fallbacks indevidos de captura GDI durante o streaming de vídeo.
+
+---
+
+### 🎨 Design, Ícones Vetoriais SVG & Identidade Cyber Sapphire
+- **Padronização de Ícones Vetoriais SVG**:
+  - Substituição de emojis e caracteres unicode propensos a falhas de renderização (tofus/quadrados vazios) por ícones vetoriais SVG nítidos (`microphone.svg`, `headphones.svg`, `rocket.svg`, `chevron-down.svg`, etc.).
+  - Botão de teste de microfone com alternância visual animada entre estado ocioso e testando.
+- **Aprimoramentos de Usabilidade & Estilo**:
+  - Paleta **Cyber Sapphire** com badges no estilo squircle clássico do Discord e aviso de preview econômico compacto (20px) com truncamento inteligente (*elide*).
+  - Rolagem automática do chat para o final ao alternar salas de voz ou canais de texto.
+  - Botão de acesso direto às Configurações presente na barra de título em todas as telas (incluindo Login).
+  - Botão **"Re-gerar QR Code"** de 1 clique para reiniciar autenticações móveis expiradas sem fechar o app.
 
 ---
 
