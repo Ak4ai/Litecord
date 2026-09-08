@@ -4310,7 +4310,7 @@ dependencies = [
  "tray-icon",
  "windows 0.58.0",
  "windows-capture",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "winit",
  "winres",
  "x11rb 0.14.0",
@@ -6611,7 +6611,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
