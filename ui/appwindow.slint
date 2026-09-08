@@ -1896,7 +1896,7 @@ export component AppWindow inherits Window {
                                                 padding: 8px;
 
                                                 Text {
-                                                    text: "✅ " + root.qr_scanned_user;
+                                                    text: "✓ " + root.qr_scanned_user;
                                                     color: #23a55a;
                                                     font-size: 13px;
                                                     font-weight: 700;
@@ -5180,6 +5180,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout {
                                                     padding-top: 2px;
                                                     Button {
+                                                        icon: root.is_testing_mic ? @image-url("../assets/microphone.svg") : @image-url("../assets/headphones.svg");
                                                         text: root.is_testing_mic ? root.tr_settings_btn_test_stop : root.tr_settings_btn_test_start;
                                                         primary: root.is_testing_mic;
                                                         clicked => { root.toggle_test_mic(); }
@@ -7834,7 +7835,7 @@ export component AppWindow inherits Window {
                                 spacing: 2px;
 
                                 Text {
-                                    text: "Nova Atualização Disponível! 🚀";
+                                    text: "Nova Atualização Disponível!";
                                     color: #f2f3f5;
                                     font-size: 16px;
                                     font-weight: 700;

@@ -182,10 +182,10 @@ pub fn format_proxy_alert_message() -> String {
     let settings = get_network_settings();
     let mode = settings.proxy_mode.to_uppercase();
     if settings.proxy_mode == "system" {
-        "⚠️ Falha de conexão via Proxy do Sistema! Clique aqui ou na engrenagem ⚙️ no topo para abrir as Configurações e desativá-lo.".to_string()
+        "Falha de conexão via Proxy do Sistema! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.".to_string()
     } else {
         format!(
-            "⚠️ O Proxy ({}: {}:{}) está inacessível ou recusando conexão! Clique aqui ou na engrenagem ⚙️ no topo para abrir as Configurações e desativá-lo.",
+            "O Proxy ({}: {}:{}) está inacessível ou recusando conexão! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.",
             mode, settings.proxy_host, settings.proxy_port
         )
     }

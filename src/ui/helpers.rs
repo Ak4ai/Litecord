@@ -91,48 +91,24 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_tr_settings_output_device(tr.settings_output_device.into());
     ui.set_tr_settings_threshold(tr.settings_threshold.into());
     ui.set_tr_settings_mic_level(tr.settings_mic_level.into());
-    #[cfg(target_os = "windows")]
-    {
-        ui.set_tr_settings_btn_test_start(match resolved {
-            i18n::Language::Portuguese => "🎧 Testar Microfone (\"Se Ouvir\")".into(),
-            i18n::Language::Spanish => "🎧 Probar Micrófono (\"Escucharse\")".into(),
-            i18n::Language::German => "🎧 Mikrofon testen (\"Sich hören\")".into(),
-            i18n::Language::French => "🎧 Tester le Micro (\"S'entendre\")".into(),
-            i18n::Language::Russian => "🎧 Проверить микрофон (\"Слышать себя\")".into(),
-            i18n::Language::Japanese => "🎧 マイクをテスト (自分の声を聞く)".into(),
-            _ => "🎧 Test Microphone (\"Hear Yourself\")".into(),
-        });
-        ui.set_tr_settings_btn_test_stop(match resolved {
-            i18n::Language::Portuguese => "🎙️ Parar Teste (Ouvindo...)".into(),
-            i18n::Language::Spanish => "🎙️ Detener Prueba (Escuchando...)".into(),
-            i18n::Language::German => "🎙️ Test beenden (Hören...)".into(),
-            i18n::Language::French => "🎙️ Arrêter le Test (Écoute...)".into(),
-            i18n::Language::Russian => "🎙️ Остановить тест (Слушаем...)".into(),
-            i18n::Language::Japanese => "🎙️ テスト停止 (聴取中...)".into(),
-            _ => "🎙️ Stop Testing (Listening...)".into(),
-        });
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        ui.set_tr_settings_btn_test_start(match resolved {
-            i18n::Language::Portuguese => "Testar Microfone (\"Se Ouvir\")".into(),
-            i18n::Language::Spanish => "Probar Micrófono (\"Escucharse\")".into(),
-            i18n::Language::German => "Mikrofon testen (\"Sich hören\")".into(),
-            i18n::Language::French => "Tester le Micro (\"S'entendre\")".into(),
-            i18n::Language::Russian => "Проверить микрофон (\"Слышать себя\")".into(),
-            i18n::Language::Japanese => "マイクをテスト (自分の声を聞く)".into(),
-            _ => "Test Microphone (\"Hear Yourself\")".into(),
-        });
-        ui.set_tr_settings_btn_test_stop(match resolved {
-            i18n::Language::Portuguese => "Parar Teste (Ouvindo...)".into(),
-            i18n::Language::Spanish => "Detener Prueba (Escuchando...)".into(),
-            i18n::Language::German => "Test beenden (Hören...)".into(),
-            i18n::Language::French => "Arrêter le Test (Écoute...)".into(),
-            i18n::Language::Russian => "Остановить тест (Слушаем...)".into(),
-            i18n::Language::Japanese => "テスト停止 (聴取中...)".into(),
-            _ => "Stop Testing (Listening...)".into(),
-        });
-    }
+    ui.set_tr_settings_btn_test_start(match resolved {
+        i18n::Language::Portuguese => "Testar Microfone (\"Se Ouvir\")".into(),
+        i18n::Language::Spanish => "Probar Micrófono (\"Escucharse\")".into(),
+        i18n::Language::German => "Mikrofon testen (\"Sich hören\")".into(),
+        i18n::Language::French => "Tester le Micro (\"S'entendre\")".into(),
+        i18n::Language::Russian => "Проверить микрофон (\"Слышать себя\")".into(),
+        i18n::Language::Japanese => "マイクをテスト (自分の声を聞く)".into(),
+        _ => "Test Microphone (\"Hear Yourself\")".into(),
+    });
+    ui.set_tr_settings_btn_test_stop(match resolved {
+        i18n::Language::Portuguese => "Parar Teste (Ouvindo...)".into(),
+        i18n::Language::Spanish => "Detener Prueba (Escuchando...)".into(),
+        i18n::Language::German => "Test beenden (Hören...)".into(),
+        i18n::Language::French => "Arrêter le Test (Écoute...)".into(),
+        i18n::Language::Russian => "Остановить тест (Слушаем...)".into(),
+        i18n::Language::Japanese => "テスト停止 (聴取中...)".into(),
+        _ => "Stop Testing (Listening...)".into(),
+    });
     ui.set_tr_settings_done(tr.settings_done.into());
     ui.set_tr_logout_title(tr.logout_title.into());
     ui.set_tr_logout_confirm_prefix(tr.logout_confirm_prefix.into());

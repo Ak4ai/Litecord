@@ -191,30 +191,30 @@ pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<Deta
     let (status, formatted_status) = if is_newer_version(&remote_version, &local_version) {
         (
             VersionComparisonStatus::Outdated,
-            format!("⚠️ Desatualizado (v{} disponível no GitHub)", remote_version),
+            format!("Desatualizado (v{} disponível no GitHub)", remote_version),
         )
     } else if is_newer_version(&local_version, &remote_version) {
         if is_dirty {
             (
                 VersionComparisonStatus::Modified,
-                format!("🚀 Dev / Modificado ({}-modified • release v{})", local_hash, remote_version),
+                format!("Dev / Modificado ({}-modified • release v{})", local_hash, remote_version),
             )
         } else {
             (
                 VersionComparisonStatus::AheadOfRelease,
-                format!("🚀 Atualizado / Dev ({} • à frente da release v{})", local_hash, remote_version),
+                format!("Atualizado / Dev ({} • à frente da release v{})", local_hash, remote_version),
             )
         }
     } else {
         if is_dirty {
             (
                 VersionComparisonStatus::Modified,
-                format!("📝 Modificado ({}-modified • base v{})", local_hash, remote_version),
+                format!("Modificado ({}-modified • base v{})", local_hash, remote_version),
             )
         } else {
             (
                 VersionComparisonStatus::UpToDate,
-                format!("✅ Atualizado (v{} • {})", local_version, local_hash),
+                format!("Atualizado (v{} • {})", local_version, local_hash),
             )
         }
     };

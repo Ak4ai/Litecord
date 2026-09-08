@@ -2299,7 +2299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         Err(e) => {
-                            ui.set_update_check_feedback(format!("⚠️ {}", e).into());
+                            ui.set_update_check_feedback(format!("Erro: {}", e).into());
                         }
                     }
                 }
@@ -2925,7 +2925,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let app_w_ui = app_w.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w_ui.upgrade() {
-                        ui.set_connection_status("⚠️ Nenhum token do Discord foi encontrado no sistema.".into());
+                        ui.set_connection_status("Nenhum token do Discord foi encontrado no sistema.".into());
                     }
                 });
             } else {
@@ -2947,11 +2947,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_w_ui.upgrade() {
                             let net = crate::utils::get_network_settings();
                             if net.proxy_mode != "off" {
-                                ui.set_connection_status(format!("⚠️ Falha de conexão via Proxy ({})", net.proxy_mode.to_uppercase()).into());
+                                ui.set_connection_status(format!("Falha de conexão via Proxy ({})", net.proxy_mode.to_uppercase()).into());
                                 ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
                                 ui.set_login_alert_is_error(true);
                             } else {
-                                ui.set_connection_status("⚠️ Nenhum dos tokens encontrados foi aceito pelo Discord.".into());
+                                ui.set_connection_status("Nenhum dos tokens encontrados foi aceito pelo Discord.".into());
                             }
                         }
                     });

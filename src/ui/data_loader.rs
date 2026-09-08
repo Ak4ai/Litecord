@@ -401,7 +401,7 @@ pub async fn fetch_and_populate_channels(
                         let empty_msgs = vec![ChatMessage {
                             id: "".into(),
                             author: "Litecord System".into(),
-                            content: "🔒 Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                            content: "Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
                             commands: slint::ModelRc::default(),
                             content_lines: slint::ModelRc::default(),
                             embed_content: "".into(),
@@ -520,9 +520,9 @@ pub async fn load_messages_for_channel(
         Err(err) => {
             error!("Erro ao carregar mensagens do canal {}: {}", channel_id, err);
             let friendly_msg = if err.contains("403") || err.contains("Forbidden") {
-                "🔒 Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.".to_string()
+                "Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.".to_string()
             } else {
-                format!("⚠️ Não foi possível carregar as mensagens ({})", err)
+                format!("Não foi possível carregar as mensagens ({})", err)
             };
 
             let _ = slint::invoke_from_event_loop(move || {
