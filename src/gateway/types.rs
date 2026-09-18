@@ -304,6 +304,46 @@ pub fn get_voice_channel_participant_count(channel_id: &str) -> i32 {
     set.len() as i32
 }
 
+pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
+    if channel_id.is_empty() {
+        return Vec::new();
+    }
+
+    let user_ids: Vec<u64> = get_guild_voice_states_store()
+        .lock()
+        .map(|states| {
+            states
+                .iter()
+                .filter_map(|(&user_id, current_channel_id)| {
+                    (current_channel_id == channel_id).then_some(user_id)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let names = get_user_names_store();
+    let names = names.lock().ok();
+    let mut participants: Vec<(u64, String)> = user_ids
+        .into_iter()
+        .map(|user_id| {
+            let name = names
+                .as_ref()
+                .and_then(|known_names| known_names.get(&user_id))
+                .cloned()
+                .unwrap_or_else(|| format!("Participante #{}", user_id));
+            (user_id, name)
+        })
+        .collect();
+
+    participants.sort_by(|left, right| {
+        left.1
+            .to_lowercase()
+            .cmp(&right.1.to_lowercase())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    participants
+}
+
 pub fn set_my_user_id(id: u64) {
     MY_USER_ID.store(id, Ordering::Relaxed);
 }

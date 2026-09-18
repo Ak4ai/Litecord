@@ -1588,7 +1588,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
-        let mut last_fingerprint: Vec<(String, i32)> = Vec::new();
+        let mut last_fingerprint: Vec<(String, Vec<(u64, String)>)> = Vec::new();
         let mut last_gid = String::new();
         loop {
             interval.tick().await;
@@ -1607,8 +1607,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(chans) = channels_opt {
                 let mut current_fingerprint = Vec::with_capacity(chans.len());
                 for ch in &chans {
-                    let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
-                    current_fingerprint.push((ch.id.clone(), vcount));
+                    let participants = if ch.is_voice {
+                        gateway::get_voice_channel_participants(&ch.id)
+                    } else {
+                        Vec::new()
+                    };
+                    current_fingerprint.push((ch.id.clone(), participants));
                 }
 
                 let guild_changed = gid != last_gid;
@@ -1629,7 +1633,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !needs_rebuild {
                                 for (i, new_c) in ui_channels.iter().enumerate() {
                                     if let Some(old_c) = cur_chans.row_data(i) {
-                                        if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
+                                        if old_c.voice_count != new_c.voice_count
+                                            || old_c.name != new_c.name
+                                            || old_c.id != new_c.id
+                                        {
                                             cur_chans.set_row_data(i, new_c.clone());
                                         }
                                     } else {
@@ -3928,7 +3935,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if !needs_rebuild {
                                         for (i, new_c) in ui_channels.iter().enumerate() {
                                             if let Some(old_c) = cur_chans.row_data(i) {
-                                                if old_c.voice_count != new_c.voice_count || old_c.id != new_c.id {
+                                                if old_c.voice_count != new_c.voice_count
+                                                    || old_c.name != new_c.name
+                                                    || old_c.id != new_c.id
+                                                {
                                                     cur_chans.set_row_data(i, new_c.clone());
                                                 }
                                             } else {
