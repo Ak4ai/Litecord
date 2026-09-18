@@ -215,8 +215,11 @@ component ChatMessagesView inherits Rectangle {
 
         VerticalLayout {
             width: 100%;
-            padding: 12px;
-            spacing: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 2px;
             alignment: end;
 
             // Load Older Messages Button / Header
@@ -267,13 +270,15 @@ component ChatMessagesView inherits Rectangle {
 
             for msg in root.messages: Rectangle {
                 width: 100%;
-                background: #2e3035;
-                border-radius: 6px;
+                background: transparent;
                 property <bool> is-collapsed: true;
 
                 VerticalBox {
                     width: 100%;
-                    padding: 8px;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
+                    padding-left: 8px;
+                    padding-right: 8px;
                     spacing: 4px;
 
                     if msg.reply-author != "" || msg.reply-command != "": Rectangle {
@@ -2105,10 +2110,12 @@ export component AppWindow inherits Window {
 
                                 for channel in root.channels: Rectangle {
                                     height: channel.is_category ? (channel.has_separator ? 36px : 26px) : 34px;
-                                    background: channel.is_category ? transparent : (touch_area.has_hover ? #3f4147 : #313338);
-                                    border-radius: 6px;
-                                    border-width: (!channel.is_category && channel.id == root.active_channel_id) ? 2px : 0px;
-                                    border-color: #3b82f6;
+                                    background: channel.is_category
+                                        ? transparent
+                                        : (channel.id == root.active_channel_id
+                                            ? #404249
+                                            : (touch_area.has_hover ? #35373c : transparent));
+                                    border-radius: 4px;
                                     animate background { duration: 120ms; }
 
                                     // Category rendering
