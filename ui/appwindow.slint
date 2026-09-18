@@ -1,9 +1,10 @@
 import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
+import { AppTheme } from "theme.slint";
 
 component IconButton inherits Rectangle {
     in property <image> icon;
-    in property <color> icon-color: #dbdee1;
-    in property <color> hover-color: #35373c;
+    in property <color> icon-color: AppTheme.text-primary;
+    in property <color> hover-color: AppTheme.interactive-hover;
     callback clicked();
 
     width: 32px;
@@ -230,10 +231,10 @@ component ChatMessagesView inherits Rectangle {
 
                 Rectangle {
                     height: 28px;
-                    background: older_btn_touch.has-hover ? #35373c : #2b2d31;
+                    background: older_btn_touch.has-hover ? AppTheme.interactive-hover : AppTheme.surface-sidebar;
                     border-radius: 6px;
                     border-width: 1px;
-                    border-color: #3f4147;
+                    border-color: AppTheme.separator;
 
                     HorizontalLayout {
                         padding-left: 14px;
@@ -247,14 +248,14 @@ component ChatMessagesView inherits Rectangle {
                                 source: @image-url("../assets/arrow-up.svg");
                                 width: 12px;
                                 height: 12px;
-                                colorize: #2563eb;
+                                colorize: AppTheme.accent;
                                 image-fit: contain;
                             }
                         }
 
                         Text {
                             text: root.is_loading_older_messages ? "Carregando mensagens anteriores..." : "Carregar mensagens mais antigas";
-                            color: #2563eb;
+                            color: AppTheme.accent;
                             font-size: 11px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -282,7 +283,7 @@ component ChatMessagesView inherits Rectangle {
                     spacing: 4px;
 
                     if msg.reply-author != "" || msg.reply-command != "": Rectangle {
-                        background: #1e293b;
+                        background: AppTheme.surface-input;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: #3b82f6;
@@ -360,14 +361,14 @@ component ChatMessagesView inherits Rectangle {
                         spacing: 8px;
                         Text {
                             text: msg.author;
-                            color: #2563eb;
+                            color: AppTheme.accent;
                             font-size: 13px;
                             font-weight: 700;
                             vertical-alignment: center;
                         }
                         Text {
                             text: msg.timestamp;
-                            color: #80848e;
+                            color: AppTheme.text-subtle;
                             font-size: 10px;
                             vertical-alignment: center;
                         }
@@ -381,7 +382,7 @@ component ChatMessagesView inherits Rectangle {
                                 source: is-collapsed ? @image-url("../assets/chevron-down.svg") : @image-url("../assets/chevron-up.svg");
                                 width: 12px;
                                 height: 12px;
-                                colorize: #949ba4;
+                                colorize: AppTheme.text-muted;
                                 image-fit: contain;
                             }
                             TouchArea {
@@ -402,7 +403,7 @@ component ChatMessagesView inherits Rectangle {
                             // Case 1: Pure single text line -> Native responsive word-wrap!
                             if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
                                 text: line.blocks[0].text;
-                                color: #dbdee1;
+                                color: AppTheme.text-primary;
                                 font-size: 13.5px;
                                 wrap: word-wrap;
                             }
@@ -572,7 +573,7 @@ component ChatMessagesView inherits Rectangle {
 
                                     if !block.is_link && !block.is_command && !block.is_emoji: Text {
                                         text: block.text;
-                                        color: #dbdee1;
+                                        color: AppTheme.text-primary;
                                         font-size: 13.5px;
                                         vertical-alignment: center;
                                         wrap: word-wrap;
@@ -586,7 +587,7 @@ component ChatMessagesView inherits Rectangle {
                     if msg.content_lines.length == 0 && msg.content != "": Text {
                         width: 100%;
                         text: msg.content;
-                        color: #dbdee1;
+                        color: AppTheme.text-primary;
                         font-size: 13.5px;
                         wrap: word-wrap;
                     }
@@ -594,10 +595,10 @@ component ChatMessagesView inherits Rectangle {
                     // 2. Code Block
                     if msg.code-block != "": Rectangle {
                         width: 100%;
-                        background: #1e1f22;
+                        background: AppTheme.surface-input;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: #383a40;
+                        border-color: AppTheme.border-subtle;
 
                         HorizontalLayout {
                             width: 100%;
@@ -616,7 +617,7 @@ component ChatMessagesView inherits Rectangle {
                     // 3. Embeds
                     if msg.embed-content != "" || msg.embed-footer != "": Rectangle {
                         width: 100%;
-                        background: #232428;
+                        background: AppTheme.surface-elevated;
                         border-radius: 4px;
 
                         HorizontalLayout {
@@ -1092,7 +1093,7 @@ export component AppWindow inherits Window {
     preferred-height: 620px;
     min-width: 680px;
     min-height: 480px;
-    background: #1e1f22;
+    background: AppTheme.surface-window;
     default-font-family: "Segoe UI, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
 
     // Callbacks to Rust backend
@@ -1439,7 +1440,7 @@ export component AppWindow inherits Window {
         // Top Status Header Bar (Frameless Custom Titlebar)
         Rectangle {
             height: 32px;
-            background: #1e1f22;
+            background: AppTheme.surface-titlebar;
 
             if root.drag_area_enabled: TouchArea {
                 width: parent.width - 150px;
@@ -1993,7 +1994,7 @@ export component AppWindow inherits Window {
             // 1. Guilds Sidebar (Servidores com Scroll e tamanho fixado)
             Rectangle {
                 width: 72px;
-                background: #1e1f22;
+                background: AppTheme.surface-guild-rail;
 
                 VerticalLayout {
                     padding-top: 8px;
@@ -2022,7 +2023,7 @@ export component AppWindow inherits Window {
                                         Rectangle {
                                             width: 4px;
                                             height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
-                                            background: #ffffff;
+                                            background: AppTheme.text-strong;
                                             border-top-right-radius: 4px;
                                             border-bottom-right-radius: 4px;
                                             animate height { duration: 150ms; easing: ease-out; }
@@ -2032,7 +2033,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         height: 48px;
                                         width: 48px;
-                                        background: (guild.id == root.active_guild_id) ? #2563eb : (guild_ta.has-hover ? #2563eb : #313338);
+                                        background: (guild.id == root.active_guild_id) ? AppTheme.accent : (guild_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
                                         border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 14px : 16px;
                                         clip: true;
                                         animate border-radius, background { duration: 150ms; easing: ease-out; }
@@ -2046,7 +2047,7 @@ export component AppWindow inherits Window {
 
                                         if !guild.has_image: Text {
                                             text: guild.icon;
-                                            color: #ffffff;
+                                            color: AppTheme.text-on-accent;
                                             font-size: 14px;
                                             font-weight: 700;
                                             horizontal-alignment: center;
@@ -2075,7 +2076,7 @@ export component AppWindow inherits Window {
             // 2. Channels Sidebar (Canais com Scroll e tamanho fixado)
             Rectangle {
                 width: 230px;
-                background: #2b2d31;
+                background: AppTheme.surface-sidebar;
                 border-top-left-radius: 8px;
                 clip: true;
 
@@ -2091,7 +2092,7 @@ export component AppWindow inherits Window {
 
                         Text {
                             text: root.active_guild_name != "" ? root.active_guild_name : root.tr_server_channels;
-                            color: #ffffff;
+                            color: AppTheme.text-strong;
                             font-size: 14px;
                             font-weight: 700;
                             overflow: elide;
@@ -2113,8 +2114,8 @@ export component AppWindow inherits Window {
                                     background: channel.is_category
                                         ? transparent
                                         : (channel.id == root.active_channel_id
-                                            ? #404249
-                                            : (touch_area.has_hover ? #35373c : transparent));
+                                            ? AppTheme.interactive-selected
+                                            : (touch_area.has_hover ? AppTheme.interactive-hover : transparent));
                                     border-radius: 4px;
                                     animate background { duration: 120ms; }
 
@@ -2132,7 +2133,7 @@ export component AppWindow inherits Window {
                                                 width: 170px;
                                                 height: 2px;
                                                 border-radius: 1px;
-                                                background: #3f4147;
+                                                background: AppTheme.separator;
                                             }
                                         }
 
@@ -2148,7 +2149,7 @@ export component AppWindow inherits Window {
                                                     source: channel.is_collapsed ? @image-url("../assets/chevron-right.svg") : @image-url("../assets/chevron-down.svg");
                                                     width: 11px;
                                                     height: 11px;
-                                                    colorize: touch_area.has_hover ? #f2f3f5 : #949ba4;
+                                                    colorize: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
                                                     image-fit: contain;
                                                     animate colorize { duration: 120ms; }
                                                 }
@@ -2156,7 +2157,7 @@ export component AppWindow inherits Window {
 
                                             Text {
                                                 text: channel.name;
-                                                color: touch_area.has_hover ? #f2f3f5 : #949ba4;
+                                                color: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
                                                 font-size: 11px;
                                                 font-weight: 800;
                                                 horizontal-alignment: left;
@@ -2182,7 +2183,7 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/speaker.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: (channel.id == root.active_channel_id) ? #93c5fd : #2563eb;
+                                                colorize: (channel.id == root.active_channel_id) ? AppTheme.accent-soft : AppTheme.accent;
                                                 image-fit: contain;
                                             }
                                         }
@@ -2193,7 +2194,7 @@ export component AppWindow inherits Window {
                                             width: 14px;
                                             Text {
                                                 text: "#";
-                                                color: touch_area.has_hover ? #ffffff : (channel.id == root.active_channel_id ? #93c5fd : #80848e);
+                                                color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.accent-soft : AppTheme.text-subtle);
                                                 font-size: 16px;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
@@ -2205,7 +2206,7 @@ export component AppWindow inherits Window {
                                         // Channel Name
                                         Text {
                                             text: channel.name;
-                                            color: touch_area.has_hover ? #ffffff : (channel.id == root.active_channel_id ? #ffffff : #dbdee1);
+                                            color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.text-strong : AppTheme.text-primary);
                                             font-size: 13px;
                                             font-weight: 600;
                                             horizontal-alignment: left;
@@ -2222,11 +2223,11 @@ export component AppWindow inherits Window {
                                                 width: 20px;
                                                 height: 20px;
                                                 border-radius: 10px;
-                                                background: #3b82f6;
+                                                background: AppTheme.accent;
 
                                                 Text {
                                                     text: "\{channel.voice_count}";
-                                                    color: #ffffff;
+                                                    color: AppTheme.text-on-accent;
                                                     font-size: 11px;
                                                     font-weight: 700;
                                                     horizontal-alignment: center;
@@ -2418,7 +2419,7 @@ export component AppWindow inherits Window {
                     // Voice Room Header Bar
                     Rectangle {
                         height: 44px;
-                        background: #2b2d31;
+                        background: AppTheme.surface-sidebar;
 
                         // Left vertical divider line separating channel sidebar from voice header bar
                         Rectangle {
@@ -2426,7 +2427,7 @@ export component AppWindow inherits Window {
                             y: 8px;
                             width: 1px;
                             height: parent.height - 16px;
-                            background: #3f4147;
+                            background: AppTheme.separator;
                         }
 
                         HorizontalLayout {
@@ -3564,7 +3565,7 @@ export component AppWindow inherits Window {
                     // Channel Header
                     Rectangle {
                         height: 44px;
-                        background: #2b2d31;
+                        background: AppTheme.surface-sidebar;
 
                         // Left vertical divider line separating channel sidebar from text header bar
                         Rectangle {
@@ -3572,7 +3573,7 @@ export component AppWindow inherits Window {
                             y: 8px;
                             width: 1px;
                             height: parent.height - 16px;
-                            background: #3f4147;
+                            background: AppTheme.separator;
                         }
 
                         HorizontalBox {
@@ -3582,7 +3583,7 @@ export component AppWindow inherits Window {
 
                             Text {
                                 text: "#";
-                                color: #80848e;
+                                color: AppTheme.text-subtle;
                                 font-size: 18px;
                                 font-weight: 800;
                                 vertical-alignment: center;
@@ -3590,7 +3591,7 @@ export component AppWindow inherits Window {
 
                             Text {
                                 text: root.active_channel_name;
-                                color: #ffffff;
+                                color: AppTheme.text-strong;
                                 font-size: 15px;
                                 font-weight: 700;
                                 vertical-alignment: center;
@@ -3647,7 +3648,7 @@ export component AppWindow inherits Window {
                     // Messages Chat Feed & Input Container with rounded top-left corner
                     Rectangle {
                         vertical-stretch: 1;
-                        background: #313338;
+                        background: AppTheme.surface-chat;
                         border-top-left-radius: 8px;
                         clip: true;
 
@@ -3819,7 +3820,7 @@ export component AppWindow inherits Window {
                     // Message / Smart Command Input Box
                     Rectangle {
                         height: 56px;
-                        background: #313338;
+                        background: AppTheme.surface-chat;
 
                         HorizontalBox {
                             padding: 8px;
@@ -3935,10 +3936,10 @@ export component AppWindow inherits Window {
 
                             if root.active_command_name == "" : Rectangle {
                                 horizontal-stretch: 1;
-                                background: #1e1f22;
+                                background: AppTheme.surface-input;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: chat_text_input.has-focus ? #2563eb : #383a40;
+                                border-color: chat_text_input.has-focus ? AppTheme.accent : AppTheme.border-subtle;
                                 clip: true;
 
                                 if root.chat_input_text == "" : Text {
@@ -3946,7 +3947,7 @@ export component AppWindow inherits Window {
                                     width: parent.width - 20px;
                                     height: 100%;
                                     text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
-                                    color: #80848e;
+                                    color: AppTheme.text-subtle;
                                     font-size: 13.5px;
                                     vertical-alignment: center;
                                 }
@@ -3956,7 +3957,7 @@ export component AppWindow inherits Window {
                                     width: parent.width - 20px;
                                     height: 100%;
                                     text <=> root.chat_input_text;
-                                    color: #dbdee1;
+                                    color: AppTheme.text-primary;
                                     font-size: 13.5px;
                                     vertical-alignment: center;
                                     single-line: true;
