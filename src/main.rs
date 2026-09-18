@@ -1972,6 +1972,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_theme = app_weak.clone();
+    app.on_toggle_theme(move || {
+        let use_light_theme = video_settings::toggle_use_light_theme();
+        if let Some(ui) = app_weak_theme.upgrade() {
+            ui.set_use_light_theme(use_light_theme);
+        }
+    });
+
 
     // Network & Proxy Settings Callbacks
     let app_weak_proxy_mode = app_weak.clone();
