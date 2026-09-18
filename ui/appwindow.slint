@@ -1,5 +1,5 @@
 import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
-import { AppTheme } from "theme.slint";
+import { AppTheme, ThemeMode } from "theme.slint";
 
 component IconButton inherits Rectangle {
     in property <image> icon;
@@ -283,10 +283,10 @@ component ChatMessagesView inherits Rectangle {
                     spacing: 4px;
 
                     if msg.reply-author != "" || msg.reply-command != "": Rectangle {
-                        background: AppTheme.surface-input;
+                        background: AppTheme.surface-reply;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: #3b82f6;
+                        border-color: AppTheme.accent-bright;
 
                         VerticalLayout {
                             padding: 6px;
@@ -302,14 +302,14 @@ component ChatMessagesView inherits Rectangle {
                                         source: msg.reply-command != "" ? @image-url("../assets/terminal.svg") : @image-url("../assets/reply.svg");
                                         width: 11px;
                                         height: 11px;
-                                        colorize: #3b82f6;
+                                        colorize: AppTheme.accent-bright;
                                         image-fit: contain;
                                     }
                                 }
 
                                 Text {
                                     text: msg.reply-command != "" ? msg.reply-author : (root.tr_replying_to + msg.reply-author);
-                                    color: #58a6ff;
+                                    color: AppTheme.accent-link-hover;
                                     font-size: 11px;
                                     font-weight: 700;
                                     vertical-alignment: center;
@@ -317,17 +317,17 @@ component ChatMessagesView inherits Rectangle {
 
                                 if msg.reply-command != "": Text {
                                     text: "usou";
-                                    color: #94a3b8;
+                                    color: AppTheme.text-reply;
                                     font-size: 11px;
                                     vertical-alignment: center;
                                 }
 
                                 if msg.reply-command != "": Rectangle {
                                     height: 18px;
-                                    background: rep_cmd_ta.has-hover ? #1d4ed8 : #3b82f633;
+                                    background: rep_cmd_ta.has-hover ? AppTheme.accent-hover : AppTheme.accent-subtle;
                                     border-radius: 3px;
                                     border-width: 1px;
-                                    border-color: #2563eb;
+                                    border-color: AppTheme.accent;
                                     HorizontalLayout {
                                         padding-left: 5px;
                                         padding-right: 5px;
@@ -335,7 +335,7 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: center;
                                         Text {
                                             text: msg.reply-command;
-                                            color: rep_cmd_ta.has-hover ? #ffffff : #58a6ff;
+                                            color: rep_cmd_ta.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
                                             font-size: 11px;
                                             font-weight: 700;
                                             vertical-alignment: center;
@@ -350,7 +350,7 @@ component ChatMessagesView inherits Rectangle {
 
                             if msg.reply-content != "": Text {
                                 text: msg.reply-content;
-                                color: #94a3b8;
+                                color: AppTheme.text-reply;
                                 font-size: 10.5px;
                                 wrap: word-wrap;
                             }
@@ -412,7 +412,7 @@ component ChatMessagesView inherits Rectangle {
                             if line.blocks.length == 1 && line.blocks[0].is_link: HorizontalLayout {
                                 alignment: start;
                                 Rectangle {
-                                    background: block_ta_single.has-hover ? #1e293b : transparent;
+                                    background: block_ta_single.has-hover ? AppTheme.surface-reply : transparent;
                                     border-radius: 3px;
                                     HorizontalLayout {
                                         padding-left: 2px;
@@ -421,7 +421,7 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: start;
                                         Text {
                                             text: line.blocks[0].text;
-                                            color: block_ta_single.has-hover ? #58a6ff : #00a8fc;
+                                            color: block_ta_single.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                             font-size: 13.5px;
                                             font-weight: 600;
                                             vertical-alignment: center;
@@ -434,7 +434,7 @@ component ChatMessagesView inherits Rectangle {
                                                 source: @image-url("../assets/external-link.svg");
                                                 width: 11px;
                                                 height: 11px;
-                                                colorize: block_ta_single.has-hover ? #58a6ff : #00a8fc;
+                                                colorize: block_ta_single.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                 image-fit: contain;
                                             }
                                         }
@@ -451,10 +451,10 @@ component ChatMessagesView inherits Rectangle {
                                 alignment: start;
                                 Rectangle {
                                     height: 20px;
-                                    background: cmd_ta_single.has-hover ? #1d4ed8 : #3b82f633;
+                                    background: cmd_ta_single.has-hover ? AppTheme.accent-hover : AppTheme.accent-subtle;
                                     border-radius: 3px;
                                     border-width: 1px;
-                                    border-color: #2563eb;
+                                    border-color: AppTheme.accent;
                                     HorizontalLayout {
                                         padding-left: 5px;
                                         padding-right: 5px;
@@ -462,7 +462,7 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: center;
                                         Text {
                                             text: line.blocks[0].text;
-                                            color: cmd_ta_single.has-hover ? #ffffff : #58a6ff;
+                                            color: cmd_ta_single.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
                                             font-size: 12px;
                                             font-weight: 700;
                                             vertical-alignment: center;
@@ -502,10 +502,10 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: center;
                                         Rectangle {
                                             height: 20px;
-                                            background: cmd_ta_mix.has-hover ? #1d4ed8 : #3b82f633;
+                                            background: cmd_ta_mix.has-hover ? AppTheme.accent-hover : AppTheme.accent-subtle;
                                             border-radius: 3px;
                                             border-width: 1px;
-                                            border-color: #2563eb;
+                                            border-color: AppTheme.accent;
                                             HorizontalLayout {
                                                 padding-left: 5px;
                                                 padding-right: 5px;
@@ -513,7 +513,7 @@ component ChatMessagesView inherits Rectangle {
                                                 alignment: center;
                                                 Text {
                                                     text: block.text;
-                                                    color: cmd_ta_mix.has-hover ? #ffffff : #58a6ff;
+                                                    color: cmd_ta_mix.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
                                                     font-size: 12px;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
@@ -540,7 +540,7 @@ component ChatMessagesView inherits Rectangle {
                                         alignment: center;
                                         Rectangle {
                                             height: 22px;
-                                            background: block_ta_mix.has-hover ? #1e293b : transparent;
+                                            background: block_ta_mix.has-hover ? AppTheme.surface-reply : transparent;
                                             border-radius: 3px;
                                             HorizontalLayout {
                                                 padding-left: 4px;
@@ -549,7 +549,7 @@ component ChatMessagesView inherits Rectangle {
                                                 alignment: center;
                                                 Text {
                                                     text: block.text;
-                                                    color: block_ta_mix.has-hover ? #58a6ff : #00a8fc;
+                                                    color: block_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                     font-size: 13px;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
@@ -560,7 +560,7 @@ component ChatMessagesView inherits Rectangle {
                                                     source: @image-url("../assets/external-link.svg");
                                                     width: 11px;
                                                     height: 11px;
-                                                    colorize: block_ta_mix.has-hover ? #58a6ff : #00a8fc;
+                                                    colorize: block_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                     image-fit: contain;
                                                 }
                                             }
@@ -606,7 +606,7 @@ component ChatMessagesView inherits Rectangle {
                             Text {
                                 width: 100%;
                                 text: msg.code-block;
-                                color: #23a55a;
+                                color: AppTheme.success;
                                 font-family: "Courier New";
                                 font-size: 12.5px;
                                 wrap: word-wrap;
@@ -640,7 +640,7 @@ component ChatMessagesView inherits Rectangle {
 
                                         if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
                                             text: line.blocks[0].text;
-                                            color: #d2d5d9;
+                                            color: AppTheme.text-embed;
                                             font-size: 12.5px;
                                             wrap: word-wrap;
                                         }
@@ -648,7 +648,7 @@ component ChatMessagesView inherits Rectangle {
                                         if line.blocks.length == 1 && line.blocks[0].is_link: HorizontalLayout {
                                             alignment: start;
                                             Rectangle {
-                                                background: eblock_ta_single.has-hover ? #1e293b : transparent;
+                                                background: eblock_ta_single.has-hover ? AppTheme.surface-reply : transparent;
                                                 border-radius: 3px;
                                                 HorizontalLayout {
                                                     padding-left: 2px;
@@ -657,7 +657,7 @@ component ChatMessagesView inherits Rectangle {
                                                     alignment: start;
                                                     Text {
                                                         text: line.blocks[0].text;
-                                                        color: eblock_ta_single.has-hover ? #58a6ff : #00a8fc;
+                                                        color: eblock_ta_single.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                         font-size: 12.5px;
                                                         font-weight: 600;
                                                         vertical-alignment: center;
@@ -670,7 +670,7 @@ component ChatMessagesView inherits Rectangle {
                                                             source: @image-url("../assets/external-link.svg");
                                                             width: 10px;
                                                             height: 10px;
-                                                            colorize: eblock_ta_single.has-hover ? #58a6ff : #00a8fc;
+                                                            colorize: eblock_ta_single.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                             image-fit: contain;
                                                         }
                                                     }
@@ -686,10 +686,10 @@ component ChatMessagesView inherits Rectangle {
                                             alignment: start;
                                             Rectangle {
                                                 height: 19px;
-                                                background: ecmd_ta_single.has-hover ? #1d4ed8 : #3b82f633;
+                                                background: ecmd_ta_single.has-hover ? AppTheme.accent-hover : AppTheme.accent-subtle;
                                                 border-radius: 3px;
                                                 border-width: 1px;
-                                                border-color: #2563eb;
+                                                border-color: AppTheme.accent;
                                                 HorizontalLayout {
                                                     padding-left: 5px;
                                                     padding-right: 5px;
@@ -697,7 +697,7 @@ component ChatMessagesView inherits Rectangle {
                                                     alignment: center;
                                                     Text {
                                                         text: line.blocks[0].text;
-                                                        color: ecmd_ta_single.has-hover ? #ffffff : #58a6ff;
+                                                        color: ecmd_ta_single.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
                                                         font-size: 11px;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
@@ -722,10 +722,10 @@ component ChatMessagesView inherits Rectangle {
                                                     alignment: center;
                                                     Rectangle {
                                                         height: 19px;
-                                                        background: ecmd_ta_mix.has-hover ? #1d4ed8 : #3b82f633;
+                                                        background: ecmd_ta_mix.has-hover ? AppTheme.accent-hover : AppTheme.accent-subtle;
                                                         border-radius: 3px;
                                                         border-width: 1px;
-                                                        border-color: #2563eb;
+                                                        border-color: AppTheme.accent;
                                                         HorizontalLayout {
                                                             padding-left: 5px;
                                                             padding-right: 5px;
@@ -733,7 +733,7 @@ component ChatMessagesView inherits Rectangle {
                                                             alignment: center;
                                                             Text {
                                                                 text: block.text;
-                                                                color: ecmd_ta_mix.has-hover ? #ffffff : #58a6ff;
+                                                                color: ecmd_ta_mix.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
                                                                 font-size: 11px;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
@@ -750,7 +750,7 @@ component ChatMessagesView inherits Rectangle {
                                                     alignment: center;
                                                     Rectangle {
                                                         height: 20px;
-                                                        background: eblock_ta_mix.has-hover ? #1e293b : transparent;
+                                                        background: eblock_ta_mix.has-hover ? AppTheme.surface-reply : transparent;
                                                         border-radius: 3px;
                                                         HorizontalLayout {
                                                             padding-left: 4px;
@@ -759,7 +759,7 @@ component ChatMessagesView inherits Rectangle {
                                                             alignment: center;
                                                             Text {
                                                                 text: block.text;
-                                                                color: eblock_ta_mix.has-hover ? #58a6ff : #00a8fc;
+                                                                color: eblock_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                                 font-size: 12px;
                                                                 font-weight: 600;
                                                                 vertical-alignment: center;
@@ -770,7 +770,7 @@ component ChatMessagesView inherits Rectangle {
                                                                 source: @image-url("../assets/external-link.svg");
                                                                 width: 10px;
                                                                 height: 10px;
-                                                                colorize: eblock_ta_mix.has-hover ? #58a6ff : #00a8fc;
+                                                                colorize: eblock_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                                 image-fit: contain;
                                                             }
                                                         }
@@ -793,7 +793,7 @@ component ChatMessagesView inherits Rectangle {
 
                                                 if !block.is_link && !block.is_command && !block.is_emoji: Text {
                                                     text: block.text;
-                                                    color: #d2d5d9;
+                                                    color: AppTheme.text-embed;
                                                     font-size: 12.5px;
                                                     vertical-alignment: center;
                                                     wrap: word-wrap;
@@ -807,20 +807,20 @@ component ChatMessagesView inherits Rectangle {
                                 if msg.embed_lines.length == 0 && msg.embed-content != "": Text {
                                     width: 100%;
                                     text: msg.embed-content;
-                                    color: #d2d5d9;
+                                    color: AppTheme.text-embed;
                                     font-size: 12.5px;
                                     wrap: word-wrap;
                                 }
 
                                 if msg.embed-footer != "": Rectangle {
                                     height: 1px;
-                                    background: #3f4147;
+                                    background: AppTheme.separator;
                                 }
 
                                 if msg.embed-footer != "": Text {
                                     width: 100%;
                                     text: msg.embed-footer;
-                                    color: #949ba4;
+                                    color: AppTheme.text-muted;
                                     font-size: 11px;
                                     wrap: word-wrap;
                                 }
@@ -836,23 +836,23 @@ component ChatMessagesView inherits Rectangle {
 
                         for btn in msg.buttons: Rectangle {
                             height: 32px;
-                            background: btn.is_disabled ? #2b2d31 : (btn_ta.has-hover ? (
-                                btn.style_type == 1 ? #1d4ed8 : (
-                                btn.style_type == 3 ? #1f8b4c : (
-                                btn.style_type == 4 ? #c0353b : (
-                                #3b3e45
+                            background: btn.is_disabled ? AppTheme.surface-disabled : (btn_ta.has-hover ? (
+                                btn.style_type == 1 ? AppTheme.accent-hover : (
+                                btn.style_type == 3 ? AppTheme.success-hover : (
+                                btn.style_type == 4 ? AppTheme.danger-action-hover : (
+                                AppTheme.surface-control-hover
                                 )))
                             ) : (
-                                btn.style_type == 1 ? #2563eb : (
-                                btn.style_type == 3 ? #23a55a : (
-                                btn.style_type == 4 ? #da373c : (
-                                btn.style_type == 5 ? #35373c : (
-                                #4e5058
+                                btn.style_type == 1 ? AppTheme.accent : (
+                                btn.style_type == 3 ? AppTheme.success : (
+                                btn.style_type == 4 ? AppTheme.danger-action : (
+                                btn.style_type == 5 ? AppTheme.interactive-hover : (
+                                AppTheme.surface-control
                                 ))))
                             ));
                             border-radius: 4px;
                             border-width: btn.style_type == 5 ? 1px : 0px;
-                            border-color: #3f4147;
+                            border-color: AppTheme.separator;
 
                             HorizontalLayout {
                                 padding-left: 12px;
@@ -881,7 +881,7 @@ component ChatMessagesView inherits Rectangle {
 
                                 Text {
                                     text: btn.label;
-                                    color: btn.is_disabled ? #80848e : #ffffff;
+                                    color: btn.is_disabled ? AppTheme.text-subtle : AppTheme.text-on-accent;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
@@ -893,7 +893,7 @@ component ChatMessagesView inherits Rectangle {
                                         source: @image-url("../assets/external-link.svg");
                                         width: 12px;
                                         height: 12px;
-                                        colorize: btn.is_disabled ? #80848e : #b5bac1;
+                                        colorize: btn.is_disabled ? AppTheme.text-subtle : AppTheme.text-secondary;
                                         image-fit: contain;
                                     }
                                 }
@@ -921,10 +921,10 @@ component ChatMessagesView inherits Rectangle {
                             property <length> img-height: (att.width > 0 && att.height > 0) ? min(520px, max(120px, 320px * att.height / att.width)) : 200px;
                             width: att.is_image ? 320px : 280px;
                             height: att.is_image ? img-height : 48px;
-                            background: #1e1f22;
+                            background: AppTheme.surface-input;
                             border-radius: 8px;
                             border-width: 1px;
-                            border-color: #2b2d31;
+                            border-color: AppTheme.surface-sidebar;
                             clip: true;
 
                             // 1. Downloaded Full Crisp Image (Clean & Raw)
@@ -947,7 +947,7 @@ component ChatMessagesView inherits Rectangle {
                             if att.is_image && !att.is_downloaded : Rectangle {
                                 width: 100%;
                                 height: 100%;
-                                background: #00000077;
+                                background: AppTheme.surface-backdrop;
                             }
 
                             // 4. Rounded Rectangle Download Button in the center (when not downloaded)
@@ -957,10 +957,10 @@ component ChatMessagesView inherits Rectangle {
                                     alignment: center;
                                     Rectangle {
                                         height: 38px;
-                                        background: dl_ta.has-hover ? #1d4ed8 : #1e1f22ee;
+                                        background: dl_ta.has-hover ? AppTheme.accent-hover : AppTheme.surface-overlay;
                                         border-radius: 8px;
                                         border-width: 1px;
-                                        border-color: #2563eb;
+                                        border-color: AppTheme.accent;
 
                                         HorizontalLayout {
                                             padding-left: 16px;
@@ -974,7 +974,7 @@ component ChatMessagesView inherits Rectangle {
                                                     source: @image-url("../assets/arrow-down.svg");
                                                     width: 14px;
                                                     height: 14px;
-                                                    colorize: #ffffff;
+                                                    colorize: AppTheme.text-on-accent;
                                                     image-fit: contain;
                                                 }
                                             }
@@ -983,7 +983,7 @@ component ChatMessagesView inherits Rectangle {
                                                 alignment: center;
                                                 Text {
                                                     text: att.is_loading ? "Baixando..." : (att.size_str != "" ? ("Baixar Imagem (" + att.size_str + ")") : "Baixar Imagem");
-                                                    color: #ffffff;
+                                                    color: AppTheme.text-on-accent;
                                                     font-size: 13px;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
@@ -1014,13 +1014,13 @@ component ChatMessagesView inherits Rectangle {
                                     source: @image-url("../assets/external-link.svg");
                                     width: 16px;
                                     height: 16px;
-                                    colorize: #949ba4;
+                                    colorize: AppTheme.text-muted;
                                 }
 
                                 Text {
                                     horizontal-stretch: 1;
                                     text: att.filename;
-                                    color: #58a6ff;
+                                    color: AppTheme.accent-link-hover;
                                     font-size: 13px;
                                     overflow: elide;
                                     vertical-alignment: center;
@@ -1028,7 +1028,7 @@ component ChatMessagesView inherits Rectangle {
 
                                 Text {
                                     text: att.size_str;
-                                    color: #949ba4;
+                                    color: AppTheme.text-muted;
                                     font-size: 11px;
                                     vertical-alignment: center;
                                 }
@@ -1046,7 +1046,7 @@ component ChatMessagesView inherits Rectangle {
                         padding-top: 4px;
                         for link in msg.links : Rectangle {
                             height: 24px;
-                            background: link_ta.has-hover ? #1e293b : transparent;
+                            background: link_ta.has-hover ? AppTheme.surface-reply : transparent;
                             border-radius: 4px;
                             HorizontalLayout {
                                 padding-left: 6px;
@@ -1059,13 +1059,13 @@ component ChatMessagesView inherits Rectangle {
                                         source: @image-url("../assets/external-link.svg");
                                         width: 12px;
                                         height: 12px;
-                                        colorize: link_ta.has-hover ? #58a6ff : #00a8fc;
+                                        colorize: link_ta.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                         image-fit: contain;
                                     }
                                 }
                                 Text {
                                     text: link.label;
-                                    color: link_ta.has-hover ? #58a6ff : #00a8fc;
+                                    color: link_ta.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                     vertical-alignment: center;
                                     font-size: 12.5px;
                                     font-weight: 500;
@@ -1095,6 +1095,13 @@ export component AppWindow inherits Window {
     min-height: 480px;
     background: AppTheme.surface-window;
     default-font-family: "Segoe UI, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+
+    // Public bridge for the backend/settings layer. Theme persistence and the
+    // visible selector can bind to this property without knowing token details.
+    in-out property <bool> use-light-theme: false;
+    changed use-light-theme => {
+        AppTheme.mode = use-light-theme ? ThemeMode.light : ThemeMode.dark;
+    }
 
     // Callbacks to Rust backend
     callback drag_window();
@@ -1469,7 +1476,7 @@ export component AppWindow inherits Window {
                                 source: @image-url("../assets/app_icon.png");
                                 width: 16px;
                                 height: 16px;
-                                colorize: #ffffff;
+                                colorize: AppTheme.text-strong;
                                 image-fit: contain;
                             }
                         }
@@ -1478,7 +1485,7 @@ export component AppWindow inherits Window {
                             alignment: center;
                             Text {
                                 text: "LITECORD";
-                                color: #ffffff;
+                                color: AppTheme.text-strong;
                                 font-weight: 800;
                                 font-size: 13px;
                             }
@@ -1489,7 +1496,7 @@ export component AppWindow inherits Window {
                             alignment: center;
                             Text {
                                 text: root.app_version;
-                                color: #949ba4;
+                                color: AppTheme.text-muted;
                                 font-weight: 600;
                                 font-size: 11px;
                             }
@@ -1502,13 +1509,13 @@ export component AppWindow inherits Window {
                                 spacing: 4px;
                                 Text {
                                     text: "-";
-                                    color: #f23f43;
+                                    color: AppTheme.danger;
                                     font-weight: 700;
                                     font-size: 11px;
                                 }
                                 Text {
                                     text: root.titlebar_error;
-                                    color: #f23f43;
+                                    color: AppTheme.danger;
                                     font-weight: 600;
                                     font-size: 11px;
                                 }
@@ -1539,7 +1546,7 @@ export component AppWindow inherits Window {
                         // CPU
                         Text {
                             text: root.hardware_cpu_text;
-                            color: root.hardware_cpu_val > 85 ? #f23f43 : #949ba4;
+                            color: root.hardware_cpu_val > 85 ? AppTheme.danger : AppTheme.text-muted;
                             font-size: 11px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -1547,7 +1554,7 @@ export component AppWindow inherits Window {
 
                         Text {
                             text: "•";
-                            color: #4e5058;
+                            color: AppTheme.surface-control;
                             font-size: 10px;
                             vertical-alignment: center;
                         }
@@ -1555,7 +1562,7 @@ export component AppWindow inherits Window {
                         // RAM
                         Text {
                             text: root.hardware_ram_text;
-                            color: root.hardware_ram_val > 500 ? #f23f43 : #949ba4;
+                            color: root.hardware_ram_val > 500 ? AppTheme.danger : AppTheme.text-muted;
                             font-size: 11px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -1563,7 +1570,7 @@ export component AppWindow inherits Window {
 
                         Text {
                             text: "•";
-                            color: #4e5058;
+                            color: AppTheme.surface-control;
                             font-size: 10px;
                             vertical-alignment: center;
                         }
@@ -1571,7 +1578,7 @@ export component AppWindow inherits Window {
                         // GPU
                         Text {
                             text: root.hardware_gpu_text;
-                            color: root.hardware_gpu_val > 90 ? #f23f43 : #949ba4;
+                            color: root.hardware_gpu_val > 90 ? AppTheme.danger : AppTheme.text-muted;
                             font-size: 11px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -1583,7 +1590,7 @@ export component AppWindow inherits Window {
                 Rectangle {
                     width: 38px;
                     height: 32px;
-                    background: sett_title_touch.has-hover ? #2b2d31 : transparent;
+                    background: sett_title_touch.has-hover ? AppTheme.surface-sidebar : transparent;
 
                     VerticalLayout {
                         alignment: center;
@@ -1593,7 +1600,7 @@ export component AppWindow inherits Window {
                                 source: @image-url("../assets/settings.svg");
                                 width: 14px;
                                 height: 14px;
-                                colorize: sett_title_touch.has-hover ? #ffffff : #949ba4;
+                                colorize: sett_title_touch.has-hover ? AppTheme.text-strong : AppTheme.text-muted;
                                 image-fit: contain;
                             }
                         }
@@ -1609,7 +1616,7 @@ export component AppWindow inherits Window {
                 Rectangle {
                     width: 46px;
                     height: 32px;
-                    background: min-touch.has-hover ? #2b2d31 : transparent;
+                    background: min-touch.has-hover ? AppTheme.surface-sidebar : transparent;
 
                     VerticalLayout {
                         alignment: center;
@@ -1619,7 +1626,7 @@ export component AppWindow inherits Window {
                                 source: @image-url("../assets/chrome-minimize.svg");
                                 width: 10px;
                                 height: 10px;
-                                colorize: #dbdee1;
+                                colorize: AppTheme.text-primary;
                                 image-fit: contain;
                             }
                         }
@@ -1634,7 +1641,7 @@ export component AppWindow inherits Window {
                 Rectangle {
                     width: 46px;
                     height: 32px;
-                    background: max-touch.has-hover ? #2b2d31 : transparent;
+                    background: max-touch.has-hover ? AppTheme.surface-sidebar : transparent;
 
                     VerticalLayout {
                         alignment: center;
@@ -1644,7 +1651,7 @@ export component AppWindow inherits Window {
                                 source: root.is_maximized ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
                                 width: 10px;
                                 height: 10px;
-                                colorize: #dbdee1;
+                                colorize: AppTheme.text-primary;
                                 image-fit: contain;
                             }
                         }
@@ -1659,7 +1666,7 @@ export component AppWindow inherits Window {
                 Rectangle {
                     width: 46px;
                     height: 32px;
-                    background: close-touch.has-hover ? #f23f43 : transparent;
+                    background: close-touch.has-hover ? AppTheme.danger : transparent;
 
                     VerticalLayout {
                         alignment: center;
@@ -2223,7 +2230,7 @@ export component AppWindow inherits Window {
                                                 width: 20px;
                                                 height: 20px;
                                                 border-radius: 10px;
-                                                background: AppTheme.accent;
+                                                background: AppTheme.accent-bright;
 
                                                 Text {
                                                     text: "\{channel.voice_count}";
@@ -2255,7 +2262,7 @@ export component AppWindow inherits Window {
                     // Active Voice Channel Banner
                     if root.is_in_voice: Rectangle {
                         height: 44px;
-                        background: root.is_voice_connecting ? #d97706 : #2563eb;
+                        background: root.is_voice_connecting ? AppTheme.warning-strong : AppTheme.accent;
                         border-radius: 6px;
 
                         HorizontalLayout {
@@ -2269,7 +2276,7 @@ export component AppWindow inherits Window {
                                     source: @image-url("../assets/speaker.svg");
                                     width: 14px;
                                     height: 14px;
-                                    colorize: #ffffff;
+                                    colorize: AppTheme.text-on-accent;
                                     image-fit: contain;
                                 }
                             }
@@ -2279,14 +2286,14 @@ export component AppWindow inherits Window {
                                 spacing: 1px;
                                 Text {
                                     text: root.is_voice_connecting ? root.tr_voice_connecting : root.tr_voice_connected;
-                                    color: #ffffff;
+                                    color: AppTheme.text-on-accent;
                                     font-size: 11px;
                                     font-weight: 800;
                                     overflow: elide;
                                 }
                                 Text {
                                     text: root.current_voice_channel;
-                                    color: #f1f5f9;
+                                    color: AppTheme.text-on-status;
                                     font-size: 10px;
                                     font-weight: 500;
                                     overflow: elide;
@@ -2301,8 +2308,8 @@ export component AppWindow inherits Window {
                                     height: 28px;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: btn_leave_sidebar_ta.has-hover ? #ffffff : #ffffffcc;
-                                    background: btn_leave_sidebar_ta.pressed ? #991b1b : (btn_leave_sidebar_ta.has-hover ? #dc2626 : #0000002b);
+                                    border-color: btn_leave_sidebar_ta.has-hover ? AppTheme.text-on-accent : AppTheme.border-on-accent-muted;
+                                    background: btn_leave_sidebar_ta.pressed ? AppTheme.danger-pressed : (btn_leave_sidebar_ta.has-hover ? AppTheme.danger-bright : AppTheme.surface-translucent);
                                     animate background { duration: 120ms; }
                                     animate border-color { duration: 120ms; }
 
@@ -2318,14 +2325,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/log-out.svg");
                                                 width: 13px;
                                                 height: 13px;
-                                                colorize: #ffffff;
+                                                colorize: AppTheme.text-on-accent;
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.tr_leave;
-                                            color: #ffffff;
+                                            color: AppTheme.text-on-accent;
                                             font-size: 11px;
                                             font-weight: 700;
                                             vertical-alignment: center;
@@ -2344,7 +2351,7 @@ export component AppWindow inherits Window {
                     // User Footer in Channels bar
                     Rectangle {
                         height: 58px;
-                        background: #232428;
+                        background: AppTheme.surface-elevated;
                         border-radius: 6px;
 
                         VerticalBox {
@@ -2355,7 +2362,7 @@ export component AppWindow inherits Window {
                             spacing: 2px;
 
                             Rectangle {
-                                background: user_tag_touch.has-hover ? #35373c : transparent;
+                                background: user_tag_touch.has-hover ? AppTheme.interactive-hover : transparent;
                                 border-radius: 4px;
                                 height: 20px;
 
@@ -2366,7 +2373,7 @@ export component AppWindow inherits Window {
 
                                     Text {
                                         text: root.user_tag;
-                                        color: user_tag_touch.has-hover ? #2563eb : #f2f3f5;
+                                        color: user_tag_touch.has-hover ? AppTheme.accent : AppTheme.text-strong;
                                         font-size: 12px;
                                         font-weight: 700;
                                         vertical-alignment: center;
@@ -2387,13 +2394,13 @@ export component AppWindow inherits Window {
 
                                 IconButton {
                                     icon: root.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
-                                    icon-color: root.is_muted ? #f23f43 : #dbdee1;
+                                    icon-color: root.is_muted ? AppTheme.danger : AppTheme.text-primary;
                                     clicked => { root.toggle_mute(); }
                                 }
 
                                 IconButton {
                                     icon: root.is_deafened ? @image-url("../assets/headphones-mute.svg") : @image-url("../assets/headphones.svg");
-                                    icon-color: root.is_deafened ? #f23f43 : #dbdee1;
+                                    icon-color: root.is_deafened ? AppTheme.danger : AppTheme.text-primary;
                                     clicked => { root.toggle_deafen(); }
                                 }
 
@@ -2409,7 +2416,7 @@ export component AppWindow inherits Window {
 
             // 3. Main Content View (Text Chat OR Voice Room View)
             Rectangle {
-                background: #2b2d31;
+                background: AppTheme.surface-sidebar;
                 horizontal-stretch: 1;
 
                 if root.is_voice_focused && root.is_in_voice: VerticalBox {
@@ -3604,7 +3611,7 @@ export component AppWindow inherits Window {
                                 Rectangle {
                                     height: 32px;
                                     border-radius: 4px;
-                                    background: btn_vroom_ta.pressed ? #1d4ed8 : (btn_vroom_ta.has-hover ? #2563eb : #383a40);
+                                    background: btn_vroom_ta.pressed ? AppTheme.accent-hover : (btn_vroom_ta.has-hover ? AppTheme.accent : AppTheme.interactive-muted);
                                     animate background { duration: 120ms; }
 
                                     HorizontalLayout {
@@ -3619,7 +3626,7 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/speaker.svg");
                                                 width: 15px;
                                                 height: 15px;
-                                                colorize: #ffffff;
+                                                colorize: AppTheme.text-on-accent;
                                                 image-fit: contain;
                                             }
                                         }
@@ -3628,7 +3635,7 @@ export component AppWindow inherits Window {
                                             alignment: center;
                                             Text {
                                                 text: root.tr_view_voice_room;
-                                                color: #ffffff;
+                                                color: AppTheme.text-on-accent;
                                                 font-size: 13px;
                                                 font-weight: 600;
                                                 vertical-alignment: center;
@@ -3675,13 +3682,13 @@ export component AppWindow inherits Window {
                     // Smart Slash Command Autocomplete / Suggestions Box (Discord Style)
                     if root.show_command_suggestions : Rectangle {
                         height: Math.min(220px, (root.command_suggestions.length * 44 + 36) * 1px);
-                        background: #2b2d31;
+                        background: AppTheme.surface-sidebar;
                         border-top-left-radius: 8px;
                         border-top-right-radius: 8px;
                         border-width: 1px;
-                        border-color: #383a40;
+                        border-color: AppTheme.border-subtle;
                         drop-shadow-blur: 10px;
-                        drop-shadow-color: #00000066;
+                        drop-shadow-color: AppTheme.surface-scrim;
 
                         VerticalLayout {
                             padding: 8px;
@@ -3698,13 +3705,13 @@ export component AppWindow inherits Window {
                                         source: @image-url("../assets/terminal.svg");
                                         width: 13px;
                                         height: 13px;
-                                        colorize: #2563eb;
+                                        colorize: AppTheme.accent;
                                         image-fit: contain;
                                     }
                                 }
                                 Text {
                                     text: "COMANDOS INTELIGENTES DO DISCORD";
-                                    color: #949ba4;
+                                    color: AppTheme.text-muted;
                                     font-size: 10px;
                                     font-weight: 700;
                                     vertical-alignment: center;
@@ -3712,7 +3719,7 @@ export component AppWindow inherits Window {
                                 Rectangle { horizontal-stretch: 1; }
                                 Text {
                                     text: "Clique para autocompletar";
-                                    color: #2563eb;
+                                    color: AppTheme.accent;
                                     font-size: 10px;
                                     vertical-alignment: center;
                                 }
@@ -3724,10 +3731,10 @@ export component AppWindow inherits Window {
                                     spacing: 3px;
                                     for cmd[idx] in root.command_suggestions: Rectangle {
                                         height: 38px;
-                                        background: (idx == root.active_suggestion_index || cmd_sug_ta.has-hover) ? #35373c : #1e1f22;
+                                        background: (idx == root.active_suggestion_index || cmd_sug_ta.has-hover) ? AppTheme.interactive-hover : AppTheme.surface-input;
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: (idx == root.active_suggestion_index) ? #2563eb : (cmd_sug_ta.has-hover ? #3b82f688 : transparent);
+                                        border-color: (idx == root.active_suggestion_index) ? AppTheme.accent : (cmd_sug_ta.has-hover ? AppTheme.accent-border-muted : transparent);
 
                                          HorizontalLayout {
                                             padding-left: 10px;
@@ -3740,7 +3747,7 @@ export component AppWindow inherits Window {
                                                     source: @image-url("../assets/terminal.svg");
                                                     width: 14px;
                                                     height: 14px;
-                                                    colorize: (idx == root.active_suggestion_index) ? #58a6ff : #80848e;
+                                                    colorize: (idx == root.active_suggestion_index) ? AppTheme.accent-link-hover : AppTheme.text-subtle;
                                                     image-fit: contain;
                                                 }
                                             }
@@ -3749,7 +3756,7 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Text {
                                                     text: cmd.name;
-                                                    color: (idx == root.active_suggestion_index) ? #ffffff : #58a6ff;
+                                                    color: (idx == root.active_suggestion_index) ? AppTheme.text-strong : AppTheme.accent-link-hover;
                                                     font-size: 13px;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
@@ -3761,17 +3768,17 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Rectangle {
                                                     height: 18px;
-                                                    background: (idx == root.active_suggestion_index) ? #3b82f655 : #3b82f622;
+                                                    background: (idx == root.active_suggestion_index) ? AppTheme.accent-selected : AppTheme.accent-subtle;
                                                     border-radius: 3px;
                                                     border-width: 1px;
-                                                    border-color: (idx == root.active_suggestion_index) ? #3b82f6aa : #3b82f655;
+                                                    border-color: (idx == root.active_suggestion_index) ? AppTheme.accent-border-strong : AppTheme.accent-selected;
                                                     HorizontalLayout {
                                                         padding-left: 5px;
                                                         padding-right: 5px;
                                                         alignment: center;
                                                         Text {
                                                             text: cmd.app_name;
-                                                            color: (idx == root.active_suggestion_index) ? #ffffff : #93c5fd;
+                                                            color: (idx == root.active_suggestion_index) ? AppTheme.text-strong : AppTheme.accent-soft;
                                                             font-size: 10px;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
@@ -3784,7 +3791,7 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Text {
                                                     text: cmd.desc;
-                                                    color: (idx == root.active_suggestion_index) ? #dbdee1 : #949ba4;
+                                                    color: (idx == root.active_suggestion_index) ? AppTheme.text-primary : AppTheme.text-muted;
                                                     font-size: 11.5px;
                                                     vertical-alignment: center;
                                                     overflow: elide;
@@ -3797,7 +3804,7 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 Text {
                                                     text: cmd.usage;
-                                                    color: (idx == root.active_suggestion_index) ? #949ba4 : #636b75;
+                                                    color: (idx == root.active_suggestion_index) ? AppTheme.text-muted : AppTheme.text-faint;
                                                     font-size: 10.5px;
                                                     font-family: "Courier New";
                                                     vertical-alignment: center;
@@ -3832,10 +3839,10 @@ export component AppWindow inherits Window {
 
                                 // Command Pill (e.g. /play or /247)
                                 Rectangle {
-                                    background: #3b82f633;
+                                    background: AppTheme.accent-subtle;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: #2563eb;
+                                    border-color: AppTheme.accent;
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -3848,14 +3855,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/terminal.svg");
                                                 width: 12px;
                                                 height: 12px;
-                                                colorize: #58a6ff;
+                                                colorize: AppTheme.accent-link-hover;
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.active_command_name;
-                                            color: #58a6ff;
+                                            color: AppTheme.accent-link-hover;
                                             font-size: 13px;
                                             font-weight: 700;
                                             vertical-alignment: center;
@@ -3867,7 +3874,7 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/x.svg");
                                                 width: 10px;
                                                 height: 10px;
-                                                colorize: close_cmd_ta.has-hover ? #ffffff : #949ba4;
+                                                colorize: close_cmd_ta.has-hover ? AppTheme.text-strong : AppTheme.text-muted;
                                                 image-fit: contain;
                                             }
                                         }
@@ -3883,10 +3890,10 @@ export component AppWindow inherits Window {
 
                                 // Parameter Pill (e.g. [query] or [song] or [volume])
                                 if root.active_param_name != "" : Rectangle {
-                                    background: #232428;
+                                    background: AppTheme.surface-elevated;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: #3f4147;
+                                    border-color: AppTheme.separator;
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -3899,14 +3906,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/param.svg");
                                                 width: 11px;
                                                 height: 11px;
-                                                colorize: #2563eb;
+                                                colorize: AppTheme.accent;
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.active_param_name + ":";
-                                            color: #2563eb;
+                                            color: AppTheme.accent;
                                             font-size: 12px;
                                             font-weight: 700;
                                             vertical-alignment: center;

@@ -16,6 +16,14 @@ export global AppTheme {
     out property <color> surface-chat: mode == ThemeMode.dark ? #313338 : #ffffff;
     out property <color> surface-input: mode == ThemeMode.dark ? #1e1f22 : #ebedef;
     out property <color> surface-elevated: mode == ThemeMode.dark ? #232428 : #f2f3f5;
+    out property <color> surface-reply: mode == ThemeMode.dark ? #1e293b : #e8f0fe;
+    out property <color> surface-disabled: mode == ThemeMode.dark ? #2b2d31 : #e3e5e8;
+    out property <color> surface-control: mode == ThemeMode.dark ? #4e5058 : #c4c7cc;
+    out property <color> surface-control-hover: mode == ThemeMode.dark ? #3b3e45 : #b5b8be;
+    out property <color> surface-backdrop: #00000077;
+    out property <color> surface-scrim: #00000066;
+    out property <color> surface-overlay: mode == ThemeMode.dark ? #1e1f22ee : #fffffff2;
+    out property <color> surface-translucent: mode == ThemeMode.dark ? #0000002b : #00000018;
 
     // Interaction surfaces
     out property <color> interactive-hover: mode == ThemeMode.dark ? #35373c : #dfe1e5;
@@ -28,18 +36,35 @@ export global AppTheme {
     out property <color> text-secondary: mode == ThemeMode.dark ? #b5bac1 : #4e5058;
     out property <color> text-muted: mode == ThemeMode.dark ? #949ba4 : #5c5e66;
     out property <color> text-subtle: mode == ThemeMode.dark ? #80848e : #6d6f78;
+    out property <color> text-faint: mode == ThemeMode.dark ? #636b75 : #74767f;
+    out property <color> text-embed: mode == ThemeMode.dark ? #d2d5d9 : #3f4147;
+    out property <color> text-reply: mode == ThemeMode.dark ? #94a3b8 : #526173;
     out property <color> text-on-accent: #ffffff;
+    out property <color> text-on-status: #f1f5f9;
 
     // Borders and separators
     out property <color> border-subtle: mode == ThemeMode.dark ? #383a40 : #d1d3d7;
     out property <color> separator: mode == ThemeMode.dark ? #3f4147 : #d1d3d7;
+    out property <color> border-on-accent-muted: #ffffffcc;
 
     // Brand and semantic states
     out property <color> accent: #2563eb;
     out property <color> accent-hover: #1d4ed8;
+    out property <color> accent-bright: #3b82f6;
+    out property <color> accent-link-hover: #58a6ff;
     out property <color> accent-soft: mode == ThemeMode.dark ? #93c5fd : #1d4ed8;
+    out property <color> accent-subtle: mode == ThemeMode.dark ? #3b82f633 : #2563eb22;
+    out property <color> accent-selected: mode == ThemeMode.dark ? #3b82f655 : #2563eb2b;
+    out property <color> accent-border-muted: mode == ThemeMode.dark ? #3b82f688 : #2563eb66;
+    out property <color> accent-border-strong: mode == ThemeMode.dark ? #3b82f6aa : #2563eb99;
     out property <color> link: mode == ThemeMode.dark ? #00a8fc : #006ce7;
     out property <color> success: #23a55a;
+    out property <color> success-hover: #1f8b4c;
     out property <color> warning: #f0b232;
+    out property <color> warning-strong: #d97706;
     out property <color> danger: #f23f43;
+    out property <color> danger-action: #da373c;
+    out property <color> danger-action-hover: #c0353b;
+    out property <color> danger-bright: #dc2626;
+    out property <color> danger-pressed: #991b1b;
 }
