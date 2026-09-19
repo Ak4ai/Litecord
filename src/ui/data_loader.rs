@@ -193,6 +193,32 @@ pub async fn fetch_and_populate_channels(
     match http.get_guild_channels(guild_id).await {
         Ok(chans_json) => {
             info!("{} canais encontrados no servidor!", chans_json.len());
+            let permissions = match http.get_channel_permissions(guild_id).await {
+                Ok(permissions) => permissions,
+                Err(err) => {
+                    error!("Não foi possível verificar permissões do servidor: {}", err);
+                    *active_channel_id.lock().unwrap() = String::new();
+                    if let Some(guild) = guilds_map.lock().unwrap().get_mut(guild_id) {
+                        guild.channels.clear();
+                    }
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_weak.upgrade() {
+                            ui.set_channels(slint::ModelRc::default());
+                            ui.set_messages(slint::ModelRc::default());
+                            ui.set_active_channel_id("".into());
+                            ui.set_active_channel_name("Permissões indisponíveis".into());
+                            ui.set_titlebar_error("Falha ao verificar permissões. Selecione o servidor novamente para tentar.".into());
+                        }
+                    });
+                    return;
+                }
+            };
+            let app_w_permissions = app_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_permissions.upgrade() {
+                    ui.set_titlebar_error("".into());
+                }
+            });
 
             pub struct RawChan {
                 id: String,
@@ -223,6 +249,14 @@ pub async fn fetch_and_populate_channels(
                         position,
                     });
                 } else if ch_type == 0 || ch_type == 2 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
+                    match permissions.can_view(&ch) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(err) => {
+                            error!("Canal {} omitido: {}", ch_id, err);
+                            continue;
+                        }
+                    }
                     raw_chans.push(RawChan {
                         id: ch_id,
                         name: ch_name,
@@ -285,6 +319,7 @@ pub async fn fetch_and_populate_channels(
             for cat in raw_cats {
                 let cat_id = cat.id.clone();
                 let children = cat_map.remove(&cat_id).unwrap_or_default();
+                if children.is_empty() { continue; }
 
                 channels_data.push(ChannelData {
                     id: cat.id,

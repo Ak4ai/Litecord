@@ -78,6 +78,25 @@ impl DiscordHttpClient {
         }
     }
 
+    pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
+        let user = self.get_current_user().await?;
+        let user_id = user["id"].as_str().ok_or("Missing current user id")?;
+        let guild_url = format!("https://discord.com/api/v10/guilds/{}", guild_id);
+        let member_url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
+        let (guild, member) = tokio::try_join!(
+            self.get_permission_data(&guild_url), self.get_permission_data(&member_url)
+        )?;
+        crate::channel_permissions::ChannelPermissions::new(&guild, &member, user_id)
+    }
+
+    async fn get_permission_data(&self, url: &str) -> Result<serde_json::Value, String> {
+        let response = self.client.get(url).send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("Permission lookup HTTP {}", response.status()));
+        }
+        response.json().await.map_err(|e| e.to_string())
+    }
+
     pub async fn get_channel_messages(&self, channel_id: &str) -> Result<Vec<serde_json::Value>, String> {
         let url = format!("https://discord.com/api/v10/channels/{}/messages?limit=30", channel_id);
         match self.client.get(&url).send().await {
