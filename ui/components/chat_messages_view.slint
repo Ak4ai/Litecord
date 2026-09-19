@@ -145,6 +145,7 @@ export component ChatMessagesView inherits Rectangle {
                     }
 
                     older_btn_touch := TouchArea {
+                        mouse-cursor: pointer;
                         enabled: !root.is_loading_older_messages;
                         clicked => { root.load_older_messages(); }
                     }

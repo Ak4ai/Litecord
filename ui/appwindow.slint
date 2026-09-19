@@ -619,6 +619,7 @@ export component AppWindow inherits Window {
                     }
 
                     min-touch := TouchArea {
+                        mouse-cursor: pointer;
                         clicked => { root.minimize_window(); }
                     }
                 }
@@ -644,6 +645,7 @@ export component AppWindow inherits Window {
                     }
 
                     max-touch := TouchArea {
+                        mouse-cursor: pointer;
                         clicked => { root.maximize_window(); }
                     }
                 }
@@ -669,6 +671,7 @@ export component AppWindow inherits Window {
                     }
 
                     close-touch := TouchArea {
+                        mouse-cursor: pointer;
                         clicked => { root.close_window(); }
                     }
                 }
@@ -2182,6 +2185,7 @@ export component AppWindow inherits Window {
                                                                       }
 
                                                                       prio_dec_ta := TouchArea {
+                                                                          mouse-cursor: pointer;
                                                                           clicked => {
                                                                               if p.priority > 0 {
                                                                                   root.set_user_priority(p.user_id, p.priority - 1);
@@ -2221,6 +2225,7 @@ export component AppWindow inherits Window {
                                                                       }
 
                                                                       prio_inc_ta := TouchArea {
+                                                                          mouse-cursor: pointer;
                                                                           clicked => {
                                                                               if p.priority < 3 {
                                                                                   root.set_user_priority(p.user_id, p.priority + 1);
@@ -2798,6 +2803,7 @@ export component AppWindow inherits Window {
         height: 100%;
 
         TouchArea {
+            mouse-cursor: pointer;
             clicked => { root.show_user_menu = false; }
         }
 
@@ -2851,6 +2857,7 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 close_menu_touch := TouchArea {
+                                    mouse-cursor: pointer;
                                     clicked => { root.show_user_menu = false; }
                                 }
                             }
@@ -3044,6 +3051,7 @@ export component AppWindow inherits Window {
                             }
 
                             add_acc_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => {
                                     root.show_user_menu = false;
                                     root.add_new_account();
@@ -3094,6 +3102,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 logout_btn_touch := TouchArea {
+                                    mouse-cursor: pointer;
                                     clicked => {
                                         root.show_user_menu = false;
                                         root.logout();
@@ -3343,6 +3352,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 ignore_touch := TouchArea {
+                                    mouse-cursor: pointer;
                                     clicked => { root.update_app_ignore(); }
                                 }
                             }
@@ -3366,6 +3376,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 dismiss_touch := TouchArea {
+                                    mouse-cursor: pointer;
                                     clicked => { root.update_app_dismiss(); }
                                 }
                             }
@@ -3390,6 +3401,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 accept_touch := TouchArea {
+                                    mouse-cursor: pointer;
                                     clicked => { root.update_app_accept(); }
                                 }
                             }
@@ -3410,6 +3422,7 @@ export component AppWindow inherits Window {
 
         // Dismiss when clicking outer backdrop
         TouchArea {
+            mouse-cursor: pointer;
             clicked => { root.show_stream_modal = false; }
         }
 

@@ -20,6 +20,7 @@ export component IconButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 }

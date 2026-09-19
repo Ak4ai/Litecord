@@ -1,4 +1,4 @@
-import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 import { AppTheme } from "../theme.slint";
 import { IconButton } from "icon_button.slint";
 
@@ -64,7 +64,10 @@ export component ChannelSidebar inherits Rectangle {
         Rectangle {
             vertical-stretch: 1;
 
-            Flickable {
+            ScrollView {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.visible-width;
                 VerticalLayout {
                     padding: 0px;
                     spacing: 4px;
@@ -199,6 +202,7 @@ export component ChannelSidebar inherits Rectangle {
                         }
 
                         touch_area := TouchArea {
+                            mouse-cursor: pointer;
                             clicked => {
                                 if channel.is_category {
                                     root.toggle_category(channel.id);
@@ -336,6 +340,7 @@ export component ChannelSidebar inherits Rectangle {
                     }
 
                     user_tag_touch := TouchArea {
+                        mouse-cursor: pointer;
                         clicked => {
                             root.toggle_user_menu();
                         }

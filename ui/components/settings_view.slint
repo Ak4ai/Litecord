@@ -104,6 +104,7 @@ export component SettingsView inherits Rectangle {
 
     // Dismiss modal and stop test loopback on clicking outside backdrop
     TouchArea {
+        mouse-cursor: pointer;
         clicked => {
             root.close_settings();
         }
@@ -264,6 +265,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab0_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 0; }
                             }
                         }
@@ -311,6 +313,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab1_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 1; }
                             }
                         }
@@ -358,6 +361,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab2_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 2; }
                             }
                         }
@@ -405,6 +409,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab5_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 5; }
                             }
                         }
@@ -452,6 +457,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab3_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 3; }
                             }
                         }
@@ -499,6 +505,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab6_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 6; }
                             }
                         }
@@ -546,6 +553,7 @@ export component SettingsView inherits Rectangle {
                             }
 
                             tab4_touch := TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => { root.settings_active_tab = 4; }
                             }
                         }
@@ -1493,6 +1501,7 @@ export component SettingsView inherits Rectangle {
                                                         }
 
                                                         TouchArea {
+                                                            mouse-cursor: pointer;
                                                             clicked => { root.change_language(lang.code); }
                                                         }
                                                     }
@@ -1676,6 +1685,7 @@ export component SettingsView inherits Rectangle {
                                                     }
 
                                                     btn_rec_mute_touch := TouchArea {
+                                                        mouse-cursor: pointer;
                                                         clicked => {
                                                             if root.recording_keybind_for == 1 {
                                                                 root.start_recording_keybind(0);
@@ -1705,6 +1715,7 @@ export component SettingsView inherits Rectangle {
                                                     }
 
                                                     btn_clear_mute_touch := TouchArea {
+                                                        mouse-cursor: pointer;
                                                         clicked => { root.reset_keybind(1); }
                                                     }
                                                 }
@@ -1844,6 +1855,7 @@ export component SettingsView inherits Rectangle {
                                                     }
 
                                                     btn_rec_deaf_touch := TouchArea {
+                                                        mouse-cursor: pointer;
                                                         clicked => {
                                                             if root.recording_keybind_for == 2 {
                                                                 root.start_recording_keybind(0);
@@ -1873,6 +1885,7 @@ export component SettingsView inherits Rectangle {
                                                     }
 
                                                     btn_clear_deaf_touch := TouchArea {
+                                                        mouse-cursor: pointer;
                                                         clicked => { root.reset_keybind(2); }
                                                     }
                                                 }
