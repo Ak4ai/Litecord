@@ -1,0 +1,369 @@
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { AppTheme } from "../theme.slint";
+import { IconButton } from "icon_button.slint";
+
+export struct ChannelItem {
+    id: string,
+    name: string,
+    is_voice: bool,
+    voice_count: int,
+    is_category: bool,
+    has_parent: bool,
+    is_collapsed: bool,
+    has_separator: bool,
+}
+
+
+export component ChannelSidebar inherits Rectangle {
+    in property <string> active_guild_name;
+    in property <string> tr_server_channels;
+    in property <[ChannelItem]> channels;
+    in-out property <string> active_channel_id;
+    in property <bool> is_in_voice;
+    in property <bool> is_voice_connecting;
+    in property <bool> is_muted;
+    in property <bool> is_deafened;
+    in property <string> tr_voice_connecting;
+    in property <string> tr_voice_connected;
+    in property <string> current_voice_channel;
+    in property <string> tr_leave;
+    in property <string> user_tag;
+    callback select_channel(string);
+    callback toggle_category(string);
+    callback leave_voice();
+    callback toggle_user_menu();
+    callback toggle_mute();
+    callback toggle_deafen();
+    callback open_settings();
+
+    width: 230px;
+    background: AppTheme.surface-sidebar;
+    border-top-left-radius: 8px;
+    clip: true;
+
+    VerticalBox {
+        padding: 8px;
+        spacing: 6px;
+
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            padding-top: 2px;
+            padding-bottom: 2px;
+
+            Text {
+                text: root.active_guild_name != "" ? root.active_guild_name : root.tr_server_channels;
+                color: AppTheme.text-strong;
+                font-size: 14px;
+                font-weight: 700;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            Flickable {
+                VerticalLayout {
+                    padding: 0px;
+                    spacing: 4px;
+                    alignment: start;
+
+                    for channel in root.channels: Rectangle {
+                        height: channel.is_category ? (channel.has_separator ? 36px : 26px) : 34px;
+                        background: channel.is_category
+                            ? transparent
+                            : (channel.id == root.active_channel_id
+                                ? AppTheme.interactive-selected
+                                : (touch_area.has_hover ? AppTheme.interactive-hover : transparent));
+                        border-radius: 4px;
+                        animate background { duration: 120ms; }
+
+                        // Category rendering
+                        if channel.is_category : VerticalLayout {
+                            padding-top: channel.has_separator ? 6px : 0px;
+                            padding-bottom: 2px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            // Sleek rounded separator only from the 2nd category onwards
+                            if channel.has_separator : HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 170px;
+                                    height: 2px;
+                                    border-radius: 1px;
+                                    background: AppTheme.separator;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 8px;
+                                spacing: 6px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 14px;
+                                    Image {
+                                        source: channel.is_collapsed ? @image-url("../../assets/chevron-right.svg") : @image-url("../../assets/chevron-down.svg");
+                                        width: 11px;
+                                        height: 11px;
+                                        colorize: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
+                                        image-fit: contain;
+                                        animate colorize { duration: 120ms; }
+                                    }
+                                }
+
+                                Text {
+                                    text: channel.name;
+                                    color: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
+                                    font-size: 11px;
+                                    font-weight: 800;
+                                    horizontal-alignment: left;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    animate color { duration: 120ms; }
+                                }
+                            }
+                        }
+
+                        // Channel rendering (Text and Voice)
+                        if !channel.is_category : HorizontalLayout {
+                            padding-left: channel.has_parent ? 18px : 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+
+                            // Voice channel icon: speaker
+                            if channel.is_voice : VerticalLayout {
+                                alignment: center;
+                                width: 14px;
+                                Image {
+                                    source: @image-url("../../assets/speaker.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                    colorize: (channel.id == root.active_channel_id) ? AppTheme.accent-soft : AppTheme.accent;
+                                    image-fit: contain;
+                                }
+                            }
+
+                            // Text channel icon: '#'
+                            if !channel.is_voice : VerticalLayout {
+                                alignment: center;
+                                width: 14px;
+                                Text {
+                                    text: "#";
+                                    color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.accent-soft : AppTheme.text-subtle);
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    animate color { duration: 120ms; }
+                                }
+                            }
+
+                            // Channel Name
+                            Text {
+                                text: channel.name;
+                                color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.text-strong : AppTheme.text-primary);
+                                font-size: 13px;
+                                font-weight: 600;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                animate color { duration: 120ms; }
+                            }
+
+                            // Voice user count badge (Perfect round circle in blue)
+                            if channel.is_voice && channel.voice_count > 0 : VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 20px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: AppTheme.accent-bright;
+
+                                    Text {
+                                        text: "\{channel.voice_count}";
+                                        color: AppTheme.text-on-accent;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        touch_area := TouchArea {
+                            clicked => {
+                                if channel.is_category {
+                                    root.toggle_category(channel.id);
+                                } else {
+                                    root.active_channel_id = channel.id;
+                                    root.select_channel(channel.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Active Voice Channel Banner
+        if root.is_in_voice: Rectangle {
+            height: 44px;
+            background: root.is_voice_connecting ? AppTheme.warning-strong : AppTheme.accent;
+            border-radius: 6px;
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../../assets/speaker.svg");
+                        width: 14px;
+                        height: 14px;
+                        colorize: AppTheme.text-on-accent;
+                        image-fit: contain;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    Text {
+                        text: root.is_voice_connecting ? root.tr_voice_connecting : root.tr_voice_connected;
+                        color: AppTheme.text-on-accent;
+                        font-size: 11px;
+                        font-weight: 800;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.current_voice_channel;
+                        color: AppTheme.text-on-status;
+                        font-size: 10px;
+                        font-weight: 500;
+                        overflow: elide;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 28px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: btn_leave_sidebar_ta.has-hover ? AppTheme.text-on-accent : AppTheme.border-on-accent-muted;
+                        background: btn_leave_sidebar_ta.pressed ? AppTheme.danger-pressed : (btn_leave_sidebar_ta.has-hover ? AppTheme.danger-bright : AppTheme.surface-translucent);
+                        animate background { duration: 120ms; }
+                        animate border-color { duration: 120ms; }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../../assets/log-out.svg");
+                                    width: 13px;
+                                    height: 13px;
+                                    colorize: AppTheme.text-on-accent;
+                                    image-fit: contain;
+                                }
+                            }
+
+                            Text {
+                                text: root.tr_leave;
+                                color: AppTheme.text-on-accent;
+                                font-size: 11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        btn_leave_sidebar_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.leave_voice(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // User Footer in Channels bar
+        Rectangle {
+            height: 58px;
+            background: AppTheme.surface-elevated;
+            border-radius: 6px;
+
+            VerticalBox {
+                padding-top: 4px;
+                padding-bottom: 6px;
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 2px;
+
+                Rectangle {
+                    background: user_tag_touch.has-hover ? AppTheme.interactive-hover : transparent;
+                    border-radius: 4px;
+                    height: 20px;
+
+                    HorizontalLayout {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        spacing: 4px;
+
+                        Text {
+                            text: root.user_tag;
+                            color: user_tag_touch.has-hover ? AppTheme.accent : AppTheme.text-strong;
+                            font-size: 12px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+
+                    user_tag_touch := TouchArea {
+                        clicked => {
+                            root.toggle_user_menu();
+                        }
+                    }
+                }
+
+                HorizontalBox {
+                    padding: 0px;
+                    spacing: 4px;
+
+                    IconButton {
+                        icon: root.is_muted ? @image-url("../../assets/microphone-mute.svg") : @image-url("../../assets/microphone.svg");
+                        icon-color: root.is_muted ? AppTheme.danger : AppTheme.text-primary;
+                        clicked => { root.toggle_mute(); }
+                    }
+
+                    IconButton {
+                        icon: root.is_deafened ? @image-url("../../assets/headphones-mute.svg") : @image-url("../../assets/headphones.svg");
+                        icon-color: root.is_deafened ? AppTheme.danger : AppTheme.text-primary;
+                        clicked => { root.toggle_deafen(); }
+                    }
+
+                    IconButton {
+                        icon: @image-url("../../assets/settings.svg");
+                        clicked => { root.open_settings(); }
+                    }
+                }
+            }
+        }
+    }
+}
