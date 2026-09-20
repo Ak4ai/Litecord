@@ -777,6 +777,9 @@ pub fn build_ui_channels(
                 name: ch.name.clone().into(),
                 is_voice: false,
                 voice_count: 0,
+                is_voice_member: false,
+                parent_channel_id: "".into(),
+                avatar_text: "".into(),
                 is_category: true,
                 has_parent: false,
                 is_collapsed,
@@ -788,17 +791,47 @@ pub fn build_ui_channels(
                     continue;
                 }
             }
-            let vcount = if ch.is_voice { gateway::get_voice_channel_participant_count(&ch.id) } else { 0 };
+            let voice_participants = if ch.is_voice {
+                gateway::get_voice_channel_participants(&ch.id)
+            } else {
+                Vec::new()
+            };
+            let vcount = voice_participants.len() as i32;
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
                 name: ch.name.clone().into(),
                 is_voice: ch.is_voice,
                 voice_count: vcount,
+                is_voice_member: false,
+                parent_channel_id: "".into(),
+                avatar_text: "".into(),
                 is_category: false,
                 has_parent: ch.parent_id.is_some(),
                 is_collapsed: false,
                 has_separator: false,
             });
+
+            for (user_id, name) in voice_participants {
+                let avatar_text: String = name
+                    .split_whitespace()
+                    .filter_map(|part| part.chars().next())
+                    .take(2)
+                    .flat_map(char::to_uppercase)
+                    .collect();
+                ui_channels.push(ChannelItem {
+                    id: format!("voice-member:{}:{}", ch.id, user_id).into(),
+                    name: name.into(),
+                    is_voice: false,
+                    voice_count: 0,
+                    is_voice_member: true,
+                    parent_channel_id: ch.id.clone().into(),
+                    avatar_text: avatar_text.into(),
+                    is_category: false,
+                    has_parent: ch.parent_id.is_some(),
+                    is_collapsed: false,
+                    has_separator: false,
+                });
+            }
         }
     }
     ui_channels

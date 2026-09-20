@@ -7,6 +7,9 @@ export struct ChannelItem {
     name: string,
     is_voice: bool,
     voice_count: int,
+    is_voice_member: bool,
+    parent_channel_id: string,
+    avatar_text: string,
     is_category: bool,
     has_parent: bool,
     is_collapsed: bool,
@@ -74,7 +77,7 @@ export component ChannelSidebar inherits Rectangle {
                     alignment: start;
 
                     for channel in root.channels: Rectangle {
-                        height: channel.is_category ? (channel.has_separator ? 36px : 26px) : 34px;
+                        height: channel.is_category ? (channel.has_separator ? 36px : 26px) : (channel.is_voice_member ? 26px : 34px);
                         background: channel.is_category
                             ? transparent
                             : (channel.id == root.active_channel_id
@@ -134,7 +137,7 @@ export component ChannelSidebar inherits Rectangle {
                         }
 
                         // Channel rendering (Text and Voice)
-                        if !channel.is_category : HorizontalLayout {
+                        if !channel.is_category && !channel.is_voice_member : HorizontalLayout {
                             padding-left: channel.has_parent ? 18px : 8px;
                             padding-right: 8px;
                             spacing: 6px;
@@ -201,14 +204,50 @@ export component ChannelSidebar inherits Rectangle {
                             }
                         }
 
+                        // Participants remain separate rows under their voice channel.
+                        if channel.is_voice_member : HorizontalLayout {
+                            padding-left: channel.has_parent ? 38px : 28px;
+                            padding-right: 8px;
+                            spacing: 8px;
+
+                            VerticalLayout {
+                                alignment: center;
+                                width: 18px;
+                                Rectangle {
+                                    width: 18px;
+                                    height: 18px;
+                                    border-radius: 9px;
+                                    background: AppTheme.interactive-selected;
+                                    Text {
+                                        text: channel.avatar_text;
+                                        color: AppTheme.text-primary;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            Text {
+                                text: channel.name;
+                                color: touch_area.has-hover ? AppTheme.text-strong : AppTheme.text-muted;
+                                font-size: 12px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                                animate color { duration: 120ms; }
+                            }
+                        }
+
                         touch_area := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
                                 if channel.is_category {
                                     root.toggle_category(channel.id);
                                 } else {
-                                    root.active_channel_id = channel.id;
-                                    root.select_channel(channel.id);
+                                    root.active_channel_id = channel.is_voice_member ? channel.parent_channel_id : channel.id;
+                                    root.select_channel(channel.is_voice_member ? channel.parent_channel_id : channel.id);
                                 }
                             }
                         }
