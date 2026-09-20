@@ -1127,7 +1127,7 @@ export component AppWindow inherits Window {
                                     source: @image-url("../assets/speaker.svg");
                                     width: 16px;
                                     height: 16px;
-                                    colorize: AppTheme.text-on-accent;
+                                    colorize: AppTheme.text-strong;
                                     image-fit: contain;
                                 }
                             }
@@ -1136,7 +1136,7 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 Text {
                                     text: root.current_voice_channel;
-                                    color: AppTheme.text-on-accent;
+                                    color: AppTheme.text-strong;
                                     font-size: 15px;
                                     font-weight: 800;
                                 }
@@ -1165,14 +1165,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/monitor.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: AppTheme.text-on-accent;
+                                                colorize: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
-                                            color: AppTheme.text-on-accent;
+                                            color: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
                                             font-size: 13px;
                                             font-weight: 600;
                                             vertical-alignment: center;
@@ -1213,14 +1213,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/message-square.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: AppTheme.text-on-accent;
+                                                colorize: AppTheme.text-strong;
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.tr_view_text_chat;
-                                            color: AppTheme.text-on-accent;
+                                            color: AppTheme.text-strong;
                                             font-size: 13px;
                                             font-weight: 600;
                                             vertical-alignment: center;
@@ -1258,14 +1258,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/log-out.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: AppTheme.text-on-accent;
+                                                colorize: (btn_leave_ta.has-hover || btn_leave_ta.pressed ? AppTheme.text-on-accent : AppTheme.text-strong);
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.tr_leave_call;
-                                            color: AppTheme.text-on-accent;
+                                            color: (btn_leave_ta.has-hover || btn_leave_ta.pressed ? AppTheme.text-on-accent : AppTheme.text-strong);
                                             font-size: 13px;
                                             font-weight: 600;
                                             vertical-alignment: center;
@@ -1321,7 +1321,7 @@ export component AppWindow inherits Window {
 
                                 Text {
                                     text: root.tr_voice_connecting_title;
-                                    color: AppTheme.text-on-accent;
+                                    color: AppTheme.text-strong;
                                     font-size: 16px;
                                     font-weight: 700;
                                     horizontal-alignment: center;
