@@ -12,6 +12,8 @@ pub struct VideoSettings {
     pub enable_self_preview_notice: bool, // default true
     #[serde(default = "default_true")]
     pub show_hardware_monitor: bool,      // default true
+    #[serde(default)]
+    pub use_light_theme: bool,            // default false
 }
 
 fn default_true() -> bool {
@@ -26,6 +28,7 @@ impl Default for VideoSettings {
             audio_loopback_backend: "auto".to_string(),
             enable_self_preview_notice: true,
             show_hardware_monitor: true,
+            use_light_theme: false,
         }
     }
 }
@@ -113,6 +116,18 @@ pub fn toggle_show_hardware_monitor() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.show_hardware_monitor = !store.show_hardware_monitor;
     let new_val = store.show_hardware_monitor;
+    save_video_settings(&store);
+    new_val
+}
+
+pub fn get_use_light_theme() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).use_light_theme
+}
+
+pub fn toggle_use_light_theme() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.use_light_theme = !store.use_light_theme;
+    let new_val = store.use_light_theme;
     save_video_settings(&store);
     new_val
 }

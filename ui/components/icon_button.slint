@@ -1,0 +1,26 @@
+import { AppTheme } from "../theme.slint";
+
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-color: AppTheme.text-primary;
+    in property <color> hover-color: AppTheme.interactive-hover;
+    callback clicked();
+
+    width: 32px;
+    height: 28px;
+    border-radius: 4px;
+    background: touch.has-hover ? hover-color : #0000;
+
+    Image {
+        source: root.icon;
+        width: 18px;
+        height: 18px;
+        colorize: root.icon-color;
+        image-fit: contain;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

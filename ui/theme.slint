@@ -1,0 +1,102 @@
+// Semantic application theme tokens.
+// Components should describe the role of a color, not its concrete shade.
+export enum ThemeMode {
+    dark,
+    light,
+}
+
+export global AppTheme {
+    in-out property <ThemeMode> mode: ThemeMode.dark;
+
+    // Main surfaces
+    out property <color> surface-window: mode == ThemeMode.dark ? #1e1f22 : #ffffff;
+    out property <color> surface-titlebar: mode == ThemeMode.dark ? #1e1f22 : #f2f3f5;
+    out property <color> surface-guild-rail: mode == ThemeMode.dark ? #1e1f22 : #e3e5e8;
+    out property <color> surface-sidebar: mode == ThemeMode.dark ? #2b2d31 : #f2f3f5;
+    out property <color> surface-sidebar-overlay: mode == ThemeMode.dark ? #2b2d31cc : #f2f3f5e6;
+    out property <color> surface-chat: mode == ThemeMode.dark ? #313338 : #ffffff;
+    out property <color> surface-input: mode == ThemeMode.dark ? #1e1f22 : #ebedef;
+    out property <color> surface-elevated: mode == ThemeMode.dark ? #232428 : #f2f3f5;
+    out property <color> surface-reply: mode == ThemeMode.dark ? #1e293b : #e8f0fe;
+    out property <color> surface-disabled: mode == ThemeMode.dark ? #2b2d31 : #e3e5e8;
+    out property <color> surface-control: mode == ThemeMode.dark ? #4e5058 : #c4c7cc;
+    out property <color> surface-control-hover: mode == ThemeMode.dark ? #3b3e45 : #b5b8be;
+    out property <color> surface-backdrop: #00000077;
+    out property <color> surface-scrim: #00000066;
+    out property <color> surface-overlay: mode == ThemeMode.dark ? #1e1f22ee : #fffffff2;
+    out property <color> media-action-background: mode == ThemeMode.dark ? #1e1f22ee : #2563eb;
+    out property <color> surface-translucent: mode == ThemeMode.dark ? #0000002b : #00000018;
+    out property <color> surface-divider-strong: mode == ThemeMode.dark ? #282a2e : #c8cbd0;
+    out property <color> surface-pressed: mode == ThemeMode.dark ? #27282b : #c8cbd0;
+    out property <color> surface-warning: mode == ThemeMode.dark ? #473a24 : #fff1c2;
+    out property <color> surface-success: mode == ThemeMode.dark ? #0f3822 : #d8f5e3;
+    out property <color> surface-danger: mode == ThemeMode.dark ? #3f1515 : #f9d7d9;
+    out property <color> surface-media: #111214;
+    out property <color> surface-media-overlay: #111214e6;
+    out property <color> surface-media-overlay-strong: #111214ee;
+    out property <color> solid-white: #ffffff;
+
+    // Backdrops retain fixed alpha so media and modal contrast stays stable.
+    out property <color> backdrop-soft: #00000088;
+    out property <color> backdrop: #000000aa;
+    out property <color> backdrop-strong: #000000bb;
+    out property <color> backdrop-stronger: #000000cc;
+    out property <color> backdrop-max: #000000dd;
+
+    // Interaction surfaces
+    out property <color> interactive-hover: mode == ThemeMode.dark ? #35373c : #dfe1e5;
+    out property <color> interactive-selected: mode == ThemeMode.dark ? #404249 : #d6d9df;
+    out property <color> interactive-muted: mode == ThemeMode.dark ? #383a40 : #d1d3d7;
+
+    // Content
+    out property <color> text-strong: mode == ThemeMode.dark ? #ffffff : #060607;
+    out property <color> text-primary: mode == ThemeMode.dark ? #dbdee1 : #313338;
+    out property <color> text-secondary: mode == ThemeMode.dark ? #b5bac1 : #4e5058;
+    out property <color> text-muted: mode == ThemeMode.dark ? #949ba4 : #5c5e66;
+    out property <color> text-subtle: mode == ThemeMode.dark ? #80848e : #6d6f78;
+    out property <color> text-faint: mode == ThemeMode.dark ? #636b75 : #74767f;
+    out property <color> text-embed: mode == ThemeMode.dark ? #d2d5d9 : #3f4147;
+    out property <color> text-reply: mode == ThemeMode.dark ? #94a3b8 : #526173;
+    out property <color> text-on-accent: #ffffff;
+    out property <color> text-on-status: #f1f5f9;
+    out property <color> text-on-warning: #000000;
+
+    // Borders and separators
+    out property <color> border-subtle: mode == ThemeMode.dark ? #383a40 : #d1d3d7;
+    out property <color> separator: mode == ThemeMode.dark ? #3f4147 : #d1d3d7;
+    out property <color> border-on-accent-muted: #ffffffcc;
+
+    // Brand and semantic states
+    out property <color> accent: #2563eb;
+    out property <color> accent-hover: #1d4ed8;
+    out property <color> accent-bright: #3b82f6;
+    out property <color> accent-medium: #60a5fa;
+    out property <color> accent-link-hover: #58a6ff;
+    out property <color> accent-soft: mode == ThemeMode.dark ? #93c5fd : #1d4ed8;
+    out property <color> accent-subtle: mode == ThemeMode.dark ? #3b82f633 : #2563eb22;
+    out property <color> accent-faint: mode == ThemeMode.dark ? #3b82f638 : #2563eb24;
+    out property <color> accent-selected: mode == ThemeMode.dark ? #3b82f655 : #2563eb2b;
+    out property <color> accent-border-muted: mode == ThemeMode.dark ? #3b82f688 : #2563eb66;
+    out property <color> accent-border-strong: mode == ThemeMode.dark ? #3b82f6aa : #2563eb99;
+    out property <color> link: mode == ThemeMode.dark ? #00a8fc : #006ce7;
+    out property <color> info: #06b6d4;
+    out property <color> success: #23a55a;
+    out property <color> success-hover: #1f8b4c;
+    out property <color> success-action-hover: #208b4c;
+    out property <color> success-subtle: mode == ThemeMode.dark ? #23a55a22 : #16813d1f;
+    out property <color> success-faint: mode == ThemeMode.dark ? #23a55a20 : #16813d1a;
+    out property <color> warning: #f0b232;
+    out property <color> warning-strong: #d97706;
+    out property <color> danger: #f23f43;
+    out property <color> danger-action: #da373c;
+    out property <color> danger-action-hover: #c0353b;
+    out property <color> danger-deep: #a8282c;
+    out property <color> danger-medium: #c83236;
+    out property <color> danger-subtle: mode == ThemeMode.dark ? #f23f4333 : #d83c4030;
+    out property <color> danger-action-subtle: mode == ThemeMode.dark ? #da373c22 : #d83c401f;
+    out property <color> danger-action-faint: mode == ThemeMode.dark ? #da373c38 : #d83c4030;
+    out property <color> danger-action-muted: mode == ThemeMode.dark ? #da373c33 : #d83c402b;
+    out property <color> danger-action-border: mode == ThemeMode.dark ? #da373c88 : #d83c4077;
+    out property <color> danger-bright: #dc2626;
+    out property <color> danger-pressed: #991b1b;
+}

@@ -7,6 +7,7 @@ pub mod ui;
 pub mod utils;
 pub mod gateway;
 pub mod http;
+pub mod channel_permissions;
 pub mod encoder;
 pub mod screen_capture;
 
@@ -1976,6 +1977,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let new_val = video_settings::toggle_show_hardware_monitor();
         if let Some(ui) = app_weak_hw.upgrade() {
             ui.set_show_hardware_monitor(new_val);
+        }
+    });
+
+    let app_weak_theme = app_weak.clone();
+    app.on_toggle_theme(move || {
+        let use_light_theme = video_settings::toggle_use_light_theme();
+        if let Some(ui) = app_weak_theme.upgrade() {
+            ui.set_use_light_theme(use_light_theme);
         }
     });
 
