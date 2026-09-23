@@ -42,6 +42,9 @@
 - 🎯 **Multi-Codec GPU Acceleration**: Choose your preferred video encoder in Settings (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware, or Cisco OpenH264 SIMD).
 - 🎙️ **Opus PLC (Packet Loss Concealment)**: Prevents robotic voice stuttering and audio crackles even under 100% CPU/GPU load.
 - 💬 **Direct Messages (DMs) & 1-Click Voice Calls**: Access private conversations and group DMs directly from the dedicated chat bubble icon. Start private voice calls with ringing audio, answer/reject incoming call cards, and real-time unread count badges.
+- 🎨 **Light & Dark Themes with Persistent Preference**: Enjoy a clean, optional native Light Theme for daytime reading alongside the default Dark Theme, with centralized semantic tokens in Slint (`AppTheme`).
+- 👥 **Voice Channel Participants Preview**: See who is inside voice channels before joining with compact participant rows, initial avatars, 1-click connect, and member state fingerprinting.
+- 🛡️ **Intelligent Channel Permission Filtering**: Evaluates Discord `VIEW_CHANNEL` hierarchy locally to hide inaccessible channels and empty categories, keeping your navigation clutter-free.
 - 🐧 **Universal AnyLinux AppImage**: Truly portable, distro-agnostic Linux package (`Litecord-x86_64.AppImage`) bundled with all dynamic dependencies (`libxdo.so.3`, `libayatana-appindicator3`, etc.), guaranteed to run out of the box across any Linux distribution.
 - ⚙️ **Anywhere Settings Access**: Titlebar gear icon accessible even from the login screen, with auto-routing to proxy settings on network failure.
 - 🌐 **7 Built-in Languages**: Automatic OS language detection with English, Portuguese, Spanish, German, French, Russian, and Japanese.
@@ -309,6 +312,7 @@ Litecord is built to be a **simple, clean, and ultra-lightweight interface for g
 | Contributor | Role / Contributions | Impact |
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Project Creator & Lead Maintainer (Core architecture, Slint UI, Audio Pipeline, Ducking Engine, Security) | **100% (Core)** |
+| [**starzynhobr**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering & Slint UI modularization) | **PR #22, #23** |
 | *Your Name Here* | *Submit a Pull Request to be credited here!* | *%* |
 
 ---

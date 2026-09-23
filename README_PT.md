@@ -38,8 +38,10 @@
 - 📊 **Monitor de Hardware em Tempo Real**: Mostra o uso de CPU do app, RAM física em MB e GPU no HUD da barra superior, com atualização ao vivo na Barra de Tarefas do Windows (`Litecord - x%/ymb`) e tooltip na bandeja.
 - 🔊 **Troca Dinâmica de Dispositivo de Saída**: Alterne entre fones de ouvido e caixas de som no meio de chamadas ativas instantaneamente, sem sair da sala de voz nem reiniciar a aplicação.
 - 🎯 **Aceleração Multi-Codec por GPU**: Escolha seu codificador de vídeo preferido nas Configurações (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware ou OpenH264 SIMD).
-- 🎙️ **Opus PLC (Ocultação de Perda de Pacotes)**: Evita vozes robóticas e estalos mesmo sob 100% de uso de CPU/GPU.
 - 💬 **Mensagens Diretas (DMs) & Chamadas de Voz em 1 Clique**: Acesse suas conversas privadas e grupos de DM diretamente pelo novo ícone de balão de chat. Inicie chamadas de voz privadas com feedback sonoro de toques, card visual de chamada recebida (Atender/Recusar) e badges de mensagens não lidas sincronizadas em tempo real.
+- 🎨 **Tema Claro e Escuro com Preferência Persistente**: Novo tema claro opcional para leitura confortável em ambientes claros, com tokens de cores semânticos no Slint (`AppTheme`).
+- 👥 **Visualização de Participantes em Salas de Voz**: Veja quem está dentro de cada canal de voz antes de entrar, com avatares de iniciais, conexão em 1 clique e detecção de presença.
+- 🛡️ **Filtro Inteligente de Permissões de Canal**: Calcula a hierarquia `VIEW_CHANNEL` do Discord para ocultar canais bloqueados e categorias vazias, mantendo a lista limpa.
 - 🐧 **AppImage Universal AnyLinux**: Pacote Linux verdadeiramente portátil e independente de distribuição (`Litecord-x86_64.AppImage`), empacotado com todas as dependências (`libxdo.so.3`, `libayatana-appindicator3`, etc.), funcionando direto no Ubuntu, Debian, Fedora, Arch Linux, Void, etc.
 - ⚙️ **Configurações Acessíveis em Qualquer Lugar**: Ícone de engrenagem na barra de título acessível a qualquer momento, inclusive na tela de login.
 - 🌐 **7 Idiomas Nativos**: Detecção automática do idioma do sistema (Português, Inglês, Espanhol, Alemão, Francês, Russo e Japonês).
@@ -115,6 +117,16 @@ Litecord/
 ├── installer.iss             # Script oficial do instalador Windows Inno Setup
 └── README.md                 # Documentação em inglês
 ```
+
+---
+
+## 🤝 Contribuidores & Quadro de Honra
+
+| Contribuidor | Função / Contribuições | Impacto |
+| :--- | :--- | :--- |
+| [**Ak4ai**](https://github.com/Ak4ai) | Criador & Mantenedor Líder (Arquitetura central, UI Slint, Áudio, Ducking, Segurança, DMs) | **100% (Core)** |
+| [**starzynhobr**](https://github.com/starzynhobr) | Contribuidor da Comunidade (Sistema de tema claro, lista de participantes em canais de voz, filtro de permissões e modularização Slint) | **PR #22, #23** |
+| *Seu Nome Aqui* | *Envie um Pull Request para ser creditado aqui!* | *%* |
 
 ---
 

@@ -40,6 +40,24 @@ Esta versão introduz suporte completo e nativo a **Mensagens Diretas (DMs)**, *
   - Cache de controle para prevenir contagens espúrias decorrentes de múltiplos disparos de eventos `MESSAGE_CREATE`.
   - Zeramento automático e remoção imediata da badge ao selecionar e visualizar a conversa.
 
+### 🎨 Tema Claro (Light Theme), Participantes em Canais de Voz & Filtro de Permissões (por @starzynhobr — PRs #22, #23)
+- **Tema Claro (Light Theme) Nativo**:
+  - Seletor de Tema Claro nas Configurações do aplicativo com persistência automática no arquivo de configurações do usuário.
+  - Centralização de tokens de cores semânticos no módulo `AppTheme` do Slint para consistência visual.
+- **Visualização de Participantes em Salas de Voz**:
+  - Exibição direta dos usuários presentes em canais de voz na barra lateral antes de conectar.
+  - Linhas compactas com avatar de iniciais e nome do usuário.
+  - Clique na linha do participante conecta automaticamente à sala de voz correspondente.
+  - Mecanismo de impressão digital (*fingerprinting*) para detectar entrada/saída de membros sem recarregamento desnecessário.
+- **Filtro de Permissões de Canais (`VIEW_CHANNEL`)**:
+  - Cálculo local de permissões do Discord respeitando a precedência oficial (dono/administrador, roles e sobrescritas de canal/membro).
+  - Canais inacessíveis são automaticamente ocultados da barra lateral e categorias vazias são removidas, eliminando a poluição visual.
+- **Aprimoramentos de Clareza Visual e UX**:
+  - Superfícies mais planas e limpas nos canais e mensagens, eliminando o efeito de caixas excessivas.
+  - Cursores de ponteiro (*hand pointer*) aplicados a botões e controles interativos.
+  - Barra de rolagem nativa arrastável (`ScrollView`) na barra lateral de canais.
+  - Modularização de componentes Slint em arquivos dedicados (`channel_sidebar.slint`, `chat_messages.slint`, `settings.slint`, `icon_button.slint`).
+
 ### 🐧 AnyLinux Universal AppImage & CI/CD
 - **Distribuição Universal para Linux**:
   - Geração automatizada do pacote `Litecord-x86_64.AppImage` no GitHub Actions através do `quick-sharun`.

@@ -45,3 +45,19 @@ Unlike web-based Electron clients that manipulate a DOM tree, Slint renders via 
 - **Unread Badge Alignment**: Designed with geometric symmetry matching voice user counters, including a 1px sub-pixel optical offset for visual centering across fonts.
 - **Incoming Call Card**: Floating modal presenting avatar, username, and green/red interactive action buttons.
 - **Event Deduplication**: Gateway `MESSAGE_CREATE` events are deduplicated at the controller level to prevent badge inflation from redundant gateway frames.
+
+---
+
+## 5. Light & Dark Themes (AppTheme)
+
+- **Native Light Theme**: Optional light interface designed for reading clarity in daylight environments, contributed by `@starzynhobr` (PR #23).
+- **Semantic Theme Tokens**: Centralized in `AppTheme` within Slint, decoupling color definitions from UI component layout.
+- **Persistent Preference**: Theme toggle in the Settings modal persists across restarts in `.litecord_user_settings.json`.
+
+---
+
+## 6. Voice Channel Participants & Permission Filtering
+
+- **Participants Preview**: Displays members currently in voice channels directly on the sidebar (contributed by `@starzynhobr` in PR #22), allowing users to see who is speaking before joining.
+- **Direct Connect**: Clicking a participant automatically switches audio to that voice channel.
+- **Permission Filtering (`VIEW_CHANNEL`)**: Automatically hides inaccessible channels and empty categories based on Discord permission hierarchy.
