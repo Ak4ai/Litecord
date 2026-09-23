@@ -125,7 +125,7 @@ Litecord/
 | Contribuidor | Função / Contribuições | Impacto |
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Criador & Mantenedor Líder (Arquitetura central, UI Slint, Áudio, Ducking, Segurança, DMs) | **100% (Core)** |
-| [**starzynhobr**](https://github.com/starzynhobr) | Contribuidor da Comunidade (Sistema de tema claro, lista de participantes em canais de voz, filtro de permissões e modularização Slint) | **PR #22, #23** |
+| [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Contribuidor da Comunidade (Sistema de tema claro, lista de participantes em canais de voz, filtro de permissões e modularização Slint) | **PR #22, #23** |
 | *Seu Nome Aqui* | *Envie um Pull Request para ser creditado aqui!* | *%* |
 
 ---

@@ -312,7 +312,7 @@ Litecord is built to be a **simple, clean, and ultra-lightweight interface for g
 | Contributor | Role / Contributions | Impact |
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Project Creator & Lead Maintainer (Core architecture, Slint UI, Audio Pipeline, Ducking Engine, Security) | **100% (Core)** |
-| [**starzynhobr**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering & Slint UI modularization) | **PR #22, #23** |
+| [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering & Slint UI modularization) | **PR #22, #23** |
 | *Your Name Here* | *Submit a Pull Request to be credited here!* | *%* |
 
 ---
