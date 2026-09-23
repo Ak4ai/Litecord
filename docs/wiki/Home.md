@@ -42,6 +42,8 @@ Litecord is an ultra-lightweight, high-performance native desktop client for Dis
    - Proactive Diagnostic Ping & Login Protection
 7. **[User Interface & Design System](User-Interface-and-Design-System)**
    - Slint Reactive Declarative Model
+   - Direct Messages (DMs), Group DMs & 1-Click Voice Calls
+   - Real-Time Unread Badges with Geometric Alignment
    - Discord Dark Theme Palette & High-Contrast Visual Balance
    - Unified Emojis (Twemoji + Discord CDN Custom Emojis)
    - Smart Slash Command Indexing & Autocomplete
@@ -49,6 +51,7 @@ Litecord is an ultra-lightweight, high-performance native desktop client for Dis
    - Build Prerequisites (Windows & Linux)
    - Cargo Profiles, Link-Time Optimization (LTO) & Static Linking
    - Windows Inno Setup Installer Generation
+   - Distro-Agnostic AnyLinux AppImage Packaging via `quick-sharun`
 
 ---
 

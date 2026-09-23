@@ -32,4 +32,16 @@ Unlike web-based Electron clients that manipulate a DOM tree, Slint renders via 
 ## 3. Unified Emojis & Vector SVG Icons
 
 - All UI action buttons use clean vector SVG icons (`assets/*.svg`), guaranteeing crisp rendering without blurry pixels or missing glyph boxes (`□`).
+  - `dm-chat.svg`: Discord-style chat bubble for the direct messages entry point.
+  - `phone.svg`: Start call / answer incoming voice call.
+  - `phone-slash.svg`: Hang up / reject incoming voice call.
 - Discord custom emojis and Unicode Twemojis are indexed and rendered directly in chat messages and embeds.
+
+---
+
+## 4. Direct Messages (DMs) & Unread Badges
+
+- **DM Navigation**: Instant access via the top chat bubble button on the server sidebar.
+- **Unread Badge Alignment**: Designed with geometric symmetry matching voice user counters, including a 1px sub-pixel optical offset for visual centering across fonts.
+- **Incoming Call Card**: Floating modal presenting avatar, username, and green/red interactive action buttons.
+- **Event Deduplication**: Gateway `MESSAGE_CREATE` events are deduplicated at the controller level to prevent badge inflation from redundant gateway frames.

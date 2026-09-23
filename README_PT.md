@@ -39,6 +39,8 @@
 - 🔊 **Troca Dinâmica de Dispositivo de Saída**: Alterne entre fones de ouvido e caixas de som no meio de chamadas ativas instantaneamente, sem sair da sala de voz nem reiniciar a aplicação.
 - 🎯 **Aceleração Multi-Codec por GPU**: Escolha seu codificador de vídeo preferido nas Configurações (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware ou OpenH264 SIMD).
 - 🎙️ **Opus PLC (Ocultação de Perda de Pacotes)**: Evita vozes robóticas e estalos mesmo sob 100% de uso de CPU/GPU.
+- 💬 **Mensagens Diretas (DMs) & Chamadas de Voz em 1 Clique**: Acesse suas conversas privadas e grupos de DM diretamente pelo novo ícone de balão de chat. Inicie chamadas de voz privadas com feedback sonoro de toques, card visual de chamada recebida (Atender/Recusar) e badges de mensagens não lidas sincronizadas em tempo real.
+- 🐧 **AppImage Universal AnyLinux**: Pacote Linux verdadeiramente portátil e independente de distribuição (`Litecord-x86_64.AppImage`), empacotado com todas as dependências (`libxdo.so.3`, `libayatana-appindicator3`, etc.), funcionando direto no Ubuntu, Debian, Fedora, Arch Linux, Void, etc.
 - ⚙️ **Configurações Acessíveis em Qualquer Lugar**: Ícone de engrenagem na barra de título acessível a qualquer momento, inclusive na tela de login.
 - 🌐 **7 Idiomas Nativos**: Detecção automática do idioma do sistema (Português, Inglês, Espanhol, Alemão, Francês, Russo e Japonês).
 
@@ -61,11 +63,12 @@
 ## 📦 Downloads & Instalação
 
 ### 🪟 Windows (10 / 11 x64)
-- **Instalador Oficial**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
-- **Versão Portátil**: Baixe o `.zip`, extraia e execute `litecord.exe` direto.
+- **Instalador Oficial (Beta 1.1.0)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
+- **Versão Portátil (Beta 1.1.0)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
 
-### 🐧 Linux (Instalação em 1 Comando)
-Cole no terminal:
+### 🐧 Linux
+- **AppImage Universal AnyLinux (Recomendado - Beta 1.1.0)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
+- **Instalação Rápida em 1 Comando**:
 ```bash
 curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
 ```

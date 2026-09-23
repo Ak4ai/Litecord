@@ -41,6 +41,8 @@
 - 🔊 **Dynamic Audio Output Switching**: Switch output audio devices (headphones/speakers) mid-call on the fly with automatic playback thread re-binding, without leaving the voice room or restarting the application.
 - 🎯 **Multi-Codec GPU Acceleration**: Choose your preferred video encoder in Settings (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware, or Cisco OpenH264 SIMD).
 - 🎙️ **Opus PLC (Packet Loss Concealment)**: Prevents robotic voice stuttering and audio crackles even under 100% CPU/GPU load.
+- 💬 **Direct Messages (DMs) & 1-Click Voice Calls**: Access private conversations and group DMs directly from the dedicated chat bubble icon. Start private voice calls with ringing audio, answer/reject incoming call cards, and real-time unread count badges.
+- 🐧 **Universal AnyLinux AppImage**: Truly portable, distro-agnostic Linux package (`Litecord-x86_64.AppImage`) bundled with all dynamic dependencies (`libxdo.so.3`, `libayatana-appindicator3`, etc.), guaranteed to run out of the box across any Linux distribution.
 - ⚙️ **Anywhere Settings Access**: Titlebar gear icon accessible even from the login screen, with auto-routing to proxy settings on network failure.
 - 🌐 **7 Built-in Languages**: Automatic OS language detection with English, Portuguese, Spanish, German, French, Russian, and Japanese.
 
@@ -126,7 +128,13 @@ Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N 
   - **Delta >= 5**: Volume ducked to protection floor (**5% - 10%**).
 - **Independent Volume & Mute**: Per-user volume sliders (0% - 200%) and instant mute buttons, saved automatically across sessions.
 
-### 📱 3. QR Code Remote Auth & Encrypted Token Vaults (Linux + Windows)
+### 💬 3. Direct Messages (DMs) & 1-Click Private Voice Calls
+- **Integrated DM Navigation**: Access your personal inbox through the dedicated chat bubble icon placed at the top of the server list.
+- **Individual & Group Chats**: Seamlessly chat in 1-on-1 direct messages or multi-recipient group DMs, featuring colored user avatars, presence states, and automatic list reordering upon new messages.
+- **1-Click Voice Calls & Ringing Alerts**: Ring your friends directly from the DM header with ringing audio feedback, visual incoming call modals (Accept / Reject), and instant one-click disconnect.
+- **Accurate Real-Time Unread Badges**: Red unread count badges on individual DMs and an aggregated count badge on the global DM button, synchronized in real time with duplicate-event protection and auto-clearing upon opening.
+
+### 📱 4. QR Code Remote Auth & Encrypted Token Vaults (Linux + Windows)
 - **Instant QR Code Login**: Scan the on-screen QR code with your Discord Mobile App (Settings -> Scan QR Code) to log in instantly.
 - **Linux Hardware-Bound AES-256-GCM Vault (`~/.config/litecord/session.vault`)**: Follows the XDG Base Directory specification with strict Unix permissions (`0700` directory, `0600` file). Credentials are encrypted at rest with AES-256-GCM using keys derived from `/etc/machine-id` and UID, preventing token exfiltration across machines.
 - **Windows DPAPI Encryption (`%APPDATA%/Litecord/session.vault`)**: Locally stored tokens are protected via Windows DPAPI (`CryptProtectData`), bound to the local user account.
@@ -134,23 +142,23 @@ Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N 
 - **Direct Discord Connections Only**: No intermediary proxies, third-party relays, or tracking servers. All requests go directly to `discord.com` endpoints.
 - **Shell Injection Shield**: Hyperlinks are strictly validated against an `http://` / `https://` whitelist and dispatched via native OS APIs (`ShellExecuteW` / `xdg-open`)—never through shell interpreters (`cmd.exe`).
 
-### ⌨️ 4. Intelligent Slash Commands & Parameter Chips
+### ⌨️ 5. Intelligent Slash Commands & Parameter Chips
 - **Dynamic Server Command Indexing**: Fetches and aggregates real slash commands from registered bots (`/play`, `/skip`, `/stop`, `/queue`, etc.).
 - **Keyboard Navigation**: Use **Up/Down Arrow keys** to cycle through command suggestions and hit **Enter** to auto-select.
 - **Interactive Parameter Chips**: Formats commands as clean visual chips in the message input and chat history with parameter placeholders.
 
-### 🖼️ 5. Ultra-Lightweight On-Demand Image Attachments
+### 🖼️ 6. Ultra-Lightweight On-Demand Image Attachments
 - **Minecraft Pixel-Art Placeholders**: Low-resolution (~500 bytes) chunky 8-bit preview before downloading.
 - **Fixed Width (320px) & Proportional Height**: Dynamically adapts height to match the image's original aspect ratio (16:9, portrait, square).
 - **Path-Traversal Sanitized Downloads**: Attachment filenames are strictly sanitized against directory traversal attacks and confined to ephemeral temp folders (`%TEMP%/Litecord/temp_images/`), wiped on startup and shutdown.
 - **Collapsed Link Archive**: Image URLs remain accessible inside the collapsed message view without cluttering chat.
 
-### 🎨 6. Unified Emoji System (Twemoji + Discord CDN)
+### 🎨 7. Unified Emoji System (Twemoji + Discord CDN)
 - **Discord Custom Emojis**: Asynchronously downloaded, cached locally, and updated in-place.
 - **Twemoji Unicode Rendering**: Direct vector glyph rasterization for Unicode emojis (`⏭️`, `⏮️`, `⏯️`, `🔀`, `🔁`, `🔥`, `❤️`, etc.), preventing Windows tofu boxes (`□`).
 - **Screen & Active Channel Priority**: Dedicates network bandwidth exclusively to visible chat messages.
 
-### ⚡ 7. DeepSleep Mode & Extreme Efficiency
+### ⚡ 8. DeepSleep Mode & Extreme Efficiency
 - **Sub-0.1% CPU Idle**: UI event dispatch loop is decoupled and capped at 30 FPS for microphone meters.
 - **System Tray DeepSleep**: Minimizing Litecord to the system tray completely suspends all visual rendering loops while keeping voice audio streaming in background.
 - **Delta Badge Fingerprinting**: Sidebar channel member count badges update only on real state changes, preventing unnecessary thread wakeups.
@@ -195,9 +203,16 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (Beta 1.0.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (Beta 1.0.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux Standalone (Beta 1.0.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (Beta 1.1.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (Beta 1.1.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux AppImage (Beta 1.1.0 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
+| **🐧 Linux Standalone (Beta 1.1.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+
+### 🚀 Running the AppImage on Linux
+```bash
+chmod +x Litecord-x86_64.AppImage
+./Litecord-x86_64.AppImage
+```
 
 ---
 

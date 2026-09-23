@@ -40,6 +40,24 @@ cargo run --bin litecord --release
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin litecord
 ```
 
+### Universal AnyLinux AppImage (quick-sharun)
+Litecord packages all dynamic libraries into a distro-agnostic AppImage:
+```bash
+# 1. Download quick-sharun
+wget -q https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/quick-sharun.sh -O ./quick-sharun
+chmod +x ./quick-sharun
+
+# 2. Package binary and bundled dependencies
+export OUTPATH=.
+export DESKTOP=assets/litecord.desktop
+export ICON=assets/litecord.png
+export DEPLOY_GTK=1
+
+./quick-sharun target/release/litecord
+./quick-sharun --make-appimage
+mv *.AppImage Litecord-x86_64.AppImage
+```
+
 ---
 
 ## 3. Cargo Optimization Settings

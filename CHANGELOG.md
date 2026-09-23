@@ -5,31 +5,47 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.1.0-beta] - 2026-09-23 — Mensagens Diretas (DMs), Chamadas de Voz P2P & AnyLinux AppImage
+## [v1.1.0-beta] - 2026-09-23 — Mensagens Diretas (DMs), Chamadas de Voz Privadas & AnyLinux AppImage
 
-Esta versão introduz suporte completo a **Mensagens Diretas (DMs)**, **Chamadas de Voz Privadas (DM Voice Calls)**, badges de mensagens não lidas com sincronização em tempo real e empacotamento universal **AppImage AnyLinux (distro-agnostic)** via GitHub Actions.
-
----
-
-### 💬 Mensagens Diretas (DMs) & Chamadas de Voz Privadas
-- **Listagem e Gerenciamento de DMs**:
-  - Suporte completo a conversas individuais e em grupo na barra lateral de DMs com avatares e presença.
-  - Sincronização em tempo real de contadores de mensagens não lidas por canal e badge global acumulada no ícone de DM.
-- **Chamadas de Voz em DMs (Ring & Call Management)**:
-  - Inicialização de chamadas privadas diretamente da barra superior de DMs.
-  - Modal de chamada recebida com detecção precisa do originador, toques e botões de atender/recusar.
-  - Resolução automática de estado quando o usuário atual é o originador da chamada.
-- **Badges de Mensagens Não Lidas**:
-  - Alinhamento óptico e geométrico idêntico às badges de canais de voz.
-  - Desduplicação inteligente de eventos `MESSAGE_CREATE` para prevenir contagens espúrias.
+Esta versão introduz suporte completo e nativo a **Mensagens Diretas (DMs)**, **Chamadas de Voz Privadas (DM Voice Calls)**, contadores e badges de mensagens não lidas com sincronização em tempo real e o empacotamento universal **AppImage AnyLinux (distro-agnostic)** via GitHub Actions.
 
 ---
+
+### 💬 Mensagens Diretas (DMs) & Conversas em Grupo
+- **Navegação e Interface de DMs**:
+  - Novo botão de DMs no topo da barra lateral de servidores com ícone vetorial dedicado (`assets/dm-chat.svg`).
+  - Lista lateral com suporte a canais individuais (1:1) e grupos (Group DMs).
+  - Avatares com iniciais coloridas para cada usuário/grupo, status de presença e nomes atualizados.
+- **Sincronização Gateway em Tempo Real**:
+  - Carregamento de canais privados via REST API com atualização dinâmica de mensagens via Gateway Discord v10.
+  - Reordenação automática da lista ao receber novas mensagens.
+
+### 📞 Chamadas de Voz Privadas em DMs (Ring & Call Management)
+- **Chamada de Voz em 1 Clique**:
+  - Botão de ligação telefônica (`assets/phone.svg`) posicionado diretamente no cabeçalho da DM ativa.
+- **Modal de Chamada Recebida (Incoming Call Modal)**:
+  - Notificação visual animada sobreposta informando nome e avatar do remetente da ligação.
+  - Botões dedicados de **Atender** (verde) e **Recusar** (vermelho, `assets/phone-slash.svg`).
+  - Prevenção de loop/auto-chamada: ao iniciar uma ligação, o originador ingressa direto no canal de voz sem disparar o modal para si mesmo.
+  - Feedback sonoro de toques e chamada atendida/encerrada.
+
+### 🔴 Badges de Mensagens Não Lidas & Sincronização Precisa
+- **Badge Global Agregada**:
+  - Contador exibido sobre o ícone de DMs na barra de servidores indicando o total de mensagens não lidas em todas as conversas.
+- **Badges Individuais por DM**:
+  - Badge vermelha no formato pill com contagem individual ao lado do nome da conversa.
+  - Formatação inteligente para números altos (`99+`).
+  - Alinhamento geométrico e centralização óptica idênticos à badge de contagem de usuários de canais de voz.
+- **Desduplicação Inteligente de Mensagens**:
+  - Cache de controle para prevenir contagens espúrias decorrentes de múltiplos disparos de eventos `MESSAGE_CREATE`.
+  - Zeramento automático e remoção imediata da badge ao selecionar e visualizar a conversa.
 
 ### 🐧 AnyLinux Universal AppImage & CI/CD
 - **Distribuição Universal para Linux**:
-  - Geração automatizada de `Litecord-x86_64.AppImage` no GitHub Actions utilizando `quick-sharun`.
-  - Compatibilidade ampla (glibc / distro-agnostic) para rodar em Ubuntu, Debian, Fedora, Arch Linux, etc.
-  - Inclusão dos metadados de desktop (`assets/litecord.desktop`) e ícone de alta resolução (`assets/litecord.png`).
+  - Geração automatizada do pacote `Litecord-x86_64.AppImage` no GitHub Actions através do `quick-sharun`.
+  - Execução garantida em qualquer distribuição Linux x86_64 moderna ou antiga (Ubuntu, Debian, Fedora, Arch Linux, Void, etc.), sem conflitos de `glibc`.
+  - Todas as bibliotecas dinâmicas compartilhadas incluídas diretamente no bundle (incluindo `libxdo.so.3`, `libayatana-appindicator3`, `libfontconfig`, `libasound`).
+  - Integração de desktop com arquivo `.desktop` (`assets/litecord.desktop`) e ícone oficial em alta resolução (`assets/litecord.png`).
 
 ---
 
