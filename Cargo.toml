@@ -31,7 +31,7 @@ davey = "0.1.4"
 image = "0.25"
 qrcode = "0.14"
 rsa = { version = "0.9", features = ["sha2"] }
-sha2 = "0.10"
+sha2 = "0.11"
 rand = "0.8"
 mimalloc = { version = "0.1", default-features = false }
 cameras = "0.1"
