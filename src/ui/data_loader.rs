@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use log::{info, error};
 
 use crate::{
-    AppWindow, GuildItem, ChatMessage, LinkItem,
+    AppWindow, GuildItem, ChatMessage, LinkItem, ChannelItem,
 };
 use crate::gateway::{self, GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use crate::http::DiscordHttpClient;
@@ -155,6 +155,13 @@ pub async fn fetch_and_populate_guilds(
                     });
                 });
             }
+
+            // Pré-carrega o cache de canais de DMs (@me) em background para detecção imediata de mensagens diretas
+            let http_dms = http.clone();
+            let gmap_dms = guilds_map.clone();
+            tokio::spawn(async move {
+                prefetch_dms_cache(&http_dms, gmap_dms).await;
+            });
         }
         Err(e) => {
             error!("Erro ao buscar servidores via REST: {}", e);
@@ -461,6 +468,204 @@ pub async fn fetch_and_populate_channels(
         }
         Err(e) => {
             error!("Erro ao buscar canais do servidor via REST: {}", e);
+        }
+    }
+}
+
+pub async fn fetch_and_populate_dms(
+    http: &DiscordHttpClient,
+    app_weak: slint::Weak<AppWindow>,
+    guilds_map: Arc<Mutex<HashMap<String, GuildData>>>,
+    active_guild_id: Arc<Mutex<String>>,
+    active_channel_id: Arc<Mutex<String>>,
+) {
+    info!("Buscando conversas de DM via REST API (/users/@me/channels)...");
+    *active_guild_id.lock().unwrap() = "@me".to_string();
+
+    let app_w_top = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_w_top.upgrade() {
+            ui.set_connection_status("Mensagens Diretas | Gateway v9 (Online)".into());
+            ui.set_active_guild_name("Direct Messages".into());
+            ui.set_active_guild_id("@me".into());
+        }
+    });
+
+    match http.get_user_dms().await {
+        Ok(dms_json) => {
+            info!("{} conversas de DM encontradas via REST!", dms_json.len());
+
+            let mut dms_sorted = dms_json;
+            // Ordena por last_message_id descrescente (Snowflake maior = mensagem mais recente)
+            dms_sorted.sort_by(|a, b| {
+                let a_id: u64 = a["last_message_id"].as_str()
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or(0);
+                let b_id: u64 = b["last_message_id"].as_str()
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or(0);
+                b_id.cmp(&a_id)
+            });
+
+            let mut channels_data: Vec<ChannelData> = Vec::new();
+            let mut ui_channels: Vec<ChannelItem> = Vec::new();
+            let mut first_ch_id_opt: Option<String> = None;
+
+            for dm in &dms_sorted {
+                let ch_id = dm["id"].as_str().unwrap_or("").to_string();
+                if ch_id.is_empty() { continue; }
+
+                let ch_type = dm["type"].as_u64().unwrap_or(1);
+
+                let (ch_name, avatar_text) = if ch_type == 3 {
+                    // Grupo
+                    let name = if let Some(n) = dm["name"].as_str() {
+                        if !n.is_empty() { n.to_string() } else { "Grupo".to_string() }
+                    } else if let Some(recipients) = dm["recipients"].as_array() {
+                        let names: Vec<String> = recipients.iter()
+                            .filter_map(|r| r["global_name"].as_str().or_else(|| r["username"].as_str()))
+                            .map(|s| s.to_string())
+                            .collect();
+                        if names.is_empty() { "Grupo".to_string() } else { names.join(", ") }
+                    } else {
+                        "Grupo".to_string()
+                    };
+                    let initials = get_guild_initials(&name);
+                    (name, initials)
+                } else {
+                    // DM direta 1x1
+                    let (name, initials) = if let Some(recipients) = dm["recipients"].as_array() {
+                        if let Some(first_user) = recipients.first() {
+                            let disp_name = first_user["global_name"].as_str()
+                                .unwrap_or_else(|| first_user["username"].as_str().unwrap_or("Amigo"));
+                            let inits = get_guild_initials(disp_name);
+                            (disp_name.to_string(), inits)
+                        } else {
+                            ("Amigo".to_string(), "DM".to_string())
+                        }
+                    } else {
+                        ("Amigo".to_string(), "DM".to_string())
+                    };
+                    (name, initials)
+                };
+
+                if first_ch_id_opt.is_none() {
+                    first_ch_id_opt = Some(ch_id.clone());
+                }
+
+                channels_data.push(ChannelData {
+                    id: ch_id.clone(),
+                    name: ch_name.clone(),
+                    is_voice: false,
+                    is_category: false,
+                    parent_id: None,
+                    position: 0,
+                });
+
+                let unread_dm_count = crate::ui::helpers::get_dm_unread(&ch_id);
+
+                ui_channels.push(ChannelItem {
+                    id: ch_id.into(),
+                    name: ch_name.into(),
+                    is_voice: false,
+                    voice_count: 0,
+                    is_voice_member: false,
+                    parent_channel_id: "".into(),
+                    avatar_text: avatar_text.into(),
+                    is_category: false,
+                    has_parent: false,
+                    is_collapsed: false,
+                    has_separator: false,
+                    unread_count: unread_dm_count,
+                });
+            }
+
+            // Registra @me no mapa para que on_select_channel funcione transparentemente
+            guilds_map.lock().unwrap().insert("@me".to_string(), GuildData {
+                id: "@me".to_string(),
+                name: "Direct Messages".to_string(),
+                channels: channels_data,
+            });
+
+            let app_w_ui = app_weak.clone();
+            let ui_channels_clone = ui_channels.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_ui.upgrade() {
+                    let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_clone));
+                    ui.set_channels(model.into());
+                    ui.set_total_dm_unread_count(crate::ui::helpers::get_total_dm_unreads());
+                }
+            });
+
+            // Se nenhum canal estiver selecionado ou o atual não estiver na lista de DMs, seleciona a 1ª
+            let current_c = active_channel_id.lock().unwrap().clone();
+            let target_ch_id = if current_c.is_empty() || !ui_channels.iter().any(|c| c.id == current_c.as_str()) {
+                first_ch_id_opt
+            } else {
+                Some(current_c)
+            };
+
+            if let Some(cid) = target_ch_id {
+                let remaining = crate::ui::helpers::clear_dm_unread(&cid);
+                for c in ui_channels.iter_mut() {
+                    if c.id == cid.as_str() {
+                        c.unread_count = 0;
+                    }
+                }
+
+                let target_name = ui_channels.iter()
+                    .find(|c| c.id == cid.as_str())
+                    .map(|c| c.name.to_string())
+                    .unwrap_or_else(|| "conversa".to_string());
+                *active_channel_id.lock().unwrap() = cid.clone();
+                let app_w_name = app_weak.clone();
+                let cid_top = cid.clone();
+                let ui_channels_updated = ui_channels.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w_name.upgrade() {
+                        ui.set_active_channel_id(cid_top.into());
+                        ui.set_active_channel_name(target_name.into());
+                        let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_updated));
+                        ui.set_channels(model.into());
+                        ui.set_total_dm_unread_count(remaining);
+                    }
+                });
+
+                load_messages_for_channel(http, app_weak.clone(), &cid).await;
+            }
+        }
+        Err(e) => {
+            error!("Erro ao buscar conversas de DM via REST: {}", e);
+        }
+    }
+}
+
+pub async fn prefetch_dms_cache(
+    http: &DiscordHttpClient,
+    guilds_map: Arc<Mutex<HashMap<String, GuildData>>>,
+) {
+    if let Ok(dms_json) = http.get_user_dms().await {
+        let mut channels_data: Vec<ChannelData> = Vec::new();
+        for dm in &dms_json {
+            let ch_id = dm["id"].as_str().unwrap_or("").to_string();
+            if ch_id.is_empty() { continue; }
+            channels_data.push(ChannelData {
+                id: ch_id,
+                name: "DM".to_string(),
+                is_voice: false,
+                is_category: false,
+                parent_id: None,
+                position: 0,
+            });
+        }
+        if let Ok(mut gmap) = guilds_map.lock() {
+            gmap.insert("@me".to_string(), GuildData {
+                id: "@me".to_string(),
+                name: "Direct Messages".to_string(),
+                channels: channels_data,
+            });
         }
     }
 }

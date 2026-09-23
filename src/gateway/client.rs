@@ -66,7 +66,7 @@ impl GatewayClient {
             user_id.is_some(), voice_sid.is_some(), voice_tok.is_some(), voice_ep.is_some(), voice_gid, voice_cid);
 
         if let (Some(uid), Some(sid), Some(tok), Some(ep)) = (user_id, voice_sid, voice_tok, voice_ep) {
-            let effective_gid = if voice_gid.is_empty() { voice_cid.clone() } else { voice_gid };
+            let effective_gid = if voice_gid.is_empty() || voice_gid == "@me" { voice_cid.clone() } else { voice_gid };
             if !voice_cid.is_empty() || !effective_gid.is_empty() {
                 info!("⚡ TODAS AS CREDENCIAIS DE VOZ PRONTAS! Conectando à Voice Gateway no endpoint {}...", ep);
                 *self.voice_token.lock().unwrap() = None;
@@ -90,10 +90,19 @@ impl GatewayClient {
                     GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
                         *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
 
+                        let is_dm = guild_id == "@me" || guild_id.trim().is_empty();
                         let is_channel_change = {
                             let cur_gid = client_cmd.voice_guild_id.lock().unwrap();
                             let cur_cid = client_cmd.voice_channel_id.lock().unwrap();
-                            *cur_gid != Some(guild_id.clone()) || *cur_cid != channel_id
+                            if *cur_cid != channel_id {
+                                true
+                            } else if channel_id.is_none() {
+                                true
+                            } else if is_dm {
+                                false
+                            } else {
+                                *cur_gid != Some(guild_id.clone())
+                            }
                         };
 
                         if is_channel_change {
@@ -108,7 +117,7 @@ impl GatewayClient {
                             *client_cmd.voice_channel_id.lock().unwrap() = channel_id.clone();
                         }
 
-                        let effective_gid_val = if guild_id.trim().is_empty() {
+                        let effective_gid_val = if guild_id.trim().is_empty() || guild_id == "@me" {
                             serde_json::Value::Null
                         } else {
                             serde_json::json!(guild_id)
@@ -144,7 +153,11 @@ impl GatewayClient {
                                     if is_still_pending {
                                         warn!("⚠️ [VOICE WATCHDOG] Detectado estado fantasma/timeout na Gateway! Forçando reset OP 4 para reconexão limpa...");
                                         IS_WATCHDOG_RESETTING.store(true, Ordering::SeqCst);
-                                        let effective_gid = if target_gid.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(target_gid) };
+                                        let effective_gid = if target_gid.trim().is_empty() || target_gid == "@me" {
+                                            serde_json::Value::Null
+                                        } else {
+                                            serde_json::json!(target_gid)
+                                        };
                                         let reset_payload = serde_json::json!({
                                             "op": 4,
                                             "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": false, "self_deaf": false }
@@ -552,7 +565,12 @@ impl GatewayClient {
                                     if let Some(ref gid) = event_gid {
                                         *self.voice_guild_id.lock().unwrap() = Some(gid.clone());
                                     }
-                                    self.try_trigger_voice_connect();
+                                    // Só reconectar ao voice gateway se não estivermos conectados
+                                    if !is_connected_to_voice() {
+                                        self.try_trigger_voice_connect();
+                                    } else {
+                                        info!("🔇 VOICE_STATE_UPDATE: já conectado ao voice gateway, apenas atualizando session_id (mute/unmute).");
+                                    }
                                 } else {
                                     let is_matching_guild = match (&my_active_gid, &event_gid) {
                                         (Some(my_g), Some(ev_g)) => my_g == ev_g,
@@ -601,7 +619,13 @@ impl GatewayClient {
                         *self.voice_token.lock().unwrap() = Some(token);
                         *self.voice_endpoint.lock().unwrap() = Some(endpoint);
                         if !guild_id.is_empty() {
-                            *self.voice_guild_id.lock().unwrap() = Some(guild_id);
+                            let is_dm = v["d"]["guild_id"].is_null() || v["d"]["guild_id"].as_str().is_none();
+                            let gid_to_store = if is_dm {
+                                "@me".to_string()
+                            } else {
+                                guild_id
+                            };
+                            *self.voice_guild_id.lock().unwrap() = Some(gid_to_store);
                         }
                         self.try_trigger_voice_connect();
                     } else {
@@ -611,6 +635,10 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+                    let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
+                    let author_id = v["d"]["author"]["id"].as_str().unwrap_or("");
+                    let is_self = !my_uid.is_empty() && author_id == my_uid;
+
                     let author = format_discord_author(&v["d"]);
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
                     let timestamp = "Agora".to_string();
@@ -634,6 +662,7 @@ impl GatewayClient {
                         buttons,
                         attachments,
                         timestamp,
+                        is_self,
                     }).await;
                 }
                 "MESSAGE_UPDATE" => {
@@ -664,6 +693,66 @@ impl GatewayClient {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let _ = self.event_tx.send(GatewayEvent::MessageDeleted { id, channel_id }).await;
+                }
+                "CALL_CREATE" | "CALL_UPDATE" => {
+                    let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+                    let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
+                    info!("📞 {} recebido bruto: {:?}", t, v["d"]);
+
+                    // Extrai IDs dos usuários presentes nos voice_states da chamada
+                    let voice_uids: Vec<String> = v["d"]["voice_states"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().filter_map(|vs| {
+                                vs["user_id"].as_str().map(|s| s.to_string())
+                                    .or_else(|| vs["user_id"].as_u64().map(|n| n.to_string()))
+                            }).collect()
+                        })
+                        .unwrap_or_default();
+
+                    // Se eu mesmo já estiver na chamada deste canal (voice_channel_id já definido ou meu uid nos voice_states),
+                    // eu sou o chamador ou já atendi, logo NÃO exibir modal de chamada recebida.
+                    let am_i_already_in_call = {
+                        let cur_vc = self.voice_channel_id.lock().unwrap().clone();
+                        cur_vc == Some(channel_id.clone()) || (!my_uid.is_empty() && voice_uids.contains(&my_uid))
+                    };
+
+                    if !am_i_already_in_call && !channel_id.is_empty() {
+                        let caller_name = v["d"]["voice_states"]
+                            .as_array()
+                            .and_then(|vs_list| {
+                                vs_list.iter().find(|vs| {
+                                    let uid_str = vs["user_id"].as_str().map(|s| s.to_string())
+                                        .or_else(|| vs["user_id"].as_u64().map(|n| n.to_string()))
+                                        .unwrap_or_default();
+                                    !my_uid.is_empty() && uid_str != my_uid
+                                })
+                            })
+                            .and_then(|vs| {
+                                vs["member"]["user"]["global_name"].as_str()
+                                    .or_else(|| vs["member"]["user"]["username"].as_str())
+                                    .or_else(|| vs["user"]["global_name"].as_str())
+                                    .or_else(|| vs["user"]["username"].as_str())
+                                    .or_else(|| vs["nick"].as_str())
+                            })
+                            .unwrap_or("")
+                            .to_string();
+
+                        info!("📞 {} processado como chamada recebida! Canal: {}, Chamador preliminar: '{}'", t, channel_id, caller_name);
+                        let _ = self.event_tx.send(GatewayEvent::IncomingCall {
+                            channel_id,
+                            caller_name,
+                        }).await;
+                    } else {
+                        info!("📞 {} ignorado (já estou na chamada deste canal). Canal: {}", t, channel_id);
+                    }
+                }
+                "CALL_DELETE" => {
+                    let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+                    if !channel_id.is_empty() {
+                        info!("📴 CALL_DELETE recebido no canal {}", channel_id);
+                        let _ = self.event_tx.send(GatewayEvent::CallEnded { channel_id }).await;
+                    }
                 }
                 "GUILD_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();

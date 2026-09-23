@@ -2147,6 +2147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_is_voice_connecting(false);
             ui.set_is_voice_focused(false);
             ui.set_current_voice_channel("".into());
+            ui.set_is_in_dm_call(false); // também encerra chamada DM se estava ativa
             ui.set_is_screen_sharing(false);
             ui.set_show_self_preview_notice(false);
             ui.set_local_preview_fps("".into());
@@ -2218,6 +2219,194 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                 ui.set_messages(model.into());
                 request_chat_scroll_to_bottom(app_weak_leave.clone());
+            }
+        }
+    });
+
+    // DM Voice Call Callbacks (Parte 4.1/4.2/4.3)
+    let http_call_dm = Arc::clone(&http_client);
+    let active_ch_call = Arc::clone(&active_channel_id);
+    let cmd_tx_call = Arc::clone(&cmd_tx_store);
+    let selected_input_call = Arc::clone(&selected_input);
+    let active_mic_call = Arc::clone(&active_mic_stream);
+    let level_tx_call = level_tx.clone();
+    let app_weak_call = app_weak.clone();
+
+    app.on_call_dm(move || {
+        let channel_id = active_ch_call.lock().unwrap().clone();
+        if channel_id.is_empty() {
+            return;
+        }
+
+        // ── Passo 1: Abrir interface de voz imediatamente (mesmo fluxo que canais de voz) ──
+        if let Some(ui) = app_weak_call.upgrade() {
+            // Nome da conversa já está no active_channel_name da UI
+            let call_name = ui.get_active_channel_name().to_string();
+            ui.set_is_in_voice(true);
+            ui.set_is_voice_connecting(true);
+            ui.set_is_voice_focused(true);
+            ui.set_is_in_dm_call(true);
+            ui.set_current_voice_channel(call_name.into());
+            sound_effects::play_ui_sound(sound_effects::UiSound::JoinChannel);
+        }
+
+        // ── Passo 2: Iniciar captura de microfone (igual a canais de voz normais) ──
+        let mic_name = selected_input_call.lock().unwrap().clone();
+        if let Some(stream) = start_mic_capture(mic_name, level_tx_call.clone()) {
+            *active_mic_call.lock().unwrap() = Some(stream);
+            info!("Microfone ativado para chamada de DM!");
+        }
+
+        // ── Passo 3: Async — REST ring + OP4 VoiceStateUpdate ──
+        let http_opt = http_call_dm.lock().unwrap().as_ref().cloned();
+        let app_w = app_weak_call.clone();
+        let ch_id = channel_id.clone();
+        let cmd_tx_for_ring = Arc::clone(&cmd_tx_call);
+        tokio::spawn(async move {
+            // 1. Entrar na sala de voz da DM via Gateway OP4 primeiro
+            if let Some(cmd_tx_guard) = cmd_tx_for_ring.lock().unwrap().as_ref() {
+                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                    guild_id: "@me".to_string(),
+                    channel_id: Some(ch_id.clone()),
+                    self_mute: false,
+                    self_deaf: false,
+                });
+            }
+
+            // Aguarda 150ms para que o Gateway registre o VoiceState antes de disparar o toque
+            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+            // 2. Disparar o toque (ring) para os membros da conversa
+            if let Some(http) = http_opt {
+                if let Err(e) = http.ring_dm_call(&ch_id).await {
+                    warn!("Aviso ao disparar ring na DM {}: {:?} (a chamada de voz continua ativa)", ch_id, e);
+                } else {
+                    info!("🔔 DM ring iniciado com sucesso no canal {}", ch_id);
+                }
+            }
+        });
+    });
+
+    let http_hangup_dm = Arc::clone(&http_client);
+    let active_ch_hangup = Arc::clone(&active_channel_id);
+    let cmd_tx_hangup = Arc::clone(&cmd_tx_store);
+    let active_guild_hangup = Arc::clone(&active_guild_id);
+    let active_mic_hangup = Arc::clone(&active_mic_stream);
+    let app_weak_hangup = app_weak.clone();
+
+    app.on_hangup_dm(move || {
+        let channel_id = active_ch_hangup.lock().unwrap().clone();
+        if channel_id.is_empty() {
+            return;
+        }
+
+        // Para o microfone imediatamente
+        *active_mic_hangup.lock().unwrap() = None;
+        sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
+
+        let http_opt = http_hangup_dm.lock().unwrap().as_ref().cloned();
+        let app_w = app_weak_hangup.clone();
+        let ch_id = channel_id.clone();
+        // REST: stop-ringing
+        let ch_id2 = ch_id.clone();
+        tokio::spawn(async move {
+            if let Some(http) = http_opt {
+                if let Err(e) = http.stop_ringing_dm_call(&ch_id2).await {
+                    warn!("Falha ao parar ring na DM {}: {:?}", ch_id2, e);
+                } else {
+                    info!("🔕 DM ring parado no canal {}", ch_id2);
+                }
+            }
+        });
+        // OP4: desconectar do voice
+        let gid = active_guild_hangup.lock().unwrap().clone();
+        if let Some(cmd_tx_guard) = cmd_tx_hangup.lock().unwrap().as_ref() {
+            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                guild_id: gid,
+                channel_id: None,
+                self_mute: false,
+                self_deaf: false,
+            });
+        }
+        if let Some(ui) = app_w.upgrade() {
+            ui.set_is_in_dm_call(false);
+            ui.set_is_in_voice(false);
+            ui.set_is_voice_connecting(false);
+            ui.set_is_voice_focused(false);
+            ui.set_current_voice_channel("".into());
+            gateway::clear_voice_participants();
+        }
+    });
+
+    // Accept incoming DM call
+    let cmd_tx_accept = Arc::clone(&cmd_tx_store);
+    let http_accept = Arc::clone(&http_client);
+    let selected_input_accept = Arc::clone(&selected_input);
+    let active_mic_accept = Arc::clone(&active_mic_stream);
+    let level_tx_accept = level_tx.clone();
+    let app_weak_accept = app_weak.clone();
+
+    app.on_accept_call(move || {
+        if let Some(ui) = app_weak_accept.upgrade() {
+            let ch_id = ui.get_incoming_call_channel_id().to_string();
+            let caller = ui.get_incoming_call_caller_name().to_string();
+            if ch_id.is_empty() { return; }
+
+            // Fechar painel + abrir interface de voz
+            ui.set_has_incoming_call(false);
+            ui.set_incoming_call_channel_id("".into());
+            ui.set_is_in_voice(true);
+            ui.set_is_voice_connecting(true);
+            ui.set_is_voice_focused(true);
+            ui.set_is_in_dm_call(true);
+            ui.set_current_voice_channel(caller.into());
+            sound_effects::play_ui_sound(sound_effects::UiSound::JoinChannel);
+
+            // Iniciar mic
+            let mic_name = selected_input_accept.lock().unwrap().clone();
+            if let Some(stream) = start_mic_capture(mic_name, level_tx_accept.clone()) {
+                *active_mic_accept.lock().unwrap() = Some(stream);
+            }
+
+            // OP4: entrar no canal de voz da DM
+            if let Some(cmd_tx_guard) = cmd_tx_accept.lock().unwrap().as_ref() {
+                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                    guild_id: "@me".to_string(),
+                    channel_id: Some(ch_id.clone()),
+                    self_mute: false,
+                    self_deaf: false,
+                });
+            }
+
+            // REST: stop-ringing para parar o toque no chamador
+            let http_opt = http_accept.lock().unwrap().as_ref().cloned();
+            tokio::spawn(async move {
+                if let Some(http) = http_opt {
+                    let _ = http.stop_ringing_dm_call(&ch_id).await;
+                }
+            });
+        }
+    });
+
+    // Reject incoming DM call
+    let http_reject = Arc::clone(&http_client);
+    let app_weak_reject = app_weak.clone();
+
+    app.on_reject_call(move || {
+        if let Some(ui) = app_weak_reject.upgrade() {
+            let ch_id = ui.get_incoming_call_channel_id().to_string();
+            ui.set_has_incoming_call(false);
+            ui.set_incoming_call_channel_id("".into());
+            ui.set_incoming_call_caller_name("".into());
+
+            // REST: stop-ringing para parar o toque
+            if !ch_id.is_empty() {
+                let http_opt = http_reject.lock().unwrap().as_ref().cloned();
+                tokio::spawn(async move {
+                    if let Some(http) = http_opt {
+                        let _ = http.stop_ringing_dm_call(&ch_id).await;
+                    }
+                });
             }
         }
     });
@@ -2571,6 +2760,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 4. Reset backend states
+        crate::ui::helpers::reset_unread_and_dedup_state();
         *cmd_tx_logout.lock().unwrap() = None;
         *http_client_logout.lock().unwrap() = None;
         *last_token_logout.lock().unwrap() = String::new();
@@ -2597,6 +2787,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_saved_accounts(slint::ModelRc::new(slint::VecModel::from(vec![])));
+            ui.set_total_dm_unread_count(0);
             ui.set_has_qr_code(false);
             ui.set_qr_scanned_user("".into());
         }
@@ -2667,6 +2858,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Reset backend states
+        crate::ui::helpers::reset_unread_and_dedup_state();
         *cmd_tx_sw.lock().unwrap() = None;
         *http_client_sw.lock().unwrap() = None;
         *last_token_sw.lock().unwrap() = target_token.clone();
@@ -2690,6 +2882,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_total_dm_unread_count(0);
         }
 
         let app_w = app_weak_sw.clone();
@@ -2748,6 +2941,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Reset backend states in-memory (vault remains intact with existing accounts)
+        crate::ui::helpers::reset_unread_and_dedup_state();
         *cmd_tx_add.lock().unwrap() = None;
         *http_client_add.lock().unwrap() = None;
         *last_token_add.lock().unwrap() = String::new();
@@ -2773,6 +2967,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_guilds(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_channels(std::rc::Rc::new(slint::VecModel::default()).into());
             ui.set_voice_participants(std::rc::Rc::new(slint::VecModel::default()).into());
+            ui.set_total_dm_unread_count(0);
             ui.set_has_qr_code(false);
             ui.set_qr_scanned_user("".into());
         }
@@ -3079,15 +3274,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(http) = http_opt {
             tokio::spawn(async move {
-                fetch_and_populate_channels(
-                    &http,
-                    app_w,
-                    guilds_map_in,
-                    active_g_in,
-                    active_c_in,
-                    cmd_tx_in,
-                    &gid,
-                ).await;
+                if gid == "@me" {
+                    fetch_and_populate_dms(
+                        &http,
+                        app_w,
+                        guilds_map_in,
+                        active_g_in,
+                        active_c_in,
+                    ).await;
+                } else {
+                    if let Some(tx) = cmd_tx_in.lock().unwrap().as_ref() {
+                        let _ = tx.try_send(GatewayCommand::SubscribeGuild { guild_id: gid.clone(), channel_ids: Vec::new() });
+                    }
+                    fetch_and_populate_channels(
+                        &http,
+                        app_w,
+                        guilds_map_in,
+                        active_g_in,
+                        active_c_in,
+                        cmd_tx_in,
+                        &gid,
+                    ).await;
+                }
             });
         }
     });
@@ -3219,6 +3427,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_active_channel_id(ch_id.clone().into());
                 ui.set_is_voice_focused(false);
                 request_chat_scroll_to_bottom(app_weak_chan_select.clone());
+
+                // Zera o badge de não lidos do canal que foi aberto
+                let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
+                if let Some(ch) = channels.iter_mut().find(|c| c.id == ch_id.as_str()) {
+                    ch.unread_count = 0;
+                }
+                let model = std::rc::Rc::new(slint::VecModel::from(channels));
+                ui.set_channels(model.into());
+
+                // Zera o unread deste canal no mapa global de DMs e atualiza o badge do botão principal de DMs
+                let remaining_dm_unreads = crate::ui::helpers::clear_dm_unread(&ch_id);
+                ui.set_total_dm_unread_count(remaining_dm_unreads);
 
                 let http_opt = http_client_chan_select.lock().unwrap().as_ref().cloned();
                 let app_w = app_weak_chan_select.clone();
@@ -3778,12 +3998,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, timestamp } => {
-                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
-                    if channel_id != current_active_ch {
-                        // Message is for a different channel or different server — IGNORE from current chat UI!
+                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, timestamp, is_self } => {
+                    // Deduplicação: ignora se esta mensagem já foi processada anteriormente
+                    if !id.is_empty() && crate::ui::helpers::mark_msg_seen(&id) {
                         continue;
                     }
+
+                    let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    if channel_id != current_active_ch {
+                        // Se a mensagem foi enviada pelo próprio usuário (ex: pelo celular), não incrementa badge de não lido
+                        if is_self {
+                            let ch_id_for_reorder = channel_id.clone();
+                            let app_w_reorder = app_weak_inner.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_w_reorder.upgrade() {
+                                    let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
+                                    if let Some(pos) = channels.iter().position(|c| c.id == ch_id_for_reorder.as_str()) {
+                                        let ch = channels.remove(pos);
+                                        channels.insert(0, ch);
+                                        let model = std::rc::Rc::new(slint::VecModel::from(channels));
+                                        ui.set_channels(model.into());
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+
+                        // Mensagem de outro canal/usuário — incrementa badge de não lidos
+                        let ch_id_for_unread = channel_id.clone();
+                        let app_w_unread = app_weak_inner.clone();
+                        let gmap_for_unread = Arc::clone(&guilds_map_inner);
+
+                        if crate::ui::helpers::is_dm_channel(&ch_id_for_unread, &gmap_for_unread) {
+                            let total_dm_unreads = crate::ui::helpers::inc_dm_unread(&ch_id_for_unread);
+                            let app_w_dm = app_w_unread.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_w_dm.upgrade() {
+                                    ui.set_total_dm_unread_count(total_dm_unreads);
+                                }
+                            });
+                        }
+
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w_unread.upgrade() {
+                                let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
+                                let mut found = false;
+                                for ch in channels.iter_mut() {
+                                    if ch.id == ch_id_for_unread.as_str() {
+                                        ch.unread_count += 1;
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if found {
+                                    // Reordena DMs: move canal com nova mensagem para o topo
+                                    if let Some(pos) = channels.iter().position(|c| c.id == ch_id_for_unread.as_str()) {
+                                        let ch = channels.remove(pos);
+                                        channels.insert(0, ch);
+                                    }
+                                    let model = std::rc::Rc::new(slint::VecModel::from(channels));
+                                    ui.set_channels(model.into());
+                                }
+                            }
+                        });
+                        continue;
+                    }
+
+                    // Mensagem para o canal ativo atual: limpa o contador deste canal e move para o topo da lista
+                    let remaining_dm = crate::ui::helpers::clear_dm_unread(&channel_id);
+                    let app_w_active_ch = app_weak_inner.clone();
+                    let ch_id_active = channel_id.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w_active_ch.upgrade() {
+                            ui.set_total_dm_unread_count(remaining_dm);
+                            let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
+                            if let Some(pos) = channels.iter().position(|c| c.id == ch_id_active.as_str()) {
+                                let mut ch = channels.remove(pos);
+                                ch.unread_count = 0;
+                                channels.insert(0, ch);
+                                let model = std::rc::Rc::new(slint::VecModel::from(channels));
+                                ui.set_channels(model.into());
+                            }
+                        }
+                    });
 
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
@@ -3967,6 +4264,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 GatewayEvent::GuildLoaded { .. } => {
                     // Handled via HTTP REST instant fetching
+                }
+                GatewayEvent::IncomingCall { channel_id, caller_name } => {
+                    // Chamada de DM recebida — mostrar painel de notificação com nome do amigo
+                    let app_w = app_weak_inner.clone();
+                    let ch_id = channel_id.clone();
+                    let caller_raw = caller_name.clone();
+                    let gmap_inc = Arc::clone(&guilds_map_inner);
+
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            // Se já estivermos na chamada ou em sala de voz, não exibir modal
+                            if ui.get_is_in_dm_call() || ui.get_is_in_voice() {
+                                return;
+                            }
+
+                            // 1. Busca o nome do amigo diretamente nos canais da UI
+                            let mut resolved_name = String::new();
+                            for ch in ui.get_channels().iter() {
+                                if ch.id == ch_id.as_str() {
+                                    resolved_name = ch.name.to_string();
+                                    break;
+                                }
+                            }
+
+                            // 2. Se não achou na UI, busca no mapa de DMs em memória
+                            if resolved_name.is_empty() {
+                                if let Ok(gmap) = gmap_inc.lock() {
+                                    if let Some(dm_guild) = gmap.get("@me") {
+                                        if let Some(ch_data) = dm_guild.channels.iter().find(|c| c.id == ch_id) {
+                                            resolved_name = ch_data.name.clone();
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Fallback para o nome do evento ou "Amigo"
+                            if resolved_name.is_empty() {
+                                resolved_name = if !caller_raw.is_empty() && caller_raw != "Alguém" {
+                                    caller_raw
+                                } else {
+                                    "Amigo".to_string()
+                                };
+                            }
+
+                            ui.set_has_incoming_call(true);
+                            ui.set_incoming_call_channel_id(ch_id.into());
+                            ui.set_incoming_call_caller_name(resolved_name.into());
+                        }
+                    });
+                    sound_effects::play_ui_sound(sound_effects::UiSound::JoinChannel);
+                }
+                GatewayEvent::CallEnded { channel_id } => {
+                    // Chamada encerrada ou cancelada — fechar modal de chamada recebida
+                    let app_w = app_weak_inner.clone();
+                    let ch_id = channel_id.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            if ui.get_incoming_call_channel_id().as_str() == ch_id {
+                                ui.set_has_incoming_call(false);
+                                ui.set_incoming_call_channel_id("".into());
+                                ui.set_incoming_call_caller_name("".into());
+                            }
+                        }
+                    });
                 }
             }
         }

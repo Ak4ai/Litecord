@@ -101,6 +101,10 @@ export component AppWindow inherits Window {
     callback toggle_mute();
     callback toggle_deafen();
     callback leave_voice();
+    callback call_dm();    // Inicia chamada de voz em DM (ring + OP4)
+    callback hangup_dm();  // Encerra chamada de voz em DM (stop-ringing + OP4 null)
+    callback accept_call();  // Aceita chamada DM recebida
+    callback reject_call();  // Recusa chamada DM recebida
     callback minimize_to_tray();
     callback open_settings();
     callback close_settings();
@@ -366,6 +370,11 @@ export component AppWindow inherits Window {
     in-out property <string> current_voice_channel: "";
     in-out property <bool> is_voice_focused: false;
     in-out property <[VoiceParticipant]> voice_participants: [];
+    in-out property <bool> is_in_dm_call: false; // true while a DM voice call is active
+    in-out property <bool> has_incoming_call: false;  // true when receiving a DM call
+    in-out property <string> incoming_call_channel_id: "";
+    in-out property <string> incoming_call_caller_name: "";
+    in-out property <int> total_dm_unread_count: 0;
     in-out property <bool> show_user_menu: false;
     in-out property <[AccountItem]> saved_accounts: [];
     in-out property <string> login_alert_message: "";
@@ -998,6 +1007,90 @@ export component AppWindow inherits Window {
                     padding-left: 0px;
                     padding-right: 0px;
                     spacing: 0px;
+
+                    // Direct Messages (Home) Button
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 0px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            width: 8px;
+                            Rectangle {
+                                width: 4px;
+                                height: (root.active_guild_id == "@me") ? 36px : (dm_btn_ta.has-hover ? 16px : (root.total_dm_unread_count > 0 ? 8px : 0px));
+                                background: AppTheme.text-strong;
+                                border-top-right-radius: 4px;
+                                border-bottom-right-radius: 4px;
+                                animate height { duration: 150ms; easing: ease-out; }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 48px;
+                            width: 48px;
+                            background: (root.active_guild_id == "@me") ? AppTheme.accent : (dm_btn_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
+                            border-radius: (root.active_guild_id == "@me" || dm_btn_ta.has-hover) ? 14px : 16px;
+                            clip: false;
+                            animate border-radius, background { duration: 150ms; easing: ease-out; }
+
+                            Image {
+                                source: @image-url("../assets/dm-chat.svg");
+                                width: 24px;
+                                height: 24px;
+                                colorize: (root.active_guild_id == "@me" || dm_btn_ta.has-hover) ? AppTheme.text-on-accent : AppTheme.text-muted;
+                                image-fit: contain;
+                                animate colorize { duration: 150ms; }
+                            }
+
+                            // Unread Badge (pill no canto inferior direito estilo Discord)
+                            if root.total_dm_unread_count > 0: Rectangle {
+                                x: parent.width - self.width + 3px;
+                                y: parent.height - self.height + 3px;
+                                width: root.total_dm_unread_count > 99 ? 28px : (root.total_dm_unread_count > 9 ? 24px : 20px);
+                                height: 20px;
+                                border-radius: 10px;
+                                background: #ed4245;
+                                border-width: 2px;
+                                border-color: AppTheme.surface-sidebar;
+
+                                Text {
+                                    x: -1px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    text: root.total_dm_unread_count > 99 ? "99+" : "\{root.total_dm_unread_count}";
+                                    color: #ffffff;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            dm_btn_ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.active_guild_id = "@me";
+                                    root.select_guild("@me");
+                                }
+                            }
+                        }
+
+                        Rectangle { width: 8px; }
+                    }
+
+                    // Separator below Home button
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        Rectangle {
+                            width: 32px;
+                            height: 2px;
+                            border-radius: 1px;
+                            background: AppTheme.separator;
+                        }
+                    }
 
                     Rectangle {
                         vertical-stretch: 1;
@@ -2269,8 +2362,9 @@ export component AppWindow inherits Window {
                             padding-right: 16px;
                             spacing: 8px;
 
+                            // Show "@" prefix for DMs, "#" for regular channels
                             Text {
-                                text: "#";
+                                text: (root.active_guild_id == "@me") ? "@" : "#";
                                 color: AppTheme.text-subtle;
                                 font-size: 18px;
                                 font-weight: 800;
@@ -2286,6 +2380,47 @@ export component AppWindow inherits Window {
                             }
 
                             Rectangle { horizontal-stretch: 1; }
+
+                            // DM Voice Call Button — visible only in Direct Messages
+                            if root.active_guild_id == "@me": VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    height: 32px;
+                                    width: 32px;
+                                    border-radius: 6px;
+                                    background: root.is_in_dm_call
+                                        ? (dm_call_btn_ta.pressed ? #c0392b : (dm_call_btn_ta.has-hover ? #e74c3c : #ed4245))
+                                        : (dm_call_btn_ta.pressed ? AppTheme.accent-hover : (dm_call_btn_ta.has-hover ? AppTheme.accent : AppTheme.interactive-muted));
+                                    animate background { duration: 120ms; }
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: root.is_in_dm_call
+                                                    ? @image-url("../assets/phone-slash.svg")
+                                                    : @image-url("../assets/phone.svg");
+                                                width: 16px;
+                                                height: 16px;
+                                                colorize: AppTheme.text-on-accent;
+                                                image-fit: contain;
+                                            }
+                                        }
+                                    }
+
+                                    dm_call_btn_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if root.is_in_dm_call {
+                                                root.hangup_dm();
+                                            } else {
+                                                root.call_dm();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
                             if root.is_in_voice: VerticalLayout {
                                 alignment: center;
@@ -4425,6 +4560,150 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Incoming DM Call Notification Panel ───────────────────────────────────────
+    if root.has_incoming_call: Rectangle {
+        x: parent.width - 320px - 20px;
+        y: parent.height - 140px - 20px;
+        width: 320px;
+        height: 140px;
+        border-radius: 12px;
+        background: AppTheme.surface-sidebar;
+        border-width: 1px;
+        border-color: AppTheme.separator;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000060;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            // Header: icon + caller name
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 18px;
+                        background: AppTheme.accent;
+
+                        VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../assets/phone.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: AppTheme.text-on-accent;
+                                    image-fit: contain;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "Chamada de voz recebida";
+                        color: AppTheme.text-muted;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.incoming_call_caller_name;
+                        color: AppTheme.text-strong;
+                        font-size: 14px;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            // Buttons: Accept (green) | Reject (red)
+            HorizontalLayout {
+                spacing: 8px;
+
+                // Accept button
+                Rectangle {
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    border-radius: 6px;
+                    background: ic_accept_ta.pressed ? #1a7a2e : (ic_accept_ta.has-hover ? #27ae60 : #2ecc71);
+                    animate background { duration: 100ms; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/phone.svg");
+                                width: 14px; height: 14px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "Atender";
+                                color: #ffffff;
+                                font-size: 13px;
+                                font-weight: 700;
+                            }
+                        }
+                    }
+                    ic_accept_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.accept_call(); }
+                    }
+                }
+
+                // Reject button
+                Rectangle {
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    border-radius: 6px;
+                    background: ic_reject_ta.pressed ? #8b0000 : (ic_reject_ta.has-hover ? #c0392b : #ed4245);
+                    animate background { duration: 100ms; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/phone-slash.svg");
+                                width: 14px; height: 14px;
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "Recusar";
+                                color: #ffffff;
+                                font-size: 13px;
+                                font-weight: 700;
+                            }
+                        }
+                    }
+                    ic_reject_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.reject_call(); }
                     }
                 }
             }

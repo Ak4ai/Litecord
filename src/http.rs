@@ -1,6 +1,6 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
-use log::{info, error};
+use log::{info, warn, error};
 
 #[derive(Clone)]
 pub struct DiscordHttpClient {
@@ -54,6 +54,22 @@ impl DiscordHttpClient {
                 if status.is_success() {
                     if let Ok(guilds) = resp.json::<Vec<serde_json::Value>>().await {
                         return Ok(guilds);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+        }
+    }
+
+    pub async fn get_user_dms(&self) -> Result<Vec<serde_json::Value>, String> {
+        let url = "https://discord.com/api/v10/users/@me/channels";
+        match self.client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(dms) = resp.json::<Vec<serde_json::Value>>().await {
+                        return Ok(dms);
                     }
                 }
                 Err(format!("Status HTTP {}", status))
@@ -302,6 +318,52 @@ impl DiscordHttpClient {
             Err(e) => {
                 let err = format!("Falha de rede ao enviar slash command interaction: {:?}", e);
                 error!("{}", err);
+                Err(err)
+            }
+        }
+    }
+
+    pub async fn ring_dm_call(&self, channel_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v9/channels/{}/call/ring", channel_id);
+        let payload = json!({ "recipients": serde_json::Value::Null });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() || resp.status().as_u16() == 204 {
+                    info!("🔔 Chamada de DM tocando no canal {}...", channel_id);
+                    Ok(())
+                } else {
+                    let err = format!("Status de erro HTTP ao iniciar toque da DM: {}", resp.status());
+                    warn!("{}", err);
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                let err = format!("Falha de rede ao iniciar toque da DM: {:?}", e);
+                warn!("{}", err);
+                Err(err)
+            }
+        }
+    }
+
+    pub async fn stop_ringing_dm_call(&self, channel_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v9/channels/{}/call/stop-ringing", channel_id);
+        let payload = json!({ "recipients": serde_json::Value::Null });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() || resp.status().as_u16() == 204 {
+                    info!("🔕 Toque da chamada de DM interrompido no canal {}.", channel_id);
+                    Ok(())
+                } else {
+                    let err = format!("Status de erro HTTP ao parar toque da DM: {}", resp.status());
+                    warn!("{}", err);
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                let err = format!("Falha de rede ao parar toque da DM: {:?}", e);
+                warn!("{}", err);
                 Err(err)
             }
         }

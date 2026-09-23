@@ -14,6 +14,7 @@ export struct ChannelItem {
     has_parent: bool,
     is_collapsed: bool,
     has_separator: bool,
+    unread_count: int,  // Badge de mensagens não lidas (0 = sem badge)
 }
 
 
@@ -155,11 +156,25 @@ export component ChannelSidebar inherits Rectangle {
                                 }
                             }
 
-                            // Text channel icon: '#'
+                            // Text channel icon: avatar initials (if DM) or '#' (if server channel)
                             if !channel.is_voice : VerticalLayout {
                                 alignment: center;
-                                width: 14px;
-                                Text {
+                                width: channel.avatar_text != "" ? 22px : 14px;
+                                if channel.avatar_text != "" : Rectangle {
+                                    width: 20px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: (channel.id == root.active_channel_id) ? AppTheme.accent : AppTheme.interactive-selected;
+                                    Text {
+                                        text: channel.avatar_text;
+                                        color: (channel.id == root.active_channel_id) ? AppTheme.text-on-accent : AppTheme.text-strong;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                if channel.avatar_text == "" : Text {
                                     text: "#";
                                     color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.accent-soft : AppTheme.text-subtle);
                                     font-size: 16px;
@@ -173,14 +188,37 @@ export component ChannelSidebar inherits Rectangle {
                             // Channel Name
                             Text {
                                 text: channel.name;
-                                color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.text-strong : AppTheme.text-primary);
+                                color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.text-strong : (channel.unread_count > 0 ? AppTheme.text-strong : AppTheme.text-primary));
                                 font-size: 13px;
-                                font-weight: 600;
+                                font-weight: channel.unread_count > 0 ? 700 : 600;
                                 horizontal-alignment: left;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                                 overflow: elide;
                                 animate color { duration: 120ms; }
+                            }
+
+                            // Unread message count badge (red pill for DMs)
+                            if channel.unread_count > 0 && channel.id != root.active_channel_id : VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: channel.unread_count > 99 ? 28px : (channel.unread_count > 9 ? 24px : 20px);
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: #ed4245;
+
+                                    Text {
+                                        x: -1px;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        text: channel.unread_count > 99 ? "99+" : "\{channel.unread_count}";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
 
                             // Voice user count badge (Perfect round circle in blue)

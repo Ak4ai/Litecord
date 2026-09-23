@@ -61,7 +61,7 @@ jobs:
           path: target/installer/Litecord-Setup-x64.exe
 
   build-linux:
-    name: Build Linux (.tar.gz)
+    name: Build Linux (.tar.gz & AppImage)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -83,7 +83,9 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev \
             libxkbcommon-x11-dev \
-            libxkbcommon-x11-0
+            libxkbcommon-x11-0 \
+            patchelf \
+            xvfb
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -108,11 +110,42 @@ jobs:
           cp README.md release-pkg/ 2>/dev/null || true
           tar -czvf litecord-linux-x64.tar.gz -C release-pkg .
 
-      - name: Upload Linux Artifact
+      - name: Build Anylinux AppImage
+        run: |
+          # 1. Download quick-sharun script from pkgforge-dev
+          wget --retry-connrefused --tries=5 -q https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/quick-sharun.sh -O ./quick-sharun
+          chmod +x ./quick-sharun
+
+          # 2. Ensure icon and desktop file are prepared
+          cp assets/app_icon.png assets/litecord.png
+
+          # 3. Configure environment variables for quick-sharun
+          export OUTPATH=.
+          export DESKTOP=assets/litecord.desktop
+          export ICON=assets/litecord.png
+          export DEPLOY_GTK=1
+
+          # 4. Bundle binary and all shared libraries (including dlopened ones)
+          ./quick-sharun target/release/litecord
+
+          # 5. Pack into portable Anylinux AppImage
+          ./quick-sharun --make-appimage
+
+          # 6. Standardize file name for release
+          mv -f *.AppImage Litecord-x86_64.AppImage || true
+          ls -lh Litecord-x86_64.AppImage
+
+      - name: Upload Linux tar.gz Artifact
         uses: actions/upload-artifact@v4
         with:
           name: litecord-linux-x64
           path: litecord-linux-x64.tar.gz
+
+      - name: Upload Linux AppImage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Litecord-x86_64.AppImage
+          path: Litecord-x86_64.AppImage
 
   create-release:
     name: Publish GitHub Release
@@ -148,6 +181,7 @@ jobs:
             release-artifacts/Litecord-Setup-x64.exe
             release-artifacts/litecord-windows-x64-portable.zip
             release-artifacts/litecord-linux-x64.tar.gz
+            release-artifacts/Litecord-x86_64.AppImage
           generate_release_notes: false
           append_body: false
           draft: false

@@ -5,6 +5,34 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-beta] - 2026-09-23 — Mensagens Diretas (DMs), Chamadas de Voz P2P & AnyLinux AppImage
+
+Esta versão introduz suporte completo a **Mensagens Diretas (DMs)**, **Chamadas de Voz Privadas (DM Voice Calls)**, badges de mensagens não lidas com sincronização em tempo real e empacotamento universal **AppImage AnyLinux (distro-agnostic)** via GitHub Actions.
+
+---
+
+### 💬 Mensagens Diretas (DMs) & Chamadas de Voz Privadas
+- **Listagem e Gerenciamento de DMs**:
+  - Suporte completo a conversas individuais e em grupo na barra lateral de DMs com avatares e presença.
+  - Sincronização em tempo real de contadores de mensagens não lidas por canal e badge global acumulada no ícone de DM.
+- **Chamadas de Voz em DMs (Ring & Call Management)**:
+  - Inicialização de chamadas privadas diretamente da barra superior de DMs.
+  - Modal de chamada recebida com detecção precisa do originador, toques e botões de atender/recusar.
+  - Resolução automática de estado quando o usuário atual é o originador da chamada.
+- **Badges de Mensagens Não Lidas**:
+  - Alinhamento óptico e geométrico idêntico às badges de canais de voz.
+  - Desduplicação inteligente de eventos `MESSAGE_CREATE` para prevenir contagens espúrias.
+
+---
+
+### 🐧 AnyLinux Universal AppImage & CI/CD
+- **Distribuição Universal para Linux**:
+  - Geração automatizada de `Litecord-x86_64.AppImage` no GitHub Actions utilizando `quick-sharun`.
+  - Compatibilidade ampla (glibc / distro-agnostic) para rodar em Ubuntu, Debian, Fedora, Arch Linux, etc.
+  - Inclusão dos metadados de desktop (`assets/litecord.desktop`) e ícone de alta resolução (`assets/litecord.png`).
+
+---
+
 ## [v1.0.0-beta] - 2026-09-08 — Litecord Beta 1.0.0
 
 Esta versão marca a **transição oficial do ciclo Alfa (v0.1.0 – v0.3.9) para a fase Beta 1.0.0**, consolidando uma reestruturação profunda da arquitetura do aplicativo, um novo motor de streaming de tela por hardware de latência zero (padrão Sunshine / Moonlight), isolamento de áudio de processos, suporte nativo a proxies, atalhos globais e monitor de consumo real em tempo real.

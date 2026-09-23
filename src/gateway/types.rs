@@ -99,6 +99,7 @@ pub enum GatewayEvent {
         buttons: Vec<MessageButtonData>,
         attachments: Vec<MessageAttachmentData>,
         timestamp: String,
+        is_self: bool,
     },
     MessageUpdated {
         id: String,
@@ -124,6 +125,13 @@ pub enum GatewayEvent {
     },
     GuildLoaded {
         guild: GuildData,
+    },
+    IncomingCall {
+        channel_id: String,
+        caller_name: String,
+    },
+    CallEnded {
+        channel_id: String,
     },
 }
 

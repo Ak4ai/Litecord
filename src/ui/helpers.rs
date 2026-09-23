@@ -12,8 +12,71 @@ use crate::http::DiscordHttpClient;
 use crate::gateway::{self, ChannelData};
 use crate::utils::i18n;
 use crate::utils::video_settings;
-use crate::utils::emoji_cache;
 use crate::utils::attachment_cache;
+use crate::utils::emoji_cache;
+use std::sync::Mutex;
+use std::collections::{HashMap, HashSet, VecDeque};
+
+static DM_UNREAD_MAP: std::sync::LazyLock<Mutex<HashMap<String, i32>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static PROCESSED_MSG_IDS: std::sync::LazyLock<Mutex<(HashSet<String>, VecDeque<String>)>> =
+    std::sync::LazyLock::new(|| Mutex::new((HashSet::new(), VecDeque::new())));
+
+pub fn get_dm_unread(ch_id: &str) -> i32 {
+    DM_UNREAD_MAP.lock().unwrap().get(ch_id).copied().unwrap_or(0)
+}
+
+pub fn inc_dm_unread(ch_id: &str) -> i32 {
+    let mut map = DM_UNREAD_MAP.lock().unwrap();
+    let count = map.entry(ch_id.to_string()).or_insert(0);
+    *count += 1;
+    map.values().sum()
+}
+
+pub fn clear_dm_unread(ch_id: &str) -> i32 {
+    let mut map = DM_UNREAD_MAP.lock().unwrap();
+    map.remove(ch_id);
+    map.values().sum()
+}
+
+pub fn get_total_dm_unreads() -> i32 {
+    DM_UNREAD_MAP.lock().unwrap().values().sum()
+}
+
+pub fn mark_msg_seen(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    let mut guard = PROCESSED_MSG_IDS.lock().unwrap();
+    if guard.0.contains(id) {
+        return true;
+    }
+    guard.0.insert(id.to_string());
+    guard.1.push_back(id.to_string());
+    if guard.1.len() > 1000 {
+        if let Some(old) = guard.1.pop_front() {
+            guard.0.remove(&old);
+        }
+    }
+    false
+}
+
+pub fn reset_unread_and_dedup_state() {
+    DM_UNREAD_MAP.lock().unwrap().clear();
+    let mut guard = PROCESSED_MSG_IDS.lock().unwrap();
+    guard.0.clear();
+    guard.1.clear();
+}
+
+pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::gateway::GuildData>>>) -> bool {
+    if let Ok(map) = guilds_map.lock() {
+        if let Some(dm_guild) = map.get("@me") {
+            return dm_guild.channels.iter().any(|c| c.id == ch_id);
+        }
+    }
+    false
+}
 
 pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -784,6 +847,7 @@ pub fn build_ui_channels(
                 has_parent: false,
                 is_collapsed,
                 has_separator,
+                unread_count: 0,
             });
         } else {
             if let Some(ref pid) = ch.parent_id {
@@ -809,6 +873,7 @@ pub fn build_ui_channels(
                 has_parent: ch.parent_id.is_some(),
                 is_collapsed: false,
                 has_separator: false,
+                unread_count: 0,
             });
 
             for (user_id, name) in voice_participants {
@@ -830,6 +895,7 @@ pub fn build_ui_channels(
                     has_parent: ch.parent_id.is_some(),
                     is_collapsed: false,
                     has_separator: false,
+                    unread_count: 0,
                 });
             }
         }
