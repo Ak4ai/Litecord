@@ -11,9 +11,10 @@ use crate::{
 use crate::gateway::{self, GatewayClient, GatewayEvent, GatewayCommand, GuildData, ChannelData, format_discord_author, format_discord_message_parts};
 use crate::http::DiscordHttpClient;
 use crate::ui::helpers::*;
+use crate::ui::message_grouping::{apply_message_metadata, regroup_messages};
 use crate::auth::vault::*;
 use crate::utils::updater;
-use crate::utils::emoji_cache;
+use crate::utils::{avatar_cache, emoji_cache};
 use slint::{Image, Model};
 
 #[derive(Clone, Debug, Default)]
@@ -458,6 +459,8 @@ pub async fn fetch_and_populate_channels(
                             buttons: slint::ModelRc::default(),
                             attachments: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
+                            show_header: true,
+                            ..Default::default()
                         }];
                         let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
                         ui.set_messages(model.into());
@@ -693,7 +696,7 @@ pub async fn load_messages_for_channel(
                     ui.set_has_more_older_messages(has_more);
                     ui.set_is_loading_older_messages(false);
 
-                    let ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
+                    let mut ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
                         vec![ChatMessage {
                             id: "".into(),
                             author: "Litecord System".into(),
@@ -712,6 +715,8 @@ pub async fn load_messages_for_channel(
                             buttons: slint::ModelRc::default(),
                             attachments: slint::ModelRc::default(),
                             timestamp: "Agora".into(),
+                            show_header: true,
+                            ..Default::default()
                         }]
                     } else {
                         msgs_val.iter().rev().map(|m| {
@@ -728,7 +733,7 @@ pub async fn load_messages_for_channel(
                             }).collect();
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                            ChatMessage {
+                            let mut message = ChatMessage {
                                 id: msg_id.into(),
                                 author: author.into(),
                                 content: content.into(),
@@ -746,9 +751,14 @@ pub async fn load_messages_for_channel(
                                 buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
                                 attachments: map_message_attachments(&attachments, &app_weak_load),
                                 timestamp: "Agora".into(),
-                            }
+                                ..Default::default()
+                            };
+                            apply_message_metadata(&mut message, m);
+                            message
                         }).collect()
                     };
+                    regroup_messages(&mut ui_msgs);
+                    avatar_cache::get_avatar_cache().hydrate(&mut ui_msgs, &app_weak);
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
 
@@ -786,6 +796,8 @@ pub async fn load_messages_for_channel(
                         buttons: slint::ModelRc::default(),
                         attachments: slint::ModelRc::default(),
                         timestamp: "Agora".into(),
+                        show_header: true,
+                        ..Default::default()
                     }];
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());

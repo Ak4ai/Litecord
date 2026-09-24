@@ -84,6 +84,10 @@ pub enum GatewayEvent {
         id: String,
         channel_id: String,
         author: String,
+        author_id: String,
+        created_at: String,
+        avatar_url: String,
+        is_bot: bool,
         content: String,
         commands: Vec<String>,
         content_lines: Vec<MessageLineData>,
@@ -98,7 +102,6 @@ pub enum GatewayEvent {
         links: Vec<LinkData>,
         buttons: Vec<MessageButtonData>,
         attachments: Vec<MessageAttachmentData>,
-        timestamp: String,
         is_self: bool,
     },
     MessageUpdated {

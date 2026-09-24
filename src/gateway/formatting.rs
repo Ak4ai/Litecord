@@ -349,13 +349,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let author_obj = &m["author"];
     let name = author_obj["global_name"].as_str()
         .unwrap_or_else(|| author_obj["username"].as_str().unwrap_or("Unknown"));
-    let is_bot = author_obj["bot"].as_bool().unwrap_or(false);
-
-    if is_bot {
-        format!("{} [BOT]", name)
-    } else {
-        name.to_string()
-    }
+    name.to_string()
 }
 
 pub fn is_emoji_char(c: char) -> bool {

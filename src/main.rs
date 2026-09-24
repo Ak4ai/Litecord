@@ -2215,6 +2215,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     buttons: slint::ModelRc::default(),
                     attachments: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
+                    show_header: true,
+                    ..Default::default()
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                 ui.set_messages(model.into());
@@ -2567,7 +2569,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }).collect();
                                     let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                                    ChatMessage {
+                                    let mut message = ChatMessage {
                                         id: msg_id.into(),
                                         author: author.into(),
                                         content: content.into(),
@@ -2585,12 +2587,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         buttons: map_message_buttons(&buttons, &ch_id_clone, &app_w_inner),
                                         attachments: map_message_attachments(&attachments, &app_w_inner),
                                         timestamp: "Anterior".into(),
-                                    }
+                                        ..Default::default()
+                                    };
+                                    apply_message_metadata(&mut message, m);
+                                    message
                                 }).collect();
 
                                 let current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
                                 let mut combined = older_slint_msgs;
                                 combined.extend(current_msgs);
+                                regroup_messages(&mut combined);
+                                avatar_cache::get_avatar_cache().hydrate(&mut combined, &app_w_inner);
                                 let model = std::rc::Rc::new(slint::VecModel::from(combined));
                                 ui.set_messages(model.into());
                             }
@@ -3418,6 +3425,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     buttons: slint::ModelRc::default(),
                     attachments: slint::ModelRc::default(),
                     timestamp: "Agora".into(),
+                    show_header: true,
+                    ..Default::default()
                 });
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                 ui.set_messages(model.into());
@@ -3998,7 +4007,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
-                GatewayEvent::MessageCreated { id, channel_id, author, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, timestamp, is_self } => {
+                GatewayEvent::MessageCreated { id, channel_id, author, author_id, created_at, avatar_url, is_bot, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, is_self } => {
                     // Deduplicação: ignora se esta mensagem já foi processada anteriormente
                     if !id.is_empty() && crate::ui::helpers::mark_msg_seen(&id) {
                         continue;
@@ -4101,7 +4110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }).collect();
                                 let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                                current_msgs.push(ChatMessage {
+                                let mut message = ChatMessage {
                                     id: id.into(),
                                     author: author.into(),
                                     content: content.into(),
@@ -4118,8 +4127,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     links: slint::ModelRc::from(links_model),
                                     buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
                                     attachments: map_message_attachments(&attachments, &app_weak_inner),
-                                    timestamp: timestamp.into(),
-                                });
+                                    timestamp: "Agora".into(),
+                                    ..Default::default()
+                                };
+                                set_message_metadata(&mut message, &author_id, &created_at);
+                                message.avatar_url = avatar_url.into();
+                                message.avatar_initial = message.author.chars().next().unwrap_or('?').to_uppercase().to_string().into();
+                                message.is_bot = is_bot;
+                                current_msgs.push(message);
+                                regroup_messages(&mut current_msgs);
+                                avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
                                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                                 ui.set_messages(model.into());
 
@@ -4194,9 +4211,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
                                     attachments: map_message_attachments(&attachments, &app_weak_inner),
                                     timestamp: "Agora".into(),
+                                    show_header: true,
+                                    ..Default::default()
                                 });
                             }
 
+                            regroup_messages(&mut current_msgs);
                             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                             ui.set_messages(model.into());
                         }
@@ -4210,7 +4230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
-                            let current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
+                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
+                            regroup_messages(&mut current_msgs);
                             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                             ui.set_messages(model.into());
                         }
