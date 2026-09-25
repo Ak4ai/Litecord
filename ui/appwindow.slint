@@ -1,5 +1,6 @@
 import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
-import { AppTheme, ThemeMode } from "theme.slint";
+import { AppTheme, ChatTypography, ThemeMode } from "theme.slint";
+import "../assets/fonts/Inter-Variable.ttf";
 
 import { IconButton } from "components/icon_button.slint";
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
@@ -432,7 +433,7 @@ export component AppWindow inherits Window {
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
     in-out property <[ChatMessage]> messages: [
-        { author: "Litecord System", timestamp: "Agora", content: "Bem-vindo ao Litecord! Seus servidores carregarão na barra lateral à esquerda." }
+        { author: "Litecord System", show_header: true, timestamp: "Agora", content: "Bem-vindo ao Litecord! Seus servidores carregarão na barra lateral à esquerda." }
     ];
 
     VerticalBox {
@@ -2741,6 +2742,8 @@ export component AppWindow inherits Window {
                                 msg_arg_input := LineEdit {
                                     horizontal-stretch: 1;
                                     text <=> root.command_arg_text;
+                                    font-family: ChatTypography.family;
+                                    font-size: ChatTypography.body-size;
                                     placeholder-text: root.active_param_name != "" ? (root.active_param_desc != "" ? root.active_param_desc : "Digite o valor para " + root.active_param_name + "...") : "Pressione Enter ou Enviar para executar " + root.active_command_name + "...";
                                     accepted => {
                                         root.execute_active_command(
@@ -2771,7 +2774,8 @@ export component AppWindow inherits Window {
                                     height: 100%;
                                     text: root.tr_chat_placeholder_prefix + root.active_channel_name + "...";
                                     color: AppTheme.text-subtle;
-                                    font-size: 13.5px;
+                                    font-family: ChatTypography.family;
+                                    font-size: ChatTypography.body-size;
                                     vertical-alignment: center;
                                 }
 
@@ -2781,7 +2785,8 @@ export component AppWindow inherits Window {
                                     height: 100%;
                                     text <=> root.chat_input_text;
                                     color: AppTheme.text-primary;
-                                    font-size: 13.5px;
+                                    font-family: ChatTypography.family;
+                                    font-size: ChatTypography.body-size;
                                     vertical-alignment: center;
                                     single-line: true;
                                     key-pressed(event) => {
