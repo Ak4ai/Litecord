@@ -4136,9 +4136,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 message.is_bot = is_bot;
                                 current_msgs.push(message);
                                 regroup_messages(&mut current_msgs);
-                                avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
-                                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-                                ui.set_messages(model.into());
+                                // An append never changes the grouping of older rows. Keep the
+                                // existing model so a new message does not rebuild the chat UI.
+                                let mut appended = current_msgs.pop().expect("message was appended");
+                                avatar_cache::get_avatar_cache().hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
+                                let messages = ui.get_messages();
+                                if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
+                                    model.push(appended);
+                                } else {
+                                    current_msgs.push(appended);
+                                    ui.set_messages(std::rc::Rc::new(slint::VecModel::from(current_msgs)).into());
+                                }
 
                                 request_chat_scroll_to_bottom(app_weak_inner.clone());
                             }
@@ -4232,6 +4240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
                             regroup_messages(&mut current_msgs);
+                            avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
                             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                             ui.set_messages(model.into());
                         }
