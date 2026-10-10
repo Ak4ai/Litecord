@@ -18,10 +18,10 @@ fn main() {
 
     // 1. Benchmark do Handshake X25519 ECDH
     let t0 = Instant::now();
-    let tx_secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let tx_secret = StaticSecret::from(rand::random::<[u8; 32]>());
     let tx_public = PublicKey::from(&tx_secret);
 
-    let rx_secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let rx_secret = StaticSecret::from(rand::random::<[u8; 32]>());
     let rx_public = PublicKey::from(&rx_secret);
 
     let shared_tx = tx_secret.diffie_hellman(&rx_public);

@@ -21,7 +21,7 @@ pub fn get_or_create_local_ecdh_keypair() -> [u8; 32] {
     if let Some(pub_bytes) = *pub_lock {
         return pub_bytes;
     }
-    let secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let secret = StaticSecret::from(rand::random::<[u8; 32]>());
     let public = PublicKey::from(&secret);
     let pub_bytes = *public.as_bytes();
     *LOCAL_ECDH_SECRET.lock().unwrap_or_else(|e| e.into_inner()) = Some(secret);
