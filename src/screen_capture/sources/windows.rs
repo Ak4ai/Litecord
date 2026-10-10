@@ -8,7 +8,8 @@ pub fn list_screens() -> Vec<MonitorItemInfo> {
     use windows_sys::Win32::Graphics::Gdi::{
         EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
     };
-    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{LPARAM, RECT, TRUE};
 
     struct MonitorEnumData {
         screens: Vec<MonitorItemInfo>,
@@ -74,7 +75,8 @@ pub fn list_screens() -> Vec<MonitorItemInfo> {
 
 #[cfg(windows)]
 pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowLongPtrW, GetWindowTextW, IsWindowVisible, GWL_EXSTYLE, GWL_STYLE,
         WS_EX_TOOLWINDOW, WS_VISIBLE,
@@ -364,7 +366,7 @@ pub fn capture_screen_rgb(target_hwnd: isize, target_w: u32, target_h: u32, _tar
             hwnd: windows_sys::Win32::Foundation::HWND,
             hdcBlt: windows_sys::Win32::Graphics::Gdi::HDC,
             nFlags: u32,
-        ) -> windows_sys::Win32::Foundation::BOOL;
+        ) -> windows_sys::core::BOOL;
     }
 
     struct GdiCaptureContext {

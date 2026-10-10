@@ -150,7 +150,7 @@ pub fn start_window_border_overlay(target_hwnd: isize) {
                 // Exclude overlay from all screen captures (WDA_EXCLUDEFROMCAPTURE = 0x00000011)
                 #[link(name = "user32")]
                 extern "system" {
-                    fn SetWindowDisplayAffinity(hwnd: HWND, dwAffinity: u32) -> windows_sys::Win32::Foundation::BOOL;
+                    fn SetWindowDisplayAffinity(hwnd: HWND, dwAffinity: u32) -> windows_sys::core::BOOL;
                 }
                 SetWindowDisplayAffinity(overlay_hwnd, 0x00000011);
 
