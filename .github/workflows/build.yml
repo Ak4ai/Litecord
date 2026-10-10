@@ -61,7 +61,7 @@ jobs:
           path: target/installer/Litecord-Setup-x64.exe
 
   build-linux:
-    name: Build Linux (.tar.gz & AppImage)
+    name: Build Linux (.tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -110,46 +110,83 @@ jobs:
           cp README.md release-pkg/ 2>/dev/null || true
           tar -czvf litecord-linux-x64.tar.gz -C release-pkg .
 
-      - name: Build Anylinux AppImage
-        run: |
-          # 1. Download quick-sharun script from pkgforge-dev
-          wget --retry-connrefused --tries=5 -q https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/quick-sharun.sh -O ./quick-sharun
-          chmod +x ./quick-sharun
-
-          # 2. Ensure icon and desktop file are prepared
-          cp assets/app_icon.png assets/litecord.png
-
-          # 3. Configure environment variables for quick-sharun
-          export OUTPATH=.
-          export DESKTOP=assets/litecord.desktop
-          export ICON=assets/litecord.png
-          export DEPLOY_GTK=1
-
-          # 4. Bundle binary and all shared libraries (including dlopened ones)
-          ./quick-sharun target/release/litecord
-
-          # 5. Pack into portable Anylinux AppImage
-          ./quick-sharun --make-appimage
-
-          # 6. Standardize file name for release
-          mv -f *.AppImage Litecord-x86_64.AppImage || true
-          ls -lh Litecord-x86_64.AppImage
-
       - name: Upload Linux tar.gz Artifact
         uses: actions/upload-artifact@v4
         with:
           name: litecord-linux-x64
           path: litecord-linux-x64.tar.gz
 
+  # Anylinux AppImage, built the way pkgforge-dev documents it:
+  # https://pkgforge-dev.github.io/Anylinux-AppImages/HOW-TO-MAKE-THESE.html
+  # - build on Arch Linux (never Debian/Fedora), app installed under /usr
+  # - quick-sharun bundles the binary + every dlopen'd lib, sharun is the AppRun
+  # - no LD_LIBRARY_PATH tricks, libc is bundled so it runs on musl/old distros too
+  build-appimage:
+    name: Build Anylinux AppImage
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install build & bundling dependencies (Arch)
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel git wget file strace rust clang cmake nasm pkgconf patchelf \
+            alsa-lib openssl gtk3 libayatana-appindicator xdotool \
+            libx11 libxcb libxkbcommon libxkbcommon-x11 wayland fontconfig freetype2 \
+            mesa vulkan-icd-loader pipewire pipewire-alsa \
+            gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire \
+            xorg-server-xvfb
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Rust dependencies & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-appimage"
+          cache-on-failure: true
+
+      - name: Build and install Litecord under /usr
+        run: |
+          cargo build --release --bin litecord
+          install -Dm755 target/release/litecord /usr/bin/litecord
+
+      - name: Bundle Anylinux AppImage (quick-sharun)
+        env:
+          DESKTOP: assets/litecord.desktop
+          ICON: assets/litecord.png
+          OUTPATH: ./dist
+          OUTNAME: Litecord-x86_64.AppImage
+          # Slint/winit renders through OpenGL; cpal talks to ALSA, which the
+          # PipeWire plugin must serve; tray-icon pulls GTK3 + appindicator.
+          DEPLOY_OPENGL: 1
+          DEPLOY_PIPEWIRE: 1
+          DEPLOY_GTK: 1
+          # Screen capture shells out to gst-launch-1.0 (src/screen_capture), so
+          # ship GStreamer and the launcher itself inside the AppImage.
+          DEPLOY_GSTREAMER: 1
+        run: |
+          wget --retry-connrefused --tries=5 -q \
+            https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/quick-sharun.sh \
+            -O ./quick-sharun
+          chmod +x ./quick-sharun
+          mkdir -p dist
+          # xvfb: quick-sharun briefly runs the binary to discover dlopen'd libs.
+          xvfb-run -a -- ./quick-sharun /usr/bin/litecord /usr/bin/gst-launch-1.0
+          ./quick-sharun --make-appimage
+          ls -lh dist
+          test -f dist/Litecord-x86_64.AppImage
+
       - name: Upload Linux AppImage Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Litecord-x86_64.AppImage
-          path: Litecord-x86_64.AppImage
+          path: dist/Litecord-x86_64.AppImage
 
   create-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-appimage]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
