@@ -1,5 +1,5 @@
 import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
-import { AppTheme } from "../theme.slint";
+import { AppTheme, ChatTypography } from "../theme.slint";
 
 export struct LinkItem {
     label: string,
@@ -49,7 +49,16 @@ export struct MessageButton {
 export struct ChatMessage {
     id: string,
     author: string,
+    author_id: string,
+    created_at: string,
+    show_header: bool,
+    day_label: string,
+    avatar_url: string,
+    avatar_img: image,
+    avatar_initial: string,
+    is_bot: bool,
     timestamp: string,
+    hover_timestamp: string,
     content: string,
     commands: [string],
     content_lines: [MessageLine],
@@ -152,28 +161,86 @@ export component ChatMessagesView inherits Rectangle {
                 }
             }
 
-            for msg in root.messages: Rectangle {
+            for msg in root.messages: VerticalLayout {
                 width: 100%;
-                background: transparent;
+                spacing: 0px;
+
+                if msg.day_label != "": HorizontalLayout {
+                    padding-top: 15px;
+                    padding-bottom: 9px;
+                    spacing: 10px;
+                    alignment: center;
+                    Rectangle { height: 1px; background: AppTheme.separator; horizontal-stretch: 1; }
+                    Text { text: msg.day_label; color: AppTheme.text-muted; font-size: 11px; font-weight: 600; }
+                    Rectangle { height: 1px; background: AppTheme.separator; horizontal-stretch: 1; }
+                }
+
+                Rectangle {
+                width: 100%;
+                background: row_hover.has-hover ? AppTheme.interactive-hover : transparent;
+                border-radius: 4px;
                 property <bool> is-collapsed: true;
+
+                // Hover metadata lives behind the message controls so links and
+                // attachment actions keep their own pointer behavior.
+                row_hover := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                }
+
+                // Group headers already carry their full timestamp beside the name;
+                // the gutter timestamp is for compact continuation rows only.
+                if row_hover.has-hover && !msg.show_header && msg.hover_timestamp != "": Text {
+                    x: 0px;
+                    y: 3px;
+                    width: 42px;
+                    text: msg.hover_timestamp;
+                    color: AppTheme.text-subtle;
+                    font-size: 10px;
+                    horizontal-alignment: right;
+                }
+
+                if msg.show_header && msg.author_id != "": Rectangle {
+                    x: 4px;
+                    y: msg.reply_content != "" ? 48px : ((msg.reply_author != "" || msg.reply_command != "") ? 30px : 8px);
+                    width: 36px;
+                    height: 36px;
+                    background: AppTheme.surface-elevated;
+                    border-radius: 18px;
+                    clip: true;
+                    Text {
+                        text: msg.avatar_initial;
+                        color: AppTheme.text-secondary;
+                        font-size: 13px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    if msg.avatar_url != "": Image {
+                        source: msg.avatar_img;
+                        width: 36px;
+                        height: 36px;
+                        image-fit: cover;
+                    }
+                }
 
                 VerticalBox {
                     width: 100%;
-                    padding-top: 7px;
-                    padding-bottom: 7px;
-                    padding-left: 8px;
+                    padding-top: msg.show_header ? 8px : 2px;
+                    padding-bottom: msg.show_header ? 6px : 2px;
+                    padding-left: 48px;
                     padding-right: 8px;
                     spacing: 4px;
 
                     if msg.reply-author != "" || msg.reply-command != "": Rectangle {
-                        background: AppTheme.surface-reply;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: AppTheme.accent-bright;
+                        background: transparent;
+                        border-width: 0px;
 
                         VerticalLayout {
-                            padding: 6px;
-                            spacing: 4px;
+                            padding-left: 7px;
+                            padding-top: 2px;
+                            padding-bottom: 2px;
+                            spacing: 2px;
 
                             HorizontalLayout {
                                 spacing: 6px;
@@ -185,15 +252,16 @@ export component ChatMessagesView inherits Rectangle {
                                         source: msg.reply-command != "" ? @image-url("../../assets/terminal.svg") : @image-url("../../assets/reply.svg");
                                         width: 11px;
                                         height: 11px;
-                                        colorize: AppTheme.accent-bright;
+                                        colorize: AppTheme.text-muted;
                                         image-fit: contain;
                                     }
                                 }
 
                                 Text {
                                     text: msg.reply-command != "" ? msg.reply-author : (root.tr_replying_to + msg.reply-author);
-                                    color: AppTheme.accent-link-hover;
-                                    font-size: 11px;
+                                    color: AppTheme.text-secondary;
+                                    font-family: ChatTypography.family;
+                                    font-size: ChatTypography.preview-size;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
@@ -233,25 +301,44 @@ export component ChatMessagesView inherits Rectangle {
 
                             if msg.reply-content != "": Text {
                                 text: msg.reply-content;
-                                color: AppTheme.text-reply;
-                                font-size: 10.5px;
-                                wrap: word-wrap;
+                                color: AppTheme.text-muted;
+                                font-family: ChatTypography.family;
+                                font-size: ChatTypography.preview-size;
+                                overflow: elide;
                             }
                         }
                     }
 
-                    HorizontalBox {
+                    if msg.show_header: HorizontalBox {
+                        padding: 0px;
                         spacing: 8px;
                         Text {
                             text: msg.author;
                             color: AppTheme.accent;
-                            font-size: 13px;
+                            font-family: ChatTypography.family;
+                            font-size: ChatTypography.author-size;
                             font-weight: 700;
                             vertical-alignment: center;
+                        }
+                        if msg.is_bot: Rectangle {
+                            background: AppTheme.accent;
+                            border-radius: 3px;
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                Text {
+                                    text: "APP";
+                                    color: AppTheme.text-on-accent;
+                                    font-size: 9px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                         Text {
                             text: msg.timestamp;
                             color: AppTheme.text-subtle;
+                            font-family: ChatTypography.family;
                             font-size: 10px;
                             vertical-alignment: center;
                         }
@@ -287,7 +374,8 @@ export component ChatMessagesView inherits Rectangle {
                             if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
                                 text: line.blocks[0].text;
                                 color: AppTheme.text-primary;
-                                font-size: 13.5px;
+                                font-family: ChatTypography.family;
+                                font-size: ChatTypography.body-size;
                                 wrap: word-wrap;
                             }
 
@@ -305,7 +393,8 @@ export component ChatMessagesView inherits Rectangle {
                                         Text {
                                             text: line.blocks[0].text;
                                             color: block_ta_single.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
-                                            font-size: 13.5px;
+                                            font-family: ChatTypography.family;
+                                            font-size: ChatTypography.body-size;
                                             font-weight: 600;
                                             vertical-alignment: center;
                                             overflow: elide;
@@ -433,6 +522,7 @@ export component ChatMessagesView inherits Rectangle {
                                                 Text {
                                                     text: block.text;
                                                     color: block_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
+                                                    font-family: ChatTypography.family;
                                                     font-size: 13px;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
@@ -457,7 +547,8 @@ export component ChatMessagesView inherits Rectangle {
                                     if !block.is_link && !block.is_command && !block.is_emoji: Text {
                                         text: block.text;
                                         color: AppTheme.text-primary;
-                                        font-size: 13.5px;
+                                        font-family: ChatTypography.family;
+                                        font-size: ChatTypography.body-size;
                                         vertical-alignment: center;
                                         wrap: word-wrap;
                                         max-width: 480px;
@@ -471,7 +562,8 @@ export component ChatMessagesView inherits Rectangle {
                         width: 100%;
                         text: msg.content;
                         color: AppTheme.text-primary;
-                        font-size: 13.5px;
+                        font-family: ChatTypography.family;
+                        font-size: ChatTypography.body-size;
                         wrap: word-wrap;
                     }
 
@@ -524,7 +616,8 @@ export component ChatMessagesView inherits Rectangle {
                                         if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
                                             text: line.blocks[0].text;
                                             color: AppTheme.text-embed;
-                                            font-size: 12.5px;
+                                            font-family: ChatTypography.family;
+                                            font-size: ChatTypography.embed-size;
                                             wrap: word-wrap;
                                         }
 
@@ -541,7 +634,8 @@ export component ChatMessagesView inherits Rectangle {
                                                     Text {
                                                         text: line.blocks[0].text;
                                                         color: eblock_ta_single.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
-                                                        font-size: 12.5px;
+                                                        font-family: ChatTypography.family;
+                                                        font-size: ChatTypography.embed-size;
                                                         font-weight: 600;
                                                         vertical-alignment: center;
                                                         overflow: elide;
@@ -643,6 +737,7 @@ export component ChatMessagesView inherits Rectangle {
                                                             Text {
                                                                 text: block.text;
                                                                 color: eblock_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
+                                                                font-family: ChatTypography.family;
                                                                 font-size: 12px;
                                                                 font-weight: 600;
                                                                 vertical-alignment: center;
@@ -677,7 +772,8 @@ export component ChatMessagesView inherits Rectangle {
                                                 if !block.is_link && !block.is_command && !block.is_emoji: Text {
                                                     text: block.text;
                                                     color: AppTheme.text-embed;
-                                                    font-size: 12.5px;
+                                                    font-family: ChatTypography.family;
+                                                    font-size: ChatTypography.embed-size;
                                                     vertical-alignment: center;
                                                     wrap: word-wrap;
                                                     max-width: 420px;
@@ -691,7 +787,8 @@ export component ChatMessagesView inherits Rectangle {
                                     width: 100%;
                                     text: msg.embed-content;
                                     color: AppTheme.text-embed;
-                                    font-size: 12.5px;
+                                    font-family: ChatTypography.family;
+                                    font-size: ChatTypography.embed-size;
                                     wrap: word-wrap;
                                 }
 
@@ -704,6 +801,7 @@ export component ChatMessagesView inherits Rectangle {
                                     width: 100%;
                                     text: msg.embed-footer;
                                     color: AppTheme.text-muted;
+                                    font-family: ChatTypography.family;
                                     font-size: 11px;
                                     wrap: word-wrap;
                                 }
@@ -962,6 +1060,7 @@ export component ChatMessagesView inherits Rectangle {
                             }
                         }
                     }
+                }
                 }
             }
         }

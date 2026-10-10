@@ -5,6 +5,15 @@ export enum ThemeMode {
     light,
 }
 
+// Chat typography is separate from the denser navigation and settings UI.
+export global ChatTypography {
+    out property <string> family: "Inter";
+    out property <length> body-size: 15.5px;
+    out property <length> author-size: 14px;
+    out property <length> preview-size: 11.5px;
+    out property <length> embed-size: 13.5px;
+}
+
 export global AppTheme {
     in-out property <ThemeMode> mode: ThemeMode.dark;
 

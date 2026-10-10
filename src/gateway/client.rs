@@ -641,12 +641,22 @@ impl GatewayClient {
 
                     let author = format_discord_author(&v["d"]);
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
-                    let timestamp = "Agora".to_string();
+                    let created_at = v["d"]["timestamp"].as_str().unwrap_or("").to_string();
+                    let avatar_url = crate::ui::message_grouping::avatar_url_for_message(&v["d"]);
+                    let is_bot = v["d"]["author"]["bot"].as_bool().unwrap_or(false);
 
                     let _ = self.event_tx.send(GatewayEvent::MessageCreated {
                         id,
                         channel_id,
                         author,
+                        author_id: if matches!(v["d"]["type"].as_i64().unwrap_or(0), 0 | 19) {
+                            author_id.to_string()
+                        } else {
+                            String::new()
+                        },
+                        created_at,
+                        avatar_url,
+                        is_bot,
                         content,
                         commands,
                         content_lines,
@@ -661,7 +671,6 @@ impl GatewayClient {
                         links,
                         buttons,
                         attachments,
-                        timestamp,
                         is_self,
                     }).await;
                 }
