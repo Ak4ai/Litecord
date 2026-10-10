@@ -110,8 +110,8 @@ fn main() {
 
             if is_sender {
                 println!("🎥 Transmitindo fluxo H.264 720p/60fps com Sunshine Pacing via WAN Pública...");
-                let mut config = EncoderConfig::new();
-                config.set_bitrate_bps(4_500_000);
+                let config = EncoderConfig::new()
+                    .bitrate(openh264::encoder::BitRate::from_bps(4_500_000));
                 let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), config).unwrap();
 
                 let w = 1280usize;
@@ -135,8 +135,8 @@ fn main() {
                     // Dinâmica de bitrate a cada 3 segundos
                     if seq == 60 {
                         cur_bitrate = 3_500_000;
-                        let mut cfg = EncoderConfig::new();
-                        cfg.set_bitrate_bps(cur_bitrate);
+                        let cfg = EncoderConfig::new()
+                            .bitrate(openh264::encoder::BitRate::from_bps(cur_bitrate));
                         if let Ok(new_enc) = Encoder::with_api_config(OpenH264API::from_source(), cfg) {
                             encoder = new_enc;
                             encoder.force_intra_frame();
@@ -144,8 +144,8 @@ fn main() {
                         }
                     } else if seq == 180 {
                         cur_bitrate = 5_000_000;
-                        let mut cfg = EncoderConfig::new();
-                        cfg.set_bitrate_bps(cur_bitrate);
+                        let cfg = EncoderConfig::new()
+                            .bitrate(openh264::encoder::BitRate::from_bps(cur_bitrate));
                         if let Ok(new_enc) = Encoder::with_api_config(OpenH264API::from_source(), cfg) {
                             encoder = new_enc;
                             encoder.force_intra_frame();

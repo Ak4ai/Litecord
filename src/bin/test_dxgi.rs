@@ -12,10 +12,10 @@ fn main() {
     for threads in [2, 4, 6, 8, 12, 16] {
         let enc_config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
-            .set_multiple_thread_idc(threads)
-            .set_bitrate_bps(5_000_000)
-            .max_frame_rate(60.0)
-            .enable_skip_frame(false)
+            .num_threads(threads)
+            .bitrate(openh264::encoder::BitRate::from_bps(5_000_000))
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(60.0))
+            .skip_frames(false)
             .rate_control_mode(RateControlMode::Quality);
 
         if let Ok(mut encoder) = Encoder::with_api_config(openh264::OpenH264API::from_source(), enc_config) {

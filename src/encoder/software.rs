@@ -32,10 +32,10 @@ impl OpenH264Encoder {
         let initial_bitrate = 6_000_000;
         let enc_config = openh264::encoder::EncoderConfig::new()
             .usage_type(usage)
-            .set_multiple_thread_idc(num_threads)
-            .set_bitrate_bps(initial_bitrate)
-            .max_frame_rate(target_fps as f32)
-            .enable_skip_frame(false)
+            .num_threads(num_threads)
+            .bitrate(openh264::encoder::BitRate::from_bps(initial_bitrate))
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(target_fps as f32))
+            .skip_frames(false)
             .rate_control_mode(openh264::encoder::RateControlMode::Quality);
 
         let encoder = openh264::encoder::Encoder::with_api_config(
@@ -160,10 +160,10 @@ impl VideoEncoder for OpenH264Encoder {
             };
             let enc_config = openh264::encoder::EncoderConfig::new()
                 .usage_type(usage)
-                .set_multiple_thread_idc(self.num_threads)
-                .set_bitrate_bps(clamped)
-                .max_frame_rate(self.target_fps as f32)
-                .enable_skip_frame(false)
+                .num_threads(self.num_threads)
+                .bitrate(openh264::encoder::BitRate::from_bps(clamped))
+                .max_frame_rate(openh264::encoder::FrameRate::from_hz(self.target_fps as f32))
+                .skip_frames(false)
                 .rate_control_mode(openh264::encoder::RateControlMode::Quality);
 
             if let Ok(new_enc) = openh264::encoder::Encoder::with_api_config(

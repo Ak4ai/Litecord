@@ -290,10 +290,10 @@ fn run_transmitter(target_addr_str: &str, duration_secs: u64) {
 
     let enc_config = EncoderConfig::new()
         .usage_type(UsageType::ScreenContentRealTime)
-        .set_multiple_thread_idc(8)
-        .set_bitrate_bps(6_000_000)
-        .max_frame_rate(target_fps as f32)
-        .enable_skip_frame(false)
+        .num_threads(8)
+        .bitrate(openh264::encoder::BitRate::from_bps(6_000_000))
+        .max_frame_rate(openh264::encoder::FrameRate::from_hz(target_fps as f32))
+        .skip_frames(false)
         .rate_control_mode(RateControlMode::Quality);
 
     let mut encoder = Encoder::with_api_config(openh264::OpenH264API::from_source(), enc_config).unwrap();

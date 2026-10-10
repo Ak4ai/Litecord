@@ -147,10 +147,10 @@ fn main() {
         let num_threads = std::thread::available_parallelism().map(|n| n.get() as u16).unwrap_or(4).clamp(2, 8);
         let enc_config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
-            .set_multiple_thread_idc(num_threads)
-            .set_bitrate_bps(3_500_000)
-            .max_frame_rate(60.0)
-            .enable_skip_frame(true)
+            .num_threads(num_threads)
+            .bitrate(openh264::encoder::BitRate::from_bps(3_500_000))
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(60.0))
+            .skip_frames(true)
             .rate_control_mode(RateControlMode::Quality);
 
         let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), enc_config).unwrap();
