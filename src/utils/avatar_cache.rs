@@ -97,7 +97,10 @@ fn avatar_disk_dir() -> PathBuf {
 }
 
 fn avatar_disk_path(dir: &Path, url: &str) -> PathBuf {
-    let key = format!("{:x}", Sha256::digest(url.as_bytes()));
+    let key: String = Sha256::digest(url.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     dir.join(format!("{key}.rgba"))
 }
 

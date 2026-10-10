@@ -4,7 +4,8 @@ use tokio::time::{sleep, Duration};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use rsa::{RsaPrivateKey, RsaPublicKey, Oaep, pkcs8::EncodePublicKey};
-use sha2::{Sha256, Digest};
+// rsa 0.9 still depends on sha2 0.10; use its re-export so OAEP's digest traits match.
+use rsa::sha2::{Sha256, Digest};
 use base64::Engine;
 use log::{info, error};
 
