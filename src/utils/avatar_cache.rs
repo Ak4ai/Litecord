@@ -12,10 +12,41 @@ use crate::{AppWindow, ChatMessage};
 const AVATAR_SIZE: u32 = 40;
 const AVATAR_BYTES: usize = (AVATAR_SIZE * AVATAR_SIZE * 4) as usize;
 const MAX_DOWNLOAD_BYTES: usize = 512 * 1024;
-// Decoded thumbnails use about 1.6 MiB in RAM and 25 MiB on disk at these limits.
-const MAX_MEMORY_AVATARS: usize = 256;
+// Decoded thumbnails use about 2.4 MiB in RAM and 25 MiB on disk at these limits.
+// Messages, voice rows and the DM list share this one cache.
+const MAX_MEMORY_AVATARS: usize = 384;
 const MAX_DISK_AVATARS: usize = 4096;
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+// Sidebar rows (DM list, voice members) are Send-only data, so their thumbnails
+// live in this UI-thread pool and rows just carry a slot index.
+const POOL_SLOTS: usize = 256;
+
+#[derive(Default)]
+struct SlotTable {
+    by_url: HashMap<String, usize>,
+    urls: Vec<String>,
+    next: usize,
+}
+
+struct UiPool {
+    images: std::rc::Rc<slint::VecModel<slint::Image>>,
+    urls: std::rc::Rc<slint::VecModel<slint::SharedString>>,
+}
+
+thread_local! {
+    static UI_POOL: std::cell::RefCell<Option<UiPool>> = const { std::cell::RefCell::new(None) };
+}
+
+fn pool_set(slot: usize, url: &str, image: slint::Image) {
+    UI_POOL.with(|pool| {
+        if let Some(pool) = pool.borrow().as_ref() {
+            if slot < pool.images.row_count() {
+                pool.images.set_row_data(slot, image);
+                pool.urls.set_row_data(slot, url.into());
+            }
+        }
+    });
+}
 
 struct MemoryAvatar {
     rgba: Vec<u8>,
@@ -69,6 +100,8 @@ pub struct AvatarCache {
     failed_until: Mutex<HashMap<String, Instant>>,
     requests: Arc<Semaphore>,
     disk_dir: PathBuf,
+    app: Mutex<Option<slint::Weak<AppWindow>>>,
+    slots: Mutex<SlotTable>,
 }
 
 static AVATAR_CACHE: OnceLock<Arc<AvatarCache>> = OnceLock::new();
@@ -82,6 +115,8 @@ pub fn get_avatar_cache() -> Arc<AvatarCache> {
                 failed_until: Mutex::new(HashMap::new()),
                 requests: Arc::new(Semaphore::new(4)),
                 disk_dir: avatar_disk_dir(),
+                app: Mutex::new(None),
+                slots: Mutex::new(SlotTable::default()),
             })
         })
         .clone()
@@ -183,6 +218,98 @@ fn decode_avatar(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 impl AvatarCache {
+    /// Remember the window so rows built off the UI thread (voice list, DM list)
+    /// can be refreshed when their thumbnail finishes loading.
+    pub fn set_app(&self, app: slint::Weak<AppWindow>) {
+        // Must run on the UI thread: this installs the shared thumbnail pool.
+        if let Some(ui) = app.upgrade() {
+            let images = std::rc::Rc::new(slint::VecModel::from(vec![
+                slint::Image::default();
+                POOL_SLOTS
+            ]));
+            let urls = std::rc::Rc::new(slint::VecModel::from(vec![
+                slint::SharedString::default();
+                POOL_SLOTS
+            ]));
+            ui.set_avatar_pool(images.clone().into());
+            ui.set_avatar_pool_urls(urls.clone().into());
+            UI_POOL.with(|pool| *pool.borrow_mut() = Some(UiPool { images, urls }));
+        }
+        if let Ok(mut slot) = self.app.lock() {
+            *slot = Some(app);
+        }
+    }
+
+    /// Pool slot for a sidebar row's avatar. Thread-safe and cheap: the image
+    /// itself is attached on the UI thread once cached or downloaded.
+    pub fn slot_for(&self, url: &str) -> i32 {
+        if url.is_empty() {
+            return 0;
+        }
+        let (slot, is_new) = {
+            let Ok(mut table) = self.slots.lock() else {
+                return 0;
+            };
+            if let Some(slot) = table.by_url.get(url) {
+                (*slot, false)
+            } else {
+                let slot = if table.urls.len() < POOL_SLOTS {
+                    table.urls.push(url.to_owned());
+                    table.urls.len() - 1
+                } else {
+                    let slot = table.next;
+                    table.next = (slot + 1) % POOL_SLOTS;
+                    let old = std::mem::replace(&mut table.urls[slot], url.to_owned());
+                    table.by_url.remove(&old);
+                    slot
+                };
+                table.by_url.insert(url.to_owned(), slot);
+                (slot, true)
+            }
+        };
+        if is_new {
+            let app = self.app.lock().ok().and_then(|slot| slot.clone());
+            if let Some(app) = app {
+                let cached = self
+                    .images
+                    .lock()
+                    .is_ok_and(|images| images.entries.contains_key(url));
+                if cached {
+                    let url = url.to_owned();
+                    let cache = get_avatar_cache();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(image) = cache.get(&url) {
+                            pool_set(slot, &url, image);
+                        }
+                    });
+                } else {
+                    self.fetch(url, app);
+                }
+            }
+        }
+        slot as i32
+    }
+
+    fn slot_of(&self, url: &str) -> Option<usize> {
+        self.slots.lock().ok()?.by_url.get(url).copied()
+    }
+
+    /// Cached thumbnail for the url, or an empty image while it is fetched in the
+    /// background. A row whose image is still empty is filled in on completion.
+    pub fn image_for(&self, url: &str) -> slint::Image {
+        if url.is_empty() {
+            return slint::Image::default();
+        }
+        if let Some(image) = self.get(url) {
+            return image;
+        }
+        let app = self.app.lock().ok().and_then(|slot| slot.clone());
+        if let Some(app) = app {
+            self.fetch(url, app);
+        }
+        slint::Image::default()
+    }
+
     pub fn hydrate(&self, messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {
         for message in messages {
             if !message.show_header
@@ -282,6 +409,20 @@ impl AvatarCache {
                 let ui_url = url.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let (Some(ui), Some(image)) = (app.upgrade(), ui_cache.get(&ui_url)) {
+                        if let Some(slot) = ui_cache.slot_of(&ui_url) {
+                            pool_set(slot, &ui_url, image.clone());
+                        }
+                        let participants = ui.get_voice_participants();
+                        for index in 0..participants.row_count() {
+                            if let Some(mut participant) = participants.row_data(index) {
+                                if participant.avatar_url == ui_url.as_str()
+                                    && participant.avatar_img.size().width == 0
+                                {
+                                    participant.avatar_img = image.clone();
+                                    participants.set_row_data(index, participant);
+                                }
+                            }
+                        }
                         let messages = ui.get_messages();
                         for index in 0..messages.row_count() {
                             if let Some(mut message) = messages.row_data(index) {
@@ -374,6 +515,35 @@ mod tests {
         assert_eq!(avatars, 2);
         assert!(dir.join("unrelated.txt").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn test_cache() -> AvatarCache {
+        AvatarCache {
+            images: Mutex::new(MemoryStore::default()),
+            pending: Mutex::new(HashSet::new()),
+            failed_until: Mutex::new(HashMap::new()),
+            requests: Arc::new(Semaphore::new(1)),
+            disk_dir: std::env::temp_dir().join("litecord-avatar-slot-test"),
+            app: Mutex::new(None),
+            slots: Mutex::new(SlotTable::default()),
+        }
+    }
+
+    #[test]
+    fn sidebar_slots_are_stable_and_recycled_oldest_first() {
+        let cache = test_cache();
+        assert_eq!(cache.slot_for(""), 0);
+        let first = cache.slot_for("url-0");
+        assert_eq!(cache.slot_for("url-0"), first);
+        for index in 1..POOL_SLOTS {
+            cache.slot_for(&format!("url-{index}"));
+        }
+        // Pool is full: the next new url takes the oldest slot and forgets its owner.
+        let recycled = cache.slot_for("url-new");
+        assert_eq!(recycled, first);
+        assert_eq!(cache.slot_of("url-new"), Some(first as usize));
+        assert_eq!(cache.slot_of("url-0"), None);
+        assert_eq!(cache.slots.lock().unwrap().urls.len(), POOL_SLOTS);
     }
 
     #[test]

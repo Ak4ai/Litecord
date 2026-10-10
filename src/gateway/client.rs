@@ -348,6 +348,7 @@ impl GatewayClient {
                         set_my_user_id(uid_num);
                         set_my_username(global_name.to_string());
                         register_user_name(uid_num, global_name.to_string());
+                        register_user_avatar(uid_num, v["d"]["user"]["avatar"].as_str().unwrap_or(""));
                     }
 
                     // Parse all user/bot objects in READY payload
@@ -369,6 +370,7 @@ impl GatewayClient {
                                     }
                                 }
                                 if !dname.is_empty() {
+                                    register_user_avatar(u_id, u["avatar"].as_str().unwrap_or(""));
                                     register_user_name(u_id, dname);
                                 }
                             }
@@ -518,6 +520,7 @@ impl GatewayClient {
 
                         if !display_name.is_empty() {
                             register_user_name(event_uid, display_name.clone());
+                            register_user_avatar(event_uid, v["d"]["member"]["user"]["avatar"].as_str().unwrap_or(""));
                             info!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
                         }
 
@@ -808,6 +811,7 @@ impl GatewayClient {
                                     }
                                 }
                                 if !display_name.is_empty() {
+                                    register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
                                     register_user_name(uid, display_name);
                                 }
                             }
@@ -850,6 +854,7 @@ impl GatewayClient {
                                     }
                                 }
                                 if !display_name.is_empty() {
+                                    register_user_avatar(uid, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
                                     register_user_name(uid, display_name);
                                 }
                             }

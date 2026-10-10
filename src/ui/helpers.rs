@@ -843,6 +843,8 @@ pub fn build_ui_channels(
                 is_voice_member: false,
                 parent_channel_id: "".into(),
                 avatar_text: "".into(),
+                avatar_url: "".into(),
+                avatar_slot: 0,
                 is_category: true,
                 has_parent: false,
                 is_collapsed,
@@ -869,6 +871,8 @@ pub fn build_ui_channels(
                 is_voice_member: false,
                 parent_channel_id: "".into(),
                 avatar_text: "".into(),
+                avatar_url: "".into(),
+                avatar_slot: 0,
                 is_category: false,
                 has_parent: ch.parent_id.is_some(),
                 is_collapsed: false,
@@ -877,6 +881,7 @@ pub fn build_ui_channels(
             });
 
             for (user_id, name) in voice_participants {
+                let avatar_url = gateway::get_user_avatar_url(user_id);
                 let avatar_text: String = name
                     .split_whitespace()
                     .filter_map(|part| part.chars().next())
@@ -891,6 +896,8 @@ pub fn build_ui_channels(
                     is_voice_member: true,
                     parent_channel_id: ch.id.clone().into(),
                     avatar_text: avatar_text.into(),
+                    avatar_slot: crate::utils::avatar_cache::get_avatar_cache().slot_for(&avatar_url),
+                    avatar_url: avatar_url.into(),
                     is_category: false,
                     has_parent: ch.parent_id.is_some(),
                     is_collapsed: false,

@@ -10,6 +10,8 @@ export struct ChannelItem {
     is_voice_member: bool,
     parent_channel_id: string,
     avatar_text: string,
+    avatar_url: string,
+    avatar_slot: int,
     is_category: bool,
     has_parent: bool,
     is_collapsed: bool,
@@ -22,6 +24,10 @@ export component ChannelSidebar inherits Rectangle {
     in property <string> active_guild_name;
     in property <string> tr_server_channels;
     in property <[ChannelItem]> channels;
+    // Shared thumbnail pool: a row shows pool[slot] only while pool_urls[slot]
+    // still equals its own avatar_url, so a recycled slot never shows a wrong face.
+    in property <[image]> avatar_pool;
+    in property <[string]> avatar_pool_urls;
     in-out property <string> active_channel_id;
     in property <bool> is_in_voice;
     in property <bool> is_voice_connecting;
@@ -165,6 +171,7 @@ export component ChannelSidebar inherits Rectangle {
                                     height: 20px;
                                     border-radius: 10px;
                                     background: (channel.id == root.active_channel_id) ? AppTheme.accent : AppTheme.interactive-selected;
+                                    clip: true;
                                     Text {
                                         text: channel.avatar_text;
                                         color: (channel.id == root.active_channel_id) ? AppTheme.text-on-accent : AppTheme.text-strong;
@@ -172,6 +179,12 @@ export component ChannelSidebar inherits Rectangle {
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
+                                    }
+                                    if channel.avatar_url != "" && root.avatar_pool_urls[channel.avatar_slot] == channel.avatar_url: Image {
+                                        source: root.avatar_pool[channel.avatar_slot];
+                                        width: 100%;
+                                        height: 100%;
+                                        image-fit: cover;
                                     }
                                 }
                                 if channel.avatar_text == "" : Text {
@@ -256,6 +269,7 @@ export component ChannelSidebar inherits Rectangle {
                                     height: 18px;
                                     border-radius: 9px;
                                     background: AppTheme.interactive-selected;
+                                    clip: true;
                                     Text {
                                         text: channel.avatar_text;
                                         color: AppTheme.text-primary;
@@ -263,6 +277,12 @@ export component ChannelSidebar inherits Rectangle {
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
+                                    }
+                                    if channel.avatar_url != "" && root.avatar_pool_urls[channel.avatar_slot] == channel.avatar_url: Image {
+                                        source: root.avatar_pool[channel.avatar_slot];
+                                        width: 100%;
+                                        height: 100%;
+                                        image-fit: cover;
                                     }
                                 }
                             }

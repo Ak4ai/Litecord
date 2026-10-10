@@ -54,7 +54,18 @@ pub fn avatar_url_for_message(source: &Value) -> String {
     }
 }
 
-fn valid_avatar_hash(hash: &str) -> bool {
+/// Group DM icon, built only from a numeric channel id and a validated hash.
+pub fn group_icon_url(channel_id: &str, hash: &str) -> String {
+    if channel_id.is_empty()
+        || !channel_id.bytes().all(|byte| byte.is_ascii_digit())
+        || !valid_avatar_hash(hash)
+    {
+        return String::new();
+    }
+    format!("https://cdn.discordapp.com/channel-icons/{channel_id}/{hash}.webp?size=64")
+}
+
+pub(crate) fn valid_avatar_hash(hash: &str) -> bool {
     let hex = hash.strip_prefix("a_").unwrap_or(hash);
     !hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -209,5 +220,16 @@ mod tests {
         assert_eq!(messages[1].day_label.as_str(), "");
         assert_eq!(messages[5].day_label.as_str(), "25 de setembro de 2026");
         assert_eq!(messages[7].day_label.as_str(), "");
+    }
+
+    #[test]
+    fn group_icon_urls_require_numeric_ids_and_hex_hashes() {
+        assert_eq!(
+            group_icon_url("123", "a_0f1e"),
+            "https://cdn.discordapp.com/channel-icons/123/a_0f1e.webp?size=64"
+        );
+        assert!(group_icon_url("12/../3", "abcd").is_empty());
+        assert!(group_icon_url("123", "../evil").is_empty());
+        assert!(group_icon_url("123", "").is_empty());
     }
 }

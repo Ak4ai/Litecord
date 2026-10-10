@@ -146,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_network_proxy_settings(&app);
 
     let app_weak = app.as_weak();
+    avatar_cache::get_avatar_cache().set_app(app_weak.clone());
 
     let popout_window = PopoutStreamWindow::new()?;
     let popout_weak = popout_window.as_weak();
@@ -1412,6 +1413,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
 
                 let _total_users_count = sorted_users.len();
+                // Reuse the thumbnails already attached to the current rows so the
+                // 20 Hz refresh never re-copies pixels from the cache.
+                let prev_model = ui.get_voice_participants();
+                let mut prev_avatars: HashMap<String, (String, slint::Image)> = HashMap::new();
+                for i in 0..prev_model.row_count() {
+                    if let Some(row) = prev_model.row_data(i) {
+                        if row.avatar_img.size().width > 0 {
+                            prev_avatars.insert(row.user_id.to_string(), (row.avatar_url.to_string(), row.avatar_img));
+                        }
+                    }
+                }
+                let avatars = avatar_cache::get_avatar_cache();
                 for (user_id, (_ssrc, audio_level, is_speaking)) in sorted_users {
                     let uid_str = user_id.to_string();
                     let is_self = (user_id == my_user_id && my_user_id != 0) || user_id == 999999;
@@ -1526,10 +1539,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let is_hidden = hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false);
 
+                    let avatar_user_id = if user_id == 999999 { my_user_id } else { user_id };
+                    let avatar_url = gateway::get_user_avatar_url(avatar_user_id);
+                    let avatar_img = match prev_avatars.get(&uid_str) {
+                        Some((url, image)) if *url == avatar_url => image.clone(),
+                        _ => avatars.image_for(&avatar_url),
+                    };
+
                     participants.push(VoiceParticipant {
                         user_id: uid_str.into(),
                         username: username.into(),
                         avatar_text: avatar_text.into(),
+                        avatar_url: avatar_url.into(),
+                        avatar_img,
                         is_speaking: final_is_speaking,
                         audio_level: final_audio_level,
                         is_muted: final_is_muted,
@@ -1571,6 +1593,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 || old.volume != p.volume
                                 || old.priority != p.priority
                                 || old.username != p.username
+                                || old.avatar_url != p.avatar_url
                                 || old.is_streaming != p.is_streaming
                                 || old.is_stream_hidden != p.is_stream_hidden;
                             if level_changed || state_changed {

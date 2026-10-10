@@ -578,6 +578,35 @@ pub fn register_user_name(user_id: u64, name: String) {
     }
 }
 
+/// Avatar hashes (max 34 bytes each) of users seen in voice states, so voice rows
+/// and the DM list can show a picture without extra REST calls. Bounded: when the
+/// cap is reached the map is simply cleared and refills from live events.
+const MAX_USER_AVATARS: usize = 1024;
+static USER_AVATARS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, String>>> = std::sync::OnceLock::new();
+
+pub fn register_user_avatar(user_id: u64, hash: &str) {
+    if user_id == 0 || !crate::ui::message_grouping::valid_avatar_hash(hash) {
+        return;
+    }
+    let store = USER_AVATARS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut map) = store.lock() {
+        if map.len() >= MAX_USER_AVATARS && !map.contains_key(&user_id) {
+            map.clear();
+        }
+        map.insert(user_id, hash.to_owned());
+    }
+}
+
+/// Discord CDN thumbnail URL for a known user, or an empty string.
+pub fn get_user_avatar_url(user_id: u64) -> String {
+    USER_AVATARS
+        .get()
+        .and_then(|store| store.lock().ok())
+        .and_then(|map| map.get(&user_id).cloned())
+        .map(|hash| format!("https://cdn.discordapp.com/avatars/{user_id}/{hash}.webp?size=64"))
+        .unwrap_or_default()
+}
+
 pub fn get_user_name(user_id: u64) -> String {
     if let Ok(map) = get_user_names_store().lock() {
         if let Some(name) = map.get(&user_id) {

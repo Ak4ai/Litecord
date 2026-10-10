@@ -554,6 +554,20 @@ pub async fn fetch_and_populate_dms(
                     (name, initials)
                 };
 
+                let avatar_url = if ch_type == 3 {
+                    crate::ui::message_grouping::group_icon_url(&ch_id, dm["icon"].as_str().unwrap_or(""))
+                } else {
+                    dm["recipients"]
+                        .as_array()
+                        .and_then(|recipients| recipients.first())
+                        .map(|user| {
+                            let uid = user["id"].as_str().unwrap_or("").parse::<u64>().unwrap_or(0);
+                            gateway::register_user_avatar(uid, user["avatar"].as_str().unwrap_or(""));
+                            gateway::get_user_avatar_url(uid)
+                        })
+                        .unwrap_or_default()
+                };
+
                 if first_ch_id_opt.is_none() {
                     first_ch_id_opt = Some(ch_id.clone());
                 }
@@ -577,6 +591,8 @@ pub async fn fetch_and_populate_dms(
                     is_voice_member: false,
                     parent_channel_id: "".into(),
                     avatar_text: avatar_text.into(),
+                    avatar_slot: avatar_cache::get_avatar_cache().slot_for(&avatar_url),
+                    avatar_url: avatar_url.into(),
                     is_category: false,
                     has_parent: false,
                     is_collapsed: false,
