@@ -17,6 +17,12 @@ pub fn set_current_thread_name(_name: &str) {}
 
 #[cfg(target_os = "windows")]
 pub fn start_thread_cpu_profiler() {
+    // Diagnostic only: every 2 s it snapshots every thread in the system
+    // (CreateToolhelp32Snapshot) which can cause periodic stalls next to a game.
+    // Enable on purpose with LITECORD_CPU_PROFILER=1.
+    if std::env::var_os("LITECORD_CPU_PROFILER").is_none() {
+        return;
+    }
     std::thread::Builder::new()
         .name("cpu-profiler".to_string())
         .spawn(move || {

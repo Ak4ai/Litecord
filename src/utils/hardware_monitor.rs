@@ -26,15 +26,25 @@ pub fn start_hardware_monitor_loop(
             let mut sampler = PlatformHardwareSampler::new();
 
             loop {
-                std::thread::sleep(Duration::from_millis(1000));
+                // Hidden in the tray nobody sees the HUD or the title, so poll slowly
+                // and never run the GPU counter query (PDH "GPU Engine(*)" walks every
+                // process on the machine and is the costly part of this loop).
+                let visible = crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(if visible { 1000 } else { 10_000 }));
 
-                let metrics = sampler.sample();
+                let visible = crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed);
+                let sample_gpu = visible && crate::utils::video_settings::get_show_hardware_monitor();
+                let metrics = sampler.sample(sample_gpu);
 
                 // Format tray tooltip (full detail) and taskbar window title (compact to fit)
-                let tooltip_text = format!(
-                    "Litecord - CPU {}% | RAM {} MB | GPU {}%",
-                    metrics.cpu_percent, metrics.ram_mb, metrics.gpu_percent
-                );
+                let tooltip_text = if sample_gpu {
+                    format!(
+                        "Litecord - CPU {}% | RAM {} MB | GPU {}%",
+                        metrics.cpu_percent, metrics.ram_mb, metrics.gpu_percent
+                    )
+                } else {
+                    format!("Litecord - CPU {}% | RAM {} MB", metrics.cpu_percent, metrics.ram_mb)
+                };
 
                 let taskbar_title = format!(
                     "Litecord - {}%/{}MB",
@@ -43,6 +53,10 @@ pub fn start_hardware_monitor_loop(
 
                 // 1. Update System Tray Tooltip
                 crate::utils::tray::update_tray_tooltip(&tooltip_text);
+
+                if !visible {
+                    continue;
+                }
 
                 // 2. Update Windows Taskbar Application Title
                 #[cfg(windows)]
@@ -322,11 +336,11 @@ impl PlatformHardwareSampler {
         0
     }
 
-    fn sample(&mut self) -> HardwareMetrics {
+    fn sample(&mut self, with_gpu: bool) -> HardwareMetrics {
         HardwareMetrics {
             cpu_percent: self.sample_cpu(),
             ram_mb: self.sample_ram(),
-            gpu_percent: self.sample_gpu(),
+            gpu_percent: if with_gpu { self.sample_gpu() } else { 0 },
         }
     }
 }
@@ -340,7 +354,7 @@ impl PlatformHardwareSampler {
         Self
     }
 
-    fn sample(&mut self) -> HardwareMetrics {
+    fn sample(&mut self, _with_gpu: bool) -> HardwareMetrics {
         let mut metrics = HardwareMetrics::default();
         if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
             for line in content.lines() {

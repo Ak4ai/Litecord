@@ -1351,6 +1351,11 @@ impl ScreenCaptureManager {
                 let my_instance_id = get_process_instance_id();
                 let mut last_outbound_heartbeat = Instant::now() - Duration::from_secs(10);
 
+                // Idle backoff: after ~1 s without traffic block in recv for up to 20 ms
+                // instead of waking every ~6 ms. Incoming data still wakes the thread
+                // immediately, so latency is unchanged.
+                let mut idle_iterations: u32 = 0;
+                let mut slow_poll = false;
                 while is_running.load(Ordering::Relaxed) {
                     let mut current_cid = channel_id_atomic.load(Ordering::Relaxed);
                     if current_cid == 0 {
@@ -2061,7 +2066,20 @@ impl ScreenCaptureManager {
                 }
 
                 if packets_drained == 0 {
-                    std::thread::sleep(Duration::from_millis(4));
+                    idle_iterations = idle_iterations.saturating_add(1);
+                    if !slow_poll && idle_iterations >= 160 {
+                        let _ = socket.set_read_timeout(Some(Duration::from_millis(20)));
+                        slow_poll = true;
+                    }
+                    if !slow_poll {
+                        std::thread::sleep(Duration::from_millis(4));
+                    }
+                } else {
+                    idle_iterations = 0;
+                    if slow_poll {
+                        let _ = socket.set_read_timeout(Some(Duration::from_millis(2)));
+                        slow_poll = false;
+                    }
                 }
 
                     // Check stream timeouts (> 2500ms sem quadros)
