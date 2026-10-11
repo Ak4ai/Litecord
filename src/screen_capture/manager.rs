@@ -1221,6 +1221,10 @@ impl ScreenCaptureManager {
                                     *last_stats = Instant::now();
                                 }
 
+                                // A frame decoded after the stream was stopped is a leftover.
+                                if is_stream_recently_stopped(peer_uid) {
+                                    continue;
+                                }
                                 if let Ok(mut f_map) = get_active_stream_frames().lock() {
                                     f_map.insert(peer_uid, pixel_buffer.clone());
                                 }
@@ -1601,6 +1605,7 @@ impl ScreenCaptureManager {
                                             continue;
                                         }
                                         if is_streaming {
+                                            mark_stream_started(pkt_uid);
                                             last_stream_activity.insert(pkt_uid, Instant::now());
                                         }
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
@@ -1661,6 +1666,10 @@ impl ScreenCaptureManager {
                                         continue;
                                     }
                                     if pkt_inst == my_instance_id {
+                                        continue;
+                                    }
+                                    // Leftovers of a stream that was just stopped must not re-open it.
+                                    if is_stream_recently_stopped(pkt_uid) {
                                         continue;
                                     }
                                     last_stream_activity.insert(pkt_uid, Instant::now());
@@ -1780,6 +1789,10 @@ impl ScreenCaptureManager {
                                         continue;
                                     }
                                     if pkt_inst == my_instance_id {
+                                        continue;
+                                    }
+                                    // Leftovers of a stream that was just stopped must not re-open it.
+                                    if is_stream_recently_stopped(pkt_uid) {
                                         continue;
                                     }
                                     last_stream_activity.insert(pkt_uid, Instant::now());

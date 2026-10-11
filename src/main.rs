@@ -779,6 +779,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(_) = slint::invoke_from_event_loop(move || {
                         pending_flag_inner.store(false, Ordering::Release);
                         if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
+                            // The stop may have been handled while this frame was waiting
+                            // for the UI thread; showing it would re-open a dead stream.
+                            if screen_capture::is_stream_recently_stopped(uid) {
+                                return;
+                            }
                             let uid_str = uid.to_string();
                             let frame = Image::from_rgba8(pixel_buf);
                             let rx_fps = screen_capture::get_rx_fps();

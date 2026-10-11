@@ -154,6 +154,10 @@ pub fn process_signaling_json(
 
             info!("📡 [SIGNALING PRESENÇA] De UID={} (inst={}) | streaming={} (was={}) | WAN={:?} | LAN={:?}", pkt_uid, pkt_inst, is_streaming, was_streaming, val["wan_ip"], val["lan_ips"]);
 
+            if is_streaming {
+                mark_stream_started(pkt_uid);
+            }
+
             // Se o peer parou de transmitir tela, fecha imediatamente (<50ms) sem esperar timeout de pacotes UDP
             if !is_streaming && was_streaming {
                 trigger_stream_stopped(pkt_uid);

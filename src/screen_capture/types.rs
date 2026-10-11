@@ -111,8 +111,41 @@ pub fn force_signaling_broadcast() {
     SIGNALING_FORCE_WAKE.store(true, Ordering::Relaxed);
 }
 
+/// When each peer's stream was last stopped. Video that was already in flight (or
+/// still queued in the decoder) keeps arriving for a moment after the stop; without
+/// this it would re-open the viewer on a frozen last frame that nothing closes.
+pub static STREAM_STOPPED_AT: Mutex<Option<HashMap<u64, Instant>>> = Mutex::new(None);
+
+/// How long leftover video is ignored after a stop, unless the peer explicitly
+/// announces a new stream first (see `mark_stream_started`).
+const STREAM_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The peer explicitly said it is streaming (announce packet or presence).
+pub fn mark_stream_started(uid: u64) {
+    if let Ok(mut guard) = STREAM_STOPPED_AT.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&uid);
+        }
+    }
+}
+
+/// True while video from `uid` must be treated as leftovers of a stopped stream.
+pub fn is_stream_recently_stopped(uid: u64) -> bool {
+    match STREAM_STOPPED_AT.lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .and_then(|map| map.get(&uid))
+            .map(|at| at.elapsed() < STREAM_STOP_GRACE)
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 pub fn trigger_stream_stopped(uid: u64) {
     info!("🛑 [STREAM STOPPED] Encerrando imediatamente estado do stream UID={}", uid);
+    if let Ok(mut guard) = STREAM_STOPPED_AT.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(uid, Instant::now());
+    }
     if let Ok(mut guard) = PEER_STREAMING_STATES.lock() {
         if let Some(map) = guard.as_mut() {
             map.insert(uid, false);
