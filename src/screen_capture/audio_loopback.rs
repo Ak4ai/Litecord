@@ -79,14 +79,11 @@ pub fn ensure_stream_audio_playback_started() {
                 info!("🔊 [STREAM PLAYBACK] Inicializando subsistema de saída de áudio para stream...");
 
                 loop {
-                    if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 {
-                        // Voice Gateway Master Output Engine is actively running and mixing stream audio
-                        std::thread::sleep(Duration::from_millis(500));
-                        continue;
-                    }
-                    // The output device is only opened on demand: no stream audio, no open
-                    // WASAPI stream waking the system 100 times per second for silence.
-                    if !stream_audio_recent() {
+                    // The output device is only opened on demand: while idle (no stream audio
+                    // and no voice call) there is no open WASAPI stream waking the system
+                    // 100 times per second for silence.
+                    let in_voice = crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0;
+                    if !stream_audio_recent() && !in_voice {
                         std::thread::sleep(Duration::from_millis(250));
                         continue;
                     }
@@ -237,12 +234,12 @@ pub fn ensure_stream_audio_playback_started() {
                     }
 
                     if let Some(stream) = active_stream {
-                        // Hold the device while stream audio keeps arriving; release it when
-                        // idle or when a voice call takes over the output.
+                        // Hold the device while stream audio keeps arriving or a voice call
+                        // is active; release it when both are idle.
                         loop {
                             std::thread::sleep(Duration::from_millis(500));
                             if !stream_audio_recent()
-                                || crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0
+                                && crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) == 0
                             {
                                 break;
                             }
