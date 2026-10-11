@@ -8,6 +8,10 @@ license = "MIT"
 repository = "https://github.com/Ak4ai/Litecord"
 readme = "README.md"
 
+[features]
+# Test-only remote control of the UI (see src/automation.rs). Never enable for releases.
+automation = []
+
 [dependencies]
 slint = "1.9"
 i-slint-backend-winit = "1.9"

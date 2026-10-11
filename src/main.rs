@@ -10,6 +10,8 @@ pub mod http;
 pub mod channel_permissions;
 pub mod encoder;
 pub mod screen_capture;
+#[cfg(feature = "automation")]
+mod automation;
 
 // Convenient re-exports for modules and root scope
 pub use auth::*;
@@ -120,6 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_lang = i18n::load_persisted_language_config();
     apply_i18n_translations(&app, initial_lang);
     info!("🌐 Idioma inicial configurado: {:?}", initial_lang);
+    #[cfg(feature = "automation")]
+    automation::start(&app);
 
     #[cfg(target_os = "linux")]
     {

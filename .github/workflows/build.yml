@@ -12,9 +12,17 @@ on:
         description: "Publish a GitHub Release (leave unchecked to only build the artifacts)"
         type: boolean
         default: false
+      features:
+        description: "Extra cargo features for a test build (e.g. automation). Never published."
+        type: string
+        default: ""
 
 permissions:
   contents: write
+
+env:
+  # Empty on pushes, tags and pull requests; only a manual run can set it.
+  CARGO_FEATURES: ${{ inputs.features }}
 
 jobs:
   build-windows:
@@ -38,7 +46,8 @@ jobs:
           cache-on-failure: true
 
       - name: Build Windows Binary (Release)
-        run: cargo build --release --bin litecord
+        shell: bash
+        run: cargo build --release --bin litecord ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
 
       - name: Package Windows Portable (.zip)
         shell: pwsh
@@ -105,7 +114,7 @@ jobs:
           cache-on-failure: true
 
       - name: Build Linux Binary (Release)
-        run: cargo build --release --bin litecord
+        run: cargo build --release --bin litecord ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
 
       - name: Package Linux Binary (.tar.gz)
         run: |
@@ -154,7 +163,7 @@ jobs:
 
       - name: Build and install Litecord under /usr
         run: |
-          cargo build --release --bin litecord
+          cargo build --release --bin litecord ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
           install -Dm755 target/release/litecord /usr/bin/litecord
 
       - name: Bundle Anylinux AppImage (quick-sharun)
@@ -192,7 +201,7 @@ jobs:
   create-release:
     name: Publish GitHub Release
     needs: [build-windows, build-linux, build-appimage]
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true && inputs.features == '')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
