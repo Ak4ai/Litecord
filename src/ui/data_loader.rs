@@ -458,7 +458,7 @@ pub async fn fetch_and_populate_channels(
                             links: slint::ModelRc::default(),
                             buttons: slint::ModelRc::default(),
                             attachments: slint::ModelRc::default(),
-                            timestamp: "Agora".into(),
+                            timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                             show_header: true,
                             ..Default::default()
                         }];
@@ -730,7 +730,7 @@ pub async fn load_messages_for_channel(
                             links: slint::ModelRc::default(),
                             buttons: slint::ModelRc::default(),
                             attachments: slint::ModelRc::default(),
-                            timestamp: "Agora".into(),
+                            timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                             show_header: true,
                             ..Default::default()
                         }]
@@ -766,7 +766,7 @@ pub async fn load_messages_for_channel(
                                 links: slint::ModelRc::from(links_model),
                                 buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
                                 attachments: map_message_attachments(&attachments, &app_weak_load),
-                                timestamp: "Agora".into(),
+                                timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                                 ..Default::default()
                             };
                             apply_message_metadata(&mut message, m);
@@ -811,7 +811,7 @@ pub async fn load_messages_for_channel(
                         links: slint::ModelRc::default(),
                         buttons: slint::ModelRc::default(),
                         attachments: slint::ModelRc::default(),
-                        timestamp: "Agora".into(),
+                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                         show_header: true,
                         ..Default::default()
                     }];

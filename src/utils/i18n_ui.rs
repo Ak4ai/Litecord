@@ -228,6 +228,7 @@ ui_strings! {
     (downloading, set_downloading, "Downloading...", "Baixando...", "Descargando...", "Wird heruntergeladen...", "Téléchargement...", "Загрузка...", "ダウンロード中..."),
     (download_image_size, set_download_image_size, "Download Image (", "Baixar Imagem (", "Descargar imagen (", "Bild herunterladen (", "Télécharger l'image (", "Скачать изображение (", "画像をダウンロード ("),
     (download_image, set_download_image, "Download Image", "Baixar Imagem", "Descargar imagen", "Bild herunterladen", "Télécharger l'image", "Скачать изображение", "画像をダウンロード"),
+    (attachment_label, set_attachment_label, "Attachment", "Anexo", "Adjunto", "Anhang", "Pièce jointe", "Вложение", "添付ファイル"),
 }
 
 #[cfg(test)]
@@ -250,6 +251,19 @@ fn index_of(lang: Language) -> u8 {
 /// Remembers the (already resolved) language so Rust-side messages follow the UI.
 pub fn set_current(lang: Language) {
     CURRENT.store(index_of(lang), Ordering::Relaxed);
+}
+
+/// Language currently shown in the UI (English until the first `apply`).
+pub fn current_language() -> Language {
+    match CURRENT.load(Ordering::Relaxed) {
+        1 => Language::Portuguese,
+        2 => Language::Spanish,
+        3 => Language::German,
+        4 => Language::French,
+        5 => Language::Russian,
+        6 => Language::Japanese,
+        _ => Language::English,
+    }
 }
 
 /// Strings for the language currently shown in the UI.

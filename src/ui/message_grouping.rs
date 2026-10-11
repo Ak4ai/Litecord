@@ -1,6 +1,7 @@
 use chrono::{DateTime, Datelike, Local, NaiveDate};
 use serde_json::Value;
 
+use crate::utils::i18n::Language;
 use crate::ChatMessage;
 
 const GROUP_WINDOW_SECONDS: i64 = 5 * 60;
@@ -132,26 +133,62 @@ pub fn regroup_messages(messages: &mut [ChatMessage]) {
 }
 
 fn format_day(day: NaiveDate) -> String {
-    const MONTHS: [&str; 12] = [
-        "janeiro",
-        "fevereiro",
-        "março",
-        "abril",
-        "maio",
-        "junho",
-        "julho",
-        "agosto",
-        "setembro",
-        "outubro",
-        "novembro",
-        "dezembro",
-    ];
-    format!(
-        "{} de {} de {}",
-        day.day(),
-        MONTHS[day.month0() as usize],
-        day.year()
-    )
+    format_day_for(crate::utils::i18n_ui::current_language(), day)
+}
+
+/// Long date used by the day separators, written the way each language writes it.
+fn format_day_for(lang: Language, day: NaiveDate) -> String {
+    let m = day.month0() as usize;
+    let (d, y) = (day.day(), day.year());
+    match lang {
+        Language::Portuguese => {
+            const MONTHS: [&str; 12] = [
+                "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+                "setembro", "outubro", "novembro", "dezembro",
+            ];
+            format!("{d} de {} de {y}", MONTHS[m])
+        }
+        Language::Spanish => {
+            const MONTHS: [&str; 12] = [
+                "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                "septiembre", "octubre", "noviembre", "diciembre",
+            ];
+            format!("{d} de {} de {y}", MONTHS[m])
+        }
+        Language::German => {
+            const MONTHS: [&str; 12] = [
+                "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August",
+                "September", "Oktober", "November", "Dezember",
+            ];
+            format!("{d}. {} {y}", MONTHS[m])
+        }
+        Language::French => {
+            const MONTHS: [&str; 12] = [
+                "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+                "septembre", "octobre", "novembre", "décembre",
+            ];
+            if d == 1 {
+                format!("1er {} {y}", MONTHS[m])
+            } else {
+                format!("{d} {} {y}", MONTHS[m])
+            }
+        }
+        Language::Russian => {
+            const MONTHS: [&str; 12] = [
+                "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+                "сентября", "октября", "ноября", "декабря",
+            ];
+            format!("{d} {} {y} г.", MONTHS[m])
+        }
+        Language::Japanese => format!("{y}年{}月{d}日", m + 1),
+        Language::English | Language::Auto => {
+            const MONTHS: [&str; 12] = [
+                "January", "February", "March", "April", "May", "June", "July", "August",
+                "September", "October", "November", "December",
+            ];
+            format!("{} {d}, {y}", MONTHS[m])
+        }
+    }
 }
 
 fn parse_local_time(timestamp: &str) -> Option<DateTime<Local>> {
@@ -216,10 +253,23 @@ mod tests {
 
         let headers: Vec<bool> = messages.iter().map(|message| message.show_header).collect();
         assert_eq!(headers, [true, false, true, true, true, true, true, true]);
-        assert_eq!(messages[0].day_label.as_str(), "24 de setembro de 2026");
+        // The text depends on the UI language (shared global); only the layout is checked here.
+        assert!(!messages[0].day_label.is_empty());
         assert_eq!(messages[1].day_label.as_str(), "");
-        assert_eq!(messages[5].day_label.as_str(), "25 de setembro de 2026");
+        assert!(!messages[5].day_label.is_empty());
         assert_eq!(messages[7].day_label.as_str(), "");
+    }
+
+    #[test]
+    fn day_labels_follow_each_language() {
+        let day = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        assert_eq!(format_day_for(Language::Portuguese, day), "24 de setembro de 2026");
+        assert_eq!(format_day_for(Language::English, day), "September 24, 2026");
+        assert_eq!(format_day_for(Language::Spanish, day), "24 de septiembre de 2026");
+        assert_eq!(format_day_for(Language::German, day), "24. September 2026");
+        assert_eq!(format_day_for(Language::French, day), "24 septembre 2026");
+        assert_eq!(format_day_for(Language::Russian, day), "24 сентября 2026 г.");
+        assert_eq!(format_day_for(Language::Japanese, day), "2026年9月24日");
     }
 
     #[test]

@@ -2231,7 +2231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     links: slint::ModelRc::default(),
                     buttons: slint::ModelRc::default(),
                     attachments: slint::ModelRc::default(),
-                    timestamp: "Agora".into(),
+                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                     show_header: true,
                     ..Default::default()
                 });
@@ -3441,7 +3441,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     links: slint::ModelRc::default(),
                     buttons: slint::ModelRc::default(),
                     attachments: slint::ModelRc::default(),
-                    timestamp: "Agora".into(),
+                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                     show_header: true,
                     ..Default::default()
                 });
@@ -4144,7 +4144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     links: slint::ModelRc::from(links_model),
                                     buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
                                     attachments: map_message_attachments(&attachments, &app_weak_inner),
-                                    timestamp: "Agora".into(),
+                                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                                     ..Default::default()
                                 };
                                 set_message_metadata(&mut message, &author_id, &created_at);
@@ -4235,7 +4235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     links: slint::ModelRc::from(links_model),
                                     buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
                                     attachments: map_message_attachments(&attachments, &app_weak_inner),
-                                    timestamp: "Agora".into(),
+                                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
                                     show_header: true,
                                     ..Default::default()
                                 });

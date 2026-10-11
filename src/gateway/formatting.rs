@@ -1187,12 +1187,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 } else if content_type.starts_with("audio/") {
                     "Audio"
                 } else {
-                    "Anexo"
+                    crate::utils::i18n_ui::ui_text().attachment_label
                 };
                 content_parts.push(format!("[{}: {}]", label, filename));
                 if !url.is_empty() {
                     links.push(LinkData {
-                        label: format!("Abrir {}: {}", label, filename),
+                        label: format!("{} {}: {}", crate::utils::i18n_ui::ui_text().open, label, filename),
                         url: url.clone(),
                     });
                 }
