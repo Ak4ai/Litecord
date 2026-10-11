@@ -45,9 +45,13 @@ elif command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update -qq 2>/dev/null || true
   sudo apt-get install -y --no-install-recommends libayatana-appindicator3-1 xdotool libclang-dev gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-good 2>/dev/null || true
 elif command -v dnf >/dev/null 2>&1; then
-  info "Fedora detected. Installing runtime dependencies (libayatana-appindicator-gtk3, xdotool, clang, gstreamer1-plugin-pipewire)..."
-  sudo dnf install -y libayatana-appindicator-gtk3 xdotool xdotool-libs clang gstreamer1-plugins-good gstreamer1-plugin-pipewire alsa-plugins-pipewire 2>/dev/null || true
-  # Newer Fedora/Nobara ship libxdo.so.4 only; the binary links against libxdo.so.3.
+  info "Fedora detected. Installing runtime dependencies (libayatana-appindicator-gtk3, libxdo, pipewire-alsa, ...)..."
+  # One package at a time: dnf aborts the WHOLE transaction when a single name is
+  # missing from the repos, which used to leave the system without any dependency.
+  for pkg in libayatana-appindicator-gtk3 libxdo xdotool clang gstreamer1-plugins-good pipewire-gstreamer pipewire-alsa; do
+    sudo dnf install -y "$pkg" >/dev/null 2>&1 || warn "Could not install $pkg (continuing)"
+  done
+  # Some releases ship only libxdo.so.4; the binary links against libxdo.so.3.
   if [ ! -f /usr/lib64/libxdo.so.3 ] && [ -f /usr/lib64/libxdo.so.4 ]; then
     sudo ln -sf /usr/lib64/libxdo.so.4 /usr/lib64/libxdo.so.3 2>/dev/null || true
   fi
