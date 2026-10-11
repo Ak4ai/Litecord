@@ -405,7 +405,7 @@ pub async fn run_cloudflare_signaling_loop(
         let mut ping_interval = tokio::time::interval(Duration::from_secs(15));
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut publish_ticker = tokio::time::interval(Duration::from_millis(300));
+        let mut publish_ticker = tokio::time::interval(Duration::from_millis(500));
         publish_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {

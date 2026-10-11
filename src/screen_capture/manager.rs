@@ -1323,7 +1323,6 @@ impl ScreenCaptureManager {
                 if let Ok(mut lock) = SHARED_P2P_SOCKET.lock() {
                     *lock = Some(Arc::clone(&socket));
                 }
-                ensure_stream_audio_playback_started();
                 let mut recv_buf = vec![0u8; 65535];
                 struct InFlightFrame {
                     total_chunks: u16,
@@ -1409,7 +1408,12 @@ impl ScreenCaptureManager {
                     }
 
                     // Proactive presence heartbeat every 1.5s to maintain direct peer routes and NAT pinholes
-                    if last_outbound_heartbeat.elapsed() >= Duration::from_millis(1500) {
+                    let heartbeat_every = if peers_store.lock().map(|p| p.is_empty()).unwrap_or(false) {
+                        Duration::from_millis(4000)
+                    } else {
+                        Duration::from_millis(1500)
+                    };
+                    if last_outbound_heartbeat.elapsed() >= heartbeat_every {
                         last_outbound_heartbeat = Instant::now();
                         let mut uname = my_username_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
                         if uname.is_empty() {
@@ -2018,6 +2022,8 @@ impl ScreenCaptureManager {
                                                 }
                                             } else {
                                                 // 2. Direct feed to Standalone Stream Audio Queue ONLY when not in a voice call
+                                                mark_stream_audio_activity();
+                                                ensure_stream_audio_playback_started();
                                                 let queue = get_stream_audio_queue();
                                                 let mut q_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
                                                 if q_guard.len() > 4800 {
@@ -2099,6 +2105,8 @@ impl ScreenCaptureManager {
                             trigger_stream_stopped(uid);
                         }
                     }
+                    crate::utils::timer_resolution::STREAM_RX_ACTIVE
+                        .store(!last_stream_activity.is_empty(), Ordering::Relaxed);
                 }
             })
             .expect("Falha ao iniciar thread RX");

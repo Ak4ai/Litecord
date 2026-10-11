@@ -9,6 +9,7 @@ pub mod emoji_cache;
 pub mod attachment_cache;
 pub mod avatar_cache;
 pub mod cpu_profiler;
+pub mod timer_resolution;
 pub mod video_settings;
 pub mod gpu_encoder;
 pub mod network_settings;

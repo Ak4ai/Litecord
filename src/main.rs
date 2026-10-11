@@ -84,14 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cpu_profiler::start_thread_cpu_profiler();
     cpu_profiler::set_current_thread_name("main-ui-thread");
 
-    #[cfg(target_os = "windows")]
-    unsafe {
-        #[link(name = "winmm")]
-        extern "system" {
-            fn timeBeginPeriod(uPeriod: u32) -> u32;
-        }
-        timeBeginPeriod(1);
-    }
+    // 1 ms timer resolution is requested only while voice/streams need it.
+    utils::timer_resolution::start_timer_resolution_governor();
 
     info!("==================================================================");
     info!("🚀 LITECORD INICIADO | VERSÃO: v{} ({})", env!("CARGO_PKG_VERSION"), env!("LITECORD_GIT_HASH"));

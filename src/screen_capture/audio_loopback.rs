@@ -12,6 +12,26 @@ use super::types::*;
 use super::crypto::*;
 
 static STREAM_AUDIO_PLAYBACK_INIT: OnceLock<()> = OnceLock::new();
+// Milliseconds since process start of the last remote stream audio chunk (0 = never).
+static STREAM_AUDIO_LAST_MS: AtomicU64 = AtomicU64::new(0);
+static STREAM_AUDIO_EPOCH: OnceLock<Instant> = OnceLock::new();
+// How long the standalone stream output device stays open after the last chunk.
+const STREAM_AUDIO_IDLE_CLOSE_MS: u64 = 10_000;
+
+fn stream_audio_now_ms() -> u64 {
+    STREAM_AUDIO_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// Called whenever remote stream audio is queued for standalone playback.
+pub fn mark_stream_audio_activity() {
+    STREAM_AUDIO_LAST_MS.store(stream_audio_now_ms(), Ordering::Relaxed);
+}
+
+/// True while stream audio arrived within the idle window.
+pub fn stream_audio_recent() -> bool {
+    let last = STREAM_AUDIO_LAST_MS.load(Ordering::Relaxed);
+    last != 0 && stream_audio_now_ms().saturating_sub(last) < STREAM_AUDIO_IDLE_CLOSE_MS
+}
 static STREAM_AUDIO_QUEUE: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
 static STREAM_VOLUMES: OnceLock<Arc<Mutex<HashMap<u64, f32>>>> = OnceLock::new();
 
@@ -51,7 +71,6 @@ pub fn ensure_stream_audio_playback_started() {
                 #[cfg(windows)]
                 unsafe {
                     windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null_mut(), windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
-                    windows_sys::Win32::Media::timeBeginPeriod(1);
                 }
 
                 let host = cpal::default_host();
@@ -63,6 +82,12 @@ pub fn ensure_stream_audio_playback_started() {
                     if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 {
                         // Voice Gateway Master Output Engine is actively running and mixing stream audio
                         std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                    // The output device is only opened on demand: no stream audio, no open
+                    // WASAPI stream waking the system 100 times per second for silence.
+                    if !stream_audio_recent() {
+                        std::thread::sleep(Duration::from_millis(250));
                         continue;
                     }
                     let selected_dev_name = if let Ok(guard) = crate::gateway::get_selected_output_device_store().lock() {
@@ -211,10 +236,19 @@ pub fn ensure_stream_audio_playback_started() {
                         }
                     }
 
-                    if let Some(_stream) = active_stream {
+                    if let Some(stream) = active_stream {
+                        // Hold the device while stream audio keeps arriving; release it when
+                        // idle or when a voice call takes over the output.
                         loop {
-                            std::thread::sleep(Duration::from_secs(3600));
+                            std::thread::sleep(Duration::from_millis(500));
+                            if !stream_audio_recent()
+                                || crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0
+                            {
+                                break;
+                            }
                         }
+                        drop(stream);
+                        info!("🔊 [STREAM PLAYBACK] Saída de áudio da stream liberada (ociosa).");
                     } else {
                         warn!("⚠️ [STREAM PLAYBACK] Falha ao iniciar playback em todos os dispositivos. Tentando novamente em 3 segundos...");
                         std::thread::sleep(Duration::from_secs(3));
