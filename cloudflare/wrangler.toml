@@ -1,0 +1,19 @@
+# Signaling worker for Litecord P2P screen sharing.
+#
+# Local test:   npx wrangler dev --ip 0.0.0.0 --port 8787
+#               LITECORD_SIGNALING_URL=ws://<lan-ip>:8787  litecord
+# Deploy:       npx wrangler deploy        (only when you mean to publish)
+
+name = "litecord-signal"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SignalingRoom"
+
+# The class already exists on the deployed worker. Keep this block aligned with
+# the migration history of the account (wrangler refuses a conflicting tag).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalingRoom"]

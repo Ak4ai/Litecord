@@ -276,6 +276,46 @@ pub fn process_signaling_json(
     }
 }
 
+/// User ids are 64-bit snowflakes; the worker sends them as strings because a JSON
+/// number loses precision above 2^53.
+fn json_uid(v: &serde_json::Value) -> u64 {
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(0)
+}
+
+/// `LITECORD_SIGNALING_URL` points the client at another signaling server
+/// (e.g. `ws://192.168.1.15:8787` for a local `wrangler dev`).
+fn signaling_base_url() -> String {
+    match std::env::var("LITECORD_SIGNALING_URL") {
+        Ok(url) if !url.trim().is_empty() => url.trim().trim_end_matches('/').to_string(),
+        _ => "wss://litecord-signal.ricosgames-henrique.workers.dev".to_string(),
+    }
+}
+
+/// What a presence message tells the other peers about how to reach us.
+#[derive(PartialEq, Clone, Default)]
+struct AnnouncedAddrs {
+    wan: Option<SocketAddr>,
+    lan: Vec<SocketAddr>,
+    rx_port: u16,
+}
+
+fn current_addrs() -> AnnouncedAddrs {
+    let rx_port = get_my_rx_port();
+    AnnouncedAddrs {
+        wan: resolve_public_stun_address(),
+        lan: get_local_lan_addresses(rx_port),
+        rx_port,
+    }
+}
+
+/// How often the client looks for a change of its own addresses (Wi-Fi roaming,
+/// new NAT mapping). Nothing is sent unless something really changed.
+const ADDR_CHECK_EVERY: Duration = Duration::from_secs(30);
+/// Safety net: re-announce even if nothing changed, in case a message was lost.
+const PRESENCE_REFRESH_EVERY: Duration = Duration::from_secs(300);
+
 pub fn handle_incoming_ws_message(
     msg: tokio_tungstenite::tungstenite::Message,
     current_cid: u64,
@@ -299,8 +339,17 @@ pub fn handle_incoming_ws_message(
         tokio_tungstenite::tungstenite::Message::Text(text) => {
             let text_bytes = text.as_bytes();
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                if val["op"] == "peer_leave" {
-                    let pkt_uid = val["uid"].as_u64().unwrap_or(0);
+                if val["op"] == "peer_join" {
+                    // Somebody entered the room: announce ourselves once so they can find us.
+                    info!("👋 [SIGNALING] Peer UID={} entrou na sala de sinalização. Reanunciando presença.", json_uid(&val["uid"]));
+                    force_signaling_broadcast();
+                    return;
+                } else if val["op"] == "room" {
+                    let count = val["uids"].as_array().map(|a| a.len()).unwrap_or(0);
+                    info!("🏠 [SIGNALING] Sala de sinalização com {} outro(s) peer(s) conectado(s).", count);
+                    return;
+                } else if val["op"] == "peer_leave" {
+                    let pkt_uid = json_uid(&val["uid"]);
                     if pkt_uid != 0 {
                         info!("🚪 [SIGNALING] Peer UID={} saiu da sala de sinalização Cloudflare.", pkt_uid);
                         trigger_stream_stopped(pkt_uid);
@@ -335,7 +384,9 @@ pub async fn run_cloudflare_signaling_loop(
     peers_store: Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
 ) {
     let my_inst = get_process_instance_id();
-    let cf_host = "litecord-signal.ricosgames-henrique.workers.dev";
+    let base_url = signaling_base_url();
+    // Failed connections back off (2s, 4s, ... 60s) instead of hammering the server.
+    let mut retry_delay = Duration::from_secs(2);
 
     loop {
         let mut cid = channel_id.load(Ordering::Relaxed);
@@ -368,7 +419,7 @@ pub async fn run_cloudflare_signaling_loop(
             }
         }
 
-        let ws_url = format!("wss://{}/ws?channel={}&user={}", cf_host, cid, my_uid);
+        let ws_url = format!("{}/ws?channel={}&user={}&v=2", base_url, cid, my_uid);
         info!("📡 [SIGNALING] Conectando ao Cloudflare Worker WebSocket em {}...", ws_url);
 
         let mut req = match ws_url.as_str().into_client_request() {
@@ -384,12 +435,14 @@ pub async fn run_cloudflare_signaling_loop(
         let (ws_stream, _resp) = match connect_async(req).await {
             Ok((s, r)) => {
                 info!("🛡️ [SIGNALING] Conectado com sucesso ao Cloudflare Edge Signaling (HTTP {}) para canal {}", r.status(), cid);
+                retry_delay = Duration::from_secs(2);
                 (s, r)
             }
             Err(e) => {
-                warn!("⚠️ [SIGNALING] Falha na conexão WebSocket com Cloudflare: {:?}. Reconectando em 2s...", e);
+                warn!("⚠️ [SIGNALING] Falha na conexão WebSocket com Cloudflare: {:?}. Reconectando em {}s...", e, retry_delay.as_secs());
                 invalidate_cached_stun_address();
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
                 continue;
             }
         };
@@ -400,7 +453,11 @@ pub async fn run_cloudflare_signaling_loop(
             *guard = Some(out_tx);
         }
 
-        let mut last_pub = Instant::now() - Duration::from_secs(10);
+        // Presence is event driven: on connect, when a peer joins, when our stream
+        // state or addresses change. See cloudflare/worker.js for the cost model.
+        let mut announced: Option<AnnouncedAddrs> = None;
+        let mut last_pub = Instant::now();
+        let mut last_addr_check = Instant::now();
         let mut last_tx_state = false;
         let mut ping_interval = tokio::time::interval(Duration::from_secs(15));
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -440,9 +497,25 @@ pub async fn run_cloudflare_signaling_loop(
                     let cur_tx = is_tx_running.load(Ordering::Relaxed);
                     let force_wake = SIGNALING_FORCE_WAKE.swap(false, Ordering::Relaxed);
 
-                    let should_publish = force_wake || cur_tx != last_tx_state || last_pub.elapsed() >= Duration::from_secs(2);
+                    let mut should_publish = announced.is_none()
+                        || force_wake
+                        || cur_tx != last_tx_state
+                        || last_pub.elapsed() >= PRESENCE_REFRESH_EVERY;
+
+                    let mut addrs = None;
+                    if !should_publish && last_addr_check.elapsed() >= ADDR_CHECK_EVERY {
+                        last_addr_check = Instant::now();
+                        let now_addrs = current_addrs();
+                        if announced.as_ref() != Some(&now_addrs) {
+                            info!("🔀 [SIGNALING] Endereços locais mudaram. Reanunciando presença.");
+                            should_publish = true;
+                        }
+                        addrs = Some(now_addrs);
+                    }
+
                     if should_publish {
                         last_pub = Instant::now();
+                        last_addr_check = Instant::now();
                         last_tx_state = cur_tx;
 
                         let mut uid = my_user_id.load(Ordering::Relaxed);
@@ -450,9 +523,11 @@ pub async fn run_cloudflare_signaling_loop(
                             uid = crate::gateway::get_my_user_id();
                         }
 
-                        let my_rx_port = get_my_rx_port();
-                        let wan_addr = resolve_public_stun_address();
-                        let lan_addrs = get_local_lan_addresses(my_rx_port);
+                        let addrs = addrs.unwrap_or_else(current_addrs);
+                        let my_rx_port = addrs.rx_port;
+                        let wan_addr = addrs.wan;
+                        let lan_addrs = addrs.lan.clone();
+                        announced = Some(addrs);
 
                         let my_ecdh_pub = get_or_create_local_ecdh_keypair();
                         let ecdh_hex: String = my_ecdh_pub.iter().map(|b| format!("{:02x}", b)).collect();
