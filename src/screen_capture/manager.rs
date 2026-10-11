@@ -1938,12 +1938,15 @@ impl ScreenCaptureManager {
                                     if len >= 25 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
                                         if pkt_inst != my_instance_id {
-                                            info!("📡 Usuário {} encerrou a transmissão de tela via UDP OP_STOP.", pkt_uid);
-                                            active_streaming_users.insert(pkt_uid, false);
+                                            // The sender repeats OP_STOP in a burst; tear down once.
+                                            let was = active_streaming_users.insert(pkt_uid, false);
                                             in_flight.remove(&pkt_uid);
                                             last_rendered_seq.remove(&pkt_uid);
                                             last_stream_activity.remove(&pkt_uid);
-                                            trigger_stream_stopped(pkt_uid);
+                                            if was != Some(false) {
+                                                info!("📡 Usuário {} encerrou a transmissão de tela via UDP OP_STOP.", pkt_uid);
+                                                trigger_stream_stopped(pkt_uid);
+                                            }
                                         }
                                     }
                                 }

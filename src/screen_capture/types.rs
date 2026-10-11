@@ -107,9 +107,25 @@ pub static PEER_STREAMING_STATES: Mutex<Option<HashMap<u64, bool>>> = Mutex::new
 pub static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
 pub static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
 
+/// Something that may have changed our addresses happened (gateway reconnect, new
+/// voice session...). The signaling loop re-checks them right away and announces
+/// only if they really changed.
 pub fn force_signaling_broadcast() {
     SIGNALING_FORCE_WAKE.store(true, Ordering::Relaxed);
 }
+
+/// Set when the signaling server reports a new peer in the room: that peer has
+/// never heard of us, so presence must be sent even though nothing changed.
+pub static SIGNALING_PEER_JOINED: AtomicBool = AtomicBool::new(false);
+
+pub fn announce_to_new_peer() {
+    SIGNALING_PEER_JOINED.store(true, Ordering::Relaxed);
+}
+
+/// Stream state already sent out-of-band by `notify_signaling_stream_state`
+/// (0 = nothing, 1 = "not streaming", 2 = "streaming"), so the signaling loop does
+/// not announce the same change a second time.
+pub static SIGNALING_ANNOUNCED_TX_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// When each peer's stream was last stopped. Video that was already in flight (or
 /// still queued in the decoder) keeps arriving for a moment after the stop; without
@@ -166,7 +182,6 @@ pub fn trigger_stream_stopped(uid: u64) {
 }
 
 pub fn notify_signaling_stream_state(cid: u64, uid: u64, streaming: bool) {
-    force_signaling_broadcast();
     if let Ok(guard) = SIGNALING_OUT_TX.lock() {
         if let Some(ref tx) = *guard {
             let my_inst = get_process_instance_id();
@@ -191,10 +206,15 @@ pub fn notify_signaling_stream_state(cid: u64, uid: u64, streaming: bool) {
 
             let current_key = super::crypto::get_voice_encryption_key(cid);
             if let Some(enc_payload) = super::crypto::encrypt_signaling_payload(&current_key, payload.to_string().as_bytes()) {
-                let _ = tx.send(tokio_tungstenite::tungstenite::Message::Binary(enc_payload.into()));
+                if tx.send(tokio_tungstenite::tungstenite::Message::Binary(enc_payload.into())).is_ok() {
+                    SIGNALING_ANNOUNCED_TX_STATE.store(if streaming { 2 } else { 1 }, Ordering::Relaxed);
+                    return;
+                }
             }
         }
     }
+    // Not connected (or the send failed): let the signaling loop announce it.
+    force_signaling_broadcast();
 }
 
 #[inline]

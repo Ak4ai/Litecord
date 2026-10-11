@@ -346,7 +346,7 @@ pub fn handle_incoming_ws_message(
                 if val["op"] == "peer_join" {
                     // Somebody entered the room: announce ourselves once so they can find us.
                     info!("👋 [SIGNALING] Peer UID={} entrou na sala de sinalização. Reanunciando presença.", json_uid(&val["uid"]));
-                    force_signaling_broadcast();
+                    announce_to_new_peer();
                     return;
                 } else if val["op"] == "room" {
                     let count = val["uids"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -500,14 +500,28 @@ pub async fn run_cloudflare_signaling_loop(
                 _ = publish_ticker.tick() => {
                     let cur_tx = is_tx_running.load(Ordering::Relaxed);
                     let force_wake = SIGNALING_FORCE_WAKE.swap(false, Ordering::Relaxed);
+                    let peer_joined = SIGNALING_PEER_JOINED.swap(false, Ordering::Relaxed);
+
+                    // A stream start/stop that was already announced out-of-band.
+                    let sent_state = match SIGNALING_ANNOUNCED_TX_STATE.swap(0, Ordering::Relaxed) {
+                        1 => Some(false),
+                        2 => Some(true),
+                        _ => None,
+                    };
+                    if sent_state == Some(cur_tx) && announced.is_some() {
+                        last_tx_state = cur_tx;
+                        last_pub = Instant::now();
+                    }
 
                     let mut should_publish = announced.is_none()
-                        || force_wake
+                        || peer_joined
                         || cur_tx != last_tx_state
                         || last_pub.elapsed() >= PRESENCE_REFRESH_EVERY;
 
+                    // `force_wake` only means "re-check now": nothing is sent unless
+                    // the addresses really changed.
                     let mut addrs = None;
-                    if !should_publish && last_addr_check.elapsed() >= ADDR_CHECK_EVERY {
+                    if !should_publish && (force_wake || last_addr_check.elapsed() >= ADDR_CHECK_EVERY) {
                         last_addr_check = Instant::now();
                         let now_addrs = current_addrs();
                         if announced.as_ref() != Some(&now_addrs) {
