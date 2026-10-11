@@ -214,8 +214,8 @@ pub async fn fetch_and_populate_channels(
                             ui.set_channels(slint::ModelRc::default());
                             ui.set_messages(slint::ModelRc::default());
                             ui.set_active_channel_id("".into());
-                            ui.set_active_channel_name("Permissões indisponíveis".into());
-                            ui.set_titlebar_error("Falha ao verificar permissões. Selecione o servidor novamente para tentar.".into());
+                            ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().perms_unavailable.into());
+                            ui.set_titlebar_error(crate::utils::i18n_ui::ui_text().perms_failed.into());
                         }
                     });
                     return;
@@ -439,7 +439,7 @@ pub async fn fetch_and_populate_channels(
                 let app_w_none = app_weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w_none.upgrade() {
-                        ui.set_active_channel_name("Nenhum canal de texto acessível".into());
+                        ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().no_text_channel.into());
                         ui.set_active_channel_id("".into());
                         let empty_msgs = vec![ChatMessage {
                             id: "".into(),

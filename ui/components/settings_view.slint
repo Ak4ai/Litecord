@@ -1,6 +1,7 @@
 import { Button, ScrollView, Slider } from "std-widgets.slint";
 import { AppTheme } from "../theme.slint";
 import { IconButton } from "icon_button.slint";
+import { Tr } from "tr.slint";
 
 export struct LanguageItem {
     code: string,
@@ -213,7 +214,7 @@ export component SettingsView inherits Rectangle {
                             padding-left: 12px;
                             padding-right: 8px;
                             Text {
-                                text: "CONFIGURAÇÕES";
+                                text: Tr.settings_header;
                                 color: AppTheme.text-subtle;
                                 font-size: 11px;
                                 font-weight: 700;
@@ -736,7 +737,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Dispositivo de Saída";
+                                                    text: Tr.output_device;
                                                     color: AppTheme.accent;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -746,7 +747,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Para obter a melhor fidelidade posicional e evitar eco ou vazamento de som nas chamadas em grupo, utilize fones de ouvido estéreo.";
+                                                text: Tr.output_hint;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -872,7 +873,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Dispositivo de Entrada";
+                                                    text: Tr.input_device;
                                                     color: AppTheme.accent;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -882,7 +883,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Selecione o microfone principal ou headset. Recomendamos usar o dispositivo padrão ou o microfone dedicado com cancelamento de ruído.";
+                                                text: Tr.input_hint;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -916,7 +917,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "VOLUME DE ENTRADA (GANHO DO MICROFONE)";
+                                                    text: Tr.input_volume_title;
                                                     color: AppTheme.text-secondary;
                                                     font-size: 11px;
                                                     font-weight: 700;
@@ -1006,7 +1007,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Ganho do Microfone";
+                                                    text: Tr.mic_gain;
                                                     color: AppTheme.accent;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -1016,7 +1017,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Ajuste o ganho do seu microfone. Valores acima de 100% (até 200%) amplificam o sinal da sua voz para os outros usuários na sala.";
+                                                text: Tr.mic_gain_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -1140,7 +1141,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Sensibilidade (VAD)";
+                                                    text: Tr.sensitivity;
                                                     color: AppTheme.success;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -1150,7 +1151,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Fale normalmente. Ajuste o controle para que sua voz ultrapasse a marca branca, mas ruídos como teclado mecânico e respiração fiquem abaixo.";
+                                                text: Tr.sensitivity_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -1208,7 +1209,7 @@ export component SettingsView inherits Rectangle {
                                                         HorizontalLayout {
                                                             alignment: center;
                                                             Text {
-                                                                text: root.mic_level >= root.vad_threshold ? "ATIVO" : "SILÊNCIO";
+                                                                text: root.mic_level >= root.vad_threshold ? Tr.mic_state_active : Tr.mic_state_silent;
                                                                 color: root.mic_level >= root.vad_threshold ? AppTheme.success : AppTheme.text-muted;
                                                                 font-size: 10px;
                                                                 font-weight: 700;
@@ -1296,7 +1297,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Teste de Retorno (Loopback)";
+                                                    text: Tr.loopback_test;
                                                     color: AppTheme.warning;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -1306,7 +1307,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Permite escutar a sua voz tratada em tempo real com o filtro do Litecord nos seus fones para calibrar volume e clareza antes das partidas.";
+                                                text: Tr.loopback_test_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -1340,7 +1341,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Atenuação de Voz Inteligente (Ducking)";
+                                                    text: Tr.ducking;
                                                     color: AppTheme.text-strong;
                                                     font-size: 13px;
                                                     font-weight: 700;
@@ -1348,7 +1349,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                                 Rectangle { horizontal-stretch: 1; }
                                                 Text {
-                                                    text: "ATIVO (P:1 a P:5)";
+                                                    text: Tr.ducking_active;
                                                     color: AppTheme.success;
                                                     font-size: 10px;
                                                     font-weight: 700;
@@ -1357,7 +1358,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "O motor de áudio Opus PLC reduz automaticamente em 12dB o som dos outros membros quando líderes táticos com prioridade falam.";
+                                                text: Tr.ducking_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -1390,7 +1391,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Vantagem Competitiva";
+                                                    text: Tr.competitive_edge;
                                                     color: AppTheme.accent;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -1400,7 +1401,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Elimina a cacofonia em momentos decisivos de jogos FPS/MOBA, garantindo que callouts críticos se sobressaiam instantaneamente.";
+                                                text: Tr.competitive_edge_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -1440,7 +1441,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "SELECIONE O IDIOMA DO CLIENTE";
+                                                    text: Tr.select_language;
                                                     color: AppTheme.text-secondary;
                                                     font-size: 11px;
                                                     font-weight: 700;
@@ -1537,7 +1538,7 @@ export component SettingsView inherits Rectangle {
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Troca Instantânea";
+                                                        text: Tr.instant_switch;
                                                         color: AppTheme.accent;
                                                         font-size: 12px;
                                                         font-weight: 700;
@@ -1546,7 +1547,7 @@ export component SettingsView inherits Rectangle {
                                                     Rectangle { horizontal-stretch: 1; }
                                                 }
                                                 Text {
-                                                    text: "A alteração de idioma é aplicada em tempo real em todas as janelas sem necessidade de reiniciar o Litecord.";
+                                                    text: Tr.instant_switch_desc;
                                                     color: AppTheme.text-muted;
                                                     font-size: 11px;
                                                     wrap: word-wrap;
@@ -1571,7 +1572,7 @@ export component SettingsView inherits Rectangle {
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Detecção Automática";
+                                                        text: Tr.auto_detect;
                                                         color: AppTheme.success;
                                                         font-size: 12px;
                                                         font-weight: 700;
@@ -1580,7 +1581,7 @@ export component SettingsView inherits Rectangle {
                                                     Rectangle { horizontal-stretch: 1; }
                                                 }
                                                 Text {
-                                                    text: "A opção 'Auto' identifica a região e linguagem padrão do seu sistema operacional (Windows/Linux).";
+                                                    text: Tr.auto_detect_desc;
                                                     color: AppTheme.text-muted;
                                                     font-size: 11px;
                                                     wrap: word-wrap;
@@ -1657,7 +1658,7 @@ export component SettingsView inherits Rectangle {
                                                         alignment: center;
 
                                                         Text {
-                                                            text: root.recording_keybind_for == 1 ? root.tr_keybind_recording_prompt : (root.keybind_mute_str != "" ? root.keybind_mute_str : "Nenhum / Desativado");
+                                                            text: root.recording_keybind_for == 1 ? root.tr_keybind_recording_prompt : (root.keybind_mute_str != "" ? root.keybind_mute_str : Tr.keybind_none);
                                                             color: root.recording_keybind_for == 1 ? AppTheme.warning : (root.keybind_mute_str != "" ? AppTheme.text-strong : AppTheme.text-subtle);
                                                             font-size: 12px;
                                                             font-weight: 700;
@@ -1676,7 +1677,7 @@ export component SettingsView inherits Rectangle {
                                                     HorizontalLayout {
                                                         alignment: center;
                                                         Text {
-                                                            text: root.recording_keybind_for == 1 ? "Gravando..." : root.tr_keybind_btn_record;
+                                                            text: root.recording_keybind_for == 1 ? Tr.recording : root.tr_keybind_btn_record;
                                                             color: root.recording_keybind_for == 1 ? AppTheme.text-on-warning : AppTheme.text-on-accent;
                                                             font-size: 12px;
                                                             font-weight: 700;
@@ -1827,7 +1828,7 @@ export component SettingsView inherits Rectangle {
                                                         alignment: center;
 
                                                         Text {
-                                                            text: root.recording_keybind_for == 2 ? root.tr_keybind_recording_prompt : (root.keybind_deafen_str != "" ? root.keybind_deafen_str : "Nenhum / Desativado");
+                                                            text: root.recording_keybind_for == 2 ? root.tr_keybind_recording_prompt : (root.keybind_deafen_str != "" ? root.keybind_deafen_str : Tr.keybind_none);
                                                             color: root.recording_keybind_for == 2 ? AppTheme.warning : (root.keybind_deafen_str != "" ? AppTheme.text-strong : AppTheme.text-subtle);
                                                             font-size: 12px;
                                                             font-weight: 700;
@@ -1846,7 +1847,7 @@ export component SettingsView inherits Rectangle {
                                                     HorizontalLayout {
                                                         alignment: center;
                                                         Text {
-                                                            text: root.recording_keybind_for == 2 ? "Gravando..." : root.tr_keybind_btn_record;
+                                                            text: root.recording_keybind_for == 2 ? Tr.recording : root.tr_keybind_btn_record;
                                                             color: root.recording_keybind_for == 2 ? AppTheme.text-on-warning : AppTheme.text-on-accent;
                                                             font-size: 12px;
                                                             font-weight: 700;
@@ -1918,7 +1919,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Dica de Teclas";
+                                                    text: Tr.keys_tip;
                                                     color: AppTheme.success;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -1928,7 +1929,7 @@ export component SettingsView inherits Rectangle {
                                             }
 
                                             Text {
-                                                text: "Você pode usar teclas como F1-F12, teclas do NumPad, ou combinações com Ctrl, Shift e Alt para evitar conflitos.";
+                                                text: Tr.keys_tip_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -1963,7 +1964,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "CODIFICADOR DE VÍDEO (H.264 ENCODER)";
+                                                text: Tr.encoder_title;
                                                 color: AppTheme.text-secondary;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -1973,7 +1974,7 @@ export component SettingsView inherits Rectangle {
                                         }
 
                                         Text {
-                                            text: "Selecione o motor de aceleração por GPU ou CPU para codificar as transmissões de tela.";
+                                            text: Tr.encoder_desc;
                                             color: AppTheme.text-muted;
                                             font-size: 11px;
                                         }
@@ -2055,7 +2056,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "APARÊNCIA";
+                                                text: Tr.appearance;
                                                 color: AppTheme.text-secondary;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -2081,14 +2082,14 @@ export component SettingsView inherits Rectangle {
                                                     horizontal-stretch: 1;
 
                                                     Text {
-                                                        text: "Tema claro";
+                                                        text: Tr.light_theme;
                                                         color: AppTheme.text-strong;
                                                         font-size: 13px;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
-                                                        text: "Alterna toda a interface entre as paletas clara e escura.";
+                                                        text: Tr.light_theme_desc;
                                                         color: AppTheme.text-muted;
                                                         font-size: 11px;
                                                         wrap: word-wrap;
@@ -2141,7 +2142,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "MÉTODO DE CAPTURA DE TELA E JANELAS";
+                                                text: Tr.capture_method;
                                                 color: AppTheme.text-secondary;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -2151,7 +2152,7 @@ export component SettingsView inherits Rectangle {
                                         }
 
                                         Text {
-                                            text: "Define como o Litecord captura o conteúdo visual do sistema operacional.";
+                                            text: Tr.capture_method_desc;
                                             color: AppTheme.text-muted;
                                             font-size: 11px;
                                         }
@@ -2237,7 +2238,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "ÁUDIO DA TRANSMISSÃO (LOOPBACK DO SISTEMA)";
+                                                text: Tr.loopback_audio_title;
                                                 color: AppTheme.text-secondary;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -2247,7 +2248,7 @@ export component SettingsView inherits Rectangle {
                                         }
 
                                         Text {
-                                            text: "Define a tecnologia de captura do som interno de jogos, vídeos e do sistema.";
+                                            text: Tr.loopback_audio_desc;
                                             color: AppTheme.text-muted;
                                             font-size: 11px;
                                         }
@@ -2333,7 +2334,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "AVISOS E INTERFACE DE TRANSMISSÃO";
+                                                text: Tr.stream_ui_title;
                                                 color: AppTheme.text-secondary;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -2358,14 +2359,14 @@ export component SettingsView inherits Rectangle {
                                                     horizontal-stretch: 1;
 
                                                     Text {
-                                                        text: "Aviso de Prévia Econômica";
+                                                        text: Tr.economy_notice;
                                                         color: AppTheme.text-strong;
                                                         font-size: 13px;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
-                                                        text: "Exibe a pílula de aviso na pré-visualização própria ao iniciar a transmissão informando sobre a taxa de quadros reduzida para economizar recursos.";
+                                                        text: Tr.economy_notice_desc;
                                                         color: AppTheme.text-muted;
                                                         font-size: 11px;
                                                         wrap: word-wrap;
@@ -2417,14 +2418,14 @@ export component SettingsView inherits Rectangle {
                                                     horizontal-stretch: 1;
 
                                                     Text {
-                                                        text: "Monitor de Desempenho (CPU / RAM / GPU)";
+                                                        text: Tr.perf_monitor;
                                                         color: AppTheme.text-strong;
                                                         font-size: 13px;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
-                                                        text: "Exibe em tempo real o percentual de uso de RAM, CPU e GPU na barra de título do aplicativo ao lado das configurações.";
+                                                        text: Tr.perf_monitor_desc;
                                                         color: AppTheme.text-muted;
                                                         font-size: 11px;
                                                         wrap: word-wrap;
@@ -2493,7 +2494,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Criptografia E2EE de Vídeo & Som";
+                                                    text: Tr.e2ee_title;
                                                     color: AppTheme.text-strong;
                                                     font-size: 13px;
                                                     font-weight: 700;
@@ -2501,7 +2502,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                                 Rectangle { horizontal-stretch: 1; }
                                                 Text {
-                                                    text: "AES-256-GCM ATIVO";
+                                                    text: Tr.aes_active;
                                                     color: AppTheme.success;
                                                     font-size: 10px;
                                                     font-weight: 700;
@@ -2509,7 +2510,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "Cada quadro a 60 FPS e áudio loopback é criptografado com chaves simétricas de 256 bits via aceleração de hardware AES-NI.";
+                                                text: Tr.e2ee_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -2542,7 +2543,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Proteção Wi-Fi & LAN";
+                                                    text: Tr.lan_protect;
                                                     color: AppTheme.success;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -2551,7 +2552,7 @@ export component SettingsView inherits Rectangle {
                                                 Rectangle { horizontal-stretch: 1; }
                                             }
                                             Text {
-                                                text: "Impede que qualquer pessoa no mesmo roteador capture seu stream com analisadores de pacotes como Wireshark.";
+                                                text: Tr.lan_protect_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -2585,7 +2586,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Cofre de Credenciais Windows DPAPI";
+                                                    text: Tr.vault_title;
                                                     color: AppTheme.text-strong;
                                                     font-size: 13px;
                                                     font-weight: 700;
@@ -2593,7 +2594,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                                 Rectangle { horizontal-stretch: 1; }
                                                 Text {
-                                                    text: "PROTEGIDO";
+                                                    text: Tr.protected;
                                                     color: AppTheme.accent;
                                                     font-size: 10px;
                                                     font-weight: 700;
@@ -2601,7 +2602,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "Seu token do Discord é armazenado com criptografia nativa CryptProtectData vinculada à sua conta de usuário do Windows.";
+                                                text: Tr.vault_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -2634,7 +2635,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Imunidade a Stealers";
+                                                    text: Tr.stealer_immunity;
                                                     color: AppTheme.accent;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -2643,7 +2644,7 @@ export component SettingsView inherits Rectangle {
                                                 Rectangle { horizontal-stretch: 1; }
                                             }
                                             Text {
-                                                text: "Scripts e malwares não autorizados não conseguem roubar sua sessão porque a chave criptográfica reside no kernel do Windows.";
+                                                text: Tr.stealer_immunity_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -2677,7 +2678,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Voz Discord Oficial (Protocolo DAVE)";
+                                                    text: Tr.dave_title;
                                                     color: AppTheme.text-strong;
                                                     font-size: 13px;
                                                     font-weight: 700;
@@ -2693,7 +2694,7 @@ export component SettingsView inherits Rectangle {
                                                 }
                                             }
                                             Text {
-                                                text: "Comunicação de voz criptografada ponta a ponta com os servidores de voz oficiais do Discord sem intermediários.";
+                                                text: Tr.dave_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -2726,7 +2727,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Zero Intermediários";
+                                                    text: Tr.zero_intermediaries;
                                                     color: AppTheme.success;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -2735,7 +2736,7 @@ export component SettingsView inherits Rectangle {
                                                 Rectangle { horizontal-stretch: 1; }
                                             }
                                             Text {
-                                                text: "Conexões 100% diretas com a API do Discord. Não existem servidores de terceiros ou telemetria embutida.";
+                                                text: Tr.zero_intermediaries_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -2780,7 +2781,7 @@ export component SettingsView inherits Rectangle {
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Modo de Conexão Proxy";
+                                                        text: Tr.proxy_mode;
                                                         color: AppTheme.text-strong;
                                                         font-size: 13px;
                                                         font-weight: 700;
@@ -2873,7 +2874,7 @@ export component SettingsView inherits Rectangle {
                                                         }
                                                     }
                                                     Text {
-                                                        text: "Endereço e Autenticação do Proxy";
+                                                        text: Tr.proxy_address;
                                                         color: AppTheme.text-strong;
                                                         font-size: 13px;
                                                         font-weight: 700;
@@ -2891,7 +2892,7 @@ export component SettingsView inherits Rectangle {
                                                         min-width: 130px;
                                                         spacing: 4px;
                                                         Text {
-                                                            text: "Servidor / IP Host:";
+                                                            text: Tr.proxy_host;
                                                             color: AppTheme.text-muted;
                                                             font-size: 11px;
                                                             font-weight: 600;
@@ -2922,7 +2923,7 @@ export component SettingsView inherits Rectangle {
                                                         width: 80px;
                                                         spacing: 4px;
                                                         Text {
-                                                            text: "Porta:";
+                                                            text: Tr.proxy_port;
                                                             color: AppTheme.text-muted;
                                                             font-size: 11px;
                                                             font-weight: 600;
@@ -2959,7 +2960,7 @@ export component SettingsView inherits Rectangle {
                                                         min-width: 100px;
                                                         spacing: 4px;
                                                         Text {
-                                                            text: "Usuário (Opcional):";
+                                                            text: Tr.proxy_user;
                                                             color: AppTheme.text-muted;
                                                             font-size: 11px;
                                                             font-weight: 600;
@@ -2991,7 +2992,7 @@ export component SettingsView inherits Rectangle {
                                                         min-width: 100px;
                                                         spacing: 4px;
                                                         Text {
-                                                            text: "Senha (Opcional):";
+                                                            text: Tr.proxy_pass;
                                                             color: AppTheme.text-muted;
                                                             font-size: 11px;
                                                             font-weight: 600;
@@ -3047,7 +3048,7 @@ export component SettingsView inherits Rectangle {
                                                             }
                                                         }
                                                         Text {
-                                                            text: root.proxy_is_testing ? "Testando..." : "Testar Proxy";
+                                                            text: root.proxy_is_testing ? Tr.testing : Tr.test_proxy;
                                                             color: AppTheme.text-strong;
                                                             font-size: 11px;
                                                             font-weight: 600;
@@ -3080,7 +3081,7 @@ export component SettingsView inherits Rectangle {
                                                         alignment: center;
                                                         spacing: 6px;
                                                         Text {
-                                                            text: "Salvar e Aplicar";
+                                                            text: Tr.save_apply;
                                                             color: AppTheme.text-on-accent;
                                                             font-size: 11px;
                                                             font-weight: 700;
@@ -3176,7 +3177,7 @@ export component SettingsView inherits Rectangle {
                                                          }
                                                      }
                                                      Text {
-                                                         text: "Burlar Bloqueios";
+                                                         text: Tr.bypass_blocks;
                                                          color: AppTheme.info;
                                                          font-size: 11px;
                                                          font-weight: 700;
@@ -3185,7 +3186,7 @@ export component SettingsView inherits Rectangle {
                                                      }
                                                  }
                                                  Text {
-                                                     text: "Permite contornar firewalls e bloqueios de DNS em colégios ou empresas.";
+                                                     text: Tr.bypass_blocks_desc;
                                                      color: AppTheme.text-muted;
                                                      font-size: 10px;
                                                      wrap: word-wrap;
@@ -3217,7 +3218,7 @@ export component SettingsView inherits Rectangle {
                                                      }
                                                  }
                                                  Text {
-                                                     text: "Compatível com a porta 9050 do Tor e túneis SSH locais para anonimizar seu IP.";
+                                                     text: Tr.tor_desc;
                                                      color: AppTheme.text-muted;
                                                      font-size: 10px;
                                                      wrap: word-wrap;
@@ -3249,7 +3250,7 @@ export component SettingsView inherits Rectangle {
                                                      }
                                                  }
                                                  Text {
-                                                     text: "Aponte para 127.0.0.1:8080 para inspecionar requisições da API REST.";
+                                                     text: Tr.debug_desc;
                                                      color: AppTheme.text-muted;
                                                      font-size: 10px;
                                                      wrap: word-wrap;
@@ -3272,7 +3273,7 @@ export component SettingsView inherits Rectangle {
                                                          }
                                                      }
                                                      Text {
-                                                         text: "Desempenho em Jogos";
+                                                         text: Tr.gaming_perf;
                                                          color: AppTheme.success;
                                                          font-size: 11px;
                                                          font-weight: 700;
@@ -3281,7 +3282,7 @@ export component SettingsView inherits Rectangle {
                                                      }
                                                  }
                                                  Text {
-                                                     text: "Com proxy desativado, o impacto é 0%. Voz e vídeo mantêm rotas UDP diretas.";
+                                                     text: Tr.gaming_perf_desc;
                                                      color: AppTheme.text-muted;
                                                      font-size: 10px;
                                                      wrap: word-wrap;
@@ -3346,7 +3347,7 @@ export component SettingsView inherits Rectangle {
                                             VerticalLayout {
                                                 alignment: center;
                                                 Button {
-                                                    text: root.is_checking_update ? "Verificando..." : "Verificar Atualizações";
+                                                    text: root.is_checking_update ? Tr.checking : Tr.check_updates;
                                                     enabled: !root.is_checking_update;
                                                     clicked => { root.check_for_updates(); }
                                                 }
@@ -3379,7 +3380,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Canal Oficial de Releases";
+                                                    text: Tr.release_channel;
                                                     color: AppTheme.warning;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -3388,7 +3389,7 @@ export component SettingsView inherits Rectangle {
                                                 Rectangle { horizontal-stretch: 1; }
                                             }
                                             Text {
-                                                text: "As atualizações são verificadas diretamente no repositório do GitHub com validação de assinatura de domínio.";
+                                                text: Tr.release_channel_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -3422,7 +3423,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Performance Nativa em Rust";
+                                                    text: Tr.rust_perf;
                                                     color: AppTheme.text-strong;
                                                     font-size: 13px;
                                                     font-weight: 700;
@@ -3431,7 +3432,7 @@ export component SettingsView inherits Rectangle {
                                                 Rectangle { horizontal-stretch: 1; }
                                             }
                                             Text {
-                                                text: "• Uso de CPU: < 0.1% em idle (0.0% no modo DeepSleep na bandeja)\n• Memória RAM: ~32 MB (contra mais de 700 MB do Electron)\n• Pipeline de áudio Opus PLC com atenuação de volume inteligente";
+                                                text: Tr.rust_perf_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
@@ -3464,7 +3465,7 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Modo DeepSleep";
+                                                    text: Tr.deepsleep;
                                                     color: AppTheme.success;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -3473,7 +3474,7 @@ export component SettingsView inherits Rectangle {
                                                 Rectangle { horizontal-stretch: 1; }
                                             }
                                             Text {
-                                                text: "Ao minimizar para a bandeja, a interface congela sua renderização para garantir 100% de FPS para seus jogos.";
+                                                text: Tr.deepsleep_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;

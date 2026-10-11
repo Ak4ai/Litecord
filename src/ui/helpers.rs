@@ -11,6 +11,7 @@ use crate::{
 use crate::http::DiscordHttpClient;
 use crate::gateway::{self, ChannelData};
 use crate::utils::i18n;
+use crate::utils::i18n_ui;
 use crate::utils::video_settings;
 use crate::utils::attachment_cache;
 use crate::utils::emoji_cache;
@@ -133,6 +134,8 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     };
 
     ui.set_current_language_code(lang.code().into());
+    i18n_ui::set_current(resolved);
+    i18n_ui::apply_to_window(ui, i18n_ui::table_for(resolved));
     ui.set_tr_login_title(tr.login_title.into());
     ui.set_tr_login_desc(tr.login_desc.into());
     ui.set_tr_login_placeholder(tr.login_placeholder.into());

@@ -1,5 +1,6 @@
 import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { AppTheme, ChatTypography } from "../theme.slint";
+import { Tr } from "tr.slint";
 
 export struct LinkItem {
     label: string,
@@ -145,7 +146,7 @@ export component ChatMessagesView inherits Rectangle {
                         }
 
                         Text {
-                            text: root.is_loading_older_messages ? "Carregando mensagens anteriores..." : "Carregar mensagens mais antigas";
+                            text: root.is_loading_older_messages ? Tr.loading_older : Tr.load_older;
                             color: AppTheme.accent;
                             font-size: 11px;
                             font-weight: 600;
@@ -267,7 +268,7 @@ export component ChatMessagesView inherits Rectangle {
                                 }
 
                                 if msg.reply-command != "": Text {
-                                    text: "usou";
+                                    text: Tr.used_command;
                                     color: AppTheme.text-reply;
                                     font-size: 11px;
                                     vertical-alignment: center;
@@ -963,7 +964,7 @@ export component ChatMessagesView inherits Rectangle {
                                             VerticalLayout {
                                                 alignment: center;
                                                 Text {
-                                                    text: att.is_loading ? "Baixando..." : (att.size_str != "" ? ("Baixar Imagem (" + att.size_str + ")") : "Baixar Imagem");
+                                                    text: att.is_loading ? Tr.downloading : (att.size_str != "" ? (Tr.download_image_size + att.size_str + ")") : Tr.download_image);
                                                     color: AppTheme.text-on-accent;
                                                     font-size: 13px;
                                                     font-weight: 600;

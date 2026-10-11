@@ -1,3 +1,5 @@
+import { Tr } from "components/tr.slint";
+export { Tr }
 import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
 import { AppTheme, ChatTypography, ThemeMode } from "theme.slint";
 import "../assets/fonts/Inter-Variable.ttf";
@@ -169,24 +171,24 @@ export component AppWindow inherits Window {
     in-out property <string> active_command_version: "";
     in-out property <string> command_arg_text: "";
     in-out property <[CommandSuggestion]> command_suggestions: [
-        { name: "/play", desc: "Tocar música, áudio ou playlist (YouTube/Spotify/SoundCloud)", usage: "/play <nome ou link>", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "query", param_desc: "Nome da música ou link do YouTube/Spotify/SoundCloud", is_required: true },
-        { name: "/skip", desc: "Pular para a próxima faixa da fila", usage: "/skip", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/stop", desc: "Parar reprodução do bot e limpar a fila", usage: "/stop", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/pause", desc: "Pausar a música em reprodução", usage: "/pause", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/resume", desc: "Retomar a reprodução pausada", usage: "/resume", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/queue", desc: "Visualizar a lista de músicas na fila", usage: "/queue", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/nowplaying", desc: "Exibir detalhes da música que está tocando agora", usage: "/nowplaying", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/volume", desc: "Ajustar o volume de reprodução do bot", usage: "/volume <1-100>", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "level", param_desc: "Volume de 1 a 100", is_required: true },
-        { name: "/loop", desc: "Ativar ou desativar repetição da música ou fila", usage: "/loop", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "mode", param_desc: "Modo: track, queue ou off", is_required: false },
-        { name: "/shuffle", desc: "Embaralhar a fila de músicas", usage: "/shuffle", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/lyrics", desc: "Buscar e exibir a letra da música atual", usage: "/lyrics", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "song", param_desc: "Nome da música (opcional)", is_required: false },
-        { name: "/247", desc: "Manter o bot 24/7 conectado no canal de voz", usage: "/247", app_id: "", app_name: "Música", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/help", desc: "Exibir o menu de ajuda e comandos do bot", usage: "/help", app_id: "", app_name: "Bot", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/ping", desc: "Verificar a latência e tempo de resposta", usage: "/ping", app_id: "", app_name: "Bot", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
-        { name: "/clear", desc: "Limpar mensagens recentes do canal", usage: "/clear <quantidade>", app_id: "", app_name: "Moderação", cmd_id: "", version: "", param_name: "amount", param_desc: "Quantidade de mensagens a apagar", is_required: true },
-        { name: "/avatar", desc: "Exibir o avatar ampliado de um usuário", usage: "/avatar [@usuario]", app_id: "", app_name: "Utilidade", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
-        { name: "/userinfo", desc: "Ver informações detalhadas da conta de um usuário", usage: "/userinfo [@usuario]", app_id: "", app_name: "Utilidade", cmd_id: "", version: "", param_name: "user", param_desc: "Usuário do Discord", is_required: false },
-        { name: "/serverinfo", desc: "Ver estatísticas e informações do servidor atual", usage: "/serverinfo", app_id: "", app_name: "Utilidade", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false }
+        { name: "/play", desc: Tr.cmd_play_desc, usage: Tr.cmd_play_usage, app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "query", param_desc: Tr.cmd_play_param, is_required: true },
+        { name: "/skip", desc: Tr.cmd_skip_desc, usage: "/skip", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/stop", desc: Tr.cmd_stop_desc, usage: "/stop", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/pause", desc: Tr.cmd_pause_desc, usage: "/pause", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/resume", desc: Tr.cmd_resume_desc, usage: "/resume", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/queue", desc: Tr.cmd_queue_desc, usage: "/queue", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/nowplaying", desc: Tr.cmd_nowplaying_desc, usage: "/nowplaying", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/volume", desc: Tr.cmd_volume_desc, usage: "/volume <1-100>", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "level", param_desc: Tr.cmd_volume_param, is_required: true },
+        { name: "/loop", desc: Tr.cmd_loop_desc, usage: "/loop", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "mode", param_desc: Tr.cmd_loop_param, is_required: false },
+        { name: "/shuffle", desc: Tr.cmd_shuffle_desc, usage: "/shuffle", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/lyrics", desc: Tr.cmd_lyrics_desc, usage: "/lyrics", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "song", param_desc: Tr.cmd_lyrics_param, is_required: false },
+        { name: "/247", desc: Tr.cmd_247_desc, usage: "/247", app_id: "", app_name: Tr.app_music, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/help", desc: Tr.cmd_help_desc, usage: "/help", app_id: "", app_name: "Bot", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/ping", desc: Tr.cmd_ping_desc, usage: "/ping", app_id: "", app_name: "Bot", cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false },
+        { name: "/clear", desc: Tr.cmd_clear_desc, usage: Tr.cmd_clear_usage, app_id: "", app_name: Tr.app_moderation, cmd_id: "", version: "", param_name: "amount", param_desc: Tr.cmd_clear_param, is_required: true },
+        { name: "/avatar", desc: Tr.cmd_avatar_desc, usage: Tr.cmd_avatar_usage, app_id: "", app_name: Tr.app_utility, cmd_id: "", version: "", param_name: "user", param_desc: Tr.cmd_user_param, is_required: false },
+        { name: "/userinfo", desc: Tr.cmd_userinfo_desc, usage: Tr.cmd_userinfo_usage, app_id: "", app_name: Tr.app_utility, cmd_id: "", version: "", param_name: "user", param_desc: Tr.cmd_user_param, is_required: false },
+        { name: "/serverinfo", desc: Tr.cmd_serverinfo_desc, usage: "/serverinfo", app_id: "", app_name: Tr.app_utility, cmd_id: "", version: "", param_name: "", param_desc: "", is_required: false }
     ];
 
     // Auto-Update Properties
@@ -195,7 +197,7 @@ export component AppWindow inherits Window {
     in-out property <string> update_release_name: "";
     in-out property <bool> is_updating: false;
     in-out property <float> update_progress: 0.0;
-    in-out property <string> update_status_text: "Baixando atualização...";
+    in-out property <string> update_status_text: Tr.update_downloading;
     in-out property <string> app_version: "v0.2.5";
     in-out property <string> update_check_feedback: "";
     in-out property <bool> is_checking_update: false;
@@ -243,7 +245,7 @@ export component AppWindow inherits Window {
         if (idx >= 0 && idx < root.command_suggestions.length) {
             root.active_command_name = root.command_suggestions[idx].name;
             root.active_param_name = root.command_suggestions[idx].param_name;
-            root.active_param_desc = root.command_suggestions[idx].param_desc != "" ? root.command_suggestions[idx].param_desc : (root.command_suggestions[idx].param_name != "" ? root.command_suggestions[idx].desc : "Pressione Enter para executar " + root.command_suggestions[idx].name);
+            root.active_param_desc = root.command_suggestions[idx].param_desc != "" ? root.command_suggestions[idx].param_desc : (root.command_suggestions[idx].param_name != "" ? root.command_suggestions[idx].desc : Tr.press_enter_run + root.command_suggestions[idx].name);
             root.active_command_app_id = root.command_suggestions[idx].app_id;
             root.active_command_cmd_id = root.command_suggestions[idx].cmd_id;
             root.active_command_version = root.command_suggestions[idx].version;
@@ -290,22 +292,22 @@ export component AppWindow inherits Window {
     in-out property <string> tr_qr_title: "Log in with QR Code";
     in-out property <string> tr_qr_desc: "Scan this with the Discord mobile app to log in instantly.";
     in-out property <string> tr_qr_confirm: "Approve login on your phone!";
-    in-out property <string> tr_settings_tab_voice: "Voz & Áudio";
-    in-out property <string> tr_settings_tab_language: "Idioma";
-    in-out property <string> tr_settings_tab_keybinds: "Atalhos";
-    in-out property <string> tr_settings_tab_video_interface: "Vídeo e Interface";
-    in-out property <string> tr_settings_tab_security: "Segurança & E2EE";
-    in-out property <string> tr_settings_tab_network_proxy: "Rede & Proxy";
-    in-out property <string> tr_settings_tab_updates: "Atualizações & Sobre";
-    in-out property <string> tr_keybind_mute_title: "Mutar / Desmutar Microfone";
-    in-out property <string> tr_keybind_mute_desc: "Atalho global para mutar ou desmutar seu microfone durante chamadas.";
-    in-out property <string> tr_keybind_deafen_title: "Ensurdecer / Desensurdecer";
-    in-out property <string> tr_keybind_deafen_desc: "Atalho global para ensurdecer ou desensurdecer todo áudio e microfone.";
-    in-out property <string> tr_keybind_recording_prompt: "Pressione a combinação de teclas...";
-    in-out property <string> tr_keybind_btn_record: "Gravar Atalho";
-    in-out property <string> tr_keybind_btn_clear: "Desativar";
-    in-out property <string> tr_keybind_guide_title: "Atalhos Globais";
-    in-out property <string> tr_keybind_guide_desc: "Os atalhos funcionam em qualquer janela ou jogo em tela cheia, mesmo com o Litecord minimizado.";
+    in-out property <string> tr_settings_tab_voice: "Voice & Audio";
+    in-out property <string> tr_settings_tab_language: "Language";
+    in-out property <string> tr_settings_tab_keybinds: "Keybinds";
+    in-out property <string> tr_settings_tab_video_interface: Tr.settings_tab_video;
+    in-out property <string> tr_settings_tab_security: "Security & E2EE";
+    in-out property <string> tr_settings_tab_network_proxy: "Network & Proxy";
+    in-out property <string> tr_settings_tab_updates: "Updates & About";
+    in-out property <string> tr_keybind_mute_title: "Toggle Mute";
+    in-out property <string> tr_keybind_mute_desc: "Global shortcut to mute or unmute your microphone during voice calls.";
+    in-out property <string> tr_keybind_deafen_title: "Toggle Deafen";
+    in-out property <string> tr_keybind_deafen_desc: "Global shortcut to deafen or undeafen all voice audio and microphone.";
+    in-out property <string> tr_keybind_recording_prompt: "Press desired key combination...";
+    in-out property <string> tr_keybind_btn_record: "Record Keybind";
+    in-out property <string> tr_keybind_btn_clear: "Disable";
+    in-out property <string> tr_keybind_guide_title: "Global Shortcuts";
+    in-out property <string> tr_keybind_guide_desc: "Keybinds work seamlessly across all applications and games, even when Litecord is in background.";
     in-out property <string> keybind_mute_str: "Ctrl+Shift+M";
     in-out property <string> keybind_deafen_str: "Ctrl+Shift+D";
     in-out property <int> recording_keybind_for: 0;
@@ -360,9 +362,9 @@ export component AppWindow inherits Window {
 
     // Properties exposed to Rust backend
     in-out property <bool> is_logged_in: false;
-    in-out property <string> connection_status: "Aguardando Token de Acesso...";
-    in-out property <string> user_tag: "Não conectado";
-    in-out property <string> active_channel_name: "Selecione um canal";
+    in-out property <string> connection_status: Tr.waiting_token;
+    in-out property <string> user_tag: Tr.not_connected;
+    in-out property <string> active_channel_name: Tr.select_channel;
     in-out property <string> active_channel_id: "";
     in-out property <string> active_guild_name: "";
     in-out property <string> active_guild_id: "";
@@ -419,10 +421,10 @@ export component AppWindow inherits Window {
     in-out property <image> remote_stream_frame;
     in-out property <bool> is_stream_fullscreen: false;
     in-out property <string> focused_stream_uid: "";
-    in-out property <string> tr_start_screen_share: "Transmitir";
-    in-out property <string> tr_stop_screen_share: "Parar Transmissão";
-    in-out property <string> tr_watching_stream: "Assistindo Transmissão";
-    in-out property <string> tr_live_badge: "AO VIVO";
+    in-out property <string> tr_start_screen_share: Tr.start_stream;
+    in-out property <string> tr_stop_screen_share: Tr.stop_stream;
+    in-out property <string> tr_watching_stream: Tr.watching_stream;
+    in-out property <string> tr_live_badge: Tr.live_badge;
     in-out property <string> tr_stream_quality: "720p 30fps";
     in-out property <string> local_preview_fps: "";
     in-out property <string> remote_stream_fps: "";
@@ -437,7 +439,7 @@ export component AppWindow inherits Window {
     in property <[image]> avatar_pool: [];
     in property <[string]> avatar_pool_urls: [];
     in-out property <[ChatMessage]> messages: [
-        { author: "Litecord System", show_header: true, timestamp: "Agora", content: "Bem-vindo ao Litecord! Seus servidores carregarão na barra lateral à esquerda." }
+        { author: "Litecord System", show_header: true, timestamp: Tr.now_label, content: Tr.welcome_msg }
     ];
 
     VerticalBox {
@@ -894,7 +896,7 @@ export component AppWindow inherits Window {
                                             HorizontalLayout {
                                                 alignment: center;
                                                 Button {
-                                                    text: "Gerar QR";
+                                                    text: Tr.qr_generate;
                                                     clicked => { root.refresh_qr_code(); }
                                                 }
                                             }
@@ -975,7 +977,7 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                             Text {
-                                                text: "Re-gerar QR Code";
+                                                text: Tr.qr_regenerate;
                                                 color: AppTheme.text-strong;
                                                 font-size: 11px;
                                                 font-weight: 600;
@@ -1893,7 +1895,7 @@ export component AppWindow inherits Window {
                                                 }
 
                                                 Text {
-                                                    text: "Prévia reduzida para poupar recursos";
+                                                    text: Tr.preview_reduced;
                                                     color: AppTheme.text-primary;
                                                     font-size: 10px;
                                                     font-weight: 600;
@@ -1934,7 +1936,7 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
                                                 Text {
-                                                    text: "Você está transmitindo";
+                                                    text: Tr.you_are_streaming;
                                                     color: AppTheme.text-on-accent;
                                                     font-size: 11px;
                                                     font-weight: 700;
@@ -2032,7 +2034,7 @@ export component AppWindow inherits Window {
                                                              padding-left: 6px;
                                                              padding-right: 6px;
                                                              Text {
-                                                                 text: "DESANEXADO";
+                                                                 text: Tr.detached_badge;
                                                                  color: AppTheme.accent;
                                                                  font-size: 9px;
                                                                  font-weight: 800;
@@ -2062,7 +2064,7 @@ export component AppWindow inherits Window {
                                                                  }
                                                              }
                                                              Text {
-                                                                 text: "AO VIVO";
+                                                                 text: Tr.live_badge;
                                                                  color: AppTheme.danger;
                                                                  font-size: 9px;
                                                                  font-weight: 800;
@@ -2087,7 +2089,7 @@ export component AppWindow inherits Window {
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Text {
-                                                                 text: "MUTED";
+                                                                 text: Tr.label_muted_caps;
                                                                  color: AppTheme.danger;
                                                                  font-size: 11px;
                                                                  font-weight: 700;
@@ -2121,7 +2123,7 @@ export component AppWindow inherits Window {
                                                               }
 
                                                               Text {
-                                                                  text: "Desativar Intangível";
+                                                                  text: Tr.disable_intangible;
                                                                   color: AppTheme.text-on-accent;
                                                                   font-size: 10px;
                                                                   font-weight: 700;
@@ -2195,7 +2197,7 @@ export component AppWindow inherits Window {
                                                      VerticalLayout {
                                                          alignment: center;
                                                          Text {
-                                                             text: root.is_muted ? "Muted" : (p.is_speaking ? "Transmitting..." : "Mic active");
+                                                             text: root.is_muted ? Tr.label_muted : (p.is_speaking ? Tr.label_transmitting : Tr.label_mic_active);
                                                              color: root.is_muted ? AppTheme.danger : (p.is_speaking ? AppTheme.success : AppTheme.text-subtle);
                                                              font-size: 11px;
                                                              font-weight: 600;
@@ -2540,7 +2542,7 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 Text {
-                                    text: "COMANDOS INTELIGENTES DO DISCORD";
+                                    text: Tr.smart_commands;
                                     color: AppTheme.text-muted;
                                     font-size: 10px;
                                     font-weight: 700;
@@ -2548,7 +2550,7 @@ export component AppWindow inherits Window {
                                 }
                                 Rectangle { horizontal-stretch: 1; }
                                 Text {
-                                    text: "Clique para autocompletar";
+                                    text: Tr.click_autocomplete;
                                     color: AppTheme.accent;
                                     font-size: 10px;
                                     vertical-alignment: center;
@@ -2757,7 +2759,7 @@ export component AppWindow inherits Window {
                                     text <=> root.command_arg_text;
                                     font-family: ChatTypography.family;
                                     font-size: ChatTypography.body-size;
-                                    placeholder-text: root.active_param_name != "" ? (root.active_param_desc != "" ? root.active_param_desc : "Digite o valor para " + root.active_param_name + "...") : "Pressione Enter ou Enviar para executar " + root.active_command_name + "...";
+                                    placeholder-text: root.active_param_name != "" ? (root.active_param_desc != "" ? root.active_param_desc : Tr.type_value_for + root.active_param_name + "...") : Tr.press_enter_or_send + root.active_command_name + "...";
                                     accepted => {
                                         root.execute_active_command(
                                             root.active_command_name,
@@ -2986,7 +2988,7 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             alignment: space-between;
                             Text {
-                                text: "Gerenciar Contas";
+                                text: Tr.manage_accounts;
                                 color: AppTheme.text-strong;
                                 font-size: 15px;
                                 font-weight: 700;
@@ -3017,7 +3019,7 @@ export component AppWindow inherits Window {
                         }
 
                         Text {
-                            text: "Troque rapidamente de conta ou adicione uma segunda conta salva.";
+                            text: Tr.manage_accounts_desc;
                             color: AppTheme.text-muted;
                             font-size: 11px;
                             wrap: word-wrap;
@@ -3107,7 +3109,7 @@ export component AppWindow inherits Window {
                                             alignment: center;
                                             spacing: 4px;
                                             Text {
-                                                text: "● Conectada";
+                                                text: Tr.account_connected;
                                                 color: AppTheme.success;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -3132,7 +3134,7 @@ export component AppWindow inherits Window {
                                                 VerticalLayout {
                                                     alignment: center;
                                                     Text {
-                                                        text: "Entrar";
+                                                        text: Tr.account_sign_in;
                                                         color: AppTheme.text-on-accent;
                                                         font-size: 11px;
                                                         font-weight: 600;
@@ -3195,7 +3197,7 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 spacing: 6px;
                                 Text {
-                                    text: "+ Adicionar Outra Conta";
+                                    text: Tr.add_account;
                                     color: AppTheme.accent;
                                     font-size: 12px;
                                     font-weight: 700;
@@ -3246,7 +3248,7 @@ export component AppWindow inherits Window {
                                     }
 
                                     Text {
-                                        text: "Sair de Todas as Contas";
+                                        text: Tr.sign_out_all;
                                         color: AppTheme.text-on-accent;
                                         font-size: 12px;
                                         font-weight: 600;
@@ -3430,7 +3432,7 @@ export component AppWindow inherits Window {
                                 spacing: 2px;
 
                                 Text {
-                                    text: "Nova Atualização Disponível!";
+                                    text: Tr.update_available;
                                     color: AppTheme.text-strong;
                                     font-size: 16px;
                                     font-weight: 700;
@@ -3447,7 +3449,7 @@ export component AppWindow inherits Window {
 
                         // Body Description
                         Text {
-                            text: root.is_updating ? root.update_status_text : "Uma nova versão do Litecord com melhorias e correções está pronta para instalação. Deseja atualizar agora?";
+                            text: root.is_updating ? root.update_status_text : Tr.update_prompt;
                             color: AppTheme.text-secondary;
                             font-size: 13px;
                             wrap: word-wrap;
@@ -3496,7 +3498,7 @@ export component AppWindow inherits Window {
                                 HorizontalLayout {
                                     alignment: center;
                                     Text {
-                                        text: "Não mostrar mais";
+                                        text: Tr.dont_show_again;
                                         color: AppTheme.text-muted;
                                         font-size: 12px;
                                         font-weight: 500;
@@ -3520,7 +3522,7 @@ export component AppWindow inherits Window {
                                 HorizontalLayout {
                                     alignment: center;
                                     Text {
-                                        text: "Lembrar Depois";
+                                        text: Tr.remind_later;
                                         color: AppTheme.text-primary;
                                         font-size: 12px;
                                         font-weight: 600;
@@ -3545,7 +3547,7 @@ export component AppWindow inherits Window {
                                     alignment: center;
                                     spacing: 6px;
                                     Text {
-                                        text: "Sim, Atualizar";
+                                        text: Tr.yes_update;
                                         color: AppTheme.text-on-accent;
                                         font-size: 12px;
                                         font-weight: 700;
@@ -3615,7 +3617,7 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Text {
-                                        text: "Compartilhe sua tela";
+                                        text: Tr.share_your_screen;
                                         color: AppTheme.text-strong;
                                         font-size: 16px;
                                         font-weight: 700;
@@ -3671,7 +3673,7 @@ export component AppWindow inherits Window {
                                                 colorize: root.stream_source_tab == "screens" ? AppTheme.text-strong : AppTheme.text-muted;
                                             }
                                             Text {
-                                                text: root.is_linux ? "Telas / Janelas" : "Telas";
+                                                text: root.is_linux ? Tr.screens_windows : Tr.screens;
                                                 color: root.stream_source_tab == "screens" ? AppTheme.text-strong : AppTheme.text-muted;
                                                 font-size: 13px;
                                                 font-weight: root.stream_source_tab == "screens" ? 700 : 500;
@@ -3714,7 +3716,7 @@ export component AppWindow inherits Window {
                                                 colorize: root.stream_source_tab == "windows" ? AppTheme.text-strong : AppTheme.text-muted;
                                             }
                                             Text {
-                                                text: "Janelas";
+                                                text: Tr.windows_tab;
                                                 color: root.stream_source_tab == "windows" ? AppTheme.text-strong : AppTheme.text-muted;
                                                 font-size: 13px;
                                                 font-weight: root.stream_source_tab == "windows" ? 700 : 500;
@@ -3759,7 +3761,7 @@ export component AppWindow inherits Window {
                                                 colorize: root.stream_source_tab == "cameras" ? AppTheme.text-strong : AppTheme.text-muted;
                                             }
                                             Text {
-                                                text: "Câmera";
+                                                text: Tr.camera;
                                                 color: root.stream_source_tab == "cameras" ? AppTheme.text-strong : AppTheme.text-muted;
                                                 font-size: 13px;
                                                 font-weight: root.stream_source_tab == "cameras" ? 700 : 500;
@@ -3850,7 +3852,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             Text {
-                                                text: root.is_linux ? "Tela / Janela" : scr.name;
+                                                text: root.is_linux ? Tr.screen_window : scr.name;
                                                 color: root.stream_selected_source_index == idx ? AppTheme.text-strong : AppTheme.text-primary;
                                                 font-size: 11px;
                                                 font-weight: 700;
@@ -3859,7 +3861,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             Text {
-                                                text: root.is_linux ? "Portal nativo do sistema" : scr.resolution;
+                                                text: root.is_linux ? Tr.system_portal : scr.resolution;
                                                 color: AppTheme.text-subtle;
                                                 font-size: 10px;
                                                 horizontal-alignment: center;
@@ -4035,7 +4037,7 @@ export component AppWindow inherits Window {
                                             alignment: center;
                                             spacing: 6px;
                                             Text {
-                                                text: "Nenhuma câmera / webcam detectada no sistema.";
+                                                text: Tr.no_camera;
                                                 color: AppTheme.text-muted;
                                                 font-size: 12px;
                                                 horizontal-alignment: center;
@@ -4047,7 +4049,7 @@ export component AppWindow inherits Window {
 
                             // 4. Stream Quality Section (Displayed ONLY for Screens and Windows, as Cameras use their optimal native sensor stream)
                             if root.stream_source_tab != "cameras": Text {
-                                text: "QUALIDADE DA TRANSMISSÃO";
+                                text: Tr.stream_quality;
                                 color: AppTheme.text-secondary;
                                 font-size: 11px;
                                 font-weight: 800;
@@ -4059,7 +4061,7 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
 
                                 Text {
-                                    text: "RESOLUÇÃO";
+                                    text: Tr.resolution;
                                     color: AppTheme.text-muted;
                                     font-size: 10px;
                                     font-weight: 700;
@@ -4155,7 +4157,7 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
 
                                 Text {
-                                    text: "TAXA DE QUADROS (FPS)";
+                                    text: Tr.frame_rate;
                                     color: AppTheme.text-muted;
                                     font-size: 10px;
                                     font-weight: 700;
@@ -4273,7 +4275,7 @@ export component AppWindow inherits Window {
                                     VerticalLayout {
                                         alignment: center;
                                         Text {
-                                            text: "A webcam transmitirá utilizando a resolução e taxa nativas do seu dispositivo.";
+                                            text: Tr.webcam_native;
                                             color: AppTheme.text-muted;
                                             font-size: 11px;
                                         }
@@ -4314,14 +4316,14 @@ export component AppWindow inherits Window {
                                             spacing: 2px;
 
                                             Text {
-                                                text: "Transmitir Áudio do Computador / Janela";
+                                                text: Tr.stream_pc_audio;
                                                 color: AppTheme.text-strong;
                                                 font-size: 12px;
                                                 font-weight: 700;
                                             }
 
                                             Text {
-                                                text: "Inclui o som do aplicativo ou jogo durante a transmissão";
+                                                text: Tr.stream_pc_audio_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 10px;
                                             }
@@ -4392,14 +4394,14 @@ export component AppWindow inherits Window {
                                             spacing: 2px;
 
                                             Text {
-                                                text: "Navegador para Transmissão (Vídeos / DRM)";
+                                                text: Tr.browser_stream;
                                                 color: AppTheme.text-strong;
                                                 font-size: 12px;
                                                 font-weight: 700;
                                             }
 
                                             Text {
-                                                text: "Abre o navegador sem travas de tela preta para assistir com amigos";
+                                                text: Tr.browser_stream_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: 10px;
                                             }
@@ -4432,7 +4434,7 @@ export component AppWindow inherits Window {
                                                 }
 
                                                 Text {
-                                                    text: "Abrir";
+                                                    text: Tr.open;
                                                     color: AppTheme.text-on-accent;
                                                     font-size: 12px;
                                                     font-weight: 700;
@@ -4480,14 +4482,14 @@ export component AppWindow inherits Window {
                                         spacing: 2px;
 
                                         Text {
-                                            text: "Transmissão Direta de Câmera";
+                                            text: Tr.direct_camera;
                                             color: AppTheme.text-strong;
                                             font-size: 12px;
                                             font-weight: 700;
                                         }
 
                                         Text {
-                                            text: "Apenas vídeo da webcam (sem captura de áudio do sistema)";
+                                            text: Tr.direct_camera_desc;
                                             color: AppTheme.text-muted;
                                             font-size: 10px;
                                         }
@@ -4518,7 +4520,7 @@ export component AppWindow inherits Window {
                                             padding-left: 12px;
                                             padding-right: 12px;
                                             Text {
-                                                text: "Cancelar";
+                                                text: Tr.cancel;
                                                 color: AppTheme.text-primary;
                                                 font-size: 13px;
                                                 font-weight: 600;
@@ -4559,7 +4561,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             Text {
-                                                text: "Transmitir";
+                                                text: Tr.start_stream;
                                                 color: AppTheme.text-on-accent;
                                                 font-size: 13px;
                                                 font-weight: 700;
@@ -4634,7 +4636,7 @@ export component AppWindow inherits Window {
                     alignment: center;
                     spacing: 2px;
                     Text {
-                        text: "Chamada de voz recebida";
+                        text: Tr.incoming_call;
                         color: AppTheme.text-muted;
                         font-size: 11px;
                         font-weight: 600;
@@ -4676,7 +4678,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             Text {
-                                text: "Atender";
+                                text: Tr.answer;
                                 color: #ffffff;
                                 font-size: 13px;
                                 font-weight: 700;
@@ -4712,7 +4714,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             Text {
-                                text: "Recusar";
+                                text: Tr.decline;
                                 color: #ffffff;
                                 font-size: 13px;
                                 font-weight: 700;
@@ -4731,7 +4733,7 @@ export component AppWindow inherits Window {
 
 // Popout Detached Video Window Component
 export component PopoutStreamWindow inherits Window {
-    title: "Litecord - Transmissão Desanexada";
+    title: Tr.detached_title;
     no-frame: true;
     background: AppTheme.surface-media;
     preferred-width: 640px;
@@ -4749,7 +4751,7 @@ export component PopoutStreamWindow inherits Window {
     }
 
     in-out property <image> stream_frame;
-    in-out property <string> username: "Transmissão";
+    in-out property <string> username: Tr.stream_word;
     in-out property <string> user_id: "";
     in-out property <string> stream_fps: "";
     in-out property <float> stream_volume: 1.0;
@@ -4844,7 +4846,7 @@ export component PopoutStreamWindow inherits Window {
                                 }
                             }
                             Text {
-                                text: "AO VIVO";
+                                text: Tr.live_badge;
                                 color: AppTheme.text-on-accent;
                                 font-size: 10px;
                                 font-weight: 800;
@@ -5124,7 +5126,7 @@ export component PopoutStreamWindow inherits Window {
             }
 
             Text {
-                text: "Prévia reduzida para poupar recursos";
+                text: Tr.preview_reduced;
                 color: AppTheme.text-primary;
                 font-size: 10px;
                 font-weight: 600;

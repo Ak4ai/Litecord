@@ -2056,7 +2056,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if mode == "off" {
                 ui.set_login_alert_message("".into());
             }
-            ui.set_proxy_test_status_text("Configurações de proxy salvas com sucesso!".into());
+            ui.set_proxy_test_status_text(crate::utils::i18n_ui::ui_text().proxy_saved.into());
             ui.set_proxy_test_is_success(true);
         }
     });
@@ -2071,7 +2071,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ui) = app_weak_proxy_test.upgrade() {
             ui.set_proxy_is_testing(true);
-            ui.set_proxy_test_status_text("Testando conexão via proxy...".into());
+            ui.set_proxy_test_status_text(crate::utils::i18n_ui::ui_text().proxy_testing.into());
             ui.set_proxy_test_is_success(true);
         }
 
@@ -2438,7 +2438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ui) = app_weak_update_acc.upgrade() {
                 ui.set_is_updating(true);
                 ui.set_update_progress(0.0);
-                ui.set_update_status_text("Baixando atualização...".into());
+                ui.set_update_status_text(crate::utils::i18n_ui::ui_text().update_downloading.into());
             }
 
             let (prog_tx, mut prog_rx) = mpsc::channel::<f32>(50);
@@ -2495,7 +2495,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ui) = app_w.upgrade() {
             ui.set_is_checking_update(true);
-            ui.set_update_check_feedback("Comparando versão local com o GitHub...".into());
+            ui.set_update_check_feedback(crate::utils::i18n_ui::ui_text().update_comparing.into());
         }
 
         tokio::spawn(async move {
@@ -2720,7 +2720,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_has_qr_code(false);
                             ui.set_qr_scanned_user("".into());
-                            ui.set_login_alert_message("Sessão do QR Code expirou ou foi cancelada no celular. Clique em Gerar QR para tentar novamente.".into());
+                            ui.set_login_alert_message(crate::utils::i18n_ui::ui_text().qr_expired.into());
                             ui.set_login_alert_is_error(false);
                         }
                     });
@@ -2736,7 +2736,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
                                 ui.set_login_alert_is_error(true);
                             } else if err_clone.contains("captcha-required") || err_clone.contains("captcha") {
-                                ui.set_login_alert_message("O Discord exigiu verificação por Captcha para o QR Code. Por favor, cole seu Token ao lado para conectar imediatamente.".into());
+                                ui.set_login_alert_message(crate::utils::i18n_ui::ui_text().qr_captcha.into());
                                 ui.set_login_alert_is_error(true);
                             } else {
                                 ui.set_login_alert_message(format!("Falha no QR Code: {}", err_clone).into());
@@ -2800,8 +2800,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 5. Update Slint UI to login state
         if let Some(ui) = app_weak_logout.upgrade() {
             ui.set_is_logged_in(false);
-            ui.set_user_tag("Não conectado".into());
-            ui.set_connection_status("Você saiu da conta. Insira seu token ou escaneie o QR Code.".into());
+            ui.set_user_tag(crate::utils::i18n_ui::ui_text().not_connected.into());
+            ui.set_connection_status(crate::utils::i18n_ui::ui_text().signed_out.into());
             ui.set_is_in_voice(false);
             ui.set_current_voice_channel("".into());
             ui.set_show_user_menu(false);
@@ -2981,7 +2981,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Update Slint UI to login state
         if let Some(ui) = app_weak_add.upgrade() {
             ui.set_is_logged_in(false);
-            ui.set_user_tag("Não conectado".into());
+            ui.set_user_tag(crate::utils::i18n_ui::ui_text().not_connected.into());
             ui.set_connection_status("Conecte a nova conta escaneando o QR Code ou inserindo o Token.".into());
             ui.set_is_in_voice(false);
             ui.set_current_voice_channel("".into());
@@ -3108,7 +3108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             if crate::utils::is_proxy_error(&err_clone) {
-                                ui.set_connection_status(format!("❌ Falha de conexão via Proxy ({})", crate::utils::get_network_settings().proxy_mode.to_uppercase()).into());
+                                ui.set_connection_status(format!("❌ {}", crate::utils::i18n_ui::ui_text().proxy_failed.replace("{}", &crate::utils::get_network_settings().proxy_mode.to_uppercase())).into());
                                 ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
                             } else {
                                 ui.set_connection_status(format!("❌ {}", err_clone).into());
@@ -3182,7 +3182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ui) = app_w_ui.upgrade() {
                             let net = crate::utils::get_network_settings();
                             if net.proxy_mode != "off" {
-                                ui.set_connection_status(format!("Falha de conexão via Proxy ({})", net.proxy_mode.to_uppercase()).into());
+                                ui.set_connection_status(crate::utils::i18n_ui::ui_text().proxy_failed.replace("{}", &net.proxy_mode.to_uppercase()).into());
                                 ui.set_login_alert_message(crate::utils::format_proxy_alert_message().into());
                                 ui.set_login_alert_is_error(true);
                             } else {
@@ -3238,7 +3238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w_status = app_weak_startup.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w_status.upgrade() {
-                    ui.set_connection_status("Autoconectando à Gateway v9...".into());
+                    ui.set_connection_status(crate::utils::i18n_ui::ui_text().auto_connecting.into());
                 }
             });
 
