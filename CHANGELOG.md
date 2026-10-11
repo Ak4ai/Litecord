@@ -5,6 +5,37 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-beta] - 2026-10-11 — Chat agrupado, fotos de perfil, menos custo em segundo plano & instalação Linux corrigida
+
+---
+
+### 💬 Chat & Fotos de Perfil
+- **Mensagens agrupadas** (PR #26, @starzynhobr): mensagens consecutivas do mesmo autor são agrupadas, com separadores de dia e avatares persistentes; as linhas são atualizadas de forma incremental, sem recriar a lista.
+- **Fotos de perfil em mais lugares** (#25): lista de DMs, membros de voz na barra lateral e painel de voz. Reaproveita o cache de avatares existente (miniaturas 40x40, limite de memória e de disco) e não faz requisições novas.
+
+### ⚡ Desempenho e Segundo Plano (#27)
+- O monitor de hardware só consulta o contador de GPU com a janela visível e o HUD ligado; na bandeja amostra CPU/RAM a cada 10 s.
+- O perfilador de threads do sistema passou a ser opcional (`LITECORD_CPU_PROFILER=1`).
+- A resolução de timer de 1 ms do Windows só é mantida durante chamadas de voz e streams; a saída de áudio de streams só é aberta quando há áudio chegando.
+- A thread de recepção P2P reduz o polling quando está ociosa.
+- Medido em benchmark sintético: custo em idle caiu de +2,0% para +1,2% sobre o baseline; em voz ficou em ~+5,3% (v1.1.0-beta: +6,0%). Efeito em jogos reais ainda não medido.
+
+### 🌍 Idiomas (#29)
+- Cerca de 190 textos que estavam fixos em português (login/QR, configurações, compartilhamento de tela, contas, atualizações e mensagens de erro) agora seguem o idioma escolhido.
+- Inglês e português completos; espanhol, alemão, francês, russo e japonês entram como tradução de máquina, a revisar por falantes nativos.
+
+### 🐧 Linux
+- **install.sh no Fedora/Nobara** (#28): os pacotes passam a ser instalados um a um, com os nomes corretos; antes uma falha numa instalação atômica do `dnf` deixava tudo sem instalar, em silêncio.
+- **AppImage Anylinux** (#21, #28): workflow reescrito conforme o guia (container Arch, `quick-sharun`, OpenGL/PipeWire/GTK/GStreamer empacotados). Validado numa VM Fedora 43 KDE Wayland (abre e inicia); o primeiro build no GitHub Actions ainda precisa ser conferido.
+
+### 🔧 Dependências
+- `futures-util` 0.3.34 (PR #15), `windows-sys` 0.61.2 (PR #17), `x25519-dalek` 3.0.0 (PR #14), `sha2` 0.11 (PR #13) e `openh264` 0.9 (PR #16).
+
+### ⚠️ Não validado
+- Decodificação H.264 com o `openh264` 0.9, login por QR / voz de DM com as dependências novas de criptografia e o P2P com pares reais só passam em compilação e testes unitários.
+
+---
+
 ## [v1.1.0-beta] - 2026-09-23 — Mensagens Diretas (DMs), Chamadas de Voz Privadas & AnyLinux AppImage
 
 Esta versão introduz suporte completo e nativo a **Mensagens Diretas (DMs)**, **Chamadas de Voz Privadas (DM Voice Calls)**, contadores e badges de mensagens não lidas com sincronização em tempo real e o empacotamento universal **AppImage AnyLinux (distro-agnostic)** via GitHub Actions.
