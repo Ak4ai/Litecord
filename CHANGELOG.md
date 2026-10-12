@@ -5,9 +5,11 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.2.0-beta] - 2026-10-11 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
+## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
 
 > **Atualização necessária para transmitir tela pela internet.** O servidor de sinalização passou a aceitar só o protocolo desta versão; clientes v1.1.0 ou anteriores continuam com voz, chat e transmissão na rede local, mas não encontram pares pela internet até atualizar.
+>
+> **Required update for screen sharing over the internet.** The signaling server now only accepts this version's protocol; v1.1.0 and older clients keep voice, chat and LAN streaming, but cannot find peers over the internet until they update.
 
 ---
 
@@ -20,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reconexão ao servidor de sinalização com espera crescente (2 s a 60 s) e endereço configurável por `LITECORD_SIGNALING_URL`.
 
 ### 💬 Chat & Fotos de Perfil
-- **Mensagens agrupadas** (PR #26, @starzynhobr): mensagens consecutivas do mesmo autor são agrupadas, com separadores de dia e avatares persistentes; as linhas são atualizadas de forma incremental, sem recriar a lista.
+- **Mensagens agrupadas** (PR #26, por **Starzinho — [@starzynhobr](https://github.com/starzynhobr)**): mensagens consecutivas do mesmo autor são agrupadas, com separadores de dia e avatares persistentes; as linhas são atualizadas de forma incremental, sem recriar a lista. Todo o desenho e a implementação do agrupamento e da hierarquia de avatar/nome são dele.
 - **Fotos de perfil em mais lugares** (#25): lista de DMs, membros de voz na barra lateral e painel de voz. Reaproveita o cache de avatares existente (miniaturas 40x40, limite de memória e de disco) e não faz requisições novas.
 
 ### ⚡ Desempenho e Segundo Plano (#27)
@@ -29,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A resolução de timer de 1 ms do Windows só é mantida durante chamadas de voz e streams; a saída de áudio de streams só é aberta quando há áudio chegando.
 - A thread de recepção P2P reduz o polling quando está ociosa.
 - Medido em benchmark sintético: custo em idle caiu de +2,0% para +1,2% sobre o baseline; em voz ficou em ~+5,3% (v1.1.0-beta: +6,0%). Efeito em jogos reais ainda não medido.
+
+### 🪪 Identificação do cliente (#30)
+- REST, Gateway e login por QR declaravam três ambientes diferentes (Electron/Chrome 120, Chrome 127 e Chrome 130), sempre como Windows e `pt-BR`. Um único módulo (`utils/client_identity`) passa a gerar o `User-Agent`, as propriedades do Gateway e um cabeçalho `X-Super-Properties` correspondente a partir das mesmas constantes, como cliente web no Chrome, com o sistema operacional e o idioma reais.
+- Campos opcionais que os clientes oficiais geram a cada abertura (`launch_signature`, identificadores de sessão) ficaram de fora de propósito.
 
 ### 🌍 Idiomas (#29)
 - Cerca de 190 textos que estavam fixos em português (login/QR, configurações, compartilhamento de tela, contas, atualizações e mensagens de erro) agora seguem o idioma escolhido.
@@ -41,12 +47,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🔧 Dependências
 - `futures-util` 0.3.34 (PR #15), `windows-sys` 0.61.2 (PR #17), `x25519-dalek` 3.0.0 (PR #14), `sha2` 0.11 (PR #13) e `openh264` 0.9 (PR #16).
 
-### 🧪 Testes
-- Recurso de compilação opcional `automation` (desligado por padrão e ausente dos binários publicados) para dirigir a interface em testes: captura da janela, cliques, teclado e leitura de estado, apenas em `127.0.0.1`.
+### 🧪 Como esta versão foi testada
+Testes feitos em 11 e 12/10/2026, com Windows 11 (RTX 3050, NVENC) de um lado e uma VM Fedora 43 KDE Wayland (sem GPU, 2 vCPUs) do outro, em contas diferentes.
+
+- **Testes automáticos**: 28 testes unitários (tabelas de idioma, formato de data por idioma, agrupamento de mensagens, identidade do cliente).
+- **Servidor de sinalização**: 16 testes de protocolo contra o servidor em produção (sala, entrada e saída de participantes, repasse sem eco, keepalive, isolamento entre salas, clientes antigos estacionados).
+- **Consumo do servidor de sinalização** (medido na Cloudflare): de ~960 GB-s para menos de 0,01 GB-s a cada 15 minutos; uma sala com dois clientes conectados ficou em milésimos de GB-s.
+- **Transmissão de tela Windows ↔ Linux**: nos dois sentidos, com início, parada e reinício em seguida; sessões contínuas de 12 e de 7 minutos, sem crescimento de memória e com o envio do Windows estável em 60 FPS.
+- **Custo de CPU ao transmitir no Windows**: 92% de um núcleo com OpenH264 (CPU), ~1–2% com NVENC depois da redução de logs.
+- **Tamanho do log**: de 48 MB para 0,27 MB numa sessão equivalente.
+- **Login**: token salvo, detecção de token e QR code (QR validado no Linux), com a identidade nova, sem erro de autenticação.
+- **Voz**: chamadas em servidor entre os dois sistemas.
+- **Linux**: `install.sh` e o AppImage gerado pelo GitHub Actions abrem e conectam no Fedora 43 KDE Wayland.
+- **Idiomas**: troca de idioma conferida em telas reais em alemão, russo e japonês.
+- Recurso de compilação opcional `automation` (desligado por padrão e ausente dos binários publicados), usado para dirigir a interface nesses testes: captura da janela, cliques, teclado e leitura de estado, apenas em `127.0.0.1`.
 
 ### ⚠️ Não validado
-- A transmissão foi testada entre Windows e Linux (VM) na mesma rede; pares em redes diferentes, mais de dois participantes na mesma sala e Linux com placa de vídeo não foram testados.
-- Voz em DM com as dependências novas de criptografia e uso prolongado do `openh264` 0.9 só passam em compilação e testes unitários.
+- Pares em redes diferentes (os dois lados do teste saíam pelo mesmo IP público) e mais de dois participantes na mesma sala.
+- Linux com placa de vídeo: a VM renderiza e decodifica por software, então os números de desempenho no Linux (memória, FPS de recepção) não representam uma máquina real.
+- Login por QR no Windows com a identidade nova, voz em DM e uso prolongado do `openh264` 0.9.
+- Efeito em jogos reais das mudanças de #27 (só medido em benchmark sintético).
+- As traduções de espanhol, alemão, francês, russo e japonês não foram revisadas por falantes nativos.
+
+### 🙏 Créditos
+- **Starzinho ([@starzynhobr](https://github.com/starzynhobr))** — autor da PR #26 (mensagens agrupadas, separadores de dia e avatares persistentes).
+- Quem reportou os problemas corrigidos nesta versão: #21, #25, #27, #28, #29 e #30.
 
 ---
 

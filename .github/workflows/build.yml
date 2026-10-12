@@ -223,11 +223,20 @@ jobs:
       - name: Display downloaded files
         run: ls -lh release-artifacts
 
+      # The update dialog of older clients shows the release name, so it doubles
+      # as the notice that this version is needed. Notes = this version's changelog.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          awk '/^## \[v/{n++} n==1' CHANGELOG.md | sed '1d' > release-notes.md
+          test -s release-notes.md
+          head -5 release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.version.outputs.version) }}
-          name: "Litecord v${{ steps.version.outputs.version }}"
+          name: "Litecord v${{ steps.version.outputs.version }} — required update for screen sharing"
+          body_path: release-notes.md
           files: |
             release-artifacts/Litecord-Setup-x64.exe
             release-artifacts/litecord-windows-x64-portable.zip
