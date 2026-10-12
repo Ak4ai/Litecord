@@ -348,6 +348,10 @@ pub fn handle_incoming_ws_message(
                     info!("👋 [SIGNALING] Peer UID={} entrou na sala de sinalização. Reanunciando presença.", json_uid(&val["uid"]));
                     announce_to_new_peer();
                     return;
+                } else if val["op"] == "upgrade_required" {
+                    // A newer signaling server parked us: no peers until the app is updated.
+                    warn!("⚠️ [SIGNALING] O servidor de sinalização exige uma versão mais nova do Litecord. Atualize para voltar a transmitir pela internet.");
+                    return;
                 } else if val["op"] == "room" {
                     let count = val["uids"].as_array().map(|a| a.len()).unwrap_or(0);
                     info!("🏠 [SIGNALING] Sala de sinalização com {} outro(s) peer(s) conectado(s).", count);

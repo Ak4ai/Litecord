@@ -17,6 +17,7 @@
 //   {"op":"peer_join","uid":"..."}      sent to everybody else when a client connects
 //   {"op":"peer_leave","uid":"...","cid":"..."}  sent to everybody else when it leaves
 //   {"op":"pong"}                       answer to {"op":"ping"}
+//   {"op":"upgrade_required","min_protocol":2}  sent once to a parked outdated client
 // User ids are 64-bit snowflakes, so they are always strings (a JSON number would
 // lose precision above 2^53).
 //
@@ -39,6 +40,13 @@ export default {
         return new Response("Expected Upgrade: websocket", { status: 426 });
       }
 
+      // Clients older than protocol 2 (Litecord <= 1.1.0) announce themselves every
+      // 2s, which keeps a room awake around the clock. They are parked instead.
+      const protocol = parseInt(url.searchParams.get("v") || "1", 10) || 1;
+      if (protocol < MIN_PROTOCOL) {
+        return parkOutdatedClient();
+      }
+
       const channelId = url.searchParams.get("channel") || "global";
       const id = env.ROOMS.idFromName(channelId);
       return env.ROOMS.get(id).fetch(request);
@@ -47,6 +55,20 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 };
+
+const MIN_PROTOCOL = 2;
+
+// Holds the socket open without ever touching a Durable Object: the outdated
+// client stops reconnecting every 2s (one worker request per connection instead)
+// and bills no duration. It is never put in a room, so it finds no peers over the
+// internet until it updates. Nothing is listening for its messages on purpose.
+function parkOutdatedClient() {
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  server.accept();
+  send(server, JSON.stringify({ op: "upgrade_required", min_protocol: MIN_PROTOCOL }));
+  return new Response(null, { status: 101, webSocket: client });
+}
 
 const PING = '{"op":"ping"}';
 const PONG = '{"op":"pong"}';
