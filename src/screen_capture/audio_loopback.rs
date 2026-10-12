@@ -783,7 +783,7 @@ pub fn start_audio_loopback_tx(
                     }
 
                     pkts_sent_count += 1;
-                    if pkts_sent_count % 50 == 1 {
+                    if pkts_sent_count % 1000 == 1 {
                         info!("📡 [LOOPBACK TX] Pkt #{} enviado ({} amostras @ {}Hz | Peak Amplitude: {}/32767) para {:?}", pkts_sent_count, target_chunk_samples, active_sample_rate, peak_tx, target_addrs);
                     }
                 }

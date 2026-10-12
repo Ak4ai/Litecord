@@ -1045,7 +1045,7 @@ impl ScreenCaptureManager {
                         let _avg_pix_ms = (total_pix_us as f64) / n / 1000.0;
                         let cur_mbps = (REQUESTED_BITRATE_BPS.load(Ordering::Relaxed) as f64) / 1_000_000.0;
 
-                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | GPU Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms",
+                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms",
                             fps, target_fps, cur_mbps, avg_enc_ms, avg_preview_ms, avg_crypt_ms, avg_fec_ms, avg_net_ms);
 
                         tx_frame_count = 0;
@@ -1138,7 +1138,7 @@ impl ScreenCaptureManager {
 
                             let mut send_pli = |target_uid: u64| {
                                 let should_req_pli = match last_pli_req.get(&target_uid) {
-                                    Some(&t) => t.elapsed() >= Duration::from_millis(300),
+                                    Some(&t) => t.elapsed() >= Duration::from_millis(1000),
                                     None => true,
                                 };
                                 if should_req_pli {
@@ -1347,6 +1347,16 @@ impl ScreenCaptureManager {
                     fec_recovered: u32,
                 }
                 let mut qos_windows: HashMap<u64, PeerQosWindow> = HashMap::new();
+
+                // Log throttling: these used to be written once per packet / per tick.
+                let mut rx_pkts_since_log: u64 = 0;
+                let mut rx_last_log = Instant::now();
+                let mut hb_last_summary = String::new();
+                let mut hb_last_log = Instant::now();
+                let mut stun_last_logged: Option<SocketAddr> = None;
+                let mut queue_full_dropped: u32 = 0;
+                let mut queue_full_last = Instant::now() - Duration::from_secs(10);
+                let mut keyframe_last_honored = Instant::now() - Duration::from_secs(10);
                 let mut active_streaming_users: HashMap<u64, bool> = HashMap::new();
                 let mut last_stream_activity: HashMap<u64, Instant> = HashMap::new();
                 let mut last_qos_feedback_time = Instant::now();
@@ -1466,7 +1476,12 @@ impl ScreenCaptureManager {
                                 }
                             }
                         }
-                        info!("💓 [HEARTBEAT PROATIVO] Enviado para {} bcasts. PeersStore: {:?}, LastSeen: {:?}", bcasts.len(), sent_peers, sent_last);
+                        let summary = format!("{} bcasts. PeersStore: {:?}, LastSeen: {:?}", bcasts.len(), sent_peers, sent_last);
+                        if summary != hb_last_summary || hb_last_log.elapsed() >= Duration::from_secs(60) {
+                            info!("💓 [HEARTBEAT PROATIVO] Enviado para {}", summary);
+                            hb_last_summary = summary;
+                            hb_last_log = Instant::now();
+                        }
                     }
 
                     let mut packets_drained = 0;
@@ -1501,7 +1516,10 @@ impl ScreenCaptureManager {
                                             if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
                                                 *guard = Some((public_stun_addr, Instant::now()));
                                             }
-                                            info!("🌐 [NAT TRAVERSAL] Porta pública mapeada com sucesso no socket P2P: {}", public_stun_addr);
+                                            if stun_last_logged != Some(public_stun_addr) {
+                                                stun_last_logged = Some(public_stun_addr);
+                                                info!("🌐 [NAT TRAVERSAL] Porta pública mapeada com sucesso no socket P2P: {}", public_stun_addr);
+                                            }
                                             break;
                                         }
                                         i += 4 + ((attr_len + 3) & !3);
@@ -1521,11 +1539,16 @@ impl ScreenCaptureManager {
                                 let pkt_cid = u64::from_be_bytes(recv_buf[9..17].try_into().unwrap());
                                 let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
 
-                                info!("📥 [TELEMETRIA RX P2P] Pacote MÁGICO recebido: OP={}, de UID={}, de IP={}", op, pkt_uid, src_addr);
-
                                 if (pkt_uid == my_uid && my_uid > 0) || pkt_inst == my_instance_id {
-                                    info!("🚫 [TELEMETRIA RX P2P] Pacote ignorado (self echo): UID={}, IP={}", pkt_uid, src_addr);
                                     continue;
+                                }
+
+                                rx_pkts_since_log += 1;
+                                if rx_last_log.elapsed() >= Duration::from_secs(10) {
+                                    info!("📥 [TELEMETRIA RX P2P] {} pacotes nos últimos {:.0}s (último: OP={}, UID={}, IP={})",
+                                        rx_pkts_since_log, rx_last_log.elapsed().as_secs_f32(), op, pkt_uid, src_addr);
+                                    rx_pkts_since_log = 0;
+                                    rx_last_log = Instant::now();
                                 }
 
                                 let my_current_cid = crate::gateway::get_my_voice_channel_id();
@@ -1773,8 +1796,13 @@ impl ScreenCaptureManager {
                                                     };
 
                                                     if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
-                                                        log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia (>120 quadros), solicitando Keyframe para ressincronização imediata");
-                                                        request_intra_keyframe();
+                                                        queue_full_dropped += 1;
+                                                        if queue_full_last.elapsed() >= Duration::from_secs(1) {
+                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia (>120 quadros): {} quadro(s) descartado(s), solicitando Keyframe para ressincronização", queue_full_dropped);
+                                                            queue_full_dropped = 0;
+                                                            queue_full_last = Instant::now();
+                                                            request_intra_keyframe();
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1891,7 +1919,12 @@ impl ScreenCaptureManager {
                                                     };
 
                                                     if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
-                                                        log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia, descartando frame {} para manter latência ultra-baixa em tempo real", seq);
+                                                        queue_full_dropped += 1;
+                                                        if queue_full_last.elapsed() >= Duration::from_secs(1) {
+                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia: {} quadro(s) descartado(s) (último: {}) para manter a latência baixa", queue_full_dropped, seq);
+                                                            queue_full_dropped = 0;
+                                                            queue_full_last = Instant::now();
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1906,7 +1939,8 @@ impl ScreenCaptureManager {
                                         } else {
                                             true
                                         };
-                                        if is_for_me {
+                                        if is_for_me && keyframe_last_honored.elapsed() >= Duration::from_secs(1) {
+                                            keyframe_last_honored = Instant::now();
                                             info!("⚡ [KEYFRAME REQ RECEBIDO] Receptor UID={} solicitou IDR Keyframe imediato!", pkt_uid);
                                             KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
                                         }
@@ -1986,7 +2020,7 @@ impl ScreenCaptureManager {
 
                                         static RX_AUDIO_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
                                         let c = RX_AUDIO_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-                                        if c < 10 || c % 50 == 0 {
+                                        if c < 3 || c % 1000 == 0 {
                                             info!("🔊 [STREAM AUDIO RX] Pkt #{} de UID={} | Amostras={} @ {}Hz | Peak Amplitude: {}/32767 | Vol={:.2}", c, pkt_uid, sample_count, sample_rate, peak_rx, get_stream_volume(pkt_uid));
                                         }
 
