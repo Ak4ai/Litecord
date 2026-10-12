@@ -206,10 +206,10 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (Beta 1.1.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (Beta 1.1.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux AppImage (Beta 1.1.0 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
-| **🐧 Linux Standalone (Beta 1.1.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (Beta 1.2.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (Beta 1.2.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux AppImage (Beta 1.2.0 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
+| **🐧 Linux Standalone (Beta 1.2.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ### 🚀 Running the AppImage on Linux
 ```bash

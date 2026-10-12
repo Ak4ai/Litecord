@@ -65,11 +65,11 @@
 ## 📦 Downloads & Instalação
 
 ### 🪟 Windows (10 / 11 x64)
-- **Instalador Oficial (Beta 1.1.0)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
-- **Versão Portátil (Beta 1.1.0)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
+- **Instalador Oficial (Beta 1.2.0)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
+- **Versão Portátil (Beta 1.2.0)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
 
 ### 🐧 Linux
-- **AppImage Universal AnyLinux (Recomendado - Beta 1.1.0)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
+- **AppImage Universal AnyLinux (Recomendado - Beta 1.2.0)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
 - **Instalação Rápida em 1 Comando**:
 ```bash
 curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash

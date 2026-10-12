@@ -5,9 +5,19 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.2.0-beta] - 2026-10-11 — Chat agrupado, fotos de perfil, menos custo em segundo plano & instalação Linux corrigida
+## [v1.2.0-beta] - 2026-10-11 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
+
+> **Atualização necessária para transmitir tela pela internet.** O servidor de sinalização passou a aceitar só o protocolo desta versão; clientes v1.1.0 ou anteriores continuam com voz, chat e transmissão na rede local, mas não encontram pares pela internet até atualizar.
 
 ---
+
+### 📡 Sinalização P2P e Transmissão de Tela
+- **Presença orientada a eventos**: o cliente anunciava presença a cada 2 s durante toda a chamada, o que esgotava o servidor de sinalização. Agora anuncia ao entrar, quando outro participante entra, quando a transmissão começa ou para e quando o endereço de rede muda.
+- **Servidor de sinalização** (`cloudflare/`): o código passou a fazer parte do repositório, usa hibernação de WebSocket e avisa a sala quando alguém entra ou sai. O ID do usuário que saiu chegava corrompido (número JSON acima de 2^53) e agora é enviado como texto.
+- **Fim da transmissão**: quadros ainda em trânsito depois de parar reabriam a visualização congelada no último quadro, sem nada que a fechasse.
+- **Receptores lentos**: um receptor sem capacidade de decodificar podia pedir vários quadros-chave por segundo e derrubar a taxa de quadros do transmissor; os pedidos ficam limitados a um por segundo dos dois lados.
+- **Logs**: o registro de cada pacote recebido (93% de um log de 48 MB) virou um resumo a cada 10 s; heartbeat e endereço público só são registrados quando mudam.
+- Reconexão ao servidor de sinalização com espera crescente (2 s a 60 s) e endereço configurável por `LITECORD_SIGNALING_URL`.
 
 ### 💬 Chat & Fotos de Perfil
 - **Mensagens agrupadas** (PR #26, @starzynhobr): mensagens consecutivas do mesmo autor são agrupadas, com separadores de dia e avatares persistentes; as linhas são atualizadas de forma incremental, sem recriar a lista.
@@ -26,13 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐧 Linux
 - **install.sh no Fedora/Nobara** (#28): os pacotes passam a ser instalados um a um, com os nomes corretos; antes uma falha numa instalação atômica do `dnf` deixava tudo sem instalar, em silêncio.
-- **AppImage Anylinux** (#21, #28): workflow reescrito conforme o guia (container Arch, `quick-sharun`, OpenGL/PipeWire/GTK/GStreamer empacotados). Validado numa VM Fedora 43 KDE Wayland (abre e inicia); o primeiro build no GitHub Actions ainda precisa ser conferido.
+- **AppImage Anylinux** (#21, #28): workflow reescrito conforme o guia (container Arch, `quick-sharun`, OpenGL/PipeWire/GTK/GStreamer empacotados). O AppImage gerado pelo GitHub Actions foi validado numa VM Fedora 43 KDE Wayland (abre e inicia).
 
 ### 🔧 Dependências
 - `futures-util` 0.3.34 (PR #15), `windows-sys` 0.61.2 (PR #17), `x25519-dalek` 3.0.0 (PR #14), `sha2` 0.11 (PR #13) e `openh264` 0.9 (PR #16).
 
+### 🧪 Testes
+- Recurso de compilação opcional `automation` (desligado por padrão e ausente dos binários publicados) para dirigir a interface em testes: captura da janela, cliques, teclado e leitura de estado, apenas em `127.0.0.1`.
+
 ### ⚠️ Não validado
-- Decodificação H.264 com o `openh264` 0.9, login por QR / voz de DM com as dependências novas de criptografia e o P2P com pares reais só passam em compilação e testes unitários.
+- A transmissão foi testada entre Windows e Linux (VM) na mesma rede; pares em redes diferentes, mais de dois participantes na mesma sala e Linux com placa de vídeo não foram testados.
+- Voz em DM com as dependências novas de criptografia e uso prolongado do `openh264` 0.9 só passam em compilação e testes unitários.
 
 ---
 
