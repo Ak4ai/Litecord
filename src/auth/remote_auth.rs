@@ -103,7 +103,7 @@ async fn exchange_ticket_for_token(
     let res = http_client.post("https://discord.com/api/v9/users/@me/remote-auth/login")
         .header("Content-Type", "application/json")
         .header("Origin", "https://discord.com")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        .header("User-Agent", crate::utils::client_identity::user_agent())
         .json(&serde_json::json!({ "ticket": ticket }))
         .send()
         .await
@@ -140,7 +140,7 @@ async fn run_remote_auth_loop(
         .uri("wss://remote-auth-gateway.discord.gg/?v=2")
         .header("Host", "remote-auth-gateway.discord.gg")
         .header("Origin", "https://discord.com")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        .header("User-Agent", crate::utils::client_identity::user_agent())
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")

@@ -2089,7 +2089,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Temporarily build a client with these explicit settings to test
             let mut builder = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(6))
-                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9000 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36");
+                .user_agent(crate::utils::client_identity::user_agent());
 
             match mode_str.as_str() {
                 "http" | "https" => {

@@ -126,7 +126,7 @@ pub fn apply_proxy_to_builder(mut builder: reqwest::ClientBuilder) -> reqwest::C
 /// Constrói um `reqwest::Client` genérico com o proxy e user-agent configurados
 pub fn build_generic_http_client() -> reqwest::Client {
     let builder = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9000 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36");
+        .user_agent(crate::utils::client_identity::user_agent());
     apply_proxy_to_builder(builder).build().unwrap_or_default()
 }
 

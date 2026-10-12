@@ -251,22 +251,7 @@ impl GatewayClient {
                                                 "d": {
                                                     "token": self.token,
                                                     "capabilities": 16381,
-                                                    "properties": {
-                                                        "os": "Windows",
-                                                        "browser": "Chrome",
-                                                        "device": "",
-                                                        "system_locale": "pt-BR",
-                                                        "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-                                                        "browser_version": "127.0.0.0",
-                                                        "os_version": "10.0.19045",
-                                                        "referrer": "",
-                                                        "referring_domain": "",
-                                                        "referrer_current": "",
-                                                        "referring_domain_current": "",
-                                                        "release_channel": "stable",
-                                                        "client_build_number": 320000,
-                                                        "client_event_source": null
-                                                    },
+                                                    "properties": crate::utils::client_identity::properties(),
                                                     "presence": {
                                                         "status": "online",
                                                         "since": 0,
