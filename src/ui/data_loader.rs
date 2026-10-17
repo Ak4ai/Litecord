@@ -903,12 +903,6 @@ pub async fn try_login_with_candidates(
                 let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
                 gw.start(cmd_rx).await;
 
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    trim_process_memory();
-                    info!("🧹 [MEMÓRIA] Faxina pós-login concluída — RAM compactada!");
-                });
-
                 return true;
             }
             Err(err_msg) => {
