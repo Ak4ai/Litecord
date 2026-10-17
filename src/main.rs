@@ -13,11 +13,6 @@ pub mod screen_capture;
 #[cfg(feature = "automation")]
 mod automation;
 
-thread_local! {
-    /// Closes the voice microphone stream; set on the UI thread, called there.
-    static CLOSE_MIC: std::cell::RefCell<Option<Box<dyn Fn()>>> = std::cell::RefCell::new(None);
-}
-
 // Convenient re-exports for modules and root scope
 pub use auth::*;
 pub use audio::*;
@@ -266,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gateway::set_selected_output_device(saved_audio_cfg.output_device.clone());
         app.set_selected_output_device(saved_audio_cfg.output_device.into());
     }
-    let active_mic_stream: Arc<Mutex<Option<cpal::Stream>>> = Arc::new(Mutex::new(None));
+    let active_mic_stream: Arc<Mutex<Option<audio::engine::MicCapture>>> = Arc::new(Mutex::new(None));
     let active_loopback_stream: Arc<Mutex<Option<cpal::Stream>>> = Arc::new(Mutex::new(None));
 
     let tray = SystemTrayManager::setup();
@@ -1738,9 +1733,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 3. Start mic capture for volume meter
             let mic_name = cur_input.clone();
-            if let Some(stream) = start_mic_capture(mic_name, level_tx_open.clone()) {
-                *active_stream_open.lock().unwrap() = Some(stream);
-            }
+            *active_stream_open.lock().unwrap() = Some(start_mic_capture(mic_name, level_tx_open.clone()));
 
             // 4. Asynchronously refresh hardware devices in background without lag
             let app_w_async = app_weak_open_settings.clone();
@@ -1817,9 +1810,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_selected_input_device(name_str.clone().into());
 
             // Restart hardware microphone stream for newly selected device
-            if let Some(stream) = start_mic_capture(name_str, level_tx_select.clone()) {
-                *active_stream_select.lock().unwrap() = Some(stream);
-            }
+            *active_stream_select.lock().unwrap() = Some(start_mic_capture(name_str, level_tx_select.clone()));
         }
     });
 
@@ -1880,9 +1871,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if active_stream_test.lock().unwrap().is_none() {
                 let cur_input = selected_input_test.lock().unwrap().clone();
                 info!("🎙️ [TEST MIC] Microfone inativo, iniciando captura para: '{}'", cur_input);
-                if let Some(stream) = start_mic_capture(cur_input, level_tx_test.clone()) {
-                    *active_stream_test.lock().unwrap() = Some(stream);
-                }
+                *active_stream_test.lock().unwrap() = Some(start_mic_capture(cur_input, level_tx_test.clone()));
             }
 
             let cur_output = selected_output_test.lock().unwrap().clone();
@@ -2287,10 +2276,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Passo 2: Iniciar captura de microfone (igual a canais de voz normais) ──
         let mic_name = selected_input_call.lock().unwrap().clone();
-        if let Some(stream) = start_mic_capture(mic_name, level_tx_call.clone()) {
-            *active_mic_call.lock().unwrap() = Some(stream);
-            info!("Microfone ativado para chamada de DM!");
-        }
+        *active_mic_call.lock().unwrap() = Some(start_mic_capture(mic_name, level_tx_call.clone()));
+        info!("Abrindo o microfone para a chamada de DM...");
 
         // ── Passo 3: Async — REST ring + OP4 VoiceStateUpdate ──
         let http_opt = http_call_dm.lock().unwrap().as_ref().cloned();
@@ -2399,9 +2386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Iniciar mic
             let mic_name = selected_input_accept.lock().unwrap().clone();
-            if let Some(stream) = start_mic_capture(mic_name, level_tx_accept.clone()) {
-                *active_mic_accept.lock().unwrap() = Some(stream);
-            }
+            *active_mic_accept.lock().unwrap() = Some(start_mic_capture(mic_name, level_tx_accept.clone()));
 
             // OP4: entrar no canal de voz da DM
             if let Some(cmd_tx_guard) = cmd_tx_accept.lock().unwrap().as_ref() {
@@ -3434,10 +3419,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // 3. Auto-start microphone capture for voice channel (feeds PCM to gateway queue)
                 let mic_name = selected_input_voice.lock().unwrap().clone();
-                if let Some(stream) = start_mic_capture(mic_name, level_tx_voice.clone()) {
-                    *active_mic_stream_voice.lock().unwrap() = Some(stream);
-                    info!("Microfone ativado automaticamente para o canal de voz!");
-                }
+                *active_mic_stream_voice.lock().unwrap() = Some(start_mic_capture(mic_name, level_tx_voice.clone()));
+                info!("Abrindo o microfone para o canal de voz...");
                 
                 let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
                 current_msgs.push(ChatMessage {
@@ -3986,11 +3969,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_channel_gw_events = Arc::clone(&active_channel_id);
     let guilds_map_gw_events = Arc::clone(&guilds_map);
     let sm_gw = Arc::clone(&screen_manager);
-    // The mic stream is not Send; this lets the gateway task close it on the UI thread.
     let active_mic_disc = Arc::clone(&active_mic_stream);
-    CLOSE_MIC.with(|close| *close.borrow_mut() = Some(Box::new(move || {
-        *active_mic_disc.lock().unwrap() = None;
-    })));
 
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
@@ -4005,8 +3984,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
                     let app_w = app_weak.clone();
                     let sm_disc = Arc::clone(&sm_gw_inner);
+                    *active_mic_disc.lock().unwrap() = None;
                     let _ = slint::invoke_from_event_loop(move || {
-                        CLOSE_MIC.with(|close| close.borrow().as_ref().map(|f| f()));
                         sm_disc.stop();
                         sm_disc.set_context(0, 0, "");
                         screen_capture::clear_stream_audio_queue();

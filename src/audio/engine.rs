@@ -97,7 +97,32 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
     }
 }
 
-pub fn start_mic_capture(
+/// Microphone capture running on a thread of its own. Opening a WASAPI device enumerates
+/// every endpoint and initializes the audio client, which can take seconds (wireless
+/// headsets) and froze the UI when it ran on the UI thread. Dropping the handle stops the
+/// capture and closes the device.
+pub struct MicCapture {
+    _stop: std::sync::mpsc::Sender<()>,
+}
+
+pub fn start_mic_capture(device_name: String, level_tx: mpsc::Sender<f32>) -> MicCapture {
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let spawned = std::thread::Builder::new().name("mic-capture-owner".into()).spawn(move || {
+        let stream = open_mic_stream(device_name, level_tx);
+        if stream.is_none() {
+            log::warn!("🎙️ Não foi possível abrir o microfone.");
+        }
+        // Blocks until the handle is dropped (the sender goes away), then closes the device.
+        let _ = stop_rx.recv();
+        drop(stream);
+    });
+    if let Err(e) = spawned {
+        log::error!("Falha ao iniciar a thread do microfone: {:?}", e);
+    }
+    MicCapture { _stop: stop_tx }
+}
+
+fn open_mic_stream(
     device_name: String,
     level_tx: mpsc::Sender<f32>,
 ) -> Option<cpal::Stream> {
