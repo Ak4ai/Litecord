@@ -19,6 +19,7 @@
 //! {"cmd":"set_language","code":"de"}
 //! {"cmd":"size"}
 //! {"cmd":"minimize_to_tray"}                 same as the title bar button
+//! {"cmd":"restore"}                          same as clicking the tray icon
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -188,6 +189,18 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
         }
         "minimize_to_tray" => {
             ui.invoke_minimize_to_tray();
+            Ok(json!({ "ok": true }))
+        }
+        "restore" => {
+            crate::ui::helpers::APP_IS_VISIBLE.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::ui::helpers::NEED_UI_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::utils::wake_hardware_monitor();
+            crate::ui::helpers::wake_ui_loops();
+            use i_slint_backend_winit::WinitWindowAccessor;
+            let _ = ui.window().with_winit_window(|w| {
+                w.set_visible(true);
+                w.set_minimized(false);
+            });
             Ok(json!({ "ok": true }))
         }
         "state" => Ok(state(ui)),
