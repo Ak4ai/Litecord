@@ -12,7 +12,7 @@
 [![Licença: MIT](https://img.shields.io/badge/Licen%C3%A7a-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <b>Litecord</b> é um cliente desktop nativo para Discord criado do zero em <b>Rust</b> e <b>Slint</b> para <b>gamers, streamers e jogadores competitivos</b>. Rodando com <b>&lt; 0.1% de CPU</b> e <b>~32 MB de RAM</b>, ele elimina micro-travamentos e não perde nenhum FPS enquanto entrega <b>Transmissão Full HD 1080p 60 FPS</b>, <b>Prioridade de Fala / Ducking Inteligente</b>, <b>Janelas Flutuantes (PiP)</b>, <b>Login via QR Code</b> e <b>Comandos Slash Inteligentes</b>.
+  <b>Litecord</b> é um cliente desktop nativo para Discord criado do zero em <b>Rust</b> e <b>Slint</b> para <b>gamers, streamers e jogadores competitivos</b>. Rodando com <b>&lt; 0.1% de CPU</b> e <b>~15 MB de RAM na bandeja</b>, ele elimina micro-travamentos e não perde nenhum FPS enquanto entrega <b>Transmissão Full HD 1080p 60 FPS</b>, <b>Prioridade de Fala / Ducking Inteligente</b>, <b>Janelas Flutuantes (PiP)</b>, <b>Login via QR Code</b> e <b>Comandos Slash Inteligentes</b>.
 </p>
 
 [🌐 Site Oficial](https://ak4ai.github.io/Litecord/) • [📚 Docs & Wiki](docs/README.md) • [📦 Downloads](#-downloads--instalação) • [🎮 Recursos](#-por-que-gamers-usam-o-litecord) • [⚡ Benchmarks](#-benchmarks-vs-discord-oficial) • [🛡️ Segurança](#-segurança-e-privacidade) • [🛠️ Compilar do Código](#-compilando-do-código-fonte)
@@ -55,8 +55,8 @@
 | **Uso de CPU em Espera** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x mais leve em CPU** |
 | **CPU em Canal de Voz** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero travamentos no jogo** |
 | **CPU em Stream 1080p 60 FPS** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Gameplay 100% fluida** |
-| **Uso de RAM (Bandeja/DeepSleep)** | 350 MB - 750 MB | **~3 MB - 5 MB** | 🌙 **99% mais leve em segundo plano** |
-| **Uso de RAM (Janela Aberta)** | 500 MB - 900 MB | **~12 MB - 28 MB** | 💾 **Economiza até 850 MB de RAM** |
+| **Uso de RAM (Bandeja/DeepSleep)** | 350 MB - 750 MB | **~10 MB - 15 MB** | 🌙 **97% mais leve em segundo plano** |
+| **Uso de RAM (Janela Aberta)** | 500 MB - 900 MB | **~140 MB** | 💾 **Economiza até 750 MB de RAM** |
 | **Tempo de Inicialização** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Abertura instantânea** |
 | **Tamanho do Executável** | ~180 MB | **~8 MB Standalone** | 📦 **Código de máquina nativo puro** |
 

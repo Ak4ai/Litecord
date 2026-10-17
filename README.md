@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>&lt; 0.1% CPU</b> and <b>~32 MB RAM</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
+  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>&lt; 0.1% CPU</b> and <b>~15 MB RAM in the tray</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
 </p>
 
 [🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📚 Docs & Wiki](docs/README.md) • [🇧🇷 Versão em Português](README_PT.md) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](SECURITY.md) • [🛠️ Build from Source](#-building-from-source)
@@ -58,8 +58,8 @@
 | **Idle CPU Usage** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x lighter CPU footprint** |
 | **Active Voice CPU** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero Game Stuttering** |
 | **1080p 60 FPS Stream CPU** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Butter-Smooth Game Play** |
-| **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~3 MB - 5 MB** | 🌙 **99% lighter background footprint** |
-| **RAM Usage (Active Window)** | 500 MB - 900 MB | **~12 MB - 28 MB** | 💾 **Saves up to 850 MB RAM** |
+| **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~10 MB - 15 MB** | 🌙 **97% lighter background footprint** |
+| **RAM Usage (Active Window)** | 500 MB - 900 MB | **~140 MB** | 💾 **Saves up to 750 MB RAM** |
 | **Startup Time** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Instant Match Launch** |
 | **Binary Size** | ~180 MB | **~8 MB Standalone** | 📦 **Pure Native Machine Code** |
 
