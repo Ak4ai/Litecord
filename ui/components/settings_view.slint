@@ -59,6 +59,7 @@ export component SettingsView inherits Rectangle {
     in property <string> tr_keybind_deafen_title;
     in property <string> tr_keybind_deafen_desc;
     in property <string> keybind_deafen_str;
+    in property <bool> linux_input_permission_needed: false;
     in property <[SettingOptionItem]> video_encoder_options;
     in property <bool> use-light-theme;
     in property <[SettingOptionItem]> video_capture_options;
@@ -88,6 +89,7 @@ export component SettingsView inherits Rectangle {
     callback change_language(string);
     callback start_recording_keybind(int);
     callback reset_keybind(int);
+    callback fix_input_permissions(int);
     callback select_video_encoder(string);
     callback toggle_theme();
     callback select_video_capture_backend(string);
@@ -1599,6 +1601,124 @@ export component SettingsView inherits Rectangle {
                                 // =============================================================
                                 if root.settings_active_tab == 2: VerticalLayout {
                                     spacing: 16px;
+
+                                    if root.linux_input_permission_needed: Rectangle {
+                                        background: AppTheme.surface-elevated;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: AppTheme.warning;
+                                        clip: true;
+
+                                        VerticalLayout {
+                                            padding-left: 14px;
+                                            padding-right: 14px;
+                                            padding-top: 10px;
+                                            padding-bottom: 10px;
+                                            spacing: 8px;
+
+                                            HorizontalLayout {
+                                                spacing: 10px;
+                                                alignment: center;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../../assets/alert-triangle.svg");
+                                                        width: 14px;
+                                                        height: 14px;
+                                                        colorize: AppTheme.warning;
+                                                    }
+                                                }
+
+                                                Text {
+                                                    horizontal-stretch: 1;
+                                                    text: "Some /dev/input/event* devices are not readable. Global hotkeys and mouse buttons require input permissions.";
+                                                    color: AppTheme.warning;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+
+                                                Rectangle {
+                                                    height: 26px;
+                                                    background: btn_perm_fix.has-hover ? AppTheme.accent-hover : AppTheme.accent;
+                                                    border-radius: 4px;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 12px;
+                                                        padding-right: 12px;
+                                                        alignment: center;
+                                                        Text {
+                                                            text: "Fix";
+                                                            color: AppTheme.text-on-accent;
+                                                            font-size: 11px;
+                                                            font-weight: 700;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    btn_perm_fix := TouchArea {
+                                                        mouse-cursor: pointer;
+                                                        clicked => { root.fix_input_permissions(1); }
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    height: 26px;
+                                                    background: btn_temp_fix.has-hover ? AppTheme.interactive-hover : AppTheme.surface-sidebar;
+                                                    border-radius: 4px;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 12px;
+                                                        padding-right: 12px;
+                                                        alignment: center;
+                                                        Text {
+                                                            text: "Temporary";
+                                                            color: AppTheme.text-primary;
+                                                            font-size: 11px;
+                                                            font-weight: 600;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    btn_temp_fix := TouchArea {
+                                                        mouse-cursor: pointer;
+                                                        clicked => { root.fix_input_permissions(2); }
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    height: 26px;
+                                                    background: btn_ignore_fix.has-hover ? AppTheme.interactive-hover : AppTheme.surface-sidebar;
+                                                    border-radius: 4px;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 12px;
+                                                        padding-right: 12px;
+                                                        alignment: center;
+                                                        Text {
+                                                            text: "Don't remind me";
+                                                            color: AppTheme.text-muted;
+                                                            font-size: 11px;
+                                                            font-weight: 600;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    btn_ignore_fix := TouchArea {
+                                                        mouse-cursor: pointer;
+                                                        clicked => { root.fix_input_permissions(3); }
+                                                    }
+                                                }
+
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+                                        }
+                                    }
 
                                     // --- ROW 1: MUTE / UNMUTE KEYBIND ---
                                     HorizontalLayout {

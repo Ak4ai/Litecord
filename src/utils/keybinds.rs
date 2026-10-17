@@ -9,6 +9,8 @@ pub const KEYBINDS_CONFIG_FILE: &str = ".litecord_keybinds.json";
 pub struct KeybindsConfig {
     pub mute_shortcut: String,
     pub deafen_shortcut: String,
+    #[serde(default)]
+    pub ignore_input_permission_warning: bool,
 }
 
 impl Default for KeybindsConfig {
@@ -16,6 +18,7 @@ impl Default for KeybindsConfig {
         Self {
             mute_shortcut: "Ctrl+Shift+M".to_string(),
             deafen_shortcut: "Ctrl+Shift+D".to_string(),
+            ignore_input_permission_warning: false,
         }
     }
 }
@@ -32,6 +35,91 @@ pub fn load_persisted_keybinds_config() -> KeybindsConfig {
 pub fn save_persisted_keybinds_config(cfg: &KeybindsConfig) {
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
         let _ = std::fs::write(KEYBINDS_CONFIG_FILE, json);
+    }
+}
+
+pub fn is_permission_warning_ignored() -> bool {
+    load_persisted_keybinds_config().ignore_input_permission_warning
+}
+
+pub fn set_permission_warning_ignored(ignored: bool) {
+    let mut cfg = load_persisted_keybinds_config();
+    cfg.ignore_input_permission_warning = ignored;
+    save_persisted_keybinds_config(&cfg);
+}
+
+pub fn apply_permission_fix(mode: i32) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        match mode {
+            1 => {
+                let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_string());
+                let cmd = format!("usermod -aG input {} && chmod a+r /dev/input/event*", user);
+                run_priv_command(&cmd)
+            }
+            2 => {
+                run_priv_command("chmod a+r /dev/input/event*")
+            }
+            3 => {
+                set_permission_warning_ignored(true);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = mode;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_priv_command(cmd: &str) -> Result<(), String> {
+    let res = std::process::Command::new("pkexec")
+        .args(["sh", "-c", cmd])
+        .status();
+    match res {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("pkexec exited with status: {}", status)),
+        Err(_) => {
+            let res_sudo = std::process::Command::new("sudo")
+                .args(["sh", "-c", cmd])
+                .status();
+            match res_sudo {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(format!("sudo exited with status: {}", status)),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    }
+}
+
+pub fn can_read_input_devices() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/dev/input") {
+            let mut found_any = false;
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with("event") {
+                    found_any = true;
+                    if let Ok(c_path) = std::ffi::CString::new(entry.path().to_string_lossy().as_bytes()) {
+                        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+                        if fd >= 0 {
+                            unsafe { libc::close(fd); }
+                        } else {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return found_any;
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
     }
 }
 
@@ -99,6 +187,11 @@ pub fn format_combo_display(ctrl: bool, shift: bool, alt: bool, key_name: &str) 
 pub fn name_to_vkey(name: &str) -> Option<i32> {
     let upper = name.to_uppercase();
     match upper.as_str() {
+        "MOUSE1" | "MOUSE 1" | "M1" => Some(0x01),
+        "MOUSE2" | "MOUSE 2" | "M2" => Some(0x02),
+        "MOUSE3" | "MOUSE 3" | "M3" | "MIDDLECLICK" => Some(0x04),
+        "MOUSE4" | "MOUSE 4" | "M4" => Some(0x05),
+        "MOUSE5" | "MOUSE 5" | "M5" => Some(0x06),
         "A" => Some(0x41), "B" => Some(0x42), "C" => Some(0x43), "D" => Some(0x44),
         "E" => Some(0x45), "F" => Some(0x46), "G" => Some(0x47), "H" => Some(0x48),
         "I" => Some(0x49), "J" => Some(0x4A), "K" => Some(0x4B), "L" => Some(0x4C),
@@ -159,6 +252,11 @@ pub fn name_to_vkey(name: &str) -> Option<i32> {
 
 pub fn vkey_to_name(vkey: i32) -> &'static str {
     match vkey {
+        0x01 => "Mouse 1",
+        0x02 => "Mouse 2",
+        0x04 => "Mouse 3",
+        0x05 => "Mouse 4",
+        0x06 => "Mouse 5",
         0x41 => "A", 0x42 => "B", 0x43 => "C", 0x44 => "D",
         0x45 => "E", 0x46 => "F", 0x47 => "G", 0x48 => "H",
         0x49 => "I", 0x4A => "J", 0x4B => "K", 0x4C => "L",
@@ -263,6 +361,7 @@ impl KeybindManager {
                     info!("⌨️ [KEYBINDS] Listener global de atalhos iniciado com sucesso");
                     let mut mute_was_pressed = false;
                     let mut deafen_was_pressed = false;
+                    let mut was_recording = false;
 
                     // Windows VK constants
                     const VK_CONTROL: i32 = 0x11;
@@ -280,11 +379,6 @@ impl KeybindManager {
 
                         let rec_target = RECORDING_TARGET.load(Ordering::Relaxed);
                         if rec_target != 0 {
-                            // In recording mode: check if any non-modifier key is pressed
-                            let ctrl = is_key_down(VK_CONTROL);
-                            let shift = is_key_down(VK_SHIFT);
-                            let alt = is_key_down(VK_MENU);
-
                             let candidate_vkeys: &[i32] = &[
                                 // A-Z
                                 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C,
@@ -301,7 +395,23 @@ impl KeybindManager {
                                 0x20, 0x09, 0x1B, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22,
                                 0x26, 0x28, 0x25, 0x27, 0x14, 0x13, 0x91,
                                 0xC0, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA, 0xDE, 0xBC, 0xBE, 0xBF, 0xDC,
+                                // Mouse buttons
+                                0x02, 0x04, 0x05, 0x06,
                             ];
+
+                            if !was_recording {
+                                was_recording = true;
+                                for _ in 0..10 {
+                                    if !candidate_vkeys.iter().any(|&vk| is_key_down(vk)) { break; }
+                                    std::thread::sleep(Duration::from_millis(20));
+                                }
+                                continue;
+                            }
+
+                            // In recording mode: check if any non-modifier key is pressed
+                            let ctrl = is_key_down(VK_CONTROL);
+                            let shift = is_key_down(VK_SHIFT);
+                            let alt = is_key_down(VK_MENU);
 
                             for &vk in candidate_vkeys {
                                 if is_key_down(vk) {
@@ -310,8 +420,8 @@ impl KeybindManager {
                                         RECORDING_TARGET.store(0, Ordering::Relaxed);
                                         info!("⌨️ [KEYBINDS] Gravação cancelada via ESC");
                                         on_recorded(rec_target, String::new());
-                                        // Wait until release
-                                        while is_key_down(0x1B) {
+                                        for _ in 0..20 {
+                                            if !is_key_down(0x1B) { break; }
                                             std::thread::sleep(Duration::from_millis(30));
                                         }
                                         break;
@@ -336,13 +446,16 @@ impl KeybindManager {
                                     on_recorded(rec_target, combo_str);
 
                                     // Wait until key is released to avoid instant triggering
-                                    while is_key_down(vk) || is_key_down(VK_CONTROL) || is_key_down(VK_SHIFT) || is_key_down(VK_MENU) {
+                                    for _ in 0..20 {
+                                        if !(is_key_down(vk) || is_key_down(VK_CONTROL) || is_key_down(VK_SHIFT) || is_key_down(VK_MENU)) { break; }
                                         std::thread::sleep(Duration::from_millis(30));
                                     }
                                     break;
                                 }
                             }
                             continue;
+                        } else {
+                            was_recording = false;
                         }
 
                         // Normal hotkey detection mode
@@ -413,6 +526,7 @@ impl KeybindManager {
                     info!("⌨️ [KEYBINDS] Listener global de atalhos (Linux evdev) iniciado com sucesso");
                     let mut mute_was_pressed = false;
                     let mut deafen_was_pressed = false;
+                    let mut was_recording = false;
                     let mut last_scan = Instant::now() - Duration::from_secs(10);
                     let mut kbd_fds: Vec<i32> = Vec::new();
 
@@ -470,13 +584,22 @@ impl KeybindManager {
 
                         let rec_target = RECORDING_TARGET.load(Ordering::Relaxed);
                         if rec_target != 0 {
+                            if !was_recording {
+                                was_recording = true;
+                                for _ in 0..10 {
+                                    if !CANDIDATE_EVDEV_KEYS.iter().any(|&c| is_key_down(c)) { break; }
+                                    std::thread::sleep(Duration::from_millis(20));
+                                }
+                                continue;
+                            }
+
                             for &evdev_code in CANDIDATE_EVDEV_KEYS {
                                 if is_key_down(evdev_code) {
                                     if evdev_code == 1 && !ctrl_down && !shift_down && !alt_down {
                                         RECORDING_TARGET.store(0, Ordering::Relaxed);
                                         info!("⌨️ [KEYBINDS] Gravação cancelada via ESC");
                                         on_recorded(rec_target, String::new());
-                                        loop {
+                                        for _ in 0..20 {
                                             std::thread::sleep(Duration::from_millis(30));
                                             let mut esc = false;
                                             for &fd in &kbd_fds {
@@ -512,7 +635,7 @@ impl KeybindManager {
                                         on_recorded(rec_target, combo_str);
 
                                         // Wait until released
-                                        loop {
+                                        for _ in 0..20 {
                                             std::thread::sleep(Duration::from_millis(30));
                                             let mut any_down = false;
                                             for &fd in &kbd_fds {
@@ -540,6 +663,8 @@ impl KeybindManager {
                                 }
                             }
                             continue;
+                        } else {
+                            was_recording = false;
                         }
 
                         // Normal hotkey detection mode
@@ -551,16 +676,21 @@ impl KeybindManager {
                             )
                         };
 
+                        let is_combo_key_down = |vk: i32| -> bool {
+                            match vk {
+                                0x05 => is_key_down(275) || is_key_down(278),
+                                0x06 => is_key_down(276) || is_key_down(277),
+                                _ => vk_to_evdev_code(vk).map_or(false, &is_key_down),
+                            }
+                        };
+
                         // Check Mute
                         if let Some(ref combo) = mute_combo {
-                            let match_modifiers = (!combo.ctrl || ctrl_down)
-                                && (!combo.shift || shift_down)
-                                && (!combo.alt || alt_down)
-                                && (combo.ctrl == ctrl_down)
+                            let match_modifiers = (combo.ctrl == ctrl_down)
                                 && (combo.shift == shift_down)
                                 && (combo.alt == alt_down);
 
-                            let key_pressed = vk_to_evdev_code(combo.vkey).map_or(false, &is_key_down);
+                            let key_pressed = is_combo_key_down(combo.vkey);
                             let is_pressed = match_modifiers && key_pressed;
 
                             if is_pressed && !mute_was_pressed {
@@ -574,14 +704,11 @@ impl KeybindManager {
 
                         // Check Deafen
                         if let Some(ref combo) = deaf_combo {
-                            let match_modifiers = (!combo.ctrl || ctrl_down)
-                                && (!combo.shift || shift_down)
-                                && (!combo.alt || alt_down)
-                                && (combo.ctrl == ctrl_down)
+                            let match_modifiers = (combo.ctrl == ctrl_down)
                                 && (combo.shift == shift_down)
                                 && (combo.alt == alt_down);
 
-                            let key_pressed = vk_to_evdev_code(combo.vkey).map_or(false, &is_key_down);
+                            let key_pressed = is_combo_key_down(combo.vkey);
                             let is_pressed = match_modifiers && key_pressed;
 
                             if is_pressed && !deafen_was_pressed {
@@ -626,7 +753,11 @@ fn find_keyboard_devices() -> Vec<i32> {
                             const EVIOCGBIT_KEY_64: u64 = 0x80404521;
                             let res = unsafe { libc::ioctl(fd, EVIOCGBIT_KEY_64 as _, key_bits.as_mut_ptr()) };
                             const KEY_A: usize = 30;
-                            let is_kbd = res >= 0 && (key_bits[KEY_A / 8] & (1 << (KEY_A % 8))) != 0;
+                            const BTN_MOUSE: usize = 0x110;
+                            let is_kbd = res >= 0
+                                && ((key_bits[KEY_A / 8] & (1 << (KEY_A % 8))) != 0
+                                    || (key_bits[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8))) != 0
+                                    || (key_bits[275 / 8] & (1 << (275 % 8))) != 0);
                             if is_kbd {
                                 fds.push(fd);
                             } else {
@@ -644,6 +775,7 @@ fn find_keyboard_devices() -> Vec<i32> {
 #[cfg(target_os = "linux")]
 pub fn vk_to_evdev_code(vk: i32) -> Option<u16> {
     match vk {
+        0x01 => Some(272), 0x02 => Some(273), 0x04 => Some(274), 0x05 => Some(275), 0x06 => Some(276),
         0x41 => Some(30), 0x42 => Some(48), 0x43 => Some(46), 0x44 => Some(32),
         0x45 => Some(18), 0x46 => Some(33), 0x47 => Some(34), 0x48 => Some(35),
         0x49 => Some(23), 0x4A => Some(36), 0x4B => Some(37), 0x4C => Some(38),
@@ -675,6 +807,8 @@ pub fn vk_to_evdev_code(vk: i32) -> Option<u16> {
 #[cfg(target_os = "linux")]
 pub fn evdev_code_to_vk(code: u16) -> Option<i32> {
     match code {
+        272 => Some(0x01), 273 => Some(0x02), 274 => Some(0x04), 275 => Some(0x05), 276 => Some(0x06),
+        277 => Some(0x06), 278 => Some(0x05),
         30 => Some(0x41), 48 => Some(0x42), 46 => Some(0x43), 32 => Some(0x44),
         18 => Some(0x45), 33 => Some(0x46), 34 => Some(0x47), 35 => Some(0x48),
         23 => Some(0x49), 36 => Some(0x4A), 37 => Some(0x4B), 38 => Some(0x4C),
@@ -711,4 +845,51 @@ const CANDIDATE_EVDEV_KEYS: &[u16] = &[
     82, 79, 80, 81, 75, 76, 77, 71, 72, 73, 55, 78, 74, 98,
     57, 15, 1, 110, 111, 102, 107, 104, 109, 103, 108, 105, 106, 58, 119, 70,
     41, 12, 13, 26, 27, 39, 40, 51, 52, 53, 43,
+    // Mouse buttons (Mouse 2, 3, 4, 5)
+    273, 274, 275, 276, 277, 278,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mouse_key_parsing() {
+        assert_eq!(name_to_vkey("Mouse 4"), Some(0x05));
+        assert_eq!(name_to_vkey("Mouse 5"), Some(0x06));
+        assert_eq!(name_to_vkey("Mouse 2"), Some(0x02));
+        assert_eq!(name_to_vkey("Mouse 3"), Some(0x04));
+        assert_eq!(vkey_to_name(0x05), "Mouse 4");
+        assert_eq!(vkey_to_name(0x06), "Mouse 5");
+
+        let combo = KeyCombo::parse("Ctrl+Mouse 4").unwrap();
+        assert!(combo.ctrl);
+        assert!(!combo.shift);
+        assert!(!combo.alt);
+        assert_eq!(combo.vkey, 0x05);
+        assert_eq!(combo.display, "Ctrl+MOUSE 4");
+    }
+
+    #[test]
+    fn test_config_ignore_permission_default() {
+        let json = r#"{"mute_shortcut":"Ctrl+Shift+M","deafen_shortcut":"Ctrl+Shift+D"}"#;
+        let cfg: KeybindsConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.ignore_input_permission_warning);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_evdev_mouse_mappings() {
+        assert_eq!(evdev_code_to_vk(273), Some(0x02));
+        assert_eq!(evdev_code_to_vk(274), Some(0x04));
+        assert_eq!(evdev_code_to_vk(275), Some(0x05));
+        assert_eq!(evdev_code_to_vk(276), Some(0x06));
+        assert_eq!(evdev_code_to_vk(277), Some(0x06));
+        assert_eq!(evdev_code_to_vk(278), Some(0x05));
+
+        // BTN_LEFT (272) must NOT be in CANDIDATE_EVDEV_KEYS
+        assert!(!CANDIDATE_EVDEV_KEYS.contains(&272));
+        assert!(CANDIDATE_EVDEV_KEYS.contains(&275));
+        assert!(CANDIDATE_EVDEV_KEYS.contains(&276));
+    }
+}

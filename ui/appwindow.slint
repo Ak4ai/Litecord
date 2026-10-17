@@ -117,6 +117,7 @@ export component AppWindow inherits Window {
     callback select_output_device(string /* device_name */);
     callback start_recording_keybind(int /* 1 = mute, 2 = deafen */);
     callback reset_keybind(int /* 1 = mute, 2 = deafen */);
+    callback fix_input_permissions(int /* 1 = fix, 2 = temporary, 3 = don't remind me */);
     callback set_custom_keybind(int /* 1 = mute, 2 = deafen */, string /* shortcut */);
     callback auto_detect_token();
     callback toggle_user_mute(string /* user_id */);
@@ -311,6 +312,9 @@ export component AppWindow inherits Window {
     in-out property <string> keybind_mute_str: "Ctrl+Shift+M";
     in-out property <string> keybind_deafen_str: "Ctrl+Shift+D";
     in-out property <int> recording_keybind_for: 0;
+
+    // Linux input permission (global hotkeys need /dev/input access on Linux)
+    in-out property <bool> linux_input_permission_needed: false;
 
     // Video & Interface Settings Properties
     in-out property <string> selected_video_encoder: "auto";
@@ -2911,6 +2915,7 @@ export component AppWindow inherits Window {
         tr_keybind_deafen_title: root.tr_keybind_deafen_title;
         tr_keybind_deafen_desc: root.tr_keybind_deafen_desc;
         keybind_deafen_str: root.keybind_deafen_str;
+        linux_input_permission_needed: root.linux_input_permission_needed;
         video_encoder_options: root.video_encoder_options;
         use-light-theme: root.use-light-theme;
         video_capture_options: root.video_capture_options;
@@ -2939,6 +2944,7 @@ export component AppWindow inherits Window {
         change_language(arg0) => { root.change_language(arg0); }
         start_recording_keybind(arg0) => { root.start_recording_keybind(arg0); }
         reset_keybind(arg0) => { root.reset_keybind(arg0); }
+        fix_input_permissions(arg0) => { root.fix_input_permissions(arg0); }
         select_video_encoder(arg0) => { root.select_video_encoder(arg0); }
         toggle_theme => { root.toggle_theme(); }
         select_video_capture_backend(arg0) => { root.select_video_capture_backend(arg0); }

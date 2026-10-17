@@ -138,6 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_keybinds = keybinds::load_persisted_keybinds_config();
     app.set_keybind_mute_str(initial_keybinds.mute_shortcut.clone().into());
     app.set_keybind_deafen_str(initial_keybinds.deafen_shortcut.clone().into());
+
+    let show_input_warning = !keybinds::can_read_input_devices() && !keybinds::is_permission_warning_ignored();
+    app.set_linux_input_permission_needed(show_input_warning);
+
     let keybind_mgr = Arc::new(keybinds::KeybindManager::new(initial_keybinds));
     sound_effects::init_sound_effects();
     populate_video_interface_settings(&app);
@@ -1694,6 +1698,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_open_settings.upgrade() {
             // 1. Instantly display modal without blocking GUI thread!
             ui.set_show_settings_modal(true);
+            let show_input_warning = !keybinds::can_read_input_devices() && !keybinds::is_permission_warning_ignored();
+            ui.set_linux_input_permission_needed(show_input_warning);
             ui.set_vad_threshold(gateway::get_vad_threshold());
             ui.set_mic_volume(gateway::get_mic_volume());
             ui.set_is_testing_mic(gateway::is_testing_mic());
@@ -1944,6 +1950,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         keybinds::RECORDING_TARGET.store(0, Ordering::Relaxed);
         keybind_mgr_reset.update_config(cfg);
         info!("⌨️ [KEYBINDS] Atalho desativado para target: {}", target);
+    });
+
+    let app_weak_fix = app_weak.clone();
+    app.on_fix_input_permissions(move |mode: i32| {
+        let app_w = app_weak_fix.clone();
+        if mode == 3 {
+            keybinds::set_permission_warning_ignored(true);
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_linux_input_permission_needed(false);
+            }
+            return;
+        }
+
+        std::thread::spawn(move || {
+            let _ = keybinds::apply_permission_fix(mode);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    let show = !keybinds::can_read_input_devices() && !keybinds::is_permission_warning_ignored();
+                    ui.set_linux_input_permission_needed(show);
+                }
+            });
+        });
     });
 
     let keybind_mgr_custom = Arc::clone(&keybind_mgr);
