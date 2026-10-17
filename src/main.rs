@@ -357,7 +357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Tokio MPSC Channel for Microphone Volume Level (0.0 to 1.0)
     let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
 
-    // Dispatch Microphone Volume Level to Slint UI Thread with high efficiency (throttled to 30 FPS / 33ms)
+    // Dispatch Microphone Volume Level to Slint UI Thread (throttled to 15 FPS / 66 ms)
     let app_weak_level = app_weak.clone();
     tokio::spawn(async move {
         let mut last_send = std::time::Instant::now();
@@ -373,9 +373,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             let now = std::time::Instant::now();
-            let delta = (level - last_level).abs();
-            // Cap visual UI property dispatch to 30 FPS (33ms) or significant transitions
-            if now.duration_since(last_send).as_millis() >= 33 || (delta >= 0.05 && now.duration_since(last_send).as_millis() >= 16) {
+            // 15 FPS is plenty for a level meter and halves the UI wakeups during a call.
+            if now.duration_since(last_send).as_millis() >= 66 {
                 last_send = now;
                 last_level = level;
                 let app_w_inner = app_weak_level.clone();
@@ -1302,6 +1301,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_panel_fingerprint: Vec<(u32, u64, u8)> = Vec::new();
+        let mut last_panel_update = std::time::Instant::now();
         loop {
             interval.tick().await;
 
@@ -1312,6 +1313,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 woken.await;
                 continue;
             }
+
+            // Participants and audio levels are read here, off the UI thread (try_lock: never
+            // wait on the audio callback's locks).
+            let my_uid = gateway::get_my_user_id();
+            let self_level = gateway::get_self_mic_level();
+            let mut parts_snapshot: Vec<(u32, u64)> = match gateway::get_active_voice_participants_store().try_lock() {
+                Ok(map) => map.iter().filter(|(&s, _)| s != 999999).map(|(&s, &u)| (s, u)).collect(),
+                Err(_) => continue, // Skip this tick; the audio thread holds the lock
+            };
+            parts_snapshot.sort_unstable();
+            let mut ssrc_levels: HashMap<u32, f32> = HashMap::new();
+            if let Ok(queues) = gateway::get_speaker_pcm_queues().try_lock() {
+                for &(ssrc, user_id) in &parts_snapshot {
+                    if user_id == my_uid && my_uid > 0 { continue; }
+                    if let Some(q) = queues.get(&ssrc) {
+                        let sample_cnt = q.len().min(480);
+                        if sample_cnt > 0 {
+                            let sum_sq: f32 = q.iter().take(sample_cnt).map(|&(l, r)| { let s = (l + r) * 0.5; s * s }).sum();
+                            let rms = (sum_sq / sample_cnt as f32).sqrt();
+                            ssrc_levels.insert(ssrc, if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) });
+                        }
+                    }
+                }
+            }
+
+            // Only wake the UI when what it shows can have changed: who is here and the level
+            // bars (in steps of 5%). In a quiet call this drops the UI updates from 10/s to
+            // the 1/s refresh that also picks up anything not covered here (names, mute...).
+            let mut fingerprint: Vec<(u32, u64, u8)> = parts_snapshot
+                .iter()
+                .map(|&(ssrc, uid)| (ssrc, uid, (ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) * 20.0) as u8))
+                .collect();
+            fingerprint.push((0, 0, (self_level * 20.0) as u8));
+            if fingerprint == last_panel_fingerprint && last_panel_update.elapsed() < std::time::Duration::from_secs(1) {
+                continue;
+            }
+            last_panel_fingerprint = fingerprint;
+            last_panel_update = std::time::Instant::now();
 
             let app_w_inner = app_weak_voice_loop.clone();
             let http_client_voice_loop_inner = Arc::clone(&http_client_voice_loop);
@@ -1326,34 +1365,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_is_voice_connecting(false);
                 }
 
-                let active_parts = gateway::get_active_voice_participants_store();
-                let queues_arc = gateway::get_speaker_pcm_queues();
-                let my_uid = gateway::get_my_user_id();
-                let self_level = gateway::get_self_mic_level();
                 let mut participants = Vec::new();
-
-                // Use try_lock() everywhere — never block the UI thread waiting for audio locks
-                let parts_snapshot: Vec<(u32, u64)> = match active_parts.try_lock() {
-                    Ok(map) => map.iter().filter(|(&s, _)| s != 999999).map(|(&s, &u)| (s, u)).collect(),
-                    Err(_) => return, // Skip this frame; audio thread holds the lock
-                };
-
-                // Pre-compute audio levels using try_lock() so we never block on the CPAL-held speaker queue
-                let mut ssrc_levels: HashMap<u32, f32> = HashMap::new();
-                if let Ok(queues) = queues_arc.try_lock() {
-                    for &(ssrc, user_id) in &parts_snapshot {
-                        if user_id == my_uid && my_uid > 0 { continue; }
-                        if let Some(q) = queues.get(&ssrc) {
-                            let sample_cnt = q.len().min(480);
-                            if sample_cnt > 0 {
-                                let sum_sq: f32 = q.iter().take(sample_cnt).map(|&(l, r)| { let s = (l + r) * 0.5; s * s }).sum();
-                                let rms = (sum_sq / sample_cnt as f32).sqrt();
-                                ssrc_levels.insert(ssrc, if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) });
-                            }
-                        }
-                    }
-                }
-                // If try_lock failed, ssrc_levels stays empty → we just won't update bars this frame
 
                 let mut user_best: HashMap<u64, (u32, f32, bool)> = HashMap::new();
                 for (ssrc, user_id) in parts_snapshot {

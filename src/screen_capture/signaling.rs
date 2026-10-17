@@ -463,6 +463,8 @@ pub async fn run_cloudflare_signaling_loop(
         if let Ok(mut guard) = SIGNALING_OUT_TX.lock() {
             *guard = Some(out_tx);
         }
+        // First presence right away; afterwards only on SIGNALING_WAKE or a due check.
+        SIGNALING_WAKE.notify_one();
 
         // Presence is event driven: on connect, when a peer joins, when our stream
         // state or addresses change. See cloudflare/worker.js for the cost model.
@@ -475,8 +477,6 @@ pub async fn run_cloudflare_signaling_loop(
         let mut ping_interval = tokio::time::interval(Duration::from_secs(40));
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut publish_ticker = tokio::time::interval(Duration::from_millis(500));
-        publish_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             if channel_id.load(Ordering::Relaxed) != cid {
@@ -490,6 +490,12 @@ pub async fn run_cloudflare_signaling_loop(
                 info!("🔄 [SIGNALING] User ID autenticado ({}). Atualizando conexão com Cloudflare...", fresh_uid);
                 break;
             }
+
+            // Presence is re-checked when something signals SIGNALING_WAKE (stream start or
+            // stop, new peer, address change, channel change) or when a periodic check is due.
+            let next_check = ADDR_CHECK_EVERY
+                .saturating_sub(last_addr_check.elapsed())
+                .min(PRESENCE_REFRESH_EVERY.saturating_sub(last_pub.elapsed()));
 
             tokio::select! {
                 Some(msg) = out_rx.recv() => {
@@ -506,7 +512,12 @@ pub async fn run_cloudflare_signaling_loop(
                     }
                 }
 
-                _ = publish_ticker.tick() => {
+                _ = async {
+                    tokio::select! {
+                        _ = SIGNALING_WAKE.notified() => {}
+                        _ = tokio::time::sleep(next_check) => {}
+                    }
+                } => {
                     let cur_tx = is_tx_running.load(Ordering::Relaxed);
                     let force_wake = SIGNALING_FORCE_WAKE.swap(false, Ordering::Relaxed);
                     let peer_joined = SIGNALING_PEER_JOINED.swap(false, Ordering::Relaxed);

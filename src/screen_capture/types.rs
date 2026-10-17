@@ -44,6 +44,7 @@ pub static P2P_CONTEXT_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_ne
 /// (shorter than any real packet, so the parser drops it).
 pub fn notify_p2p_context_changed() {
     P2P_CONTEXT_WAKE.notify_waiters();
+    SIGNALING_WAKE.notify_one();
     let port = get_my_rx_port();
     if port != 0 {
         if let Ok(sock) = std::net::UdpSocket::bind("127.0.0.1:0") {
@@ -139,7 +140,11 @@ pub static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
 /// only if they really changed.
 pub fn force_signaling_broadcast() {
     SIGNALING_FORCE_WAKE.store(true, Ordering::Relaxed);
+    SIGNALING_WAKE.notify_one();
 }
+
+/// Wakes the signaling loop to re-check what it has to send; it sleeps otherwise.
+pub static SIGNALING_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Set when the signaling server reports a new peer in the room: that peer has
 /// never heard of us, so presence must be sent even though nothing changed.
@@ -147,6 +152,7 @@ pub static SIGNALING_PEER_JOINED: AtomicBool = AtomicBool::new(false);
 
 pub fn announce_to_new_peer() {
     SIGNALING_PEER_JOINED.store(true, Ordering::Relaxed);
+    SIGNALING_WAKE.notify_one();
 }
 
 /// Stream state already sent out-of-band by `notify_signaling_stream_state`
