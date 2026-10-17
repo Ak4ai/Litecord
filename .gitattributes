@@ -1,0 +1,2 @@
+# Vendored crates are kept byte-identical to the published ones (except the marked patches)
+vendor/** -text
