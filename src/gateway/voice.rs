@@ -529,6 +529,8 @@ pub async fn connect_voice_gateway(
 
                                                                             let now = std::time::Instant::now();
                                                                             let rtp_seq = u16::from_be_bytes([pkt[2], pkt[3]]);
+                                                                            #[cfg(feature = "automation")]
+                                                                            crate::utils::test_hooks::voice_received(rtp_seq);
                                                                             let last_time_opt = ssrc_last_pkt_time.get(&ssrc_recv).copied();
                                                                             let is_new_talkspurt = match last_time_opt {
                                                                                 Some(t) => now.duration_since(t) > Duration::from_millis(100),
@@ -626,6 +628,11 @@ pub async fn connect_voice_gateway(
                                                                                         while q.len() > 48000 {
                                                                                             q.pop_front();
                                                                                         }
+                                                                                        #[cfg(feature = "automation")]
+                                                                                        {
+                                                                                            crate::utils::test_hooks::voice_decoded(&plc_pairs);
+                                                                                            crate::utils::test_hooks::voice_decoded(&dump_vec);
+                                                                                        }
                                                                                         // Push synthesized PLC concealed frames first to maintain unbroken audio stream
                                                                                         for &pair in &plc_pairs {
                                                                                             q.push_back(pair);
@@ -722,6 +729,11 @@ pub async fn connect_voice_gateway(
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [f32], _| {
+                                                                    #[cfg(feature = "automation")]
+                                                                    if crate::utils::test_hooks::mute_output() {
+                                                                        output.fill(0.0);
+                                                                        return;
+                                                                    }
                                                                     if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
                                                                         for s in output.iter_mut() { *s = 0.0; }
                                                                         return;
@@ -884,6 +896,11 @@ pub async fn connect_voice_gateway(
                                                             device.build_output_stream(
                                                                 &config.into(),
                                                                 move |output: &mut [i16], _| {
+                                                                    #[cfg(feature = "automation")]
+                                                                    if crate::utils::test_hooks::mute_output() {
+                                                                        output.fill(0);
+                                                                        return;
+                                                                    }
                                                                     if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
                                                                         for s in output.iter_mut() { *s = 0; }
                                                                         return;
@@ -1098,15 +1115,16 @@ pub async fn connect_voice_gateway(
                                                 // no mic data (no device, capture failed) a 60 ms timeout keeps the
                                                 // silence keepalives going; it is long enough that a mic delivering
                                                 // in large chunks never trips it in the middle of speech.
+                                                // Returns false when it gave up waiting (no mic data).
                                                 let next_frame = || async {
                                                     loop {
                                                         let ready = pcm_queue.lock().map(|q| q.len() >= 960).unwrap_or(false);
                                                         if ready {
-                                                            return;
+                                                            return true;
                                                         }
                                                         tokio::select! {
                                                             _ = MIC_FRAME_READY.notified() => {}
-                                                            _ = sleep(Duration::from_millis(60)) => return,
+                                                            _ = sleep(Duration::from_millis(60)) => return false,
                                                         }
                                                     }
                                                 };
@@ -1115,8 +1133,23 @@ pub async fn connect_voice_gateway(
                                                 let mut speech_hangover_frames: usize = 0;
                                                 let mut silence_keepalive_counter: u32 = 0;
 
+                                                // Test builds can switch back to the old timer pacing for A/B runs.
+                                                #[cfg(feature = "automation")]
+                                                let timer_pacing = crate::utils::test_hooks::timer_pacing();
+                                                #[cfg(not(feature = "automation"))]
+                                                let timer_pacing = false;
+                                                let _fine_timer = timer_pacing.then(crate::utils::timer_resolution::FineTimerGuard::new);
+                                                let mut pacing_timer = tokio::time::interval(Duration::from_millis(20));
+                                                pacing_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
                                                 loop {
-                                                    next_frame().await;
+                                                    #[allow(unused_variables)]
+                                                    let had_mic_frame = if timer_pacing {
+                                                        pacing_timer.tick().await;
+                                                        true
+                                                    } else {
+                                                        next_frame().await
+                                                    };
                                                     if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
                                                         info!("Sessão de voz antiga (ID={}) encerrada, saindo do loop UDP!", my_session_id);
                                                         break;
@@ -1258,6 +1291,8 @@ pub async fn connect_voice_gateway(
                                                                 if let Err(_) = socket.send_to(&rtp_pkt, &target_addr).await {
                                                                     break;
                                                                 }
+                                                                #[cfg(feature = "automation")]
+                                                                crate::utils::test_hooks::voice_sent(!is_silence_packet, !had_mic_frame);
 
                                                                 // Resend OP 5 Speaking and log audio stats every ~5 seconds (every 250 frames)
                                                                 speaking_loop_counter = speaking_loop_counter.wrapping_add(1);

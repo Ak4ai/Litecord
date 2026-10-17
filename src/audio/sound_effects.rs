@@ -49,6 +49,10 @@ pub fn init_sound_effects() {
 
 /// Plays a tactile UI sound effect immediately.
 pub fn play_ui_sound(sound: UiSound) {
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::mute_output() {
+        return;
+    }
     if let Some(sender) = SOUND_SENDER.get() {
         let _ = sender.try_send(sound);
     } else {

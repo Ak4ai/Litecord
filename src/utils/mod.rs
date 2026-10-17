@@ -17,6 +17,8 @@ pub mod network_settings;
 pub mod hardware_monitor;
 pub mod client_identity;
 pub mod gateway_stats;
+#[cfg(feature = "automation")]
+pub mod test_hooks;
 
 pub use logger::*;
 pub use i18n::*;

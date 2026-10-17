@@ -68,6 +68,8 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
         let clamped = s.clamp(-1.0, 1.0);
         if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
     }
+    #[cfg(feature = "automation")]
+    crate::utils::test_hooks::mic_captured(pcm_samples.len());
     if pcm_q.len() >= 960 {
         gateway::MIC_FRAME_READY.notify_one();
     }
@@ -100,17 +102,31 @@ pub fn start_mic_capture(
     level_tx: mpsc::Sender<f32>,
 ) -> Option<cpal::Stream> {
     let host = cpal::default_host();
-    let devices = host.input_devices().ok()?;
 
-    let target_dev = if device_name.is_empty() || device_name.contains("Padrão") {
-        host.default_input_device()?
+    // Test builds can feed the "microphone" from whatever plays on the default output
+    // (WASAPI loopback), so a reference recording can stand in for a voice.
+    #[cfg(feature = "automation")]
+    let loopback = crate::utils::test_hooks::mic_from_loopback();
+    #[cfg(not(feature = "automation"))]
+    let loopback = false;
+
+    let (target_dev, config) = if loopback {
+        let out = host.default_output_device()?;
+        let cfg = out.default_output_config().ok()?;
+        info!("🧪 [TEST MIC] Capturando a saída padrão por loopback como microfone: {}", out.name().unwrap_or_default());
+        (out, cfg)
     } else {
-        devices.into_iter().find(|d| {
-            d.name().map(|n| n == device_name).unwrap_or(false)
-        }).or_else(|| host.default_input_device())?
+        let devices = host.input_devices().ok()?;
+        let dev = if device_name.is_empty() || device_name.contains("Padrão") {
+            host.default_input_device()?
+        } else {
+            devices.into_iter().find(|d| {
+                d.name().map(|n| n == device_name).unwrap_or(false)
+            }).or_else(|| host.default_input_device())?
+        };
+        let cfg = dev.default_input_config().ok()?;
+        (dev, cfg)
     };
-
-    let config = target_dev.default_input_config().ok()?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     let pcm_queue = gateway::get_mic_pcm_queue();

@@ -305,6 +305,12 @@ pub fn load_account_vault() -> AccountVault {
 }
 
 pub fn save_account_vault(vault: &AccountVault) {
+    // A test instance logged in with LITECORD_TEST_ACCOUNT must not change which account
+    // the installed app opens with.
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::test_account().is_some() {
+        return;
+    }
     let (primary_path, fallback_path) = get_secure_token_paths();
     let json_str = match serde_json::to_string(vault) {
         Ok(s) => s,
@@ -385,6 +391,11 @@ pub fn remove_single_account(user_id_or_token: &str) -> AccountVault {
 }
 
 pub fn delete_secure_token() {
+    // A failed login of a test instance must not wipe the accounts of the installed app.
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::test_account().is_some() {
+        return;
+    }
     let (primary_path, fallback_path) = get_secure_token_paths();
     for path in [&primary_path, &fallback_path] {
         if path.exists() {
@@ -427,6 +438,15 @@ pub fn save_secure_token(token_str: &str) {
 
 pub fn load_secure_token() -> Option<String> {
     let vault = load_account_vault();
+    #[cfg(feature = "automation")]
+    if let Some(wanted) = crate::utils::test_hooks::test_account() {
+        let wanted = wanted.to_lowercase();
+        return vault
+            .accounts
+            .iter()
+            .find(|a| a.user_id == wanted || a.username.to_lowercase().contains(&wanted) || a.tag.to_lowercase().contains(&wanted))
+            .map(|a| a.token.clone());
+    }
     if let Some(acc) = vault.accounts.iter().find(|a| a.is_active) {
         Some(acc.token.clone())
     } else if let Some(first) = vault.accounts.first() {

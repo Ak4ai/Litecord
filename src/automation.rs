@@ -20,6 +20,15 @@
 //! {"cmd":"size"}
 //! {"cmd":"minimize_to_tray"}                 same as the title bar button
 //! {"cmd":"restore"}                          same as clicking the tray icon
+//! {"cmd":"open_guild","name":"Server"}       select a server by exact name
+//! {"cmd":"open_channel","name":"general"}    select a channel of the open server by exact
+//!                                            name (a voice channel joins it); errors if absent
+//! {"cmd":"leave_voice"}                      same as the leave button
+//! {"cmd":"start_screen_share","res":"1080p","fps":60,"screen":0,"audio":false}
+//! {"cmd":"stop_screen_share"}
+//! {"cmd":"watch_stream","user_id":"123"}     open a peer's stream in the main view
+//! {"cmd":"stream_fullscreen"}                toggle the stream full screen button
+//! {"cmd":"resize","width":1920,"height":1080} set the window size in logical pixels
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -30,7 +39,7 @@ use std::time::Duration;
 use log::{info, warn};
 use serde_json::{json, Value};
 use slint::platform::{Key, PointerEventButton, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, SharedString};
+use slint::{ComponentHandle, LogicalPosition, Model, SharedString};
 
 use crate::AppWindow;
 
@@ -203,6 +212,59 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             });
             Ok(json!({ "ok": true }))
         }
+        "open_guild" => {
+            let name = cmd["name"].as_str().ok_or("missing \"name\"")?;
+            let guild = ui.get_guilds().iter().find(|g| g.name == name).ok_or(format!("no server named {name}"))?;
+            ui.invoke_select_guild(guild.id.clone());
+            Ok(json!({ "ok": true, "id": guild.id.to_string() }))
+        }
+        "open_channel" => {
+            let name = cmd["name"].as_str().ok_or("missing \"name\"")?;
+            let channel = ui
+                .get_channels()
+                .iter()
+                .find(|c| c.name == name && !c.is_category)
+                .ok_or(format!("no channel named {name} in the open server"))?;
+            ui.invoke_select_channel(channel.id.clone());
+            Ok(json!({ "ok": true, "id": channel.id.to_string(), "is_voice": channel.is_voice }))
+        }
+        "leave_voice" => {
+            ui.invoke_leave_voice();
+            Ok(json!({ "ok": true }))
+        }
+        "start_screen_share" => {
+            if ui.get_is_screen_sharing() {
+                return Err("already sharing".into());
+            }
+            ui.set_stream_source_tab("screens".into());
+            ui.set_stream_selected_res(cmd["res"].as_str().unwrap_or("1080p").into());
+            ui.set_stream_selected_fps(cmd["fps"].as_i64().unwrap_or(60) as i32);
+            ui.set_stream_selected_source_index(cmd["screen"].as_i64().unwrap_or(0) as i32);
+            ui.set_stream_include_audio(cmd["audio"].as_bool().unwrap_or(false));
+            ui.invoke_toggle_screen_share();
+            Ok(json!({ "ok": true }))
+        }
+        "stop_screen_share" => {
+            if ui.get_is_screen_sharing() {
+                ui.invoke_toggle_screen_share();
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "watch_stream" => {
+            let uid = cmd["user_id"].as_str().ok_or("missing \"user_id\"")?;
+            ui.invoke_focus_stream(uid.into());
+            Ok(json!({ "ok": true }))
+        }
+        "stream_fullscreen" => {
+            ui.invoke_toggle_stream_fullscreen();
+            Ok(json!({ "ok": true }))
+        }
+        "resize" => {
+            let w = cmd["width"].as_f64().ok_or("missing \"width\"")? as f32;
+            let h = cmd["height"].as_f64().ok_or("missing \"height\"")? as f32;
+            ui.window().set_size(slint::LogicalSize::new(w, h));
+            Ok(json!({ "ok": true }))
+        }
         "state" => Ok(state(ui)),
         other => Err(format!("unknown cmd {other}")),
     }
@@ -266,3 +328,4 @@ fn state(ui: &AppWindow) -> Value {
         },
     })
 }
+
