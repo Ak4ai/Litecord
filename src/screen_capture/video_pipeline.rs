@@ -426,11 +426,17 @@ pub fn decode_video_frame(
             }
         }
         Ok(None) => {
-            log::info!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {} (len={})", peer_uid, annex_b.len());
+            static WAITING_IDR: crate::utils::logger::LogThrottle = crate::utils::logger::LogThrottle::new(1000);
+            if let Some(n) = WAITING_IDR.hit() {
+                log::info!("⏳ [DECODER RX] OpenH264 aguardando IDR Keyframe para peer {} ({} quadro(s) desde o último aviso, len={})", peer_uid, n, annex_b.len());
+            }
         }
         Err(e) => {
-            log::warn!("⚠️ [DECODER RX] Frame descartado por erro/falta de referência para peer {}: {:?} (len={}, header={:02X?})",
-                peer_uid, e, annex_b.len(), &annex_b[..annex_b.len().min(8)]);
+            static DROPPED: crate::utils::logger::LogThrottle = crate::utils::logger::LogThrottle::new(1000);
+            if let Some(n) = DROPPED.hit() {
+                log::warn!("⚠️ [DECODER RX] {} frame(s) descartado(s) por erro/falta de referência desde o último aviso, peer {}: {:?} (len={}, header={:02X?})",
+                    n, peer_uid, e, annex_b.len(), &annex_b[..annex_b.len().min(8)]);
+            }
         }
     }
     None

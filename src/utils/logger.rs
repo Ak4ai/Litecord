@@ -73,3 +73,57 @@ pub fn init_logger() {
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Info);
 }
+
+/// Collapses a warning that can fire once per video frame into one line per
+/// interval: `hit` counts every occurrence and returns the count to report only
+/// when the interval since the last report has passed.
+pub struct LogThrottle {
+    interval_ms: u64,
+    last_ms: std::sync::atomic::AtomicU64,
+    pending: std::sync::atomic::AtomicU32,
+}
+
+impl LogThrottle {
+    pub const fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms,
+            last_ms: std::sync::atomic::AtomicU64::new(0),
+            pending: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    pub fn hit(&self) -> Option<u32> {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        // Offset by the interval so the very first hit is always reported.
+        let now = START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + self.interval_ms;
+        self.hit_at(now)
+    }
+
+    fn hit_at(&self, now_ms: u64) -> Option<u32> {
+        use std::sync::atomic::Ordering;
+        let count = self.pending.fetch_add(1, Ordering::Relaxed) + 1;
+        let last = self.last_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) >= self.interval_ms
+            && self.last_ms.compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        {
+            self.pending.fetch_sub(count, Ordering::Relaxed);
+            return Some(count);
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogThrottle;
+
+    #[test]
+    fn throttle_reports_first_hit_then_counts_until_interval() {
+        let t = LogThrottle::new(1000);
+        assert_eq!(t.hit_at(5_000), Some(1));
+        assert_eq!(t.hit_at(5_100), None);
+        assert_eq!(t.hit_at(5_900), None);
+        assert_eq!(t.hit_at(6_000), Some(3));
+        assert_eq!(t.hit_at(6_001), None);
+    }
+}
