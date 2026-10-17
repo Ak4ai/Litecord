@@ -130,6 +130,9 @@ pub static PENDING_MESSAGES: AtomicUsize = AtomicUsize::new(0);
 /// messages), oldest first, one entry per channel. Applied when the window comes back.
 static HIDDEN_CHANNEL_ACTIVITY: Mutex<Vec<(String, i32)>> = Mutex::new(Vec::new());
 
+/// True while the settings modal (with the microphone level meter) is open.
+pub static MIC_METER_VISIBLE: AtomicBool = AtomicBool::new(false);
+
 /// Set while hidden when voice states changed, so the channel list is refreshed on restore.
 pub static VOICE_STATES_DIRTY: AtomicBool = AtomicBool::new(false);
 

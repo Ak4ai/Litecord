@@ -364,8 +364,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_level = -1.0f32;
         while let Some(level) = level_rx.recv().await {
             gateway::set_self_mic_level(level);
-            // Deep-sleep guard: drain the channel without invoking Slint
-            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+            // Only the settings meter shows this value (the voice panel reads the level
+            // directly), so the UI is not woken for it otherwise.
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !MIC_METER_VISIBLE.load(Ordering::Relaxed) {
                 continue;
             }
             // Skip UI redraw if microphone was silent and is still silent
@@ -1345,7 +1346,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .map(|&(ssrc, uid)| (ssrc, uid, (ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) * 20.0) as u8))
                 .collect();
-            fingerprint.push((0, 0, (self_level * 20.0) as u8));
+            // Our own bar only shows above the voice threshold; mic noise below it changes nothing.
+            let shown_self_level = if self_level >= gateway::get_vad_threshold() { self_level } else { 0.0 };
+            fingerprint.push((0, 0, (shown_self_level * 20.0) as u8));
             if fingerprint == last_panel_fingerprint && last_panel_update.elapsed() < std::time::Duration::from_secs(1) {
                 continue;
             }
@@ -1488,7 +1491,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let (is_muted_saved, vol, prio) = gateway::get_user_audio_settings(&uid_str);
 
                     let (final_audio_level, final_is_speaking, final_is_muted) = if is_self {
-                        let mic_lvl = ui.get_mic_level();
+                        let mic_lvl = self_level;
                         let is_self_muted = ui.get_is_muted();
                         if is_self_muted {
                             (0.0, false, true)
@@ -1730,6 +1733,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_stream_open = Arc::clone(&active_mic_stream);
 
     app.on_open_settings(move || {
+        MIC_METER_VISIBLE.store(true, Ordering::Relaxed);
         if let Some(ui) = app_weak_open_settings.upgrade() {
             // 1. Instantly display modal without blocking GUI thread!
             ui.set_show_settings_modal(true);
@@ -1824,6 +1828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_stream_close = Arc::clone(&active_mic_stream);
     let active_loopback_close = Arc::clone(&active_loopback_stream);
     app.on_close_settings(move || {
+        MIC_METER_VISIBLE.store(false, Ordering::Relaxed);
         if let Some(ui) = app_weak_close_settings.upgrade() {
             ui.set_show_settings_modal(false);
             gateway::set_testing_mic(false);
