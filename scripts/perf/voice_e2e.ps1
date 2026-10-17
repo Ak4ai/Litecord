@@ -39,6 +39,7 @@ $tts.Dispose()
 $senderEnv = @{
     LITECORD_TEST_ACCOUNT = $Sender; LITECORD_TEST_MIC = "loopback"; LITECORD_TEST_MUTE_OUTPUT = "1"
     LITECORD_TEST_VOICE_LOG = (Join-Path $OutDir "sender.csv")
+    LITECORD_TEST_TX_PCM = (Join-Path $OutDir "captured.f32")
 }
 if ($TimerPacing) { $senderEnv.LITECORD_TEST_TIMER_PACING = "1" }
 $senderProc = Start-Litecord $Exe (Join-Path $OutDir "sender") 47131 $senderEnv

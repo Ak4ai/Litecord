@@ -9,6 +9,7 @@
 //! LITECORD_TEST_MUTE_OUTPUT=1              play nothing, UI sounds included (keeps a loopback "mic" clean)
 //! LITECORD_TEST_VOICE_LOG=<file.csv>       one row per mic block, sent and received voice packet
 //! LITECORD_TEST_RX_PCM=<file.f32>          decoded received voice, 48 kHz mono f32, in arrival order
+//! LITECORD_TEST_TX_PCM=<file.f32>          what the microphone captured, 48 kHz mono f32
 //! ```
 
 use std::io::Write;
@@ -75,6 +76,26 @@ pub fn voice_sent(speech: bool, from_fallback: bool) {
 /// One RTP voice packet received from another user.
 pub fn voice_received(seq: u16) {
     record("rx", seq as u32, false);
+}
+
+/// Captured microphone samples (48 kHz mono), appended as f32.
+pub fn voice_captured(samples: &[f32]) {
+    static PCM: OnceLock<Option<Mutex<std::io::BufWriter<std::fs::File>>>> = OnceLock::new();
+    let Some(out) = PCM
+        .get_or_init(|| {
+            let path = env("LITECORD_TEST_TX_PCM")?;
+            std::fs::File::create(path).ok().map(|f| Mutex::new(std::io::BufWriter::new(f)))
+        })
+        .as_ref()
+    else {
+        return;
+    };
+    if let Ok(mut out) = out.lock() {
+        for &s in samples {
+            let _ = out.write_all(&s.to_le_bytes());
+        }
+        let _ = out.flush();
+    }
 }
 
 /// Decoded received voice (stereo pairs at 48 kHz), appended as mono f32.

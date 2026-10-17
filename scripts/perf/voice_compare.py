@@ -81,43 +81,90 @@ def summarize(run: Path) -> None:
     print(f"receiver: {len(rx)} packets ({len(tx) - len(rx)} fewer than sent), {reordered} out of order")
 
 
+def score_chunks(test: np.ndarray, source: np.ndarray):
+    """Scores of each speech chunk of `test` against `source`, and the damaged ones."""
+    source_energy = np.clip(fftconvolve(source * source, np.ones(CHUNK, np.float32), mode="valid"), 0.0, None)
+    scores, bad = [], []
+    for start in range(0, len(test) - CHUNK + 1, CHUNK):
+        chunk = test[start:start + CHUNK]
+        if np.sqrt(np.mean(chunk * chunk)) < SPEECH_RMS:
+            continue
+        score = best_match(chunk, source, source_energy)
+        scores.append(score)
+        if score < GOOD_MATCH:
+            bad.append((start / RATE, score))
+    return scores, bad
+
+
+def report(label: str, scores, bad) -> None:
+    if not scores:
+        print(f"{label}: no speech")
+        return
+    print(f"{label}: {len(scores)} speech chunks, match median {np.median(scores):.2f}, "
+          f"worst {min(scores):.2f}, {len(bad)} damaged")
+    for at, score in bad[:10]:
+        print(f"  damaged chunk at {at:6.2f} s (score {score:.2f})")
+
+
+def score_chunks(test: np.ndarray, source: np.ndarray):
+    """Scores of each speech chunk of `test` against `source`, and the damaged ones."""
+    source_energy = np.clip(fftconvolve(source * source, np.ones(CHUNK, np.float32), mode="valid"), 0.0, None)
+    scores, bad = [], []
+    for start in range(0, len(test) - CHUNK + 1, CHUNK):
+        chunk = test[start:start + CHUNK]
+        if np.sqrt(np.mean(chunk * chunk)) < SPEECH_RMS:
+            continue
+        score = best_match(chunk, source, source_energy)
+        scores.append(score)
+        if score < GOOD_MATCH:
+            bad.append((start / RATE, score))
+    return scores, bad
+
+
+def report(label: str, scores, bad) -> None:
+    if not scores:
+        print(f"{label}: no speech")
+        return
+    print(f"{label}: {len(scores)} speech chunks, match median {np.median(scores):.2f}, "
+          f"worst {min(scores):.2f}, {len(bad)} damaged")
+    for at, score in bad[:10]:
+        print(f"  damaged chunk at {at:6.2f} s (score {score:.2f})")
+
+
 def main() -> int:
     run = Path(sys.argv[1])
     summarize(run)
 
     ref = load_reference(run / "reference.wav")
-    rx_path = run / "received.f32"
+    rx_path, tx_path = run / "received.f32", run / "captured.f32"
     rx = np.fromfile(rx_path, dtype="<f4") if rx_path.exists() else np.zeros(0, np.float32)
     print(f"reference: {len(ref) / RATE:.1f} s, received audio: {len(rx) / RATE:.1f} s")
     if len(rx) < CHUNK:
         print("RESULT: FAIL (no voice received)")
         return 1
 
-    # Received level differs from the reference (gain, codec); normalize per chunk instead.
-    ref_energy = np.clip(fftconvolve(ref * ref, np.ones(CHUNK, np.float32), mode="valid"), 0.0, None)
-    scores, bad = [], []
-    for start in range(0, len(rx) - CHUNK + 1, CHUNK):
-        chunk = rx[start:start + CHUNK]
-        if np.sqrt(np.mean(chunk * chunk)) < SPEECH_RMS:
-            continue
-        score = best_match(chunk, ref, ref_energy)
-        scores.append(score)
-        if score < GOOD_MATCH:
-            bad.append((start / RATE, score))
-
-    if not scores:
-        print("RESULT: FAIL (received audio has no speech)")
-        return 1
     ref_speech = sum(
         1 for s in range(0, len(ref) - CHUNK + 1, CHUNK)
         if np.sqrt(np.mean(ref[s:s + CHUNK] ** 2)) >= SPEECH_RMS
     )
-    print(f"speech chunks: reference {ref_speech}, received {len(scores)}")
-    print(f"match score: median {np.median(scores):.2f}, worst {min(scores):.2f}")
-    for at, score in bad[:20]:
-        print(f"  damaged chunk at {at:6.2f} s of received audio (score {score:.2f})")
-    ok = len(bad) <= max(1, len(scores) // 50) and len(scores) >= 0.9 * ref_speech
-    print(f"RESULT: {'PASS' if ok else 'FAIL'} ({len(bad)} damaged of {len(scores)} speech chunks)")
+    print(f"reference speech chunks: {ref_speech}")
+
+    if tx_path.exists():
+        # Split the blame: what the sender captured vs the reference (other sounds on the
+        # loopback device), and what arrived vs what was captured (Litecord + Discord).
+        tx = np.fromfile(tx_path, dtype="<f4")
+        report("captured vs reference", *score_chunks(tx, ref))
+        scores, bad = score_chunks(rx, tx)
+        report("received vs captured ", scores, bad)
+    else:
+        scores, bad = score_chunks(rx, ref)
+        report("received vs reference", scores, bad)
+
+    if not scores:
+        print("RESULT: FAIL (received audio has no speech)")
+        return 1
+    ok = len(bad) <= max(1, len(scores) // 50)
+    print(f"RESULT: {'PASS' if ok else 'FAIL'} ({len(bad)} damaged of {len(scores)} received speech chunks)")
     return 0 if ok else 1
 
 

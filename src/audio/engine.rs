@@ -69,7 +69,10 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
         if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
     }
     #[cfg(feature = "automation")]
-    crate::utils::test_hooks::mic_captured(pcm_samples.len());
+    {
+        crate::utils::test_hooks::mic_captured(pcm_samples.len());
+        crate::utils::test_hooks::voice_captured(pcm_samples);
+    }
     if pcm_q.len() >= 960 {
         gateway::MIC_FRAME_READY.notify_one();
     }
