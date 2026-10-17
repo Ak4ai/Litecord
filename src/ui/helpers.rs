@@ -110,6 +110,14 @@ pub fn parse_hex_color(hex: &str) -> slint::Color {
 /// Guards all UI-rendering loops so they sleep when not needed.
 pub static APP_IS_VISIBLE: AtomicBool = AtomicBool::new(true);
 
+/// Woken when the window comes back from the tray or the voice connection
+/// changes, so UI loops can sleep instead of ticking while they have nothing to show.
+pub static UI_LOOPS_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub fn wake_ui_loops() {
+    UI_LOOPS_WAKE.notify_waiters();
+}
+
 /// Set to true by the tray restore paths to signal a REST refresh is needed.
 pub static NEED_UI_REFRESH: AtomicBool = AtomicBool::new(false);
 

@@ -303,6 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 APP_IS_VISIBLE.store(true, Ordering::Relaxed);
                 NEED_UI_REFRESH.store(true, Ordering::Relaxed);
                 utils::wake_hardware_monitor();
+                wake_ui_loops();
                 info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
 
                 let app_weak_inner = app_weak_tray.clone();
@@ -1297,18 +1298,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hidden_streams_voice_loop = Arc::clone(&hidden_streams);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
 
-            // Deep-sleep guard: skip when UI is hidden
-            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+            // Nothing to draw while hidden or outside a call: sleep until the window
+            // comes back or voice connects (created before the check so no wake is lost).
+            let woken = UI_LOOPS_WAKE.notified();
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
+                woken.await;
                 continue;
             }
 
-            let is_connected = gateway::is_connected_to_voice();
-
             // On-restore refresh: re-fetch active channel messages via REST
-            if is_connected && NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            if NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
                 let pending = PENDING_MESSAGES.swap(0, Ordering::Relaxed);
                 let ch_id = active_channel_voice_loop.lock().unwrap().clone();
                 if !ch_id.is_empty() {
@@ -1332,12 +1335,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(ui) = app_w_inner.upgrade() else { return; };
                 if !ui.get_is_in_voice() { return; }
 
-                if is_connected {
-                    if ui.get_is_voice_connecting() {
-                        ui.set_is_voice_connecting(false);
-                    }
-                } else {
-                    return;
+                if ui.get_is_voice_connecting() {
+                    ui.set_is_voice_connecting(false);
                 }
 
                 let active_parts = gateway::get_active_voice_participants_store();
@@ -1600,9 +1599,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
         let mut last_fingerprint: Vec<(String, Vec<(u64, String)>)> = Vec::new();
         let mut last_gid = String::new();
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            if !APP_IS_VISIBLE.load(Ordering::Relaxed) { continue; }
+            let woken = UI_LOOPS_WAKE.notified();
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                woken.await;
+                continue;
+            }
             let gid = active_guild_badges.lock().unwrap().clone();
             if gid.is_empty() { continue; }
 

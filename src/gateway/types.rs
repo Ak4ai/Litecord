@@ -262,6 +262,7 @@ fn get_vad_threshold_atomic() -> &'static std::sync::atomic::AtomicU32 {
 
 pub fn set_is_connected_to_voice(val: bool) {
     IS_CONNECTED_TO_VOICE.store(val, Ordering::Relaxed);
+    crate::ui::helpers::wake_ui_loops();
 }
 
 pub fn is_connected_to_voice() -> bool {
