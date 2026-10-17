@@ -65,6 +65,7 @@ export component SettingsView inherits Rectangle {
     in property <[SettingOptionItem]> audio_loopback_options;
     in property <bool> enable_self_preview_notice;
     in property <bool> show_hardware_monitor;
+    in property <bool> use_gpu_renderer;
     in property <[SettingOptionItem]> proxy_mode_options;
     in-out property <string> selected_proxy_mode;
     in-out property <string> proxy_host_input;
@@ -94,6 +95,7 @@ export component SettingsView inherits Rectangle {
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
+    callback toggle_gpu_renderer();
     callback select_proxy_mode(string);
     callback test_proxy_requested(string, string, string, string, string);
     callback save_proxy_settings(string, string, string, string, string, bool);
@@ -2454,6 +2456,63 @@ export component SettingsView inherits Rectangle {
                                                         hw_sw_ta := TouchArea {
                                                             mouse-cursor: pointer;
                                                             clicked => { root.toggle_hardware_monitor(); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            background: AppTheme.surface-input;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: AppTheme.border-subtle;
+
+                                            HorizontalLayout {
+                                                padding: 14px;
+                                                spacing: 12px;
+                                                alignment: space-between;
+
+                                                VerticalLayout {
+                                                    spacing: 4px;
+                                                    horizontal-stretch: 1;
+
+                                                    Text {
+                                                        text: Tr.gpu_render;
+                                                        color: AppTheme.text-strong;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                    }
+
+                                                    Text {
+                                                        text: Tr.gpu_render_desc;
+                                                        color: AppTheme.text-muted;
+                                                        font-size: 11px;
+                                                        wrap: word-wrap;
+                                                    }
+                                                }
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Rectangle {
+                                                        width: 42px;
+                                                        height: 24px;
+                                                        border-radius: 12px;
+                                                        background: root.use_gpu_renderer ? AppTheme.accent : AppTheme.surface-control;
+                                                        animate background { duration: 150ms; }
+
+                                                        Rectangle {
+                                                            x: root.use_gpu_renderer ? 20px : 2px;
+                                                            y: 2px;
+                                                            width: 20px;
+                                                            height: 20px;
+                                                            border-radius: 10px;
+                                                            background: AppTheme.solid-white;
+                                                            animate x { duration: 150ms; easing: ease-out; }
+                                                        }
+
+                                                        gpu_sw_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.toggle_gpu_renderer(); }
                                                         }
                                                     }
                                                 }

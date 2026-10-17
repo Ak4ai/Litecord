@@ -229,6 +229,7 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let aloop = video_settings::get_audio_loopback_backend();
     let notice = video_settings::get_enable_self_preview_notice();
     let show_hw = video_settings::get_show_hardware_monitor();
+    ui.set_use_gpu_renderer(video_settings::get_use_gpu_renderer());
     let use_light_theme = video_settings::get_use_light_theme();
 
     ui.set_selected_video_encoder(enc.clone().into());

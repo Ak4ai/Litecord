@@ -98,7 +98,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 LITECORD INICIADO | VERSÃO: v{} ({})", env!("CARGO_PKG_VERSION"), env!("LITECORD_GIT_HASH"));
     info!("==================================================================");
 
-    info!("🖥️ Inicializando Slint AppWindow...");
+    // Renderer: software unless the user turned on GPU rendering (an explicit
+    // SLINT_BACKEND, e.g. from a test script, still wins).
+    if std::env::var_os("SLINT_BACKEND").is_none() && !video_settings::get_use_gpu_renderer() {
+        std::env::set_var("SLINT_BACKEND", "winit-software");
+    }
+    info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
+        std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
     let app = match AppWindow::new() {
         Ok(app) => {
             info!("🖥️ Exibindo janela principal (app.show())...");
@@ -1993,6 +1999,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let new_val = video_settings::toggle_show_hardware_monitor();
         if let Some(ui) = app_weak_hw.upgrade() {
             ui.set_show_hardware_monitor(new_val);
+        }
+    });
+
+    let app_weak_gpu = app.as_weak();
+    app.on_toggle_gpu_renderer(move || {
+        let new_val = video_settings::toggle_use_gpu_renderer();
+        if let Some(ui) = app_weak_gpu.upgrade() {
+            ui.set_use_gpu_renderer(new_val);
         }
     });
 

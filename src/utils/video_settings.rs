@@ -14,6 +14,11 @@ pub struct VideoSettings {
     pub show_hardware_monitor: bool,      // default true
     #[serde(default)]
     pub use_light_theme: bool,            // default false
+    /// Draw the UI with the GPU (OpenGL) instead of the CPU software renderer. Off by
+    /// default: idle in the tray the software renderer costs almost nothing and does not
+    /// keep a GPU context (and its driver threads) next to the game.
+    #[serde(default)]
+    pub use_gpu_renderer: bool,           // default false
 }
 
 fn default_true() -> bool {
@@ -29,6 +34,7 @@ impl Default for VideoSettings {
             enable_self_preview_notice: true,
             show_hardware_monitor: true,
             use_light_theme: false,
+            use_gpu_renderer: false,
         }
     }
 }
@@ -38,7 +44,8 @@ static VIDEO_SETTINGS: OnceLock<Mutex<VideoSettings>> = OnceLock::new();
 pub fn get_video_settings_store() -> &'static Mutex<VideoSettings> {
     VIDEO_SETTINGS.get_or_init(|| {
         let settings = if let Ok(data) = std::fs::read_to_string(VIDEO_SETTINGS_FILE) {
-            serde_json::from_str::<VideoSettings>(&data).unwrap_or_default()
+            // Tolerate a BOM (editors on Windows add one) instead of silently resetting.
+            serde_json::from_str::<VideoSettings>(data.trim_start_matches('\u{feff}')).unwrap_or_default()
         } else {
             VideoSettings::default()
         };
@@ -116,6 +123,19 @@ pub fn toggle_show_hardware_monitor() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.show_hardware_monitor = !store.show_hardware_monitor;
     let new_val = store.show_hardware_monitor;
+    save_video_settings(&store);
+    new_val
+}
+
+pub fn get_use_gpu_renderer() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).use_gpu_renderer
+}
+
+/// Takes effect on the next start: the renderer is chosen before the window exists.
+pub fn toggle_use_gpu_renderer() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.use_gpu_renderer = !store.use_gpu_renderer;
+    let new_val = store.use_gpu_renderer;
     save_video_settings(&store);
     new_val
 }

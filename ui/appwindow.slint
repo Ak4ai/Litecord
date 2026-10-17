@@ -318,6 +318,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected_audio_loopback_backend: "auto";
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
+    in-out property <bool> use_gpu_renderer: false;
     in-out property <string> hardware_cpu_text: "CPU --%";
     in-out property <string> hardware_ram_text: "RAM -- MB";
     in-out property <string> hardware_gpu_text: "GPU --%";
@@ -334,6 +335,7 @@ export component AppWindow inherits Window {
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
+    callback toggle_gpu_renderer();
     callback toggle_theme();
 
 
@@ -2917,6 +2919,7 @@ export component AppWindow inherits Window {
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
+        use_gpu_renderer: root.use_gpu_renderer;
         proxy_mode_options: root.proxy_mode_options;
         selected_proxy_mode <=> root.selected_proxy_mode;
         proxy_host_input <=> root.proxy_host_input;
@@ -2945,6 +2948,7 @@ export component AppWindow inherits Window {
         select_audio_loopback_backend(arg0) => { root.select_audio_loopback_backend(arg0); }
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
         toggle_hardware_monitor => { root.toggle_hardware_monitor(); }
+        toggle_gpu_renderer => { root.toggle_gpu_renderer(); }
         select_proxy_mode(arg0) => { root.select_proxy_mode(arg0); }
         test_proxy_requested(arg0, arg1, arg2, arg3, arg4) => { root.test_proxy_requested(arg0, arg1, arg2, arg3, arg4); }
         save_proxy_settings(arg0, arg1, arg2, arg3, arg4, arg5) => { root.save_proxy_settings(arg0, arg1, arg2, arg3, arg4, arg5); }
