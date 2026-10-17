@@ -284,9 +284,9 @@ impl ScreenCaptureManager {
         std::thread::Builder::new()
             .name("screen-capture-tx".to_string())
             .spawn(move || {
+                let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
                 #[cfg(windows)]
                 unsafe {
-                    windows_sys::Win32::Media::timeBeginPeriod(1);
                     use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 }
@@ -578,10 +578,7 @@ impl ScreenCaptureManager {
                     std::thread::Builder::new()
                         .name("screen-capture-worker".to_string())
                         .spawn(move || {
-                            #[cfg(windows)]
-                            unsafe {
-                                windows_sys::Win32::Media::timeBeginPeriod(1);
-                            }
+                            let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
 
                             let camera_handle = if let Some(cam_idx) = camera_index {
                                 info!("📷 [CAMERA WORKER] Buscando câmeras disponíveis na thread dedicada (índice selecionado: {})...", cam_idx);
@@ -699,11 +696,6 @@ impl ScreenCaptureManager {
                                         next_cap_time += frame_interval;
                                     }
                                 }
-                            }
-
-                            #[cfg(windows)]
-                            unsafe {
-                                windows_sys::Win32::Media::timeEndPeriod(1);
                             }
                         })
                         .ok();
@@ -1062,10 +1054,6 @@ impl ScreenCaptureManager {
 
                 CURRENT_TX_FPS.store(0, Ordering::Relaxed);
                 stop_window_border_overlay();
-                #[cfg(windows)]
-                unsafe {
-                    windows_sys::Win32::Media::timeEndPeriod(1);
-                }
                 info!("🖥️ Thread emissora de tela/vídeo finalizada.");
             })
             .expect("Falha ao iniciar thread TX");

@@ -438,8 +438,8 @@ pub fn start_audio_loopback_tx(
             #[cfg(windows)]
             unsafe {
                 windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null_mut(), windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
-                windows_sys::Win32::Media::timeBeginPeriod(1);
             }
+            let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
             crate::cpu_profiler::set_current_thread_name("audio-loopback-tx");
 
             let mut seq: u32 = 0;

@@ -10,6 +10,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Set by the P2P receive thread while at least one remote stream is arriving.
 pub static STREAM_RX_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Holds the 1 ms timer resolution for as long as it lives. Threads that pace
+/// themselves with short sleeps take one of these instead of calling
+/// `timeBeginPeriod` directly, so every exit path (early `return` included)
+/// gives the resolution back.
+pub struct FineTimerGuard(());
+
+impl FineTimerGuard {
+    pub fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            windows_sys::Win32::Media::timeBeginPeriod(1);
+        }
+        FineTimerGuard(())
+    }
+}
+
+impl Drop for FineTimerGuard {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            windows_sys::Win32::Media::timeEndPeriod(1);
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn start_timer_resolution_governor() {
     std::thread::Builder::new()
