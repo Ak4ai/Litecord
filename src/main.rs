@@ -4025,9 +4025,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
+                    // The sidebar shows one list: the DMs ("@me") or the open server's channels.
+                    // Only a channel in that list has a row to update, and only DMs are
+                    // ordered by recent activity (server channels keep their positions).
+                    let (showing_dms, in_shown_list) = {
+                        let shown_guild = active_guild_inner.lock().unwrap().clone();
+                        let in_list = guilds_map_inner.lock().ok()
+                            .and_then(|m| m.get(&shown_guild).map(|g| g.channels.iter().any(|c| c.id == channel_id)))
+                            .unwrap_or(false);
+                        (shown_guild == "@me", in_list)
+                    };
                     if channel_id != current_active_ch {
                         // Se a mensagem foi enviada pelo próprio usuário (ex: pelo celular), não incrementa badge de não lido
                         if is_self {
+                            if !(showing_dms && in_shown_list) {
+                                continue;
+                            }
                             let ch_id_for_reorder = channel_id.clone();
                             let app_w_reorder = app_weak_inner.clone();
                             let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_self_reorder", || {
@@ -4059,6 +4072,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }));
                         }
 
+                        if !in_shown_list {
+                            continue;
+                        }
                         let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_other_unread", || {
                             if let Some(ui) = app_w_unread.upgrade() {
                                 let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
@@ -4072,7 +4088,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 if found {
                                     // Reordena DMs: move canal com nova mensagem para o topo
-                                    if let Some(pos) = channels.iter().position(|c| c.id == ch_id_for_unread.as_str()) {
+                                    if let Some(pos) = channels.iter().position(|c| showing_dms && c.id == ch_id_for_unread.as_str()) {
                                         let ch = channels.remove(pos);
                                         channels.insert(0, ch);
                                     }
@@ -4084,20 +4100,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // Mensagem para o canal ativo atual: limpa o contador deste canal e move para o topo da lista
+                    // Mensagem para o canal ativo atual: limpa o contador deste canal e, se for DM, move para o topo da lista
                     let remaining_dm = crate::ui::helpers::clear_dm_unread(&channel_id);
                     let app_w_active_ch = app_weak_inner.clone();
                     let ch_id_active = channel_id.clone();
                     let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_active_reorder", || {
                         if let Some(ui) = app_w_active_ch.upgrade() {
                             ui.set_total_dm_unread_count(remaining_dm);
-                            let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-                            if let Some(pos) = channels.iter().position(|c| c.id == ch_id_active.as_str()) {
-                                let mut ch = channels.remove(pos);
-                                ch.unread_count = 0;
-                                channels.insert(0, ch);
-                                let model = std::rc::Rc::new(slint::VecModel::from(channels));
-                                ui.set_channels(model.into());
+                            let channels_model = ui.get_channels();
+                            let pos = (0..channels_model.row_count())
+                                .find(|&i| channels_model.row_data(i).is_some_and(|c| c.id == ch_id_active.as_str()));
+                            if let Some(pos) = pos {
+                                let needs_reset = channels_model.row_data(pos).is_some_and(|c| c.unread_count != 0);
+                                let needs_move = showing_dms && pos != 0;
+                                if needs_reset || needs_move {
+                                    let mut channels: Vec<ChannelItem> = channels_model.iter().collect();
+                                    let mut ch = channels.remove(pos);
+                                    ch.unread_count = 0;
+                                    channels.insert(if needs_move { 0 } else { pos }, ch);
+                                    let model = std::rc::Rc::new(slint::VecModel::from(channels));
+                                    ui.set_channels(model.into());
+                                }
                             }
                         }
                     }));
