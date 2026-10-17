@@ -75,3 +75,6 @@ desktop.ini
 *.env
 *.env.*
 *.bat
+
+# Output of the test-only gateway-stats feature
+gateway_stats.csv

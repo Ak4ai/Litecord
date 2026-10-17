@@ -18,6 +18,7 @@
 //! {"cmd":"set","prop":"show_settings_modal","value":true}
 //! {"cmd":"set_language","code":"de"}
 //! {"cmd":"size"}
+//! {"cmd":"minimize_to_tray"}                 same as the title bar button
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -184,6 +185,10 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             let lang = crate::utils::i18n::Language::from_code(code);
             crate::ui::helpers::apply_i18n_translations(ui, lang);
             Ok(json!({ "ok": true, "language": lang.code() }))
+        }
+        "minimize_to_tray" => {
+            ui.invoke_minimize_to_tray();
+            Ok(json!({ "ok": true }))
         }
         "state" => Ok(state(ui)),
         other => Err(format!("unknown cmd {other}")),
