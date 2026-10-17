@@ -423,6 +423,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Popout Stream Window Callbacks & Window Manager
+    // Hides the popout's top bar 2.2 s after the last mouse activity. Single-shot and
+    // restarted on activity, so nothing ticks while the popout is closed or idle.
+    let pop_autohide = std::rc::Rc::new(slint::Timer::default());
+    {
+        let pop_w_hide = popout_weak.clone();
+        pop_autohide.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(2200), move || {
+            if let Some(pop) = pop_w_hide.upgrade() {
+                pop.set_show_controls(false);
+            }
+        });
+        pop_autohide.stop();
+    }
+    let pop_autohide_open = std::rc::Rc::clone(&pop_autohide);
     let pop_w_cb = popout_weak.clone();
     let pop_hwnd_cb = Arc::clone(&popout_hwnd_store);
     let app_weak_pop = app_weak.clone();
@@ -440,6 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
                 pop_win.set_stream_frame(cur_frame);
                 pop_win.set_show_controls(true);
+                pop_autohide_open.restart();
                 pop_win.set_is_self(is_pop_self);
                 if is_pop_self && video_settings::get_enable_self_preview_notice() {
                     pop_win.set_show_self_preview_notice(true);
@@ -690,15 +704,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let pop_w_mouse = popout_weak.clone();
-    let last_mouse_act = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let last_mouse_act_cb = Arc::clone(&last_mouse_act);
+    let pop_autohide_mouse = std::rc::Rc::clone(&pop_autohide);
     if let Some(pop_win) = popout_weak.upgrade() {
         pop_win.on_mouse_activity(move || {
             if let Some(pop) = pop_w_mouse.upgrade() {
                 if !pop.get_show_controls() {
                     pop.set_show_controls(true);
                 }
-                *last_mouse_act_cb.lock().unwrap() = std::time::Instant::now();
+                pop_autohide_mouse.restart();
             }
         });
 
@@ -709,21 +722,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-
-    // Autohide top bar timer for Popout Window
-    let pop_w_timer = popout_weak.clone();
-    let last_mouse_act_timer = Arc::clone(&last_mouse_act);
-    let _pop_autohide_timer = slint::Timer::default();
-    _pop_autohide_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(300), move || {
-        if let Some(pop) = pop_w_timer.upgrade() {
-            if pop.get_show_controls() {
-                let elapsed = last_mouse_act_timer.lock().unwrap().elapsed();
-                if elapsed.as_millis() > 2200 {
-                    pop.set_show_controls(false);
-                }
-            }
-        }
-    });
 
     // Screen Share / Live Stream Video Callbacks (P2P UDP Transmitter & Receiver)
     let screen_manager = Arc::new(ScreenCaptureManager::new());
