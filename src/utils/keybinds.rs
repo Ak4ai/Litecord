@@ -269,14 +269,39 @@ impl KeybindManager {
                     const VK_SHIFT: i32 = 0x10;
                     const VK_MENU: i32 = 0x12; // Alt
 
-                    let is_key_down = |vk: i32| -> bool {
+                    let key_now = |vk: i32| -> bool {
                         unsafe {
                             (windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk) as u16 & 0x8000) != 0
                         }
                     };
 
-                    while is_running.load(Ordering::Relaxed) {
-                        std::thread::sleep(Duration::from_millis(20));
+                    // Raw keyboard input (delivered even while a game has focus) wakes this
+                    // thread on every key press or release; between keys it sleeps in
+                    // GetMessageW instead of polling the keyboard every 20 ms.
+                    let sink = unsafe { create_raw_keyboard_sink() };
+                    if sink.is_null() {
+                        log::warn!("⌨️ [KEYBINDS] Não foi possível registrar a entrada de teclado; atalhos globais desativados.");
+                        return;
+                    }
+                    let mut msg: windows_sys::Win32::UI::WindowsAndMessaging::MSG = unsafe { std::mem::zeroed() };
+
+                    while is_running.load(Ordering::Relaxed)
+                        && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0
+                    {
+                        let event = if msg.message == windows_sys::Win32::UI::WindowsAndMessaging::WM_INPUT {
+                            unsafe { read_raw_key(msg.lParam) }
+                        } else {
+                            None
+                        };
+                        // DefWindowProc must see WM_INPUT to release the input data.
+                        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DispatchMessageW(&msg); }
+                        let Some((event_vk, event_down)) = event else { continue };
+
+                        // The async key state may not include the key that woke us yet, so
+                        // that key's state comes from the event itself.
+                        let is_key_down = |vk: i32| -> bool {
+                            if vk == event_vk { event_down } else { key_now(vk) }
+                        };
 
                         let rec_target = RECORDING_TARGET.load(Ordering::Relaxed);
                         if rec_target != 0 {
@@ -311,9 +336,10 @@ impl KeybindManager {
                                         info!("⌨️ [KEYBINDS] Gravação cancelada via ESC");
                                         on_recorded(rec_target, String::new());
                                         // Wait until release
-                                        while is_key_down(0x1B) {
+                                        while key_now(0x1B) {
                                             std::thread::sleep(Duration::from_millis(30));
                                         }
+                                        unsafe { discard_pending_raw_input(); }
                                         break;
                                     }
 
@@ -336,9 +362,11 @@ impl KeybindManager {
                                     on_recorded(rec_target, combo_str);
 
                                     // Wait until key is released to avoid instant triggering
-                                    while is_key_down(vk) || is_key_down(VK_CONTROL) || is_key_down(VK_SHIFT) || is_key_down(VK_MENU) {
+                                    while key_now(vk) || key_now(VK_CONTROL) || key_now(VK_SHIFT) || key_now(VK_MENU) {
                                         std::thread::sleep(Duration::from_millis(30));
                                     }
+                                    // Key repeats queued while waiting must not fire the new shortcut.
+                                    unsafe { discard_pending_raw_input(); }
                                     break;
                                 }
                             }
@@ -712,3 +740,75 @@ const CANDIDATE_EVDEV_KEYS: &[u16] = &[
     57, 15, 1, 110, 111, 102, 107, 104, 109, 103, 108, 105, 106, 58, 119, 70,
     41, 12, 13, 26, 27, 39, 40, 51, 52, 53, 43,
 ];
+
+/// Creates a message-only window that receives raw keyboard input from the whole
+/// system (RIDEV_INPUTSINK), so the calling thread can block in GetMessageW until a
+/// key changes. Returns null on failure.
+#[cfg(target_os = "windows")]
+unsafe fn create_raw_keyboard_sink() -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Input::{RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_INPUTSINK};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, HWND_MESSAGE, WNDCLASSW,
+    };
+
+    let class: Vec<u16> = "LitecordKeybindSink\0".encode_utf16().collect();
+    let hinstance = GetModuleHandleW(std::ptr::null());
+    let mut wc: WNDCLASSW = std::mem::zeroed();
+    wc.lpfnWndProc = Some(DefWindowProcW);
+    wc.hInstance = hinstance;
+    wc.lpszClassName = class.as_ptr();
+    RegisterClassW(&wc);
+
+    let hwnd = CreateWindowExW(
+        0, class.as_ptr(), class.as_ptr(), 0, 0, 0, 0, 0,
+        HWND_MESSAGE, std::ptr::null_mut(), hinstance, std::ptr::null(),
+    );
+    if hwnd.is_null() {
+        return hwnd;
+    }
+    let device = RAWINPUTDEVICE {
+        usUsagePage: 0x01, // generic desktop
+        usUsage: 0x06,     // keyboard
+        dwFlags: RIDEV_INPUTSINK,
+        hwndTarget: hwnd,
+    };
+    if RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32) == 0 {
+        DestroyWindow(hwnd);
+        return std::ptr::null_mut();
+    }
+    hwnd
+}
+
+/// Reads a WM_INPUT keyboard event as (virtual key, pressed).
+#[cfg(target_os = "windows")]
+unsafe fn read_raw_key(lparam: windows_sys::Win32::Foundation::LPARAM) -> Option<(i32, bool)> {
+    use windows_sys::Win32::UI::Input::{GetRawInputData, RAWINPUT, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD};
+    use windows_sys::Win32::UI::WindowsAndMessaging::RI_KEY_BREAK;
+
+    let mut raw: RAWINPUT = std::mem::zeroed();
+    let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+    let read = GetRawInputData(
+        lparam as _, RID_INPUT, &mut raw as *mut RAWINPUT as *mut _, &mut size,
+        std::mem::size_of::<RAWINPUTHEADER>() as u32,
+    );
+    if read == u32::MAX || raw.header.dwType != RIM_TYPEKEYBOARD {
+        return None;
+    }
+    let kb = raw.data.keyboard;
+    // 0xFF marks the fake keys some keyboards send as part of escape sequences.
+    if kb.VKey == 0 || kb.VKey == 0xFF {
+        return None;
+    }
+    Some((kb.VKey as i32, (kb.Flags as u32 & RI_KEY_BREAK) == 0))
+}
+
+/// Drops WM_INPUT messages already queued for this thread.
+#[cfg(target_os = "windows")]
+unsafe fn discard_pending_raw_input() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, MSG, PM_REMOVE, WM_INPUT};
+    let mut msg: MSG = std::mem::zeroed();
+    while PeekMessageW(&mut msg, std::ptr::null_mut(), WM_INPUT, WM_INPUT, PM_REMOVE) != 0 {
+        DispatchMessageW(&msg);
+    }
+}
