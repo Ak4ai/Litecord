@@ -1,0 +1,73 @@
+# End-to-end screen share test on one machine with two saved accounts: the sender shares
+# its screen, the receiver watches it. Reports whether the stream opened and what
+# watching cost the receiver (CPU, wakeups, FPS).
+#
+#   powershell -File scripts\perf\stream_e2e.ps1 -Sender "<account>" -Receiver "<account>" `
+#       -Server "<server name>" -Channel "<voice channel>" [-ReceiverBackend winit-software]
+param(
+    [Parameter(Mandatory)] [string]$Sender,
+    [Parameter(Mandatory)] [string]$Receiver,
+    [Parameter(Mandatory)] [string]$Server,
+    [Parameter(Mandatory)] [string]$Channel,
+    [string]$Exe = "",
+    [string]$OutDir = "",
+    [string]$ReceiverBackend = "",   # SLINT_BACKEND for the receiver, e.g. winit-software
+    [string]$Resolution = "1080p",
+    [int]$Fps = 60,
+    [int]$WatchSeconds = 30,
+    [switch]$Fullscreen             # watch with the stream full screen (the costliest view)
+)
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "lib.ps1")
+if (-not $Exe) { $Exe = Join-Path $RepoRoot "target\release\litecord.exe" }
+if (-not $OutDir) { $OutDir = Join-Path $env:TEMP ("litecord-stream-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
+New-Item -ItemType Directory -Force $OutDir | Out-Null
+
+$receiverEnv = @{ LITECORD_TEST_ACCOUNT = $Receiver; LITECORD_TEST_MUTE_OUTPUT = "1" }
+if ($ReceiverBackend) { $receiverEnv.SLINT_BACKEND = $ReceiverBackend }
+$senderProc = Start-Litecord $Exe (Join-Path $OutDir "sender") 47131 @{ LITECORD_TEST_ACCOUNT = $Sender; LITECORD_TEST_MUTE_OUTPUT = "1" }
+$receiverProc = Start-Litecord $Exe (Join-Path $OutDir "receiver") 47132 $receiverEnv
+try {
+    $a = Wait-LoggedIn 47131; $b = Wait-LoggedIn 47132
+    if ($a.user_id -eq $b.user_id) { throw "both instances logged in as the same account ($($a.user_tag))" }
+    "sender:   $($a.user_tag)"; "receiver: $($b.user_tag) (backend: $(if ($ReceiverBackend) { $ReceiverBackend } else { 'default' }))"
+    Join-Voice 47132 $Server $Channel
+    Join-Voice 47131 $Server $Channel
+    Start-Sleep -Seconds 3
+
+    $r = Send-Litecord 47131 (@{ cmd = "start_screen_share"; res = $Resolution; fps = $Fps; screen = 0; audio = $false } | ConvertTo-Json -Compress)
+    if (-not $r.ok) { throw "start_screen_share: $($r.error)" }
+    $t0 = Get-Date; $opened = $null
+    while (((Get-Date) - $t0).TotalSeconds -lt 30) {
+        $s = (Send-Litecord 47132 '{"cmd":"state"}').stream
+        if ($s.has_active_stream -or ($s.peers_streaming | Where-Object { "$_" -match $a.user_id })) { $opened = ((Get-Date) - $t0).TotalSeconds; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($null -eq $opened) { "RESULT: FAIL (the receiver never saw the stream)"; return }
+    "stream visible to the receiver after $([math]::Round($opened, 1)) s"
+    Send-Litecord 47132 (@{ cmd = "watch_stream"; user_id = "$($a.user_id)" } | ConvertTo-Json -Compress) | Out-Null
+    if ($Fullscreen) {
+        Send-Litecord 47132 '{"cmd":"resize","width":1920,"height":1080}' | Out-Null
+        Start-Sleep -Seconds 2
+        Send-Litecord 47132 '{"cmd":"stream_fullscreen"}' | Out-Null
+    }
+    Start-Sleep -Seconds 5
+    "receiver window: $((Send-Litecord 47132 '{"cmd":"size"}').logical -join 'x')"
+
+    $cpu0 = $receiverProc.TotalProcessorTime.TotalSeconds; $snd0 = $senderProc.TotalProcessorTime.TotalSeconds
+    & (Join-Path $PSScriptRoot "wakeups.ps1") -ProcId $receiverProc.Id -Seconds $WatchSeconds -Label "receiver watching" -Out (Join-Path $OutDir "receiver-wakeups.txt")
+    $receiverProc.Refresh(); $senderProc.Refresh()
+    $s = (Send-Litecord 47132 '{"cmd":"state"}').stream
+    $cores = [Environment]::ProcessorCount
+    $rxCpu = ($receiverProc.TotalProcessorTime.TotalSeconds - $cpu0) / $WatchSeconds * 100
+    $txCpu = ($senderProc.TotalProcessorTime.TotalSeconds - $snd0) / $WatchSeconds * 100
+    "receiver CPU while watching: $([math]::Round($rxCpu, 1))% of one core ($([math]::Round($rxCpu / $cores, 2))% of the machine), shown FPS: $($s.remote_fps)"
+    "sender CPU while sharing:    $([math]::Round($txCpu, 1))% of one core, local FPS: $((Send-Litecord 47131 '{"cmd":"state"}').stream.local_fps)"
+    Get-Content (Join-Path $OutDir "receiver-wakeups.txt") | Select-Object -First 12
+    "RESULT: PASS (stream opened)"
+} finally {
+    try { Send-Litecord 47131 '{"cmd":"stop_screen_share"}' | Out-Null } catch { }
+    foreach ($port in 47131, 47132) { try { Send-Litecord $port '{"cmd":"leave_voice"}' | Out-Null } catch { } }
+    Start-Sleep -Seconds 2
+    foreach ($p in $senderProc, $receiverProc) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+}
