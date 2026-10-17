@@ -5,6 +5,42 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.1-beta] - não publicada — Leveza para quem joga (#27)
+
+### ⚡ Parado de verdade na bandeja
+- **Laço infinito da interface com a janela escondida**: qualquer animação que começasse com o app na bandeja (alguém entrando num canal de voz, um contador de não lidas mudando) fazia o Slint pedir quadros para sempre, ~130 vezes por segundo, até a janela ser reaberta. A causa está no backend winit do Slint (também na 1.18.1); o Litecord passa a usar uma cópia local da versão 1.17.1 com a correção (`vendor/`).
+- **A interface é desenhada pela CPU por padrão.** Sem contexto de GPU, o driver de vídeo não fica com threads acordando ao lado do jogo e a memória privada cai pela metade. A renderização pela GPU continua disponível em Configurações → Vídeo e Interface (vale ao reiniciar).
+- Deixaram de acordar periodicamente: atalhos globais (liam o teclado a cada 20 ms; agora esperam a tecla), ícone da bandeja (120 ms) e sua dica (500 ms), barra do popout (300 ms), monitor de hardware escondido, recepção P2P, decodificador e sinalização fora de chamada, governador do timer, faxina de memória a cada 60 s.
+- Com a janela escondida, mensagens, contadores de voz e ordem das DMs só são anotados; ao restaurar, tudo é aplicado de uma vez e o canal aberto é recarregado (antes isso só acontecia durante uma chamada).
+- Resultado (Windows 11, fora de chamada): na bandeja, de 338 para **0,9 acordadas por segundo** e 0,00% de CPU; janela aberta em 0,08% de CPU; ~10 MB de RAM na bandeja e 16–25 MB com a janela aberta.
+
+### 🎙️ Voz e chamadas
+- **Envio de voz no ritmo do microfone** em vez de um timer de 20 ms: o timer de 1 ms do Windows não é mais usado durante chamadas. No teste de ponta a ponta, o maior intervalo entre pacotes de fala caiu de 131 ms para 22 ms.
+- **Microfone fechado ao sair da chamada**: ele continuava capturando até fechar o app, com o indicador de microfone do Windows ligado.
+- **Entrar num canal não congela mais a interface**: o microfone é aberto numa thread própria (com headset sem fio isso podia levar segundos).
+- O painel de voz só é redesenhado quando alguém entra, sai ou muda de volume, e o medidor do microfone roda a 15 FPS.
+- O timer de 1 ms e a saída de áudio de transmissões ficavam ligados para sempre depois da primeira chamada; agora são liberados ao sair.
+
+### 📡 Transmissão e sinalização
+- Fora de chamada a recepção P2P dorme por completo (sem heartbeat nem broadcast); em chamada sem transmissão, acorda uma vez por segundo.
+- Depois de sair de uma chamada, a sinalização voltava a entrar na sala antiga e o filtro de privacidade aceitava pacotes dela.
+- A sinalização acorda por evento em vez de checar a cada 500 ms, e o keepalive passou de 15 s para 40 s.
+- Avisos de quadro descartado viraram um resumo por segundo.
+
+### 💬 Interface
+- Canais de servidor não pulam mais para o topo da lista a cada mensagem (só DMs são ordenadas por atividade).
+- Atualizar contadores de voz não desfaz mais a ordem das DMs nem apaga as não lidas.
+
+### 🐧 Linux
+- Atalhos globais esperam eventos do teclado (`poll` no evdev) em vez de ler as teclas a cada 20 ms. Ainda não testado num Linux real.
+
+### 🧪 Como esta versão foi testada
+- **Ferramentas novas** (`scripts/perf/`, só em builds de teste): contagem de acordadas por thread, custo parado e em chamada, e testes de ponta a ponta que rodam duas contas lado a lado no mesmo PC.
+- **Voz de ponta a ponta**: uma fala de referência atravessa o Discord e é comparada com o que chegou: 0,5% de perda e 2 de 252 trechos danificados (ritmo antigo: 5 de 256).
+- **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. Assistir custou 9,7% de um núcleo com a janela normal (14,4% numa janela 1920×1080) pela CPU, contra 11,6% (9,4%) pela GPU.
+- 30 testes unitários; os patches do Slint têm teste no próprio crate.
+- Medido só neste PC (Intel e NVIDIA); falta AMD.
+
 ## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
 
 > **Atualização necessária para transmitir tela pela internet.** O servidor de sinalização passou a aceitar só o protocolo desta versão; clientes v1.1.0 ou anteriores continuam com voz, chat e transmissão na rede local, mas não encontram pares pela internet até atualizar.

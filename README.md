@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>&lt; 0.1% CPU</b> and <b>~15 MB RAM in the tray</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
+  <b>Litecord</b> is an ultra-fast, native desktop client for Discord engineered from scratch in <b>Rust</b> for <b>gamers, streamers, and competitive esports players</b>. Running with <b>&lt; 0.1% CPU</b> and <b>~10 MB RAM in the tray</b>, it eliminates background micro-stutters and drops zero in-game FPS while delivering <b>Full HD 1080p 60 FPS Screen Sharing</b>, <b>IGL / Shot-Caller Speech Priority Ducking</b>, <b>Detached Stream Popouts</b>, <b>QR Code Mobile Login</b>, <b>Smart Slash Commands</b>, <b>Unified Emojis</b>, and <b>On-Demand Ephemeral Attachments</b>.
 </p>
 
 [🌐 Live Website](https://ak4ai.github.io/Litecord/) • [📚 Docs & Wiki](docs/README.md) • [🇧🇷 Versão em Português](README_PT.md) • [📦 Downloads](#-downloads--releases) • [🎮 Gamer Features](#-why-gamers-choose-litecord) • [⚡ Benchmarks](#-benchmarks-vs-official-discord) • [📺 1080p 60 FPS Video Pipeline](#-full-hd-1080p-60-fps-video--audio-pipeline) • [✨ All Features](#-features-breakdown) • [🛡️ Security & Privacy](SECURITY.md) • [🛠️ Build from Source](#-building-from-source)
@@ -37,6 +37,7 @@
 - ⌨️ **Smart Slash Commands Autocomplete**: Real-time suggestion indexing for `/play`, `/skip`, and server bot commands with keyboard navigation (Up/Down + Enter) and interactive parameter chips.
 - 🖼️ **On-Demand Ephemeral Image Attachments**: Minecraft-style pixel-art placeholders (~500 bytes) with dynamic proportional height and zero-residue temp downloads.
 - 🎨 **Unified Emoji System (Twemoji + Discord CDN)**: Zero missing tofu squares (`□`). Full support for Discord custom animated/static emojis and Unicode emojis across chat, embeds, and bot buttons.
+- 🖥️ **CPU-Rendered Interface by Default**: The UI is drawn on the CPU, so no GPU context or graphics driver threads sit next to your game, and in the tray the app wakes up less than once per second. GPU rendering is one switch away in Settings → Video & Interface.
 - 📊 **Real-Time Hardware Performance HUD**: Shows process-specific CPU usage, physical RAM in MB, and GPU load right in the titlebar HUD, with live Windows Taskbar updates (`Litecord - x%/ymb`) and System Tray tooltips.
 - 🔊 **Dynamic Audio Output Switching**: Switch output audio devices (headphones/speakers) mid-call on the fly with automatic playback thread re-binding, without leaving the voice room or restarting the application.
 - 🎯 **Multi-Codec GPU Acceleration**: Choose your preferred video encoder in Settings (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware, or Cisco OpenH264 SIMD).
@@ -58,8 +59,8 @@
 | **Idle CPU Usage** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x lighter CPU footprint** |
 | **Active Voice CPU** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero Game Stuttering** |
 | **1080p 60 FPS Stream CPU** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Butter-Smooth Game Play** |
-| **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~10 MB - 15 MB** | 🌙 **97% lighter background footprint** |
-| **RAM Usage (Active Window)** | 500 MB - 900 MB | **~140 MB** | 💾 **Saves up to 750 MB RAM** |
+| **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~10 MB** | 🌙 **98% lighter background footprint** |
+| **RAM Usage (Active Window)** | 500 MB - 900 MB | **~16 MB - 25 MB** | 💾 **Saves up to 880 MB RAM** |
 | **Startup Time** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Instant Match Launch** |
 | **Binary Size** | ~180 MB | **~8 MB Standalone** | 📦 **Pure Native Machine Code** |
 

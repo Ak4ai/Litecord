@@ -12,7 +12,7 @@
 [![Licença: MIT](https://img.shields.io/badge/Licen%C3%A7a-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <b>Litecord</b> é um cliente desktop nativo para Discord criado do zero em <b>Rust</b> e <b>Slint</b> para <b>gamers, streamers e jogadores competitivos</b>. Rodando com <b>&lt; 0.1% de CPU</b> e <b>~15 MB de RAM na bandeja</b>, ele elimina micro-travamentos e não perde nenhum FPS enquanto entrega <b>Transmissão Full HD 1080p 60 FPS</b>, <b>Prioridade de Fala / Ducking Inteligente</b>, <b>Janelas Flutuantes (PiP)</b>, <b>Login via QR Code</b> e <b>Comandos Slash Inteligentes</b>.
+  <b>Litecord</b> é um cliente desktop nativo para Discord criado do zero em <b>Rust</b> e <b>Slint</b> para <b>gamers, streamers e jogadores competitivos</b>. Rodando com <b>&lt; 0.1% de CPU</b> e <b>~10 MB de RAM na bandeja</b>, ele elimina micro-travamentos e não perde nenhum FPS enquanto entrega <b>Transmissão Full HD 1080p 60 FPS</b>, <b>Prioridade de Fala / Ducking Inteligente</b>, <b>Janelas Flutuantes (PiP)</b>, <b>Login via QR Code</b> e <b>Comandos Slash Inteligentes</b>.
 </p>
 
 [🌐 Site Oficial](https://ak4ai.github.io/Litecord/) • [📚 Docs & Wiki](docs/README.md) • [📦 Downloads](#-downloads--instalação) • [🎮 Recursos](#-por-que-gamers-usam-o-litecord) • [⚡ Benchmarks](#-benchmarks-vs-discord-oficial) • [🛡️ Segurança](#-segurança-e-privacidade) • [🛠️ Compilar do Código](#-compilando-do-código-fonte)
@@ -35,6 +35,7 @@
 - 📱 **Login Rápido por QR Code & Re-geração**: Faça login escaneando o QR Code direto pelo aplicativo do Discord no celular, com botão de re-geração em 1 clique sem precisar reiniciar o app.
 - 🔒 **Cofres Criptografados & Múltiplas Contas**: Credenciais protegidas por **AES-256-GCM** no Linux e **DPAPI** no Windows, com troca instantânea entre múltiplas contas.
 - ⌨️ **Comandos Slash Inteligentes**: Autocomplete em tempo real para bots (`/play`, `/skip`, etc.) com navegação por teclado e chips interativos.
+- 🖥️ **Interface desenhada pela CPU por padrão**: a interface é desenhada pela CPU, então nenhum contexto de GPU nem threads do driver de vídeo ficam ao lado do seu jogo, e na bandeja o app acorda menos de uma vez por segundo. A renderização pela GPU fica a um clique em Configurações → Vídeo e Interface.
 - 📊 **Monitor de Hardware em Tempo Real**: Mostra o uso de CPU do app, RAM física em MB e GPU no HUD da barra superior, com atualização ao vivo na Barra de Tarefas do Windows (`Litecord - x%/ymb`) e tooltip na bandeja.
 - 🔊 **Troca Dinâmica de Dispositivo de Saída**: Alterne entre fones de ouvido e caixas de som no meio de chamadas ativas instantaneamente, sem sair da sala de voz nem reiniciar a aplicação.
 - 🎯 **Aceleração Multi-Codec por GPU**: Escolha seu codificador de vídeo preferido nas Configurações (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware ou OpenH264 SIMD).
@@ -55,8 +56,8 @@
 | **Uso de CPU em Espera** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x mais leve em CPU** |
 | **CPU em Canal de Voz** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero travamentos no jogo** |
 | **CPU em Stream 1080p 60 FPS** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Gameplay 100% fluida** |
-| **Uso de RAM (Bandeja/DeepSleep)** | 350 MB - 750 MB | **~10 MB - 15 MB** | 🌙 **97% mais leve em segundo plano** |
-| **Uso de RAM (Janela Aberta)** | 500 MB - 900 MB | **~140 MB** | 💾 **Economiza até 750 MB de RAM** |
+| **Uso de RAM (Bandeja/DeepSleep)** | 350 MB - 750 MB | **~10 MB** | 🌙 **98% mais leve em segundo plano** |
+| **Uso de RAM (Janela Aberta)** | 500 MB - 900 MB | **~16 MB - 25 MB** | 💾 **Economiza até 880 MB de RAM** |
 | **Tempo de Inicialização** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Abertura instantânea** |
 | **Tamanho do Executável** | ~180 MB | **~8 MB Standalone** | 📦 **Código de máquina nativo puro** |
 
