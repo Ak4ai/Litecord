@@ -1,14 +1,28 @@
 //! Keeps the 1 ms Windows timer resolution only while something needs it.
 //!
 //! A permanent `timeBeginPeriod(1)` makes the whole machine take ~1000 timer
-//! interrupts per second even when Litecord is idle in the tray. Voice (20 ms Opus
-//! pacing), stream playback and P2P stream reception need the fine resolution;
-//! everything else works fine on the default tick.
+//! interrupts per second even when Litecord is idle in the tray. P2P stream reception
+//! and stream playback need the fine resolution; voice does not (its sender is paced
+//! by the microphone, see `MIC_FRAME_READY`), and neither does anything else.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Set by the P2P receive thread while at least one remote stream is arriving.
-pub static STREAM_RX_ACTIVE: AtomicBool = AtomicBool::new(false);
+static STREAM_RX_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static GOVERNOR_THREAD: std::sync::OnceLock<std::thread::Thread> = std::sync::OnceLock::new();
+
+/// Called by the P2P receive thread; a stream starting wakes the governor.
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+pub fn set_stream_rx_active(active: bool) {
+    let was = STREAM_RX_ACTIVE.swap(active, Ordering::Relaxed);
+    #[cfg(target_os = "windows")]
+    if active && !was {
+        if let Some(t) = GOVERNOR_THREAD.get() {
+            t.unpark();
+        }
+    }
+}
 
 /// Holds the 1 ms timer resolution for as long as it lives. Threads that pace
 /// themselves with short sleeps take one of these instead of calling
@@ -40,12 +54,10 @@ pub fn start_timer_resolution_governor() {
     std::thread::Builder::new()
         .name("timer-resolution".to_string())
         .spawn(|| {
+            let _ = GOVERNOR_THREAD.set(std::thread::current());
             let mut held = false;
             loop {
-                // Not CURRENT_VOICE_SESSION_ID != 0: leaving a channel bumps that counter
-                // instead of zeroing it, which kept 1 ms on after the first call.
-                let wanted = crate::gateway::is_connected_to_voice()
-                    || STREAM_RX_ACTIVE.load(Ordering::Relaxed)
+                let wanted = STREAM_RX_ACTIVE.load(Ordering::Relaxed)
                     || crate::screen_capture::stream_audio_recent();
                 if wanted != held {
                     unsafe {
@@ -57,7 +69,13 @@ pub fn start_timer_resolution_governor() {
                     }
                     held = wanted;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(250));
+                // While held, poll to notice the stream audio going quiet; otherwise
+                // sleep until `set_stream_rx_active` reports a stream.
+                if held {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                } else {
+                    std::thread::park();
+                }
             }
         })
         .ok();

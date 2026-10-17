@@ -54,10 +54,22 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     result
 }
 
+/// Publishes the mic level for the voice panel and the meter. Only the UI reads it,
+/// so while the window is hidden the async task that forwards it is not woken.
+fn report_mic_level(level_tx: &mpsc::Sender<f32>, level: f32) {
+    gateway::set_self_mic_level(level);
+    if crate::ui::helpers::APP_IS_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = level_tx.try_send(level);
+    }
+}
+
 pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], level: f32) {
     for &s in pcm_samples {
         let clamped = s.clamp(-1.0, 1.0);
         if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
+    }
+    if pcm_q.len() >= 960 {
+        gateway::MIC_FRAME_READY.notify_one();
     }
     if gateway::is_testing_mic() {
         let vad = gateway::get_vad_threshold();
@@ -129,7 +141,7 @@ pub fn start_mic_capture(
 
                     let rms = (sum_sq / frames as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
-                    let _ = level_tx.try_send(level);
+                    report_mic_level(&level_tx, level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
@@ -179,7 +191,7 @@ pub fn start_mic_capture(
 
                     let rms = (sum_sq / frames as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
-                    let _ = level_tx.try_send(level);
+                    report_mic_level(&level_tx, level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
@@ -229,7 +241,7 @@ pub fn start_mic_capture(
 
                     let rms = (sum_sq / frames as f32).sqrt();
                     let level = (rms * 6.0).min(1.0);
-                    let _ = level_tx.try_send(level);
+                    report_mic_level(&level_tx, level);
 
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {

@@ -1093,15 +1093,30 @@ pub async fn connect_voice_gateway(
                                                 }
 
                                                 // Stream AES-256-GCM Encrypted Opus microphone audio RTP frames every 20ms over UDP
-                                                let mut timer = tokio::time::interval(Duration::from_millis(20));
-                                                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                                // One RTP frame per 20 ms of captured audio: the loop is paced by
+                                                // the microphone (MIC_FRAME_READY) instead of a 20 ms timer. With
+                                                // no mic data (no device, capture failed) a 60 ms timeout keeps the
+                                                // silence keepalives going; it is long enough that a mic delivering
+                                                // in large chunks never trips it in the middle of speech.
+                                                let next_frame = || async {
+                                                    loop {
+                                                        let ready = pcm_queue.lock().map(|q| q.len() >= 960).unwrap_or(false);
+                                                        if ready {
+                                                            return;
+                                                        }
+                                                        tokio::select! {
+                                                            _ = MIC_FRAME_READY.notified() => {}
+                                                            _ = sleep(Duration::from_millis(60)) => return,
+                                                        }
+                                                    }
+                                                };
                                                 // Send initial 10 silence frames (200ms) to immediately punch UDP NAT hole and activate SFU downstream routing
                                                 let mut remaining_silence_frames: usize = 10;
                                                 let mut speech_hangover_frames: usize = 0;
                                                 let mut silence_keepalive_counter: u32 = 0;
 
                                                 loop {
-                                                    timer.tick().await;
+                                                    next_frame().await;
                                                     if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
                                                         info!("Sessão de voz antiga (ID={}) encerrada, saindo do loop UDP!", my_session_id);
                                                         break;

@@ -407,6 +407,11 @@ pub fn get_self_mic_level() -> f32 {
     f32::from_bits(SELF_MIC_LEVEL.load(Ordering::Relaxed))
 }
 
+/// Signalled by the microphone callback whenever a full 20 ms frame (960 samples)
+/// is queued. The voice sender waits on it, so it runs on the sound card's clock and
+/// does not need a 20 ms timer (nor the 1 ms system timer resolution behind one).
+pub static MIC_FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 pub fn get_mic_pcm_queue() -> Arc<std::sync::Mutex<VecDeque<f32>>> {
     MIC_PCM_QUEUE.get_or_init(|| Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(48000)))).clone()
 }

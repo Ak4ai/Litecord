@@ -2160,8 +2160,7 @@ impl ScreenCaptureManager {
                             trigger_stream_stopped(uid);
                         }
                     }
-                    crate::utils::timer_resolution::STREAM_RX_ACTIVE
-                        .store(!last_stream_activity.is_empty(), Ordering::Relaxed);
+                    crate::utils::timer_resolution::set_stream_rx_active(!last_stream_activity.is_empty());
                 }
             })
             .expect("Falha ao iniciar thread RX");
