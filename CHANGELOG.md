@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Ferramentas novas** (`scripts/perf/`, só em builds de teste): contagem de acordadas por thread, custo parado e em chamada, e testes de ponta a ponta que rodam duas contas lado a lado no mesmo PC.
 - **Voz de ponta a ponta**: uma fala de referência atravessa o Discord e é comparada com o que chegou: 0,5% de perda e 2 de 252 trechos danificados (ritmo antigo: 5 de 256).
 - **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. Assistir custou 9,7% de um núcleo com a janela normal (14,4% numa janela 1920×1080) pela CPU, contra 11,6% (9,4%) pela GPU.
-- 30 testes unitários; os patches do Slint têm teste no próprio crate.
+- 30 testes unitários. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
 - Medido só neste PC (Intel e NVIDIA); falta AMD.
 
 ## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
