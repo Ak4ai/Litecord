@@ -3994,6 +3994,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::Connected { user_tag } => {
+                    // One trim once the first screens have loaded after login: the startup
+                    // pages (parsing READY, first layout) are not touched again. Not repeated
+                    // periodically, since pages in use would only fault back in.
+                    tokio::spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                        trim_process_memory();
+                        info!("🧹 [MEMÓRIA] Faxina pós-login concluída.");
+                    });
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             ui.set_is_logged_in(true);
