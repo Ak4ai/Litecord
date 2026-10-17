@@ -13,6 +13,11 @@ pub mod screen_capture;
 #[cfg(feature = "automation")]
 mod automation;
 
+thread_local! {
+    /// Closes the voice microphone stream; set on the UI thread, called there.
+    static CLOSE_MIC: std::cell::RefCell<Option<Box<dyn Fn()>>> = std::cell::RefCell::new(None);
+}
+
 // Convenient re-exports for modules and root scope
 pub use auth::*;
 pub use audio::*;
@@ -2145,10 +2150,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_leave = app_weak.clone();
     let sm_leave = Arc::clone(&screen_manager);
     let hidden_streams_leave = Arc::clone(&hidden_streams);
+    let active_mic_leave = Arc::clone(&active_mic_stream);
 
     app.on_leave_voice(move || {
         info!("Usuário solicitou desconexão da sala de voz...");
         sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
+        // Close the microphone: it was opened on join and kept capturing after leaving.
+        *active_mic_leave.lock().unwrap() = None;
         sm_leave.stop();
         sm_leave.set_context(0, 0, "");
         screen_capture::clear_stream_audio_queue();
@@ -3964,6 +3972,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_channel_gw_events = Arc::clone(&active_channel_id);
     let guilds_map_gw_events = Arc::clone(&guilds_map);
     let sm_gw = Arc::clone(&screen_manager);
+    // The mic stream is not Send; this lets the gateway task close it on the UI thread.
+    let active_mic_disc = Arc::clone(&active_mic_stream);
+    CLOSE_MIC.with(|close| *close.borrow_mut() = Some(Box::new(move || {
+        *active_mic_disc.lock().unwrap() = None;
+    })));
 
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
@@ -3979,6 +3992,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let app_w = app_weak.clone();
                     let sm_disc = Arc::clone(&sm_gw_inner);
                     let _ = slint::invoke_from_event_loop(move || {
+                        CLOSE_MIC.with(|close| close.borrow().as_ref().map(|f| f()));
                         sm_disc.stop();
                         sm_disc.set_context(0, 0, "");
                         screen_capture::clear_stream_audio_queue();
