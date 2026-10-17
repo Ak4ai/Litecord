@@ -595,6 +595,9 @@ impl GatewayClient {
                                             clear_voice_participants();
                                             let _ = self.event_tx.send(GatewayEvent::VoiceDisconnected).await;
                                         }
+                                    } else if my_active_cid.is_none() {
+                                        // Our own leave: the channel was already cleared locally.
+                                        info!("🚪 [VOICE_STATE_UPDATE] Saída do canal de voz confirmada pelo Discord.");
                                     } else {
                                         info!("🛡️ [VOICE_STATE_UPDATE] Ignorando evento de desconexão de outra guild ({:?}) enquanto estamos em ({:?})", event_gid, my_active_gid);
                                     }

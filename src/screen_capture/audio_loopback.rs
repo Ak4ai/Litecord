@@ -165,7 +165,7 @@ pub fn ensure_stream_audio_playback_started() {
                                 dev.build_output_stream(
                                     &config.into(),
                                     move |data: &mut [f32], _| {
-                                        if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 || crate::gateway::get_my_voice_channel_id() != 0 {
+                                        if crate::gateway::is_connected_to_voice() {
                                             data.fill(0.0);
                                             return;
                                         }
@@ -196,7 +196,7 @@ pub fn ensure_stream_audio_playback_started() {
                                 dev.build_output_stream(
                                     &config.into(),
                                     move |data: &mut [i16], _| {
-                                        if crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 || crate::gateway::get_my_voice_channel_id() != 0 {
+                                        if crate::gateway::is_connected_to_voice() {
                                             data.fill(0);
                                             return;
                                         }

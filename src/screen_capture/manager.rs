@@ -2020,7 +2020,7 @@ impl ScreenCaptureManager {
                                         update_audio_clock_pts(pts_ms);
                                         let vol = get_stream_volume(pkt_uid);
                                         if vol > 0.001 && !samples_i16.is_empty() {
-                                            let is_voice_active = crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0 || crate::gateway::get_my_voice_channel_id() != 0;
+                                            let is_voice_active = crate::gateway::is_connected_to_voice();
 
                                             if is_voice_active {
                                                 // 1. Direct feed EXCLUSIVELY to Voice Gateway Master Speaker Mixer (SSRC 0x8000_5354)
