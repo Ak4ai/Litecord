@@ -445,7 +445,14 @@ impl KeybindManager {
                     let mut kbd_fds: Vec<i32> = Vec::new();
 
                     while is_running.load(Ordering::Relaxed) {
-                        std::thread::sleep(Duration::from_millis(20));
+                        // Sleep until a keyboard reports an event (or the next device rescan is
+                        // due) instead of reading the key state every 20 ms.
+                        let rescan_in = Duration::from_secs(5).saturating_sub(last_scan.elapsed());
+                        if kbd_fds.is_empty() {
+                            std::thread::sleep(rescan_in);
+                        } else {
+                            wait_for_key_events(&kbd_fds, rescan_in);
+                        }
 
                         if kbd_fds.is_empty() || last_scan.elapsed() >= Duration::from_secs(5) {
                             last_scan = Instant::now();
@@ -635,6 +642,25 @@ impl KeybindManager {
             let _ = on_deafen_trigger;
             let _ = on_recorded;
             info!("⌨️ [KEYBINDS] Atalhos globais não suportados nativamente nesta plataforma.");
+        }
+    }
+}
+
+/// Blocks until one of the evdev descriptors has input or `timeout` passes, then drains
+/// the pending events (the caller reads the key state with EVIOCGKEY afterwards).
+#[cfg(target_os = "linux")]
+fn wait_for_key_events(fds: &[i32], timeout: Duration) {
+    let mut pollfds: Vec<libc::pollfd> = fds.iter().map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    let ready = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, timeout_ms) };
+    if ready <= 0 {
+        return;
+    }
+    let mut buf = [0u8; 24 * 64]; // struct input_event is 24 bytes on 64-bit
+    for p in &pollfds {
+        if p.revents & libc::POLLIN != 0 {
+            // Non-blocking descriptors: read until EAGAIN.
+            while unsafe { libc::read(p.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) } > 0 {}
         }
     }
 }
