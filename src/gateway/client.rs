@@ -221,11 +221,7 @@ impl GatewayClient {
                     while let Some(msg_result) = read.next().await {
                         match msg_result {
                             Ok(Message::Text(text)) => {
-                                #[cfg(feature = "gateway-stats")]
-                                let stats_start = std::time::Instant::now();
                                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                                    #[cfg(feature = "gateway-stats")]
-                                    let stats_parsed = std::time::Instant::now();
                                     let op = value["op"].as_u64().unwrap_or(99);
                                     if let Some(s) = value["s"].as_i64() {
                                         last_seq_arc.store(s, Ordering::Relaxed);
@@ -293,13 +289,6 @@ impl GatewayClient {
                                         }
                                         _ => {
                                             self.handle_event(&value).await;
-                                            #[cfg(feature = "gateway-stats")]
-                                            crate::utils::gateway_stats::record_gateway(
-                                                value["t"].as_str().unwrap_or(if op == 0 { "?" } else { "op" }),
-                                                text.len(),
-                                                stats_parsed - stats_start,
-                                                stats_parsed.elapsed(),
-                                            );
                                         }
                                     }
                                 }

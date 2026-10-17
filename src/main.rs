@@ -4058,7 +4058,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             let ch_id_for_reorder = channel_id.clone();
                             let app_w_reorder = app_weak_inner.clone();
-                            let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_self_reorder", || {
+                            let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = app_w_reorder.upgrade() {
                                     let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
                                     if let Some(pos) = channels.iter().position(|c| c.id == ch_id_for_reorder.as_str()) {
@@ -4068,7 +4068,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ui.set_channels(model.into());
                                     }
                                 }
-                            }));
+                            });
                             continue;
                         }
 
@@ -4080,17 +4080,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if crate::ui::helpers::is_dm_channel(&ch_id_for_unread, &gmap_for_unread) {
                             let total_dm_unreads = crate::ui::helpers::inc_dm_unread(&ch_id_for_unread);
                             let app_w_dm = app_w_unread.clone();
-                            let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_dm_unread", || {
+                            let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = app_w_dm.upgrade() {
                                     ui.set_total_dm_unread_count(total_dm_unreads);
                                 }
-                            }));
+                            });
                         }
 
                         if !in_shown_list {
                             continue;
                         }
-                        let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_other_unread", || {
+                        let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_w_unread.upgrade() {
                                 let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
                                 let mut found = false;
@@ -4111,7 +4111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     ui.set_channels(model.into());
                                 }
                             }
-                        }));
+                        });
                         continue;
                     }
 
@@ -4119,7 +4119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let remaining_dm = crate::ui::helpers::clear_dm_unread(&channel_id);
                     let app_w_active_ch = app_weak_inner.clone();
                     let ch_id_active = channel_id.clone();
-                    let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_active_reorder", || {
+                    let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w_active_ch.upgrade() {
                             ui.set_total_dm_unread_count(remaining_dm);
                             let channels_model = ui.get_channels();
@@ -4138,7 +4138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                    }));
+                    });
 
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
@@ -4146,7 +4146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let pending = PENDING_MESSAGES.fetch_add(1, Ordering::Relaxed) + 1;
                         info!("[DeepSleep] Mensagem recebida em background ({} pendente(s)) — UI ignorada.", pending);
                     } else {
-                        let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_active_append", || {
+                        let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak_inner.upgrade() {
                                 let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
 
@@ -4199,7 +4199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 request_chat_scroll_to_bottom(app_weak_inner.clone());
                             }
-                        }));
+                        });
                     }
                 }
                 GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
@@ -4208,7 +4208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_update", || {
+                    let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
 
@@ -4277,7 +4277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                             ui.set_messages(model.into());
                         }
-                    }));
+                    });
                 }
                 GatewayEvent::MessageDeleted { id, channel_id } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
@@ -4285,7 +4285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("msg_delete", || {
+                    let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
                             regroup_messages(&mut current_msgs);
@@ -4293,7 +4293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                             ui.set_messages(model.into());
                         }
-                    }));
+                    });
                 }
                 GatewayEvent::VoiceStatesUpdated => {
                     let gid = active_guild_inner.lock().unwrap().clone();
@@ -4313,7 +4313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             };
 
                             let app_w = app_weak_inner.clone();
-                            let _ = slint::invoke_from_event_loop(move || crate::utils::gateway_stats::ui_timed("voice_states_channels", || {
+                            let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = app_w.upgrade() {
                                     let cur_chans = ui.get_channels();
                                     let mut needs_rebuild = cur_chans.row_count() != ui_channels.len();
@@ -4337,7 +4337,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ui.set_channels(model.into());
                                     }
                                 }
-                            }));
+                            });
                         }
                     }
                 }

@@ -11,8 +11,6 @@ readme = "README.md"
 [features]
 # Test-only remote control of the UI (see src/automation.rs). Never enable for releases.
 automation = []
-# Test-only per-minute counter of gateway events and the UI work they cause (src/utils/gateway_stats.rs).
-gateway-stats = []
 
 [dependencies]
 slint = "1.9"

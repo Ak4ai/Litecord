@@ -16,7 +16,6 @@ pub mod gpu_encoder;
 pub mod network_settings;
 pub mod hardware_monitor;
 pub mod client_identity;
-pub mod gateway_stats;
 #[cfg(feature = "automation")]
 pub mod test_hooks;
 
