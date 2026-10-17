@@ -136,3 +136,14 @@ codegen-units = 256
 lto = "off"
 strip = false
 
+
+# Local copy of i-slint-core 1.17.1 with one fix: a mouse-wheel scroll animation could get
+# stuck (subnormal velocity, zero-length steps) and keep the UI redrawing ~130 times per
+# second forever, even hidden in the tray. See step_internal in
+# vendor/i-slint-core/animations/physics_simulation.rs.
+[patch.crates-io]
+i-slint-core = { path = "vendor/i-slint-core" }
+# Local copy of i-slint-backend-winit 1.17.1 with one fix: an animation running while the
+# window is hidden in the tray made the event loop request redraws forever. See
+# about_to_wait in vendor/i-slint-backend-winit/event_loop.rs.
+i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
