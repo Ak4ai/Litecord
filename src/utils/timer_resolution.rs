@@ -42,7 +42,9 @@ pub fn start_timer_resolution_governor() {
         .spawn(|| {
             let mut held = false;
             loop {
-                let wanted = crate::gateway::CURRENT_VOICE_SESSION_ID.load(Ordering::Relaxed) != 0
+                // Not CURRENT_VOICE_SESSION_ID != 0: leaving a channel bumps that counter
+                // instead of zeroing it, which kept 1 ms on after the first call.
+                let wanted = crate::gateway::is_connected_to_voice()
                     || STREAM_RX_ACTIVE.load(Ordering::Relaxed)
                     || crate::screen_capture::stream_audio_recent();
                 if wanted != held {
