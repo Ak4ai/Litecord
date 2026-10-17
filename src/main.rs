@@ -1297,7 +1297,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Dispatch Live Voice Room Participants & Animated Volume Level Bars
     let app_weak_voice_loop = app_weak.clone();
     let http_client_voice_loop = Arc::clone(&http_client);
-    let active_channel_voice_loop = Arc::clone(&active_channel_id);
     let active_guild_voice_loop = Arc::clone(&active_guild_id);
     let hidden_streams_voice_loop = Arc::clone(&hidden_streams);
     tokio::spawn(async move {
@@ -1312,22 +1311,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
                 woken.await;
                 continue;
-            }
-
-            // On-restore refresh: re-fetch active channel messages via REST
-            if NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-                let pending = PENDING_MESSAGES.swap(0, Ordering::Relaxed);
-                let ch_id = active_channel_voice_loop.lock().unwrap().clone();
-                if !ch_id.is_empty() {
-                    let http_opt = http_client_voice_loop.lock().unwrap().clone();
-                    if let Some(http) = http_opt {
-                        let app_w_refresh = app_weak_voice_loop.clone();
-                        info!("[DeepSleep] Restaurado - re-sincronizando {} mensagem(s) pendente(s) do canal {}.", pending, ch_id);
-                        tokio::spawn(async move {
-                            load_messages_for_channel(&http, app_w_refresh, &ch_id).await;
-                        });
-                    }
-                }
             }
 
             let app_w_inner = app_weak_voice_loop.clone();
@@ -1592,6 +1575,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             });
+        }
+    });
+
+    // Brings the UI up to date when the window comes back from the tray. While hidden,
+    // gateway events only record what changed: messages of the open channel are refetched,
+    // and voice counts, unread counts and DM order are applied in one go.
+    let app_weak_restore = app_weak.clone();
+    let http_client_restore = Arc::clone(&http_client);
+    let active_channel_restore = Arc::clone(&active_channel_id);
+    let active_guild_restore = Arc::clone(&active_guild_id);
+    let guilds_map_restore = Arc::clone(&guilds_map);
+    tokio::spawn(async move {
+        loop {
+            let woken = UI_LOOPS_WAKE.notified();
+            if APP_IS_VISIBLE.load(Ordering::Relaxed)
+                && NEED_UI_REFRESH.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+            {
+                let pending = PENDING_MESSAGES.swap(0, Ordering::Relaxed);
+                let ch_id = active_channel_restore.lock().unwrap().clone();
+                let http_opt = http_client_restore.lock().unwrap().clone();
+                if let (false, Some(http)) = (ch_id.is_empty(), http_opt) {
+                    info!("[DeepSleep] Restaurado - re-sincronizando {} mensagem(s) pendente(s) do canal {}.", pending, ch_id);
+                    let app_w = app_weak_restore.clone();
+                    let ch = ch_id.clone();
+                    tokio::spawn(async move {
+                        load_messages_for_channel(&http, app_w, &ch).await;
+                    });
+                }
+
+                let gid = active_guild_restore.lock().unwrap().clone();
+                let fresh_channels = if crate::ui::helpers::VOICE_STATES_DIRTY.swap(false, Ordering::Relaxed) {
+                    let chans = guilds_map_restore.lock().ok().and_then(|m| m.get(&gid).map(|g| g.channels.clone()));
+                    chans.map(|c| {
+                        let cats = get_collapsed_categories().lock().unwrap().clone();
+                        build_ui_channels(&c, &cats)
+                    })
+                } else {
+                    None
+                };
+                let activity = crate::ui::helpers::take_hidden_channel_activity();
+                let dm_total = crate::ui::helpers::get_total_dm_unreads();
+                let app_w = app_weak_restore.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w.upgrade() {
+                        ui.set_total_dm_unread_count(dm_total);
+                        if let Some(rows) = fresh_channels {
+                            crate::ui::helpers::update_channel_voice_rows(&ui, rows);
+                        }
+                        crate::ui::helpers::apply_channel_activity(&ui, &activity, &ch_id, gid == "@me");
+                    }
+                });
+            }
+            woken.await;
         }
     });
 
@@ -4050,95 +4086,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(false);
                         (shown_guild == "@me", in_list)
                     };
+                    let visible = APP_IS_VISIBLE.load(Ordering::Relaxed);
+                    // Sidebar row update for this message; while hidden it is only recorded
+                    // and applied when the window comes back.
+                    let sidebar = |new_unread: i32| {
+                        if !visible {
+                            crate::ui::helpers::record_hidden_channel_activity(&channel_id, new_unread);
+                            return;
+                        }
+                        let app_w = app_weak_inner.clone();
+                        let (id, active) = (channel_id.clone(), current_active_ch.clone());
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w.upgrade() {
+                                crate::ui::helpers::apply_channel_activity(&ui, &[(id, new_unread)], &active, showing_dms);
+                            }
+                        });
+                    };
+                    let show_dm_total = |total: i32| {
+                        if visible {
+                            let app_w = app_weak_inner.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_w.upgrade() {
+                                    ui.set_total_dm_unread_count(total);
+                                }
+                            });
+                        }
+                    };
+
                     if channel_id != current_active_ch {
                         // Se a mensagem foi enviada pelo próprio usuário (ex: pelo celular), não incrementa badge de não lido
                         if is_self {
-                            if !(showing_dms && in_shown_list) {
-                                continue;
+                            if showing_dms && in_shown_list {
+                                sidebar(0);
                             }
-                            let ch_id_for_reorder = channel_id.clone();
-                            let app_w_reorder = app_weak_inner.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = app_w_reorder.upgrade() {
-                                    let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-                                    if let Some(pos) = channels.iter().position(|c| c.id == ch_id_for_reorder.as_str()) {
-                                        let ch = channels.remove(pos);
-                                        channels.insert(0, ch);
-                                        let model = std::rc::Rc::new(slint::VecModel::from(channels));
-                                        ui.set_channels(model.into());
-                                    }
-                                }
-                            });
                             continue;
                         }
 
                         // Mensagem de outro canal/usuário — incrementa badge de não lidos
-                        let ch_id_for_unread = channel_id.clone();
-                        let app_w_unread = app_weak_inner.clone();
-                        let gmap_for_unread = Arc::clone(&guilds_map_inner);
-
-                        if crate::ui::helpers::is_dm_channel(&ch_id_for_unread, &gmap_for_unread) {
-                            let total_dm_unreads = crate::ui::helpers::inc_dm_unread(&ch_id_for_unread);
-                            let app_w_dm = app_w_unread.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = app_w_dm.upgrade() {
-                                    ui.set_total_dm_unread_count(total_dm_unreads);
-                                }
-                            });
+                        if crate::ui::helpers::is_dm_channel(&channel_id, &guilds_map_inner) {
+                            show_dm_total(crate::ui::helpers::inc_dm_unread(&channel_id));
                         }
-
-                        if !in_shown_list {
-                            continue;
+                        if in_shown_list {
+                            sidebar(1);
                         }
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = app_w_unread.upgrade() {
-                                let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-                                let mut found = false;
-                                for ch in channels.iter_mut() {
-                                    if ch.id == ch_id_for_unread.as_str() {
-                                        ch.unread_count += 1;
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if found {
-                                    // Reordena DMs: move canal com nova mensagem para o topo
-                                    if let Some(pos) = channels.iter().position(|c| showing_dms && c.id == ch_id_for_unread.as_str()) {
-                                        let ch = channels.remove(pos);
-                                        channels.insert(0, ch);
-                                    }
-                                    let model = std::rc::Rc::new(slint::VecModel::from(channels));
-                                    ui.set_channels(model.into());
-                                }
-                            }
-                        });
                         continue;
                     }
 
                     // Mensagem para o canal ativo atual: limpa o contador deste canal e, se for DM, move para o topo da lista
-                    let remaining_dm = crate::ui::helpers::clear_dm_unread(&channel_id);
-                    let app_w_active_ch = app_weak_inner.clone();
-                    let ch_id_active = channel_id.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_w_active_ch.upgrade() {
-                            ui.set_total_dm_unread_count(remaining_dm);
-                            let channels_model = ui.get_channels();
-                            let pos = (0..channels_model.row_count())
-                                .find(|&i| channels_model.row_data(i).is_some_and(|c| c.id == ch_id_active.as_str()));
-                            if let Some(pos) = pos {
-                                let needs_reset = channels_model.row_data(pos).is_some_and(|c| c.unread_count != 0);
-                                let needs_move = showing_dms && pos != 0;
-                                if needs_reset || needs_move {
-                                    let mut channels: Vec<ChannelItem> = channels_model.iter().collect();
-                                    let mut ch = channels.remove(pos);
-                                    ch.unread_count = 0;
-                                    channels.insert(if needs_move { 0 } else { pos }, ch);
-                                    let model = std::rc::Rc::new(slint::VecModel::from(channels));
-                                    ui.set_channels(model.into());
-                                }
-                            }
-                        }
-                    });
+                    show_dm_total(crate::ui::helpers::clear_dm_unread(&channel_id));
+                    sidebar(0);
 
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         // Window is hidden — count message but don't touch Slint.
@@ -4204,7 +4200,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
-                    if channel_id != current_active_ch {
+                    // Hidden: the open channel is refetched when the window comes back.
+                    if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         continue;
                     }
 
@@ -4281,7 +4278,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 GatewayEvent::MessageDeleted { id, channel_id } => {
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
-                    if channel_id != current_active_ch {
+                    // Hidden: the open channel is refetched when the window comes back.
+                    if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         continue;
                     }
 
@@ -4296,49 +4294,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::VoiceStatesUpdated => {
+                    if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                        crate::ui::helpers::VOICE_STATES_DIRTY.store(true, Ordering::Relaxed);
+                        continue;
+                    }
                     let gid = active_guild_inner.lock().unwrap().clone();
-                    if !gid.is_empty() {
-                        let channels_opt = {
-                            if let Ok(map) = guilds_map_inner.lock() {
-                                map.get(&gid).map(|g| g.channels.clone())
-                            } else {
-                                None
-                            }
+                    let channels_opt = guilds_map_inner.lock().ok().and_then(|map| map.get(&gid).map(|g| g.channels.clone()));
+                    if let Some(chans) = channels_opt {
+                        let ui_channels = {
+                            let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                            build_ui_channels(&chans, &cats_guard)
                         };
-
-                        if let Some(chans) = channels_opt {
-                            let ui_channels = {
-                                let cats_guard = get_collapsed_categories().lock().unwrap().clone();
-                                build_ui_channels(&chans, &cats_guard)
-                            };
-
-                            let app_w = app_weak_inner.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = app_w.upgrade() {
-                                    let cur_chans = ui.get_channels();
-                                    let mut needs_rebuild = cur_chans.row_count() != ui_channels.len();
-                                    if !needs_rebuild {
-                                        for (i, new_c) in ui_channels.iter().enumerate() {
-                                            if let Some(old_c) = cur_chans.row_data(i) {
-                                                if old_c.voice_count != new_c.voice_count
-                                                    || old_c.name != new_c.name
-                                                    || old_c.id != new_c.id
-                                                {
-                                                    cur_chans.set_row_data(i, new_c.clone());
-                                                }
-                                            } else {
-                                                needs_rebuild = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if needs_rebuild {
-                                        let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
-                                        ui.set_channels(model.into());
-                                    }
-                                }
-                            });
-                        }
+                        let app_w = app_weak_inner.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w.upgrade() {
+                                crate::ui::helpers::update_channel_voice_rows(&ui, ui_channels);
+                            }
+                        });
                     }
                 }
                 GatewayEvent::GuildLoaded { .. } => {

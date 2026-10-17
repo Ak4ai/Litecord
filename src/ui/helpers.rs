@@ -16,6 +16,7 @@ use crate::utils::video_settings;
 use crate::utils::attachment_cache;
 use crate::utils::emoji_cache;
 use std::sync::Mutex;
+use slint::Model;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 static DM_UNREAD_MAP: std::sync::LazyLock<Mutex<HashMap<String, i32>>> =
@@ -124,6 +125,87 @@ pub static NEED_UI_REFRESH: AtomicBool = AtomicBool::new(false);
 /// Number of messages received while the window was hidden.
 /// Cleared when the window is restored and a REST refresh is triggered.
 pub static PENDING_MESSAGES: AtomicUsize = AtomicUsize::new(0);
+
+/// Sidebar activity that arrived while the window was hidden: (channel id, new unread
+/// messages), oldest first, one entry per channel. Applied when the window comes back.
+static HIDDEN_CHANNEL_ACTIVITY: Mutex<Vec<(String, i32)>> = Mutex::new(Vec::new());
+
+/// Set while hidden when voice states changed, so the channel list is refreshed on restore.
+pub static VOICE_STATES_DIRTY: AtomicBool = AtomicBool::new(false);
+
+pub fn record_hidden_channel_activity(channel_id: &str, new_unread: i32) {
+    if let Ok(mut pending) = HIDDEN_CHANNEL_ACTIVITY.lock() {
+        let earlier = pending
+            .iter()
+            .position(|(id, _)| id == channel_id)
+            .map(|i| pending.remove(i).1)
+            .unwrap_or(0);
+        pending.push((channel_id.to_string(), earlier + new_unread));
+    }
+}
+
+pub fn take_hidden_channel_activity() -> Vec<(String, i32)> {
+    HIDDEN_CHANNEL_ACTIVITY.lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default()
+}
+
+/// Applies sidebar activity in order: each channel's unread count grows by its new
+/// messages (the open channel goes back to 0) and, in the DM list, it moves to the top.
+pub fn apply_channel_activity(ui: &AppWindow, activity: &[(String, i32)], active_channel: &str, showing_dms: bool) {
+    let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
+    let mut changed = false;
+    for (id, new_unread) in activity {
+        let Some(pos) = channels.iter().position(|c| c.id == id.as_str()) else { continue };
+        let unread = if id == active_channel { 0 } else { channels[pos].unread_count + new_unread };
+        if channels[pos].unread_count != unread {
+            channels[pos].unread_count = unread;
+            changed = true;
+        }
+        if showing_dms && pos != 0 {
+            let ch = channels.remove(pos);
+            channels.insert(0, ch);
+            changed = true;
+        }
+    }
+    if changed {
+        ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
+    }
+}
+
+/// Refreshes voice counts and participants from `fresh` (a `build_ui_channels` result).
+/// Rows are matched by id, so the current order (recent DMs first) and unread counts stay.
+pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
+    let current = ui.get_channels();
+    let fresh_by_id: HashMap<String, &ChannelItem> = fresh.iter().map(|c| (c.id.to_string(), c)).collect();
+    let same_rows = current.row_count() == fresh.len()
+        && (0..current.row_count()).all(|i| current.row_data(i).is_some_and(|c| fresh_by_id.contains_key(c.id.as_str())));
+    if same_rows {
+        for i in 0..current.row_count() {
+            let Some(old) = current.row_data(i) else { continue };
+            let new = fresh_by_id[old.id.as_str()];
+            if old.voice_count != new.voice_count || old.name != new.name {
+                let mut row = new.clone();
+                row.unread_count = old.unread_count;
+                current.set_row_data(i, row);
+            }
+        }
+        return;
+    }
+    let unread: HashMap<String, i32> = current
+        .iter()
+        .filter(|c| c.unread_count > 0)
+        .map(|c| (c.id.to_string(), c.unread_count))
+        .collect();
+    let rows: Vec<ChannelItem> = fresh
+        .into_iter()
+        .map(|mut c| {
+            if let Some(&n) = unread.get(c.id.as_str()) {
+                c.unread_count = n;
+            }
+            c
+        })
+        .collect();
+    ui.set_channels(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+}
 
 pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     let resolved = match lang {
@@ -1018,5 +1100,24 @@ pub fn set_linux_window_keep_above(is_pinned: bool) {
             }
         }
         let _ = std::fs::remove_file(&script_path);
+    }
+}
+
+#[cfg(test)]
+mod hidden_activity_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_activity_keeps_one_entry_per_channel_in_last_activity_order() {
+        let _ = take_hidden_channel_activity();
+        record_hidden_channel_activity("a", 1);
+        record_hidden_channel_activity("b", 1);
+        record_hidden_channel_activity("a", 1);
+        record_hidden_channel_activity("c", 0);
+        assert_eq!(
+            take_hidden_channel_activity(),
+            vec![("b".to_string(), 1), ("a".to_string(), 2), ("c".to_string(), 0)]
+        );
+        assert!(take_hidden_channel_activity().is_empty());
     }
 }
