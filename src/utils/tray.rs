@@ -1,21 +1,29 @@
-use std::sync::OnceLock;
+use std::cell::RefCell;
 use tray_icon::{
     menu::{Menu, MenuItem, MenuId},
     Icon, TrayIcon, TrayIconBuilder,
 };
 use log::{info, warn};
 
-static TRAY_TOOLTIP_TX: OnceLock<std::sync::mpsc::Sender<String>> = OnceLock::new();
+thread_local! {
+    // The icon must be touched only on the thread that created it (the UI thread).
+    static TRAY_ICON: RefCell<Option<TrayIcon>> = RefCell::new(None);
+}
 
+/// Sets the tray tooltip from any thread. Runs on the UI thread only when called,
+/// so nothing polls for tooltip changes.
 pub fn update_tray_tooltip(tooltip: &str) {
-    if let Some(tx) = TRAY_TOOLTIP_TX.get() {
-        let _ = tx.send(tooltip.to_string());
-    }
+    let tip = tooltip.to_string();
+    let _ = slint::invoke_from_event_loop(move || {
+        TRAY_ICON.with(|icon| {
+            if let Some(icon) = icon.borrow().as_ref() {
+                let _ = icon.set_tooltip(Some(tip));
+            }
+        });
+    });
 }
 
 pub struct SystemTrayManager {
-    pub tray_icon: Option<TrayIcon>,
-    pub tooltip_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub show_item_id: MenuId,
     pub quit_item_id: MenuId,
 }
@@ -50,6 +58,7 @@ fn create_default_icon() -> Icon {
 }
 
 impl SystemTrayManager {
+    /// Call on the UI thread.
     pub fn setup() -> Self {
         #[cfg(target_os = "linux")]
         {
@@ -85,12 +94,9 @@ impl SystemTrayManager {
             }
         };
 
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let _ = TRAY_TOOLTIP_TX.set(tx);
+        TRAY_ICON.with(|icon| *icon.borrow_mut() = tray_icon);
 
         Self {
-            tray_icon,
-            tooltip_rx: Some(rx),
             show_item_id: show_id,
             quit_item_id: quit_id,
         }

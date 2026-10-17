@@ -262,86 +262,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let show_id = tray.show_item_id.clone();
     let quit_id = tray.quit_item_id.clone();
 
-    let tray_icon_holder = tray.tray_icon;
-    let tooltip_rx = tray.tooltip_rx;
-
-    if let (Some(icon), Some(rx)) = (tray_icon_holder, tooltip_rx) {
-        let timer = slint::Timer::default();
-        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(500), move || {
-            let mut latest: Option<String> = None;
-            while let Ok(tip) = rx.try_recv() {
-                latest = Some(tip);
-            }
-            if let Some(tip) = latest {
-                let _ = icon.set_tooltip(Some(tip));
-            }
-        });
-        // Prevent timer from dropping
-        Box::leak(Box::new(timer));
-    }
-
     // Spawn tray event listener thread
     let hwnd_store_tray = Arc::clone(&hwnd_store);
     let app_weak_tray = app_weak.clone();
     let show_id_c = show_id.clone();
     let quit_id_c = quit_id.clone();
+    // The tray and menu handlers forward only the events that matter; the thread
+    // sleeps on that channel instead of polling the receivers every 120 ms.
+    // `true` = restore the window, `false` = quit.
+    let (tray_action_tx, tray_action_rx) = std::sync::mpsc::channel::<bool>();
+    let menu_action_tx = tray_action_tx.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        info!("Tray MenuEvent recebido: {:?}", event);
+        let action = if event.id == show_id_c {
+            true
+        } else if event.id == quit_id_c {
+            false
+        } else {
+            return;
+        };
+        let _ = menu_action_tx.send(action);
+    }));
+    let icon_action_tx = tray_action_tx;
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
+            info!("TrayIconEvent recebido: {:?}", event);
+            let _ = icon_action_tx.send(true);
+        }
+    }));
     std::thread::Builder::new()
         .name("tray-listener".into())
         .spawn(move || {
-            let menu_rx = MenuEvent::receiver();
-            let tray_rx = TrayIconEvent::receiver();
+            while let Ok(restore) = tray_action_rx.recv() {
+                if !restore {
+                    #[cfg(target_os = "linux")]
+                    screen_capture::kill_portal_child();
+                    std::process::exit(0);
+                }
 
-            loop {
+                APP_IS_VISIBLE.store(true, Ordering::Relaxed);
+                NEED_UI_REFRESH.store(true, Ordering::Relaxed);
+                utils::wake_hardware_monitor();
+                info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
 
-
-                let mut should_restore = false;
-
-                while let Ok(event) = menu_rx.try_recv() {
-                    info!("Tray MenuEvent recebido: {:?}", event);
-                    if event.id == show_id_c {
-                        should_restore = true;
-                    } else if event.id == quit_id_c {
-                        #[cfg(target_os = "linux")]
-                        screen_capture::kill_portal_child();
-                        std::process::exit(0);
+                let app_weak_inner = app_weak_tray.clone();
+                let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui_inner) = app_weak_inner.upgrade() {
+                        let _ = ui_inner.window().with_winit_window(|winit_win| {
+                            winit_win.set_visible(true);
+                            winit_win.set_minimized(false);
+                            winit_win.focus_window();
+                        });
                     }
-                }
-
-                while let Ok(event) = tray_rx.try_recv() {
-                    info!("TrayIconEvent recebido: {:?}", event);
-                    if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } | TrayIconEvent::Click { button: MouseButton::Left, .. }) {
-                        should_restore = true;
+                    #[cfg(target_os = "windows")]
+                    if let Some(hwnd) = *_hwnd_store_inner.lock().unwrap() {
+                        unsafe {
+                            ShowWindow(hwnd as _, SW_SHOW);
+                            ShowWindow(hwnd as _, SW_RESTORE);
+                            SetForegroundWindow(hwnd as _);
+                            SetWindowPos(hwnd as _, HWND_TOP as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                        }
                     }
-                }
-
-                if should_restore {
-                    APP_IS_VISIBLE.store(true, Ordering::Relaxed);
-                    NEED_UI_REFRESH.store(true, Ordering::Relaxed);
-                    info!("[DeepSleep] Restauração acionada via Tray — acordando UI.");
-
-                    let app_weak_inner = app_weak_tray.clone();
-                    let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui_inner) = app_weak_inner.upgrade() {
-                            let _ = ui_inner.window().with_winit_window(|winit_win| {
-                                winit_win.set_visible(true);
-                                winit_win.set_minimized(false);
-                                winit_win.focus_window();
-                            });
-                        }
-                        #[cfg(target_os = "windows")]
-                        if let Some(hwnd) = *_hwnd_store_inner.lock().unwrap() {
-                            unsafe {
-                                ShowWindow(hwnd as _, SW_SHOW);
-                                ShowWindow(hwnd as _, SW_RESTORE);
-                                SetForegroundWindow(hwnd as _);
-                                SetWindowPos(hwnd as _, HWND_TOP as _, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-                            }
-                        }
-                    });
-                }
-
-                std::thread::sleep(std::time::Duration::from_millis(120));
+                });
             }
         })
         .expect("Failed to spawn tray listener thread");

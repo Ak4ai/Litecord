@@ -4,6 +4,14 @@ use crate::AppWindow;
 use slint::ComponentHandle;
 
 static MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
+static MONITOR_THREAD: std::sync::OnceLock<std::thread::Thread> = std::sync::OnceLock::new();
+
+/// Wakes the monitor after the window comes back from the tray.
+pub fn wake_hardware_monitor() {
+    if let Some(t) = MONITOR_THREAD.get() {
+        t.unpark();
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HardwareMetrics {
@@ -23,14 +31,21 @@ pub fn start_hardware_monitor_loop(
     std::thread::Builder::new()
         .name("hardware-monitor".into())
         .spawn(move || {
+            let _ = MONITOR_THREAD.set(std::thread::current());
             let mut sampler = PlatformHardwareSampler::new();
+            let mut last_tooltip = String::new();
 
             loop {
-                // Hidden in the tray nobody sees the HUD or the title, so poll slowly
-                // and never run the GPU counter query (PDH "GPU Engine(*)" walks every
-                // process on the machine and is the costly part of this loop).
-                let visible = crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(if visible { 1000 } else { 10_000 }));
+                // Hidden in the tray nobody sees the HUD or the title: leave a plain
+                // tooltip and sleep until `wake_hardware_monitor`.
+                if !crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                    crate::utils::tray::update_tray_tooltip("Litecord - Discord Client Ultra-Leve");
+                    last_tooltip.clear();
+                    while !crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed) {
+                        std::thread::park();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1000));
 
                 let visible = crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed);
                 let sample_gpu = visible && crate::utils::video_settings::get_show_hardware_monitor();
@@ -51,8 +66,11 @@ pub fn start_hardware_monitor_loop(
                     metrics.cpu_percent, metrics.ram_mb
                 );
 
-                // 1. Update System Tray Tooltip
-                crate::utils::tray::update_tray_tooltip(&tooltip_text);
+                // 1. Update System Tray Tooltip (only on change: it costs a UI-thread wakeup)
+                if tooltip_text != last_tooltip {
+                    crate::utils::tray::update_tray_tooltip(&tooltip_text);
+                    last_tooltip = tooltip_text;
+                }
 
                 if !visible {
                     continue;
