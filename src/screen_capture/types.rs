@@ -35,6 +35,33 @@ pub fn get_process_instance_id() -> u32 {
 
 static MY_RX_PORT: AtomicU16 = AtomicU16::new(P2P_VIDEO_PORT);
 
+/// Woken when the voice channel or connection changes, so the signaling loop can
+/// wait for a call instead of polling for one.
+pub static P2P_CONTEXT_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Tells the P2P threads that the call context changed. The receive thread blocks in
+/// `recv` outside a call, so it is woken with a 1-byte datagram to its own port
+/// (shorter than any real packet, so the parser drops it).
+pub fn notify_p2p_context_changed() {
+    P2P_CONTEXT_WAKE.notify_waiters();
+    let port = get_my_rx_port();
+    if port != 0 {
+        if let Ok(sock) = std::net::UdpSocket::bind("127.0.0.1:0") {
+            let _ = sock.send_to(&[0u8], ("127.0.0.1", port));
+        }
+    }
+}
+
+/// The voice channel the P2P threads should use when none was set explicitly: the
+/// last joined channel, but only while still connected (it is never reset on leave).
+pub fn current_voice_channel_fallback() -> u64 {
+    if crate::gateway::is_connected_to_voice() {
+        crate::gateway::get_my_voice_channel_id()
+    } else {
+        0
+    }
+}
+
 pub fn get_my_rx_port() -> u16 {
     MY_RX_PORT.load(Ordering::Relaxed)
 }

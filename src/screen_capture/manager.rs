@@ -44,6 +44,7 @@ impl ScreenCaptureManager {
         if let Ok(mut uname) = self.my_username.lock() {
             *uname = my_username.to_string();
         }
+        notify_p2p_context_changed();
     }
 
     pub fn is_active(&self) -> bool {
@@ -1114,7 +1115,14 @@ impl ScreenCaptureManager {
                 let mut waiting_for_idr: HashMap<u64, bool> = HashMap::new();
 
                 while is_running_decoder.load(Ordering::Relaxed) {
-                    match rx_decode.recv_timeout(Duration::from_millis(100)) {
+                    // The timeout only exists to zero the FPS readout after a stream
+                    // stalls; with no stream (FPS already 0) wait for the next frame.
+                    let next = if CURRENT_RX_FPS.load(Ordering::Relaxed) == 0 {
+                        rx_decode.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    } else {
+                        rx_decode.recv_timeout(Duration::from_millis(100))
+                    };
+                    match next {
                         Ok(item) => {
                             let QueuedVideoFrame { peer_uid, peer_name, peer_fps, seq, pts_ms, frame_data } = item;
                             let t_dec_start = Instant::now();
@@ -1347,15 +1355,16 @@ impl ScreenCaptureManager {
                 let my_instance_id = get_process_instance_id();
                 let mut last_outbound_heartbeat = Instant::now() - Duration::from_secs(10);
 
-                // Idle backoff: after ~1 s without traffic block in recv for up to 20 ms
-                // instead of waking every ~6 ms. Incoming data still wakes the thread
-                // immediately, so latency is unchanged.
+                // Idle backoff: after ~1 s without traffic block in recv instead of waking
+                // every ~6 ms (see `idle_timeout` below). Incoming data still wakes the
+                // thread immediately, so latency is unchanged.
                 let mut idle_iterations: u32 = 0;
-                let mut slow_poll = false;
+                let mut idle_timeout: Option<Option<Duration>> = None;
                 while is_running.load(Ordering::Relaxed) {
+                    let in_call = crate::gateway::is_connected_to_voice() || is_tx_running.load(Ordering::Relaxed);
                     let mut current_cid = channel_id_atomic.load(Ordering::Relaxed);
                     if current_cid == 0 {
-                        current_cid = crate::gateway::get_my_voice_channel_id();
+                        current_cid = current_voice_channel_fallback();
                         if current_cid > 0 {
                             channel_id_atomic.store(current_cid, Ordering::Relaxed);
                         }
@@ -1410,7 +1419,7 @@ impl ScreenCaptureManager {
                     } else {
                         Duration::from_millis(1500)
                     };
-                    if last_outbound_heartbeat.elapsed() >= heartbeat_every {
+                    if in_call && last_outbound_heartbeat.elapsed() >= heartbeat_every {
                         last_outbound_heartbeat = Instant::now();
                         let mut uname = my_username_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
                         if uname.is_empty() {
@@ -1534,7 +1543,7 @@ impl ScreenCaptureManager {
                                     rx_last_log = Instant::now();
                                 }
 
-                                let my_current_cid = crate::gateway::get_my_voice_channel_id();
+                                let my_current_cid = current_voice_channel_fallback();
                                 // Regra Estrita de Segurança & Privacidade:
                                 // Descarta imediatamente qualquer pacote de áudio/vídeo se não estivermos na mesma sala de voz
                                 if my_current_cid == 0 || pkt_cid == 0 || pkt_cid != my_current_cid {
@@ -2106,18 +2115,31 @@ impl ScreenCaptureManager {
 
                 if packets_drained == 0 {
                     idle_iterations = idle_iterations.saturating_add(1);
-                    if !slow_poll && idle_iterations >= 160 {
-                        let _ = socket.set_read_timeout(Some(Duration::from_millis(20)));
-                        slow_poll = true;
-                    }
-                    if !slow_poll {
+                    if idle_iterations >= 160 {
+                        // A stream that went quiet keeps the 20 ms wait so it can expire.
+                        // In a call without streams, wake once a second for the heartbeat
+                        // and QoS. Outside a call there is nothing to send: sleep until a
+                        // packet arrives (`notify_p2p_context_changed` sends one on join).
+                        let any_stream = active_streaming_users.values().any(|&on| on);
+                        let wanted = if any_stream {
+                            Some(Duration::from_millis(20))
+                        } else if in_call {
+                            Some(Duration::from_millis(1000))
+                        } else {
+                            None
+                        };
+                        if idle_timeout != Some(wanted) {
+                            let _ = socket.set_read_timeout(wanted);
+                            idle_timeout = Some(wanted);
+                        }
+                    } else {
                         std::thread::sleep(Duration::from_millis(4));
                     }
                 } else {
                     idle_iterations = 0;
-                    if slow_poll {
+                    if idle_timeout.is_some() {
                         let _ = socket.set_read_timeout(Some(Duration::from_millis(2)));
-                        slow_poll = false;
+                        idle_timeout = None;
                     }
                 }
 

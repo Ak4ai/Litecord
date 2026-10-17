@@ -397,15 +397,18 @@ pub async fn run_cloudflare_signaling_loop(
     let mut retry_delay = Duration::from_secs(2);
 
     loop {
+        // Registered before the checks below so a join in between is not missed.
+        let woken = P2P_CONTEXT_WAKE.notified();
         let mut cid = channel_id.load(Ordering::Relaxed);
         if cid == 0 {
-            cid = crate::gateway::get_my_voice_channel_id();
+            cid = current_voice_channel_fallback();
             if cid > 0 {
                 channel_id.store(cid, Ordering::Relaxed);
             }
         }
         if cid == 0 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Not in a call: nothing to signal until a channel is joined.
+            woken.await;
             continue;
         }
 
@@ -467,7 +470,9 @@ pub async fn run_cloudflare_signaling_loop(
         let mut last_pub = Instant::now();
         let mut last_addr_check = Instant::now();
         let mut last_tx_state = false;
-        let mut ping_interval = tokio::time::interval(Duration::from_secs(15));
+        // The worker answers pings itself (setWebSocketAutoResponse); they only keep
+        // the connection and any middlebox state alive.
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(40));
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut publish_ticker = tokio::time::interval(Duration::from_millis(500));
