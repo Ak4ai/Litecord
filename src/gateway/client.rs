@@ -24,6 +24,27 @@ pub struct GatewayClient {
     voice_channel_id: Arc<std::sync::Mutex<Option<String>>>,
     voice_self_mute: Arc<std::sync::Mutex<bool>>,
     ws_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<Message>>>>,
+    /// The session READY opened, kept so a dropped connection resumes it instead of
+    /// identifying again: a new session makes Discord drop the voice call of the old one.
+    resume: std::sync::Mutex<Option<ResumeSession>>,
+}
+
+#[derive(Clone)]
+struct ResumeSession {
+    session_id: String,
+    url: String,
+}
+
+const GATEWAY_URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
+
+/// Close codes after which the session cannot be resumed (Discord gateway docs).
+fn close_ends_session(code: u16) -> bool {
+    matches!(code, 4004 | 4007 | 4009 | 4010 | 4011 | 4012 | 4013 | 4014)
+}
+
+/// The resume URL READY gives, with the query the first connection used.
+fn resume_url(base: &str) -> String {
+    format!("{}/?v=9&encoding=json", base.trim_end_matches('/'))
 }
 
 impl GatewayClient {
@@ -51,6 +72,7 @@ impl GatewayClient {
             voice_channel_id: Arc::new(std::sync::Mutex::new(None)),
             voice_self_mute: Arc::new(std::sync::Mutex::new(false)),
             ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            resume: std::sync::Mutex::new(None),
         }
     }
 
@@ -188,13 +210,20 @@ impl GatewayClient {
             }
         });
 
-        let url = "wss://gateway.discord.gg/?v=9&encoding=json";
+        // Survives reconnections: RESUME replays what came after it.
+        let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
 
         // Loop Infinito de Auto-Reconexão da Gateway
         loop {
-            info!("Conectando à Gateway v9 do Discord...");
+            let resuming = self.resume.lock().unwrap().clone().filter(|_| last_seq_arc.load(Ordering::Relaxed) >= 0);
+            let url = resuming.as_ref().map(|r| resume_url(&r.url)).unwrap_or_else(|| GATEWAY_URL.to_string());
+            if resuming.is_some() {
+                info!("Reconectando à Gateway v9 do Discord para retomar a sessão...");
+            } else {
+                info!("Conectando à Gateway v9 do Discord...");
+            }
 
-            match connect_async(url).await {
+            match connect_async(url.as_str()).await {
                 Ok((ws_stream, _)) => {
                     info!("Conexão WebSocket estabelecida com sucesso!");
                     crate::screen_capture::invalidate_cached_stun_address();
@@ -214,11 +243,15 @@ impl GatewayClient {
                         }
                     });
 
-                    let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
                     let mut hb_task_handle: Option<tokio::task::JoinHandle<()>> = None;
 
                     // Read incoming Gateway messages loop
                     while let Some(msg_result) = read.next().await {
+                        #[cfg(feature = "automation")]
+                        if crate::utils::test_hooks::DROP_GATEWAY.swap(false, Ordering::Relaxed) {
+                            warn!("🤖 [AUTOMATION] Conexão com a Gateway abandonada (teste de queda)");
+                            break;
+                        }
                         match msg_result {
                             Ok(Message::Text(text)) => {
                                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
@@ -245,6 +278,18 @@ impl GatewayClient {
                                             };
                                             let _ = ws_out_tx.send(Message::Text(hb_initial.to_string().into())).await;
 
+                                            if let Some(r) = resuming.as_ref() {
+                                                let resume = serde_json::json!({
+                                                    "op": 6,
+                                                    "d": {
+                                                        "token": self.token,
+                                                        "session_id": r.session_id,
+                                                        "seq": last_seq_arc.load(Ordering::Relaxed)
+                                                    }
+                                                });
+                                                info!("Enviando RESUME para a Gateway (seq {})...", last_seq_arc.load(Ordering::Relaxed));
+                                                let _ = ws_out_tx.send(Message::Text(resume.to_string().into())).await;
+                                            } else {
                                             // Send Identify Payload (Opcode 2) for Discord User Tokens
                                             let identify = serde_json::json!({
                                                 "op": 2,
@@ -267,6 +312,7 @@ impl GatewayClient {
 
                                             info!("Enviando payload IDENTIFY v9 para a Gateway...");
                                             let _ = ws_out_tx.send(Message::Text(identify.to_string().into())).await;
+                                            }
 
                                             // Spawn Heartbeat Loop
                                             let tx_hb = ws_out_tx.clone();
@@ -287,7 +333,41 @@ impl GatewayClient {
                                                 }
                                             }));
                                         }
+                                        1 => {
+                                            // Opcode 1: Discord asks for a heartbeat now.
+                                            let last_s = last_seq_arc.load(Ordering::Relaxed);
+                                            let hb = serde_json::json!({ "op": 1, "d": if last_s >= 0 { serde_json::json!(last_s) } else { Value::Null } });
+                                            let _ = ws_out_tx.send(Message::Text(hb.to_string().into())).await;
+                                        }
+                                        7 => {
+                                            // Opcode 7: RECONNECT. The session stays; resume it on a new connection.
+                                            info!("🔁 [GATEWAY] Discord pediu reconexão; a sessão será retomada.");
+                                            break;
+                                        }
+                                        9 => {
+                                            // Opcode 9: INVALID SESSION. `d` says whether it can still be resumed.
+                                            if value["d"].as_bool() != Some(true) {
+                                                warn!("⚠️ [GATEWAY] Sessão inválida; será aberta uma nova.");
+                                                *self.resume.lock().unwrap() = None;
+                                                last_seq_arc.store(-1, Ordering::Relaxed);
+                                            } else {
+                                                warn!("⚠️ [GATEWAY] Sessão inválida, mas ainda retomável.");
+                                            }
+                                            // Discord asks for a 1-5 s wait before identifying again.
+                                            sleep(Duration::from_millis(1000 + rand::random::<u64>() % 4000)).await;
+                                            break;
+                                        }
                                         _ => {
+                                            if value["t"].as_str() == Some("READY") {
+                                                let sid = value["d"]["session_id"].as_str();
+                                                let rurl = value["d"]["resume_gateway_url"].as_str();
+                                                *self.resume.lock().unwrap() = sid.map(|s| ResumeSession {
+                                                    session_id: s.to_string(),
+                                                    url: rurl.unwrap_or("wss://gateway.discord.gg").to_string(),
+                                                });
+                                            } else if value["t"].as_str() == Some("RESUMED") {
+                                                info!("✅ [GATEWAY] Sessão retomada; chamada de voz e transmissão continuam.");
+                                            }
                                             self.handle_event(&value).await;
                                         }
                                     }
@@ -295,6 +375,10 @@ impl GatewayClient {
                             }
                             Ok(Message::Close(close_frame)) => {
                                 warn!("Gateway fechou a conexão (Close Frame): {:?}", close_frame);
+                                if close_frame.as_ref().is_some_and(|f| close_ends_session(u16::from(f.code))) {
+                                    *self.resume.lock().unwrap() = None;
+                                    last_seq_arc.store(-1, Ordering::Relaxed);
+                                }
                                 break;
                             }
                             Err(e) => {
@@ -311,6 +395,12 @@ impl GatewayClient {
                     warn!("⚠️ [GATEWAY] Conexão com o Discord perdida. Tentando reconectar automaticamente em 2s...");
                 }
                 Err(e) => {
+                    if resuming.is_some() {
+                        // The resume host may be gone; the main gateway still resumes the session.
+                        if let Some(r) = self.resume.lock().unwrap().as_mut() {
+                            r.url = "wss://gateway.discord.gg".to_string();
+                        }
+                    }
                     warn!("⚠️ [GATEWAY] Falha ao conectar na Gateway do Discord: {:?}. Tentando reconectar em 3s...", e);
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
@@ -860,3 +950,25 @@ impl GatewayClient {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_url_keeps_the_query_of_the_first_connection() {
+        assert_eq!(resume_url("wss://gateway-us-east1-b.discord.gg"), "wss://gateway-us-east1-b.discord.gg/?v=9&encoding=json");
+        assert_eq!(resume_url("wss://gateway-us-east1-b.discord.gg/"), "wss://gateway-us-east1-b.discord.gg/?v=9&encoding=json");
+    }
+
+    #[test]
+    fn only_session_ending_close_codes_drop_the_session() {
+        // 1001: "Discord WebSocket requesting client reconnect."; 4000: unknown error.
+        for code in [1000, 1001, 1006, 4000, 4001, 4002, 4003, 4005, 4008] {
+            assert!(!close_ends_session(code), "{code}");
+        }
+        for code in [4004, 4007, 4009, 4010, 4011, 4012, 4013, 4014] {
+            assert!(close_ends_session(code), "{code}");
+        }
+    }
+}

@@ -27,6 +27,9 @@ pub static FULL_SIZE_CONVERSION: AtomicBool = AtomicBool::new(false);
 /// Decode received streams with OpenH264 even when the GPU could (A/B; automation port).
 pub static CPU_DECODE: AtomicBool = AtomicBool::new(false);
 
+/// Drop the gateway connection on its next message, like a network loss (automation port).
+pub static DROP_GATEWAY: AtomicBool = AtomicBool::new(false);
+
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }

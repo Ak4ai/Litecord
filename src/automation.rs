@@ -224,6 +224,10 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             crate::utils::test_hooks::CPU_DECODE.store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({ "ok": true }))
         }
+        "drop_gateway" => {
+            crate::utils::test_hooks::DROP_GATEWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "ok": true }))
+        }
         "minimize" => {
             // Like the taskbar button: the window stays "visible" but has no area.
             use i_slint_backend_winit::WinitWindowAccessor;
