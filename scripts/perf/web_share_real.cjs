@@ -148,6 +148,15 @@ async function watch(context, url) {
     async function sample(label, pages = [], attempt = 1) {
       if (quietBuilds) await waitForBuilds();
       await sleep(5000);
+      const expectedWeb = !label.endsWith('web-off');
+      function validateSource(snapshot) {
+        assert(snapshot.voice.is_in_voice && snapshot.voice.channel === 'fofocas',
+          'Test account left fofocas; reserve the account before repeating the measurement');
+        assert(snapshot.stream.is_screen_sharing, 'Screen capture stopped during the sample');
+        assert.equal(snapshot.stream.web_active, expectedWeb, 'Web sharing changed during the sample');
+        assert.equal(snapshot.stream.web_viewers, pages.length, 'Viewer count changed during the sample');
+      }
+      validateSource(await command({cmd: 'state'}));
       const buildsBefore = await builds();
       const appLog = path.join(work, 'litecord_app.log');
       const logOffset = fs.statSync(appLog).size;
@@ -162,7 +171,8 @@ async function watch(context, url) {
       if (cpu.status === 'rejected') throw cpu.reason;
       const after = await Promise.all(pages.map(browsers.stats));
       const elapsed = (Date.now() - begin) / 1000;
-      const state = (await command({cmd: 'state'})).stream;
+      const snapshot = await command({cmd: 'state'});
+      const state = snapshot.stream;
       const tx = [...fs.readFileSync(appLog).subarray(logOffset).toString('utf8')
         .matchAll(/\(TX\)\] FPS: ([\d.]+)\/60/g)].map(match => Number(match[1]));
       const wakeText = fs.existsSync(wakePath) ? fs.readFileSync(wakePath, 'utf8') : '';
@@ -170,12 +180,15 @@ async function watch(context, url) {
       const phase = {label, attempt, ...JSON.parse(cpu.value.stdout), local_fps: state.local_fps,
         started_at: new Date(begin).toISOString(), builds_before: buildsBefore, builds_after: buildsAfter,
         web_viewers: state.web_viewers, web_active: state.web_active,
+        capture_active: state.is_screen_sharing, voice_connected: snapshot.voice.is_in_voice,
         native_peers: state.peers_seen.length,
+        incoming_streams: state.peers_streaming.filter(peer => peer.streaming).length,
         tx_fps_mean: tx.length ? Number((tx.reduce((a, b) => a + b) / tx.length).toFixed(2)) : null,
         wakeups_per_second: Number(wakeText.match(/total_wakeups_per_s=([\d.,]+)/)?.[1]?.replace(',', '.')) || null,
         wakeups_error: wake.status === 'rejected' ? wake.reason.message : undefined,
         playback: after.map((value, i) => ({...value, measured_fps: Number(((value.decoded - before[i].decoded) / elapsed).toFixed(2))}))};
       result.phases.push(phase); save(); console.log(JSON.stringify(phase));
+      validateSource(snapshot);
       for (const page of phase.playback) {
         assert.equal(page.state, 'playing'); assert.equal(page.width, 1920); assert.equal(page.height, 1080);
         assert(page.measured_fps > 0, 'Video must advance throughout the sample');
