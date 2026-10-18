@@ -911,6 +911,8 @@ impl ScreenCaptureManager {
                     total_encode_us += enc_dur;
 
                     if let Some(raw_frame_bytes) = frame_bytes_opt {
+                        // Browsers watching over WebRTC get the same encoded frame.
+                        super::web_share::offer_frame(&raw_frame_bytes);
                         let t_crypt_start = Instant::now();
                         let sec_key = get_voice_encryption_key(cid);
                         let frame_bytes = encrypt_signaling_payload(&sec_key, &raw_frame_bytes).unwrap_or(raw_frame_bytes);

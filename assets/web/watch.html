@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Litecord stream</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111214; color: #dbdee1;
+    font: 14px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #status { position: fixed; left: 16px; bottom: 16px; padding: 6px 10px; border-radius: 6px;
+    background: rgba(0, 0, 0, .6); }
+  #status:empty { display: none; }
+  #play { position: fixed; inset: 0; margin: auto; width: 180px; height: 48px; border: 0;
+    border-radius: 8px; background: #5865f2; color: #fff; font-size: 15px; font-weight: 600;
+    cursor: pointer; display: none; }
+</style>
+</head>
+<body>
+<div id="stage"><video id="video" autoplay playsinline muted></video></div>
+<button id="play">Play with sound</button>
+<div id="status">Connecting...</div>
+<script>
+// Receives a Litecord screen share over WebRTC. The app answers the offer posted to
+// ./offer; video (and audio, when shared) arrive as ordinary WebRTC tracks.
+const video = document.getElementById('video');
+const status = document.getElementById('status');
+const play = document.getElementById('play');
+const say = (text) => { status.textContent = text; };
+
+async function connect() {
+  const pc = new RTCPeerConnection();
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+  const stream = new MediaStream();
+  pc.ontrack = (e) => {
+    stream.addTrack(e.track);
+    video.srcObject = stream;
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') say('');
+    if (pc.connectionState === 'failed') say('Could not connect to the stream.');
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') say('The stream ended.');
+  };
+  video.onplaying = () => { if (video.muted) play.style.display = 'block'; };
+  play.onclick = () => { video.muted = false; video.play(); play.style.display = 'none'; };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  const res = await fetch('offer' + location.search, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(offer),
+  });
+  if (!res.ok) { say(res.status === 409 ? 'The stream is full.' : 'The stream is not available.'); return; }
+  await pc.setRemoteDescription(await res.json());
+}
+
+connect().catch((e) => say('Could not connect: ' + e.message));
+</script>
+</body>
+</html>

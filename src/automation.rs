@@ -29,6 +29,8 @@
 //! {"cmd":"watch_stream","user_id":"123"}     open a peer's stream in the main view
 //! {"cmd":"stream_fullscreen"}                toggle the stream full screen button
 //! {"cmd":"resize","width":1920,"height":1080} set the window size in logical pixels
+//! {"cmd":"web_share_start"}                  start sharing to browsers; replies with the link
+//! {"cmd":"web_share_stop"}
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -263,6 +265,14 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             let w = cmd["width"].as_f64().ok_or("missing \"width\"")? as f32;
             let h = cmd["height"].as_f64().ok_or("missing \"height\"")? as f32;
             ui.window().set_size(slint::LogicalSize::new(w, h));
+            Ok(json!({ "ok": true }))
+        }
+        "web_share_start" => {
+            let url = crate::screen_capture::web_share::start().map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "url": url }))
+        }
+        "web_share_stop" => {
+            crate::screen_capture::web_share::stop();
             Ok(json!({ "ok": true }))
         }
         "state" => Ok(state(ui)),
