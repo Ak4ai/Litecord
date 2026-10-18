@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Envio de voz no ritmo do microfone** em vez de um timer de 20 ms: o timer de 1 ms do Windows não é mais usado durante chamadas. No teste de ponta a ponta, o maior intervalo entre pacotes de fala caiu de 131 ms para 22 ms.
 - **Microfone fechado ao sair da chamada**: ele continuava capturando até fechar o app, com o indicador de microfone do Windows ligado.
 - **Entrar num canal não congela mais a interface**: o microfone é aberto numa thread própria (com headset sem fio isso podia levar segundos).
-- O painel de voz só é redesenhado quando alguém entra, sai ou muda de volume, e o medidor do microfone roda a 15 FPS.
+- O painel de voz só é redesenhado quando alguém entra, sai ou muda de volume; o medidor do microfone roda a 15 FPS e só com as configurações abertas, e ruído abaixo do limiar de voz não acorda mais a interface.
+- Sem dispositivo de saída de áudio, a chamada procura de novo com espera crescente (até 5 s) e avisa uma vez, em vez de a cada meio segundo.
 - O timer de 1 ms e a saída de áudio de transmissões ficavam ligados para sempre depois da primeira chamada; agora são liberados ao sair.
 
 ### 📡 Transmissão e sinalização
@@ -26,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Depois de sair de uma chamada, a sinalização voltava a entrar na sala antiga e o filtro de privacidade aceitava pacotes dela.
 - A sinalização acorda por evento em vez de checar a cada 500 ms, e o keepalive passou de 15 s para 40 s.
 - Avisos de quadro descartado viraram um resumo por segundo.
+
+### 🩺 Diagnóstico de rede
+- Configurações → Rede & Proxy ganhou um **diagnóstico de rede**: testa se a transmissão com alguém de outra rede consegue conectar direto (tipo de NAT pelo STUN de três provedores, UDP bloqueado, servidor de sinalização) e copia um relatório para colar numa issue. O relatório esconde os dois últimos números do IP público.
+
+### 🎞️ Assistir transmissões
+- A fila de decodificação caiu de 120 para 30 quadros (0,5 s): quando o receptor atrasa, a imagem não fica mais até 2 s atrás da transmissão. Engasgos de até meio segundo passam sem descartar nada.
+- Quando quadros são descartados, o pedido de quadro-chave agora vai para **quem transmite** (ia para o próprio codificador), e o receptor espera esse quadro em vez de decodificar imagens corrompidas.
 
 ### 💬 Interface
 - Canais de servidor não pulam mais para o topo da lista a cada mensagem (só DMs são ordenadas por atividade).
@@ -36,9 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🧪 Como esta versão foi testada
 - **Ferramentas novas** (`scripts/perf/`, só em builds de teste): contagem de acordadas por thread, custo parado e em chamada, e testes de ponta a ponta que rodam duas contas lado a lado no mesmo PC.
-- **Voz de ponta a ponta**: uma fala de referência atravessa o Discord e é comparada com o que chegou: 0,5% de perda e 2 de 252 trechos danificados (ritmo antigo: 5 de 256).
+- **Voz de ponta a ponta**: uma fala de referência atravessa o Discord e é comparada com o que o remetente capturou: mediana de semelhança 0,99, 2 de 283 trechos danificados, 0,2% de perda; um pacote a cada 20 ms (máximo 21 ms). No ritmo antigo, por timer, o maior intervalo chegou a 131 ms.
+- **Em chamada com microfone real**: CPU de 13,6% para 0,6% de um núcleo com a janela aberta e de 4,0% para 0,4% na bandeja.
+- **Receptor lento**: engasgos simulados de 300 ms passam sem descarte; de 800 ms, um único pedido de quadro-chave e volta a 60 FPS no segundo seguinte.
 - **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. Assistir custou 9,7% de um núcleo com a janela normal (14,4% numa janela 1920×1080) pela CPU, contra 11,6% (9,4%) pela GPU.
-- 30 testes unitários. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
+- 39 testes unitários. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
 - Medido só neste PC (Intel e NVIDIA); falta AMD.
 
 ## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
