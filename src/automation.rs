@@ -212,6 +212,7 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
                 w.set_visible(true);
                 w.set_minimized(false);
             });
+            i_slint_backend_winit::redraw_whole_window(ui.window());
             Ok(json!({ "ok": true }))
         }
         "set_full_conversion" => {

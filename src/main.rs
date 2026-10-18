@@ -178,16 +178,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         let refresh_main = refresh_gpu_video.clone();
+        let main_had_area = std::cell::Cell::new(true);
         app.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
+                if has && !main_had_area.replace(has) {
+                    i_slint_backend_winit::redraw_whole_window(window);
+                }
                 screen_capture::set_main_window_has_area(has);
                 refresh_main();
             }
             EventResult::Propagate
         });
         let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+        let popout_had_area = std::cell::Cell::new(true);
         popout_window.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
+                if has && !popout_had_area.replace(has) {
+                    i_slint_backend_winit::redraw_whole_window(window);
+                }
                 screen_capture::set_popout_has_area(has);
                 if let (winit::event::WindowEvent::Resized(s), Some(a), Some(p)) = (ev, aw.upgrade(), pw.upgrade()) {
                     crate::ui::gpu_video::popout_resized(&a, &p, s.width, s.height);
@@ -376,6 +384,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             winit_win.set_minimized(false);
                             winit_win.focus_window();
                         });
+                        i_slint_backend_winit::redraw_whole_window(ui_inner.window());
                     }
                     #[cfg(target_os = "windows")]
                     if let Some(hwnd) = *_hwnd_store_inner.lock().unwrap() {
@@ -548,6 +557,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     w.set_minimized(false);
                     w.focus_window();
                 });
+                i_slint_backend_winit::redraw_whole_window(pop_win.window());
                 // Shown and restored now (showing a hidden window brings no resize event).
                 screen_capture::set_popout_has_area(true);
                 crate::ui::gpu_video::refresh(&ui, &pop_win);

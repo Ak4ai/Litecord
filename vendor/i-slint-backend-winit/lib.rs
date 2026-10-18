@@ -76,6 +76,24 @@ pub trait LayerSink {
 /// while elements drawn over it still blend normally.
 pub const LAYER_HOLE_RGB: [u8; 3] = [1, 2, 3];
 
+/// Redraws all of `window` on its next frame, not only what changed. Call it when a window
+/// is shown again after being hidden or minimized: Windows drops what a hidden window
+/// showed, and winit sends no `Occluded` event there, so the software renderer would only
+/// put back the parts that changed and leave the rest of the window transparent.
+pub fn redraw_whole_window(window: &i_slint_core::api::Window) {
+    let Some(adapter) = i_slint_core::window::WindowInner::from_pub(window)
+        .window_adapter()
+        .internal(i_slint_core::InternalToken)
+        .and_then(|wa| (wa as &dyn core::any::Any).downcast_ref::<WinitWindowAdapter>())
+        .map(|wa| wa.self_weak.clone())
+        .and_then(|w| w.upgrade())
+    else {
+        return;
+    };
+    adapter.renderer().occluded(true);
+    adapter.request_redraw();
+}
+
 /// Hands every frame the software renderer draws in `window` to `sink` (after drawing it
 /// on the window as usual), or stops doing so with `None`. Returns false when the window
 /// does not use the software renderer.
