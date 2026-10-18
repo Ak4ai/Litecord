@@ -24,6 +24,12 @@ espectador. O link muda a cada sessão e para de funcionar quando ela termina.
 - A chave AES-256-GCM fica no fragmento `#` do link. A sinalização é criptografada
   antes do envio. O token de proprietário é independente dessa chave; conhecer o
   link de espectador não permite registrar um transmissor naquela sala.
+- Antes de reservar uma vaga, o worker verifica uma prova derivada da chave e da
+  sala. A prova é `SHA-256("litecord-web-viewer-v1\0" || chave de 32 bytes || sala
+  ASCII)`; o transmissor registra somente o hash SHA-256 dessa prova. A chave AES
+  não vai ao worker. Uma prova ausente ou incorreta é recusada com status 403 sem
+  registrar socket na sala ou repassar uma oferta ao transmissor. A capacidade é
+  conferida novamente após o hash assíncrono para respeitar o limite sob concorrência.
 - O endereço público é descoberto por STUN no próprio socket WebRTC. Uma conexão
   após um período sem espectadores refaz essa descoberta, sem heartbeat STUN ocioso.
 - Desligado: sem socket, thread ou timer de WebRTC. Ligado sem espectadores: só a
@@ -55,6 +61,13 @@ três espectadores, recusa do quarto, reconexão de espectador, encerramento e l
 inválido. Artefatos e amostras de CPU/memória vão para `target/web-share-e2e/`.
 As amostras incluem a geração/codificação sintética: não são um benchmark de jogo
 nem uma estimativa do custo de 1080p60.
+
+Após a autenticação antes da admissão, passaram **48 testes Rust** (uma fixture
+ignorada por padrão), **seis testes do worker** e o fluxo completo no Chrome com
+worker local: H.264/Opus, chave errada, três espectadores, recusa do quarto,
+substituição de espectador e encerramento. A regressão da sinalização nativa
+também passou. As tentativas com prova ausente, errada ou malformada não registram
+espectador, e dez admissões simultâneas mantêm o limite de três.
 
 ```powershell
 cargo test --release --lib screen_capture::web_share::tests -- --skip browser_fixture

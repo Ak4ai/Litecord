@@ -119,7 +119,7 @@ pub fn start() -> io::Result<String> {
             }
             let mut startup_stop = stop_rx.clone();
             let connected = tokio::select! {
-                result = signal::connect(&base, &room, &host_token) => result,
+                result = signal::connect(&base, &room, &host_token, &key) => result,
                 _ = startup_stop.changed() => Err("Web sharing cancelled".into()),
             };
             let ws = match connected {

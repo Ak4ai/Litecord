@@ -15,9 +15,11 @@ export async function fetchWebRoom(state, request) {
   const role = url.searchParams.get("role");
   const current = sockets(state);
   const host = current.find(ws => info(ws)?.role === "host");
+  const auth = url.searchParams.get("auth") || "";
   if (role === "host") {
     const token = url.searchParams.get("token") || "";
-    if (!/^[a-f0-9]{64}$/.test(token)) return new Response("Invalid host", { status: 403 });
+    if (!/^[a-f0-9]{64}$/.test(token) || !/^[a-f0-9]{64}$/.test(auth))
+      return new Response("Invalid host", { status: 403 });
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
     const ownedRoom = Array.from(digest.slice(0, 16), b => b.toString(16).padStart(2, "0")).join("");
     if (url.searchParams.get("room") !== ownedRoom) return new Response("Invalid host", { status: 403 });
@@ -26,13 +28,23 @@ export async function fetchWebRoom(state, request) {
       return new Response("Stream already registered", { status: 409 });
   } else if (role === "viewer") {
     if (!host) return refused("ended", 410);
-    if (current.filter(ws => info(ws)?.role === "viewer").length >= MAX_VIEWERS)
+    const proof = url.searchParams.get("proof") || "";
+    if (!/^[a-f0-9]{64}$/.test(proof)) return refused("reject", 403);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      Uint8Array.from(proof.match(/../g), h => parseInt(h, 16))));
+    const verifier = Array.from(digest, b => b.toString(16).padStart(2, "0")).join("");
+    if (verifier !== info(host)?.auth) return refused("reject", 403);
+    // Recheck after hashing: another admission or a host disconnect may have run.
+    const live = sockets(state);
+    if (!live.includes(host)) return refused("ended", 410);
+    if (live.filter(ws => info(ws)?.role === "viewer").length >= MAX_VIEWERS)
       return refused("reject", 409);
   } else return new Response("Invalid role", { status: 400 });
   const [client, server] = Object.values(new WebSocketPair());
   const id = crypto.randomUUID().replaceAll("-", "");
   state.acceptWebSocket(server);
-  server.serializeAttachment({ kind: "web", role, id, offered: false });
+  server.serializeAttachment({ kind: "web", role, id, offered: false,
+    ...(role === "host" ? {auth} : {}) });
   send(server, { op: "ready" });
   return new Response(null, { status: 101, webSocket: client });
 }

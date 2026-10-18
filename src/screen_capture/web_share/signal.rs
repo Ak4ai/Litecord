@@ -4,8 +4,17 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-pub(super) async fn connect(base: &str, room: &str, token: &str) -> Result<Socket, String> {
-    let url = format!("{}/web/ws?room={room}&role=host&token={token}", base.trim_end_matches('/'));
+pub(super) fn viewer_verifier(key: &[u8; 32], room: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"litecord-web-viewer-v1\0");
+    hash.update(key);
+    hash.update(room.as_bytes());
+    Sha256::digest(hash.finalize()).iter().map(|b| format!("{b:02x}")).collect()
+}
+pub(super) async fn connect(base: &str, room: &str, token: &str, key: &[u8; 32]) -> Result<Socket, String> {
+    let auth = viewer_verifier(key, room);
+    let url = format!("{}/web/ws?room={room}&role=host&token={token}&auth={auth}", base.trim_end_matches('/'));
     let (mut ws, _) = tokio::time::timeout(Duration::from_secs(8), connect_async(url)).await
         .map_err(|_| "Web sharing server timed out".to_string())?
         .map_err(|_| "Could not connect to the web sharing server; check that its web-sharing update is deployed".to_string())?;

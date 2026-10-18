@@ -91,6 +91,16 @@ fn stop_does_not_wait_for_close_and_retired_session_cannot_change_restart() {
 }
 
 #[test]
+fn viewer_verifier_matches_browser_hash_and_is_bound_to_the_room() {
+    assert_eq!(signal::viewer_verifier(&[7; 32], &"a".repeat(32)),
+        "caf39d2291ee9e4bb85dcba118c6982f27910239756f848898cd28b30db626a6");
+    assert_ne!(signal::viewer_verifier(&[8; 32], &"a".repeat(32)),
+        signal::viewer_verifier(&[7; 32], &"a".repeat(32)));
+    assert_ne!(signal::viewer_verifier(&[7; 32], &"b".repeat(32)),
+        signal::viewer_verifier(&[7; 32], &"a".repeat(32)));
+}
+
+#[test]
 fn signaling_authenticates_key_and_rejects_tampering() {
     let key = [7; 32];
     let payload = signal::encrypt(&key, b"private SDP").unwrap();

@@ -18,7 +18,9 @@ class Socket {
   send(message) { this.messages.push(JSON.parse(message)); }
   close() { this.readyState = 3; }
 }
-globalThis.WebSocketPair = class { constructor() { this[0] = new Socket(); this[1] = new Socket(); } };
+globalThis.WebSocketPair = class { constructor() {
+  this[0] = new Socket(); this[1] = new Socket(); this[0].peer = this[1];
+} };
 function state() {
   const values = new Map(), all = [];
   return { all, getWebSockets: () => all, acceptWebSocket: ws => all.push(ws),
@@ -26,7 +28,10 @@ function state() {
 }
 const token = 'b'.repeat(64);
 const room = createHash('sha256').update(token).digest('hex').slice(0, 32);
-const request = role => new Request(`https://test/web/ws?room=${room}&role=${role}&token=${token}`);
+const proof = createHash('sha256').update('litecord-web-viewer-v1\0')
+  .update(Buffer.alloc(32, 7)).update(room).digest('hex');
+const auth = createHash('sha256').update(Buffer.from(proof, 'hex')).digest('hex');
+const request = role => new Request(`https://test/web/ws?room=${room}&role=${role}&token=${token}&auth=${auth}&proof=${proof}`);
 
 test('only the host receives offers; answers go only to the addressed viewer', async () => {
   const s = state(); await fetchWebRoom(s, request('host'));
@@ -51,6 +56,30 @@ test('a fourth viewer is refused and leaving frees a slot', async () => {
   await fetchWebRoom(s, request('viewer'));
   assert.equal(s.all.length, 5);
   assert.equal(s.all[0].messages.at(-1).op, 'leave');
+});
+
+test('missing or wrong keys never reserve a slot or reach the host', async () => {
+  const s = state(); await fetchWebRoom(s, request('host'));
+  await fetchWebRoom(s, request('viewer')); await fetchWebRoom(s, request('viewer'));
+  for (const invalid of ['', '0'.repeat(64), 'invalid']) {
+    const url = new URL(request('viewer').url); url.searchParams.set('proof', invalid);
+    const response = await fetchWebRoom(s, new Request(url));
+    assert.deepEqual(response.webSocket.peer.messages, [{op: 'reject', status: 403}]);
+    assert.equal(response.webSocket.peer.readyState, 3);
+    assert.equal(s.all.length, 3);
+    assert.equal(s.all[0].messages.length, 1);
+  }
+  await fetchWebRoom(s, request('viewer'));
+  assert.equal(s.all.length, 4);
+  assert.equal(s.all[3].messages[0].op, 'ready');
+  await fetchWebRoom(s, request('viewer'));
+  assert.equal(s.all.length, 4);
+});
+
+test('concurrent admission still accepts at most three viewers', async () => {
+  const s = state(); await fetchWebRoom(s, request('host'));
+  await Promise.all(Array.from({length: 10}, () => fetchWebRoom(s, request('viewer'))));
+  assert.equal(s.all.length, 4);
 });
 
 test('host disconnection ends all viewers; knowing the viewer link cannot claim the room', async () => {

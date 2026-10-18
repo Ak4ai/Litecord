@@ -90,6 +90,12 @@ async function connect() {
   if (!/^[a-f0-9]{32}$/.test(room) || !/^[a-f0-9]{64}$/.test(secret)) return finish('invalid');
   if (!window.isSecureContext || !crypto.subtle) return finish('secure');
   const raw = Uint8Array.from(secret.match(/../g), h => parseInt(h, 16));
+  const prefix = new TextEncoder().encode('litecord-web-viewer-v1\0');
+  const roomBytes = new TextEncoder().encode(room);
+  const material = new Uint8Array(prefix.length + raw.length + roomBytes.length);
+  material.set(prefix); material.set(raw, prefix.length); material.set(roomBytes, prefix.length + raw.length);
+  const proof = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', material)),
+    b => b.toString(16).padStart(2, '0')).join('');
   const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
   pc = new RTCPeerConnection({iceServers: [{urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302']}]});
   pc.addTransceiver('video', { direction: 'recvonly' });
@@ -106,7 +112,7 @@ async function connect() {
   play.onclick = () => { video.muted = false; video.play().catch(() => {}); play.style.display = 'none'; };
   const url = new URL('/web/ws', location.href);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.search = new URLSearchParams({room, role: 'viewer'});
+  url.search = new URLSearchParams({room, role: 'viewer', proof});
   ws = new WebSocket(url);
   deadline = setTimeout(() => finish('unavailable'), 20000);
   let offered = false;
