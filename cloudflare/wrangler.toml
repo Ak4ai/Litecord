@@ -8,6 +8,11 @@ name = "litecord-signal"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "SignalingRoom"
