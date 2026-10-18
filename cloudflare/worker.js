@@ -23,9 +23,27 @@
 //
 // Every other frame is relayed verbatim to the other sockets of the room.
 
+import watchPage from "../assets/web/watch.html";
+import { fetchWebRoom, webMessage, webLeave } from "./web-share.js";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/watch") {
+      return new Response(watchPage, { headers: {
+        "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+        "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
+        "permissions-policy": "camera=(), microphone=()",
+      } });
+    }
+    if (url.pathname === "/web/ws") {
+      if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+        return new Response("Expected websocket", { status: 426 });
+      const room = url.searchParams.get("room") || "";
+      if (!/^[a-f0-9]{32}$/.test(room)) return new Response("Invalid room", { status: 400 });
+      return env.ROOMS.get(env.ROOMS.idFromName(`web:${room}`)).fetch(request);
+    }
 
     if (url.pathname === "/" || url.pathname === "/health") {
       return new Response("Litecord Signaling Server is Running!", {
@@ -48,6 +66,8 @@ export default {
       }
 
       const channelId = url.searchParams.get("channel") || "global";
+      // Native sockets must never enter a web room through the legacy route.
+      if (channelId.startsWith("web:")) return new Response("Reserved room", { status: 400 });
       const id = env.ROOMS.idFromName(channelId);
       return env.ROOMS.get(id).fetch(request);
     }
@@ -81,6 +101,7 @@ export class SignalingRoom {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/web/ws") return fetchWebRoom(this.state, request);
     const userId = url.searchParams.get("user") || "0";
     const channelId = url.searchParams.get("channel") || "global";
 
@@ -103,16 +124,19 @@ export class SignalingRoom {
   }
 
   async webSocketMessage(ws, message) {
+    if (safeAttachment(ws)?.kind === "web") return webMessage(this.state, ws, message);
     // Binary presence blobs and any other text frame are relayed untouched.
     this.broadcast(ws, message);
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
+    if (safeAttachment(ws)?.kind === "web") return webLeave(this.state, ws);
     this.leave(ws);
     try { ws.close(code, "closing"); } catch (e) {}
   }
 
   async webSocketError(ws, error) {
+    if (safeAttachment(ws)?.kind === "web") return webLeave(this.state, ws);
     this.leave(ws);
   }
 

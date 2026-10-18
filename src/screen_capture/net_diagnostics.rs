@@ -176,7 +176,7 @@ fn stun_query(sock: &std::net::UdpSocket, server: &str, tag: u8) -> (Option<Sock
 }
 
 /// XOR-MAPPED-ADDRESS (or MAPPED-ADDRESS) from a STUN Binding Success Response, IPv4 only.
-fn parse_mapped_address(msg: &[u8]) -> Option<SocketAddr> {
+pub(crate) fn parse_mapped_address(msg: &[u8]) -> Option<SocketAddr> {
     if msg.len() < 20 || msg[0..2] != [0x01, 0x01] {
         return None;
     }

@@ -141,6 +141,8 @@ export component AppWindow inherits Window {
     callback check_for_updates();
     callback load_older_messages();
     callback toggle_screen_share();
+    callback toggle_web_share();
+    callback copy_web_share_link();
     callback toggle_stream_fullscreen();
     callback focus_stream(string /* user_id */);
     callback start_stream(int /* monitor_id */, string /* resolution */, int /* fps */);
@@ -409,6 +411,32 @@ export component AppWindow inherits Window {
 
     // Screen Share / Live Video Grid Properties
     in-out property <bool> is_screen_sharing: false;
+    in-out property <bool> web_share_active: false;
+    in-out property <bool> web_share_pending: false;
+    in-out property <bool> web_share_copied: false;
+    in-out property <string> web_share_url: "";
+    in-out property <string> web_share_error: "";
+    in-out property <int> web_share_viewers: 0;
+
+    if root.web_share_error != "": Rectangle {
+        z: 100;
+        x: (root.width - self.width) / 2;
+        y: 64px;
+        width: min(580px, root.width - 32px);
+        height: 80px;
+        background: AppTheme.surface-chat;
+        border-width: 1px;
+        border-color: AppTheme.danger;
+        border-radius: 8px;
+        Text {
+            x: 16px; y: 8px; width: parent.width - 32px; height: parent.height - 16px;
+            text: root.web_share_error;
+            color: AppTheme.text-strong;
+            wrap: word-wrap;
+            font-size: 13px;
+        }
+        TouchArea { mouse-cursor: pointer; clicked => { root.web_share_error = ""; } }
+    }
     in-out property <bool> show_self_preview_notice: false;
     in-out property <bool> show_stream_modal: false;
     in-out property <string> stream_source_tab: "screens";
@@ -1307,6 +1335,63 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            if root.is_screen_sharing: VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: root.web_share_active ? (web_ta.has-hover ? AppTheme.accent-hover : AppTheme.accent) : (web_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat);
+                                    opacity: root.web_share_pending ? 0.5 : 1;
+                                    accessible-role: button;
+                                    accessible-label: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_stop + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
+                                    Image {
+                                        x: 7px;
+                                        y: 7px;
+                                        width: 18px;
+                                        height: 18px;
+                                        source: @image-url("../assets/globe.svg");
+                                        colorize: root.web_share_active ? AppTheme.text-on-accent : AppTheme.text-strong;
+                                        image-fit: contain;
+                                    }
+                                    if web_ta.has-hover: Rectangle {
+                                        z: 10;
+                                        x: parent.width - self.width;
+                                        y: parent.height + 6px;
+                                        width: 220px;
+                                        height: 30px;
+                                        border-radius: 4px;
+                                        background: AppTheme.surface-chat;
+                                        border-width: 1px;
+                                        border-color: AppTheme.border-subtle;
+                                        Text {
+                                            text: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_stop + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
+                                            color: AppTheme.text-strong;
+                                            font-size: 12px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    web_ta := TouchArea { enabled: !root.web_share_pending; mouse-cursor: pointer; clicked => { root.toggle_web_share(); } }
+                                }
+                            }
+                            if root.web_share_active: VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    height: 32px;
+                                    min-width: 110px;
+                                    border-radius: 4px;
+                                    background: copy_web_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat;
+                                    Text {
+                                        text: root.web_share_copied ? Tr.web_share_copied : Tr.web_share_copy;
+                                        color: AppTheme.text-strong;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    copy_web_ta := TouchArea { mouse-cursor: pointer; clicked => { root.copy_web_share_link(); } }
+                                }
+                            }
                             VerticalLayout {
                                 alignment: center;
 

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - O timer de 1 ms e a saída de áudio de transmissões ficavam ligados para sempre depois da primeira chamada; agora são liberados ao sair.
 
 ### 📡 Transmissão e sinalização
+- **Compartilhar na web**: link com chave por sessão, vídeo H.264 e áudio da transmissão em Opus por WebRTC, até três espectadores sem login. A página e a sinalização usam o worker existente; a mídia vai diretamente aos navegadores. Encerrar a web, parar a transmissão ou sair da chamada desconecta os espectadores. Sem TURN: redes restritivas podem não conectar. A atualização do worker precisa ser publicada antes do uso pela internet.
 - Fora de chamada a recepção P2P dorme por completo (sem heartbeat nem broadcast); em chamada sem transmissão, acorda uma vez por segundo.
 - Depois de sair de uma chamada, a sinalização voltava a entrar na sala antiga e o filtro de privacidade aceitava pacotes dela.
 - A sinalização acorda por evento em vez de checar a cada 500 ms, e o keepalive passou de 15 s para 40 s.
@@ -43,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quando quadros são descartados, o pedido de quadro-chave agora vai para **quem transmite** (ia para o próprio codificador), e o receptor espera esse quadro em vez de decodificar imagens corrompidas.
 
 ### 💬 Interface
+- Avatares e ícones de servidor são arredondados na imagem carregada, corrigindo o recorte quadrado do renderizador por software.
 - Canais de servidor não pulam mais para o topo da lista a cada mensagem (só DMs são ordenadas por atividade).
 - Atualizar contadores de voz não desfaz mais a ordem das DMs nem apaga as não lidas.
 - Com a renderização pela CPU (o novo padrão), a janela voltava da bandeja ou de minimizada transparente, mostrando só o que se mexia (os cards da chamada, os contadores de CPU e RAM). O Windows apaga o conteúdo de uma janela escondida e não avisa o renderizador; agora ela é redesenhada inteira ao voltar.
@@ -59,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. CPU do receptor contada em ciclos (a contagem de tempo do Windows deixa de fora threads que acordam por pouco tempo, como uma de 60 FPS): 68% de um núcleo antes, 46% com a conversão no tamanho exibido, 34% decodificando pela GPU e copiando de volta, **8% com as camadas**; em tela cheia, 103–110% pela CPU contra 8%. Na bandeja ou minimizado, 2–3%.
 - **Decodificador da GPU**: comparado quadro a quadro com o OpenH264 e o ffmpeg em placas Intel e NVIDIA, com vídeos de x264 (vários perfis, quadros B, várias referências e fatias), NVENC, Quick Sync, Media Foundation e OpenH264 configurado como no app: todos idênticos. Ao perder pacotes, para de mostrar imagens até o próximo quadro-chave, sem mostrar imagem corrompida.
 - Enquanto alguém assiste pela GPU, o receptor usa cerca de 80 MB a mais de memória; o driver de vídeo guarda parte dela depois (medido isolado: até ~100 MB comprometidos, fora da memória em uso).
-- 63 testes unitários (incluindo a contagem de quadros de referência do H.264 com vídeos sintéticos). A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
+- 70 testes unitários (incluindo a contagem de quadros de referência do H.264 com vídeos sintéticos e a negociação da transmissão pela web) e 6 testes do worker. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
 - Medido só neste PC (Intel e NVIDIA); falta AMD.
 
 ## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida

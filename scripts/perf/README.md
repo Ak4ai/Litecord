@@ -35,3 +35,11 @@ powershell -File scripts\perf\stream_e2e.ps1 -Sender "<name>" -Receiver "<name>"
 - `stream_e2e.ps1` shares the sender's screen and reports whether the receiver got it,
   plus the receiver's CPU and FPS while watching. `-ReceiverBackend winit-software`
   compares renderers; `-Fullscreen` watches at 1920x1080.
+
+## Browser sharing without Discord accounts
+
+See [the web-sharing guide](../../docs/WEB_SHARING.md). `web_share_e2e.cjs` drives
+a synthetic Rust source and headless Chrome against a local Wrangler worker.
+It verifies H.264/Opus playback, access control, the viewer limit, and cleanup.
+`process_sample.py <pid> [seconds]` samples CPU and memory on Windows using only
+Python's standard library; CPU is reported as percent of one logical core.

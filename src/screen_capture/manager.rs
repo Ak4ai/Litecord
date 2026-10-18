@@ -163,6 +163,7 @@ impl ScreenCaptureManager {
     }
 
     pub fn stop(&self) {
+        super::web_share::stop();
         stop_window_border_overlay();
         #[cfg(not(windows))]
         {

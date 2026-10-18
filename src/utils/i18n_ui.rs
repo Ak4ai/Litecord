@@ -39,6 +39,11 @@ macro_rules! ui_strings {
 }
 
 ui_strings! {
+    (web_share_start, set_web_share_start, "Share on web", "Compartilhar na web", "Compartir en la web", "Im Web teilen", "Partager sur le web", "Поделиться в браузере", "ウェブで共有"),
+    (web_share_stop, set_web_share_stop, "Stop web", "Encerrar web", "Detener web", "Web beenden", "Arrêter le web", "Остановить веб", "ウェブ共有を停止"),
+    (web_share_connecting, set_web_share_connecting, "Connecting…", "Conectando…", "Conectando…", "Verbinden…", "Connexion…", "Подключение…", "接続中…"),
+    (web_share_copy, set_web_share_copy, "Copy link", "Copiar link", "Copiar enlace", "Link kopieren", "Copier le lien", "Копировать ссылку", "リンクをコピー"),
+    (web_share_copied, set_web_share_copied, "Link copied", "Link copiado", "Enlace copiado", "Link kopiert", "Lien copié", "Ссылка скопирована", "コピーしました"),
     (qr_generate, set_qr_generate, "Generate QR", "Gerar QR", "Generar QR", "QR generieren", "Générer le QR", "Создать QR", "QRを生成"),
     (qr_regenerate, set_qr_regenerate, "Re-generate QR Code", "Re-gerar QR Code", "Volver a generar código QR", "QR-Code neu generieren", "Régénérer le QR Code", "Создать QR-код заново", "QRコードを再生成"),
     (preview_reduced, set_preview_reduced, "Reduced preview to save resources", "Prévia reduzida para poupar recursos", "Vista previa reducida para ahorrar recursos", "Reduzierte Vorschau zur Ressourcenschonung", "Aperçu réduit pour économiser des ressources", "Уменьшенный предпросмотр для экономии ресурсов", "リソース節約のため簡易プレビュー"),

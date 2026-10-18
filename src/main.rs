@@ -972,6 +972,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
+                ui.set_web_share_active(false);
+                ui.set_web_share_url("".into());
+                ui.set_web_share_viewers(0);
                 ui.set_show_self_preview_notice(false);
                 ui.set_local_preview_fps("".into());
                 ui.set_active_stream_frame(Image::default());
@@ -1087,6 +1090,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_show_self_preview_notice(false);
                 }
             }
+        }
+    });
+
+    // Updates arrive only when a viewer joins/leaves or the session changes.
+    let web_status_weak = app.as_weak();
+    screen_capture::web_share::on_status_change(move || {
+        let weak = web_status_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade() {
+                let active = ui.get_is_screen_sharing() && screen_capture::web_share::is_active();
+                ui.set_web_share_active(active);
+                ui.set_web_share_viewers(screen_capture::web_share::viewer_count() as i32);
+                if !active {
+                    ui.set_web_share_url("".into());
+                    ui.set_web_share_error(screen_capture::web_share::last_error().into());
+                }
+            }
+        });
+    });
+    let web_weak = app.as_weak();
+    let web_sm = Arc::clone(&screen_manager);
+    app.on_toggle_web_share(move || {
+        let Some(ui) = web_weak.upgrade() else { return; };
+        if ui.get_web_share_pending() { return; }
+        if screen_capture::web_share::is_active() {
+            screen_capture::web_share::stop();
+            ui.set_web_share_active(false);
+            ui.set_web_share_url("".into());
+            ui.set_web_share_viewers(0);
+            return;
+        }
+        if !web_sm.is_active() { return; }
+        ui.set_web_share_pending(true);
+        ui.set_web_share_error("".into());
+        ui.set_web_share_copied(false);
+        let weak = web_weak.clone();
+        let manager = Arc::clone(&web_sm);
+        std::thread::spawn(move || {
+            let result = screen_capture::web_share::start();
+            if !manager.is_active() { screen_capture::web_share::stop(); }
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_web_share_pending(false);
+                    match result {
+                        Ok(url) if manager.is_active() && screen_capture::web_share::is_active() => {
+                            ui.set_web_share_url(url.into());
+                            ui.set_web_share_active(true);
+                        },
+                        Err(e) => ui.set_web_share_error(e.to_string().into()),
+                        _ => {},
+                    }
+                }
+            });
+        });
+    });
+    let copy_web_weak = app.as_weak();
+    app.on_copy_web_share_link(move || {
+        if let Some(ui) = copy_web_weak.upgrade() {
+            let link = ui.get_web_share_url().to_string();
+            let copied = !link.is_empty() && copypasta::ClipboardContext::new()
+                .and_then(|mut ctx| copypasta::ClipboardProvider::set_contents(&mut ctx, link)).is_ok();
+            ui.set_web_share_copied(copied);
         }
     });
 
@@ -2348,6 +2413,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_is_in_dm_call(false); // também encerra chamada DM se estava ativa
             ui.set_is_screen_sharing(false);
             ui.set_show_self_preview_notice(false);
+            ui.set_web_share_active(false);
+            ui.set_web_share_url("".into());
+            ui.set_web_share_viewers(0);
             ui.set_local_preview_fps("".into());
             ui.set_remote_stream_fps("".into());
             ui.set_has_active_stream(false);
