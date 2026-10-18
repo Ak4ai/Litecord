@@ -13,6 +13,7 @@ pub mod cpu_profiler;
 pub mod timer_resolution;
 pub mod video_settings;
 pub mod gpu_encoder;
+pub mod image_shape;
 pub mod network_settings;
 pub mod hardware_monitor;
 pub mod client_identity;

@@ -88,7 +88,7 @@ pub async fn fetch_and_populate_guilds(
                         let mut has_image = false;
                         let mut icon_image = Image::default();
                         if let Some(ref path_str) = raw.icon_path {
-                            if let Ok(img) = Image::load_from_path(std::path::Path::new(path_str)) {
+                            if let Some(img) = load_rounded_guild_icon(path_str) {
                                 has_image = true;
                                 icon_image = img;
                             }
@@ -142,7 +142,7 @@ pub async fn fetch_and_populate_guilds(
                                     let gid = item.id.to_string();
                                     let icon_path = cache_dir.join(format!("{}.png", gid));
                                     if icon_path.exists() {
-                                        if let Ok(img) = Image::load_from_path(&icon_path) {
+                                        if let Some(img) = load_rounded_guild_icon(&icon_path.to_string_lossy()) {
                                             item.has_image = true;
                                             item.icon_image = img;
                                         }
@@ -955,3 +955,12 @@ pub fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
     });
 }
 
+/// Server icon with its corners already rounded (radius = a third of the side, the 16 px
+/// of the 48 px tile), so it looks the same on the software renderer.
+fn load_rounded_guild_icon(path: &str) -> Option<Image> {
+    let mut rgba = image::open(path).ok()?.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    crate::utils::image_shape::round_corners(&mut rgba, w, h, w.min(h) as f32 / 3.0);
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h);
+    Some(Image::from_rgba8(buffer))
+}

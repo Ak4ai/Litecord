@@ -72,7 +72,9 @@ impl MemoryStore {
         Some(slint::Image::from_rgba8(buffer))
     }
 
-    fn insert(&mut self, url: String, rgba: Vec<u8>) {
+    fn insert(&mut self, url: String, mut rgba: Vec<u8>) {
+        // Avatars are always shown as circles; see image_shape for why the pixels are cut.
+        crate::utils::image_shape::round_corners(&mut rgba, AVATAR_SIZE, AVATAR_SIZE, AVATAR_SIZE as f32 / 2.0);
         self.clock = self.clock.wrapping_add(1);
         if !self.entries.contains_key(&url) && self.entries.len() >= MAX_MEMORY_AVATARS {
             if let Some(oldest) = self
