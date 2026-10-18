@@ -365,8 +365,11 @@ impl FfmpegNvencEncoder {
             *(ctx_u8.add(140) as *mut i32) = 23;                         // pix_fmt = AV_PIX_FMT_NV12 (23)
             *(ctx_u8.add(148) as *mut i32) = 1;                          // color_primaries = BT709
             *(ctx_u8.add(152) as *mut i32) = 1;                          // color_trc = BT709
-            *(ctx_u8.add(156) as *mut i32) = 1;                          // colorspace = BT709
-            *(ctx_u8.add(160) as *mut i32) = 2;                          // color_range = PC / Full
+            // Declare what encode() really writes: BT.601 limited range (the BGRA -> NV12
+            // conversion below). Declaring BT.709 full range made decoders that trust it
+            // (browsers, the GPU decoder) show lifted blacks.
+            *(ctx_u8.add(156) as *mut i32) = 6;                          // colorspace = SMPTE170M (BT.601)
+            *(ctx_u8.add(160) as *mut i32) = 1;                          // color_range = MPEG / limited
 
             let gop_off = get_offset(b"g\0");
             if gop_off > 0 { *(ctx_u8.add(gop_off) as *mut i32) = (target_fps * 2) as i32; }
