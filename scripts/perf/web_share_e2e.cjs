@@ -8,26 +8,17 @@ const {promisify} = require('node:util');
 const exec = promisify(execFile);
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
-const artifact = path.join(root, 'target/web-share-e2e');
+const browserName = process.argv.find(v => v.startsWith('--browser='))?.split('=')[1] || 'chrome';
+const artifact = path.join(root, 'target/web-share-e2e', browserName);
 fs.mkdirSync(artifact, {recursive: true});
+const failurePath = path.join(artifact, 'failure.json');
+if (fs.existsSync(failurePath)) fs.unlinkSync(failurePath);
 const ready = path.join(artifact, `ready-${Date.now()}.json`);
 const manual = process.argv.includes('--manual');
 const exchange = ready + '.offer';
-function playwright() {
-  function load(entry) {
-    const core = require.resolve('playwright-core/package.json', {paths: [path.dirname(entry)]});
-    return {browser: require(entry), TestWebSocket: require(path.join(path.dirname(core), 'lib/utilsBundle.js')).ws};
-  }
-  try { return load(require.resolve('playwright')); } catch {}
-  const cache = path.join(process.env.LOCALAPPDATA, 'npm-cache/_npx');
-  for (const dir of fs.readdirSync(cache)) {
-    const pkg = path.join(cache, dir, 'node_modules/playwright');
-    if (fs.existsSync(path.join(pkg, 'package.json'))) return load(require.resolve(pkg));
-  }
-  throw new Error('Install playwright, or provide it in node_modules');
-}
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const drivers = playwright();
+const browserTools = require('./web_share_browser.cjs');
+const drivers = browserTools.drivers();
 async function waitReady() {
   for (let i = 0; i < 300; i++) {
     if (fs.existsSync(ready)) return JSON.parse(fs.readFileSync(ready, 'utf8'));
@@ -36,19 +27,7 @@ async function waitReady() {
   throw new Error('Source did not start; inspect fixture.log');
 }
 async function stats(page) {
-  return page.evaluate(async () => {
-    const records = [];
-    for (const pc of window.__peers || []) {
-      for (const entry of (await pc.getStats()).values()) {
-        if (entry.type === 'inbound-rtp') records.push({
-          kind: entry.kind, bytes: entry.bytesReceived, frames: entry.framesDecoded,
-          samples: entry.totalSamplesReceived, energy: entry.totalAudioEnergy,
-          codec: entry.codecId,
-        });
-      }
-    }
-    return {state: document.querySelector('#status').dataset.state, records};
-  });
+  return browserTools.stats(page);
 }
 
 async function nativeSignalingRegression() {
@@ -97,6 +76,7 @@ async function nativeSignalingRegression() {
   source.stdout.pipe(log); source.stderr.pipe(log);
   let exited = new Promise(resolve => source.once('exit', code => resolve(code)));
   let browser;
+  const pages = [];
   const results = {};
   async function sample() {
     const result = await exec('python', [path.join(__dirname, 'process_sample.py'), String(source.pid), '3']);
@@ -106,10 +86,8 @@ async function nativeSignalingRegression() {
     if (!manual) await nativeSignalingRegression();
     const {url} = await waitReady();
     results.source_without_viewers = await sample();
-    browser = await drivers.browser.chromium.launch({
-      executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-      headless: true, args: ['--autoplay-policy=no-user-gesture-required'],
-    });
+    browser = await browserTools.launch(drivers.browser, browserName);
+    results.browser = {name: browserName, version: browser.version()};
     const context = await browser.newContext({locale: 'pt-BR'});
     await context.addInitScript(() => {
       window.__peers = [];
@@ -129,6 +107,7 @@ async function nativeSignalingRegression() {
     });
     async function open(link) {
       const page = await context.newPage();
+      pages.push(page);
       page.on('console', msg => fs.appendFileSync(path.join(artifact, 'browser.log'), msg.text() + '\n'));
       page.on('pageerror', error => fs.appendFileSync(path.join(artifact, 'browser.log'), String(error) + '\n'));
       await page.goto(link);
@@ -150,7 +129,7 @@ async function nativeSignalingRegression() {
       return page;
     }
     const a = await open(url);
-    await a.waitForFunction(() => document.querySelector('#status').dataset.state === 'playing', {timeout: 35000});
+    await a.waitForFunction(() => document.querySelector('#status').dataset.state === 'playing', null, {timeout: 35000});
     await a.locator('#play').click();
     await sleep(2000);
     results.first = await stats(a);
@@ -160,7 +139,7 @@ async function nativeSignalingRegression() {
     assert(results.first.records.some(r => r.kind === 'video' && r.frames > 5), 'H.264 must decode');
     assert(results.first.records.some(r => r.kind === 'audio' && r.samples > 9600 && r.energy > 0), 'Opus must decode non-silent audio');
     await a.screenshot({path: path.join(artifact, 'watch.png')});
-    console.log('PASS: Chrome decoded H.264 video and non-silent Opus audio');
+    console.log(`PASS: ${browserName} ${browser.version()} decoded H.264 video and non-silent Opus audio`);
     if (manual) {
       await sleep(25000);
       results.steady = await stats(a);
@@ -177,32 +156,45 @@ async function nativeSignalingRegression() {
     const bad = new URL(url); const hash = new URLSearchParams(bad.hash.slice(1));
     hash.set('key', '00'.repeat(32)); bad.hash = hash.toString();
     const wrong = await open(bad.href);
-    await wrong.waitForFunction(() => document.querySelector('#status').dataset.state === 'invalid', {timeout: 15000});
+    await wrong.waitForFunction(() => document.querySelector('#status').dataset.state === 'invalid', null, {timeout: 15000});
     await wrong.close();
     console.log('PASS: wrong key refused before media connection');
     await sleep(300);
     const b = await open(url), c = await open(url);
-    for (const page of [b, c]) await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'playing', {timeout: 35000});
+    for (const page of [b, c]) await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'playing', null, {timeout: 35000});
     const fourth = await open(url);
-    await fourth.waitForFunction(() => document.querySelector('#status').dataset.state === 'full', {timeout: 10000});
+    await fourth.waitForFunction(() => document.querySelector('#status').dataset.state === 'full', null, {timeout: 10000});
     await fourth.close();
     console.log('PASS: 3 simultaneous viewers; fourth viewer sees full');
     await c.close(); await sleep(500);
     const replacement = await open(url);
-    await replacement.waitForFunction(() => document.querySelector('#status').dataset.state === 'playing', {timeout: 35000});
+    await replacement.waitForFunction(() => document.querySelector('#status').dataset.state === 'playing', null, {timeout: 35000});
     results.three = await Promise.all([a, b, replacement].map(stats));
     results.source_with_three_viewers = await sample();
     console.log('PASS: closing a viewer frees its slot');
     fs.writeFileSync(ready + '.stop', 'stop');
-    for (const page of [a, b, replacement]) await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'ended', {timeout: 10000});
+    for (const page of [a, b, replacement]) await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'ended', null, {timeout: 10000});
     assert.equal(await exited, 0, 'Source must shut down cleanly');
     console.log('PASS: stopping the host closes every viewer and releases the session');
     const old = await open(url);
-    await old.waitForFunction(() => document.querySelector('#status').dataset.state === 'ended', {timeout: 10000});
+    await old.waitForFunction(() => document.querySelector('#status').dataset.state === 'ended', null, {timeout: 10000});
     const invalid = await open('http://127.0.0.1:8787/watch#room=invalid');
-    await invalid.waitForFunction(() => document.querySelector('#status').dataset.state === 'invalid', {timeout: 5000});
+    await invalid.waitForFunction(() => document.querySelector('#status').dataset.state === 'invalid', null, {timeout: 5000});
     console.log('PASS: ended and malformed links show clear messages');
     fs.writeFileSync(path.join(artifact, 'results.json'), JSON.stringify(results, null, 2));
+  } catch (error) {
+    const failures = [];
+    for (const page of pages.filter(page => !page.isClosed())) {
+      try {
+        failures.push(await Promise.race([page.evaluate(() => ({path: location.pathname,
+          status: document.querySelector('#status')?.dataset.state,
+          message: document.querySelector('#status')?.textContent,
+          peers: window.__peers?.map(pc => ({connection: pc.connectionState, ice: pc.iceConnectionState}))})),
+        sleep(3000).then(() => ({error: 'Page did not respond to diagnostics'}))]));
+      } catch {}
+    }
+    fs.writeFileSync(failurePath, JSON.stringify({error: error.message, pages: failures}, null, 2));
+    throw error;
   } finally {
     fs.writeFileSync(ready + '.stop', 'stop');
     await browser?.close();
