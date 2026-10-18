@@ -219,6 +219,11 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             crate::utils::test_hooks::FULL_SIZE_CONVERSION.store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({ "ok": true }))
         }
+        "set_cpu_decode" => {
+            let on = cmd["on"].as_bool().ok_or("missing \"on\"")?;
+            crate::utils::test_hooks::CPU_DECODE.store(on, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "ok": true }))
+        }
         "minimize" => {
             // Like the taskbar button: the window stays "visible" but has no area.
             use i_slint_backend_winit::WinitWindowAccessor;
@@ -351,6 +356,7 @@ fn state(ui: &AppWindow) -> Value {
             "local_fps": ui.get_local_preview_fps().to_string(),
             "frames_shown": crate::screen_capture::RX_FRAMES_SHOWN.load(std::sync::atomic::Ordering::Relaxed),
             "frames_unwatched": crate::screen_capture::RX_FRAMES_UNWATCHED.load(std::sync::atomic::Ordering::Relaxed),
+            "frames_gpu": crate::screen_capture::RX_GPU_FRAMES.load(std::sync::atomic::Ordering::Relaxed),
             "peers_streaming": peer_streams,
             "peers_seen": peer_addrs,
         },

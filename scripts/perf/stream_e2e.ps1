@@ -19,7 +19,8 @@ param(
     [int]$DecodeDelayMs = 0,        # slow the receiver's decoder down to test falling behind
     [string]$DecodeStall = "",      # "<ms>,<every ms>": stall the receiver's decoder now and then
     [switch]$TrayCheck,             # then hide the receiver in the tray and bring it back
-    [int]$ConversionAB = 0          # then <n> rounds alternating scaled / full-size conversion
+    [int]$ConversionAB = 0,         # then <n> rounds alternating scaled / full-size conversion
+    [int]$DecodeAB = 0              # then <n> rounds alternating GPU / CPU (OpenH264) decoding
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "lib.ps1")
@@ -66,7 +67,7 @@ try {
     $txCpu = Cpu-Percent $tx0 ([Cycles]::OfProcess($senderProc.Id)) $WatchSeconds
     $s = (Send-Litecord 47132 '{"cmd":"state"}').stream
     $cores = [Environment]::ProcessorCount
-    "receiver CPU while watching: $([math]::Round($rxCpu, 1))% of a 3 GHz core ($([math]::Round($rxCpu / $cores, 2))% of the machine), shown FPS: $($s.remote_fps)"
+    "receiver CPU while watching: $([math]::Round($rxCpu, 1))% of a 3 GHz core ($([math]::Round($rxCpu / $cores, 2))% of the machine), shown FPS: $($s.remote_fps), pictures decoded on the GPU: $($s.frames_gpu) of $($s.frames_shown)"
     "sender CPU while sharing:    $([math]::Round($txCpu, 1))% of a 3 GHz core, local FPS: $((Send-Litecord 47131 '{"cmd":"state"}').stream.local_fps)"
     Get-Content (Join-Path $OutDir "receiver-wakeups.txt") | Select-Object -First 12
     for ($i = 0; $i -lt $ConversionAB; $i++) {
@@ -80,6 +81,17 @@ try {
         }
     }
     Send-Litecord 47132 '{"cmd":"set_full_conversion","on":false}' | Out-Null
+    for ($i = 0; $i -lt $DecodeAB; $i++) {
+        foreach ($cpu in $false, $true) {
+            Send-Litecord 47132 (@{ cmd = "set_cpu_decode"; on = $cpu } | ConvertTo-Json -Compress) | Out-Null
+            Start-Sleep -Seconds 3   # past the keyframe the switch asks for
+            $rx0 = [Cycles]::OfProcess($receiverProc.Id); $s0 = (Send-Litecord 47132 '{"cmd":"state"}').stream
+            Start-Sleep -Seconds 10
+            $s1 = (Send-Litecord 47132 '{"cmd":"state"}').stream
+            "decoding on the $(if ($cpu) { 'CPU' } else { 'GPU' }): receiver $([math]::Round((Cpu-Percent $rx0 ([Cycles]::OfProcess($receiverProc.Id)) 10), 1))% of a 3 GHz core, pictures $($s1.frames_shown - $s0.frames_shown) ($($s1.frames_gpu - $s0.frames_gpu) on the GPU)"
+        }
+    }
+    Send-Litecord 47132 '{"cmd":"set_cpu_decode","on":false}' | Out-Null
     if ($TrayCheck) {
         # Hidden (tray, minimized) nothing should be decoded and the picture must come back
         # once restored (from a keyframe the receiver asks for). With the popout open the

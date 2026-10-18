@@ -378,32 +378,128 @@ pub fn ensure_annex_b(peer_uid: u64, data: &[u8]) -> std::borrow::Cow<'_, [u8]> 
     }
 }
 
-pub fn decode_video_frame(
-    decoders: &mut HashMap<u64, openh264::decoder::Decoder>,
-    peer_uid: u64,
-    frame_data: &[u8],
-) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u32, u32)> {
-    if frame_data.is_empty() { return None; }
+/// Decoders of the received streams: on the GPU when the machine and the stream allow it,
+/// OpenH264 otherwise.
+#[derive(Default)]
+pub struct StreamDecoders {
+    cpu: HashMap<u64, openh264::decoder::Decoder>,
+    gpu: HashMap<u64, super::hw_decode::GpuDecoder>,
+    /// Streams decoded on the CPU for good (GPU decoder missing, unsupported or failed).
+    cpu_only: std::collections::HashSet<u64>,
+}
 
-    // Check if legacy JPEG header (0xFF, 0xD8)
-    if frame_data.len() >= 2 && frame_data[0] == 0xFF && frame_data[1] == 0xD8 {
-        return decode_jpeg(frame_data);
+impl StreamDecoders {
+    /// Starts the decoders of this stream over (the next picture must be a keyframe).
+    pub fn reset(&mut self, peer_uid: u64) {
+        self.cpu.remove(&peer_uid);
+        self.gpu.remove(&peer_uid);
     }
 
+    /// Frees the GPU decoders (their device and surfaces) once streams stop arriving.
+    pub fn release_gpu(&mut self) {
+        self.gpu.clear();
+    }
+}
+
+pub enum Decoded {
+    Picture(SharedPixelBuffer<Rgba8Pixel>, u32, u32),
+    /// Nothing to show yet, and nothing wrong (parameter sets, a picture held for reordering).
+    Nothing,
+    /// The picture could not be decoded.
+    Failed,
+    /// Pictures are missing: wait for a keyframe and ask the sender for one.
+    NeedKeyframe,
+}
+
+/// Pictures decoded on the GPU (read by tests).
+pub static RX_GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Size a decoded picture is converted to: the largest size it is shown at.
+fn shown_size(w: u32, h: u32) -> (u32, u32) {
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::FULL_SIZE_CONVERSION.load(Ordering::Relaxed) {
+        return (w, h);
+    }
+    let (view_w, view_h) = stream_view_size();
+    fit_within(w, h, view_w, view_h)
+}
+
+pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_data: &[u8]) -> Decoded {
+    if frame_data.is_empty() {
+        return Decoded::Failed;
+    }
+    // Legacy JPEG frames (0xFF, 0xD8).
+    if frame_data.len() >= 2 && frame_data[0] == 0xFF && frame_data[1] == 0xD8 {
+        return decode_jpeg(frame_data).map(|(b, w, h)| Decoded::Picture(b, w, h)).unwrap_or(Decoded::Failed);
+    }
+    let annex_b = ensure_annex_b(peer_uid, frame_data);
+
+    #[cfg(feature = "automation")]
+    let gpu_allowed = !crate::utils::test_hooks::CPU_DECODE.load(Ordering::Relaxed);
+    #[cfg(not(feature = "automation"))]
+    let gpu_allowed = true;
+    if gpu_allowed && !decoders.cpu_only.contains(&peer_uid) {
+        use super::hw_decode::{GpuDecoder, HwError};
+        let gpu = match decoders.gpu.entry(peer_uid) {
+            std::collections::hash_map::Entry::Occupied(e) => Some(e.into_mut()),
+            std::collections::hash_map::Entry::Vacant(v) => match GpuDecoder::new() {
+                Ok(d) => {
+                    log::info!("🎞️ [DECODER RX] Decodificando a transmissão do peer {} pela GPU", peer_uid);
+                    Some(v.insert(d))
+                }
+                Err(e) => {
+                    log::info!("🎞️ [DECODER RX] Sem decodificação pela GPU ({:?}); peer {} vai pela CPU", e, peer_uid);
+                    decoders.cpu_only.insert(peer_uid);
+                    None
+                }
+            },
+        };
+        if let Some(gpu) = gpu {
+            match gpu.decode_rgba(&annex_b, shown_size) {
+                Ok(Some((buf, w, h))) => {
+                    RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
+                    return Decoded::Picture(buf, w, h);
+                }
+                Ok(None) => return Decoded::Nothing,
+                Err(HwError::NeedKeyframe(why)) => {
+                    static WAITING: crate::utils::logger::LogThrottle = crate::utils::logger::LogThrottle::new(1000);
+                    if let Some(n) = WAITING.hit() {
+                        log::info!("⏳ [DECODER RX] GPU aguardando keyframe do peer {} ({}; {} quadro(s) desde o último aviso)", peer_uid, why, n);
+                    }
+                    return Decoded::NeedKeyframe;
+                }
+                Err(e) => {
+                    // Unsupported stream or a GPU failure: this stream goes to the CPU from
+                    // its next keyframe on.
+                    log::warn!("🎞️ [DECODER RX] Decodificação pela GPU desligada para o peer {}: {:?}", peer_uid, e);
+                    decoders.gpu.remove(&peer_uid);
+                    decoders.cpu_only.insert(peer_uid);
+                    decoders.cpu.remove(&peer_uid);
+                    return Decoded::NeedKeyframe;
+                }
+            }
+        }
+    }
+    match decode_on_cpu(&mut decoders.cpu, peer_uid, &annex_b) {
+        Some((b, w, h)) => Decoded::Picture(b, w, h),
+        None => Decoded::Failed,
+    }
+}
+
+fn decode_on_cpu(
+    decoders: &mut HashMap<u64, openh264::decoder::Decoder>,
+    peer_uid: u64,
+    annex_b: &[u8],
+) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u32, u32)> {
     use openh264::formats::YUVSource;
     let decoder = decoders.entry(peer_uid).or_insert_with(|| {
         openh264::decoder::Decoder::new().expect("Falha ao criar Decoder H.264")
     });
 
-    let annex_b = ensure_annex_b(peer_uid, frame_data);
-
-    match decoder.decode(&annex_b) {
+    match decoder.decode(annex_b) {
         Ok(Some(decoded_yuv)) => {
             let (w, h) = decoded_yuv.dimensions();
-            let (view_w, view_h) = stream_view_size();
-            let (out_w, out_h) = fit_within(w as u32, h as u32, view_w, view_h);
-            #[cfg(feature = "automation")]
-            let (out_w, out_h) = if crate::utils::test_hooks::FULL_SIZE_CONVERSION.load(Ordering::Relaxed) { (w as u32, h as u32) } else { (out_w, out_h) };
+            let (out_w, out_h) = shown_size(w as u32, h as u32);
             if w > 0 && h > 0 && (out_w as usize, out_h as usize) != (w, h) {
                 let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(out_w, out_h);
                 let (ys, us, vs) = decoded_yuv.strides();
@@ -556,6 +652,28 @@ pub fn fit_within(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     (even(w as f64 * scale), even(h as f64 * scale))
 }
 
+/// How a stream's YUV samples map to RGB (from the SPS VUI).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Colour {
+    /// 0-255 samples instead of 16-235 (NVENC streams are full range).
+    pub full_range: bool,
+    pub bt709: bool,
+}
+
+impl Colour {
+    pub const BT601_LIMITED: Colour = Colour { full_range: false, bt709: false };
+
+    /// (luma scale, R from V, G from U, G from V, B from U), in 1/256 steps.
+    fn coefficients(self) -> (i32, i32, i32, i32, i32) {
+        match (self.full_range, self.bt709) {
+            (false, false) => (298, 409, 100, 208, 516),
+            (false, true) => (298, 459, 55, 136, 541),
+            (true, false) => (256, 359, 88, 183, 454),
+            (true, true) => (256, 403, 48, 120, 475),
+        }
+    }
+}
+
 /// Converts an I420 frame to RGBA at `out_w` x `out_h` (smaller than or equal to the frame),
 /// sampling luma bilinearly so text stays readable when shrunk.
 #[allow(clippy::too_many_arguments)]
@@ -563,10 +681,30 @@ pub fn i420_to_rgba_scaled(
     y: &[u8], u: &[u8], v: &[u8], y_stride: usize, uv_stride: usize,
     w: usize, h: usize, out: &mut [u8], out_w: usize, out_h: usize,
 ) {
+    yuv420_to_rgba_scaled(y, y_stride, |row, x| (u[row * uv_stride + x], v[row * uv_stride + x]), w, h, out, out_w, out_h, Colour::BT601_LIMITED);
+}
+
+/// The same for NV12 (interleaved UV rows, as GPU decoders produce), in the stream's colours.
+#[allow(clippy::too_many_arguments)]
+pub fn nv12_to_rgba_scaled(
+    y: &[u8], uv: &[u8], y_stride: usize, uv_stride: usize,
+    w: usize, h: usize, out: &mut [u8], out_w: usize, out_h: usize, colour: Colour,
+) {
+    yuv420_to_rgba_scaled(y, y_stride, |row, x| (uv[row * uv_stride + 2 * x], uv[row * uv_stride + 2 * x + 1]), w, h, out, out_w, out_h, colour);
+}
+
+/// `chroma(row, x)` returns (U, V) of chroma sample `x` on chroma row `row`.
+#[allow(clippy::too_many_arguments)]
+fn yuv420_to_rgba_scaled(
+    y: &[u8], y_stride: usize, chroma: impl Fn(usize, usize) -> (u8, u8) + Sync,
+    w: usize, h: usize, out: &mut [u8], out_w: usize, out_h: usize, colour: Colour,
+) {
     use rayon::prelude::*;
     if out_w == 0 || out_h == 0 || w == 0 || h == 0 {
         return;
     }
+    let (ky, kr, kgu, kgv, kb) = colour.coefficients();
+    let black = if colour.full_range { 0 } else { 16 };
     // Source position of each output column, in 1/256 pixel steps.
     let map = |o: usize, n_out: usize, n_in: usize| -> (usize, usize, u32) {
         let pos = ((o as f64 + 0.5) * n_in as f64 / n_out as f64 - 0.5).max(0.0);
@@ -578,18 +716,18 @@ pub fn i420_to_rgba_scaled(
     out[..out_w * out_h * 4].par_chunks_mut(out_w * 4).enumerate().for_each(|(oy, row)| {
         let (y0, y1, fy) = map(oy, out_h, h);
         let (r0, r1) = (&y[y0 * y_stride..], &y[y1 * y_stride..]);
-        let uv_row = (y0.min(h - 1) / 2) * uv_stride;
+        let chroma_row = y0.min(h - 1) / 2;
         for (ox, px) in row.chunks_exact_mut(4).enumerate() {
             let (x0, x1, fx) = cols[ox];
             let top = r0[x0] as u32 * (256 - fx) + r0[x1] as u32 * fx;
             let bottom = r1[x0] as u32 * (256 - fx) + r1[x1] as u32 * fx;
             let luma = ((top * (256 - fy) + bottom * fy + 32768) >> 16) as i32;
-            let d = u[uv_row + x0 / 2] as i32 - 128;
-            let e = v[uv_row + x0 / 2] as i32 - 128;
-            let c = 298 * (luma - 16);
-            px[0] = ((c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            px[1] = ((c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            px[2] = ((c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            let (u, v) = chroma(chroma_row, x0 / 2);
+            let (d, e) = (u as i32 - 128, v as i32 - 128);
+            let c = ky * (luma - black);
+            px[0] = ((c + kr * e + 128) >> 8).clamp(0, 255) as u8;
+            px[1] = ((c - kgu * d - kgv * e + 128) >> 8).clamp(0, 255) as u8;
+            px[2] = ((c + kb * d + 128) >> 8).clamp(0, 255) as u8;
             px[3] = 255;
         }
     });
@@ -617,6 +755,57 @@ mod watching_tests {
 #[cfg(test)]
 mod scaled_conversion_tests {
     use super::*;
+
+    fn solid_nv12(w: usize, h: usize, yv: u8, uv: u8, vv: u8) -> (Vec<u8>, Vec<u8>) {
+        (vec![yv; w * h], [uv, vv].repeat((w / 2) * (h / 2)))
+    }
+
+    fn assert_close(px: &[u8], expect: [u8; 3]) {
+        for c in 0..3 {
+            assert!((px[c] as i32 - expect[c] as i32).abs() <= 3, "got {:?}, expected {:?}", &px[..3], expect);
+        }
+        assert_eq!(px[3], 255);
+    }
+
+    #[test]
+    fn nv12_honours_range_and_matrix() {
+        let full709 = Colour { full_range: true, bt709: true };
+        let limited709 = Colour { full_range: false, bt709: true };
+        let cases = [
+            (full709, (255, 128, 128), [255, 255, 255]),
+            (full709, (0, 128, 128), [0, 0, 0]),
+            (full709, (54, 99, 255), [255, 0, 0]),
+            (limited709, (235, 128, 128), [255, 255, 255]),
+            (limited709, (16, 128, 128), [0, 0, 0]),
+            (limited709, (63, 102, 240), [255, 0, 0]),
+        ];
+        for (colour, (yv, uv, vv), expect) in cases {
+            let (y, uvp) = solid_nv12(16, 8, yv, uv, vv);
+            let mut out = vec![0u8; 8 * 4 * 4];
+            nv12_to_rgba_scaled(&y, &uvp, 16, 16, 16, 8, &mut out, 8, 4, colour);
+            for px in out.chunks_exact(4) {
+                assert_close(px, expect);
+            }
+        }
+    }
+
+    #[test]
+    fn nv12_reads_interleaved_chroma_per_column() {
+        // Left half blue (high U), right half red (high V), BT.601 limited.
+        let (w, h) = (16, 4);
+        let y = vec![81u8; w * h];
+        let mut uv = Vec::new();
+        for _ in 0..h / 2 {
+            for x in 0..w / 2 {
+                uv.extend_from_slice(if x < w / 4 { &[240, 110] } else { &[90, 240] });
+            }
+        }
+        let mut out = vec![0u8; w * h * 4];
+        nv12_to_rgba_scaled(&y, &uv, w, w, w, h, &mut out, w, h, Colour::BT601_LIMITED);
+        let (left, right) = (&out[0..4], &out[(w - 1) * 4..w * 4]);
+        assert!(left[2] > 200 && left[0] < 100, "left should be blue: {left:?}");
+        assert!(right[0] > 200 && right[2] < 100, "right should be red: {right:?}");
+    }
 
     #[test]
     fn fit_keeps_aspect_and_never_upscales() {

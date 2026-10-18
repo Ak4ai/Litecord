@@ -4,6 +4,7 @@ pub mod types;
 pub mod crypto;
 pub mod signaling;
 pub mod video_pipeline;
+pub mod hw_decode;
 pub mod sources;
 pub mod audio_loopback;
 pub mod manager;

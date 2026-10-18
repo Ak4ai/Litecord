@@ -24,6 +24,9 @@ use std::time::Instant;
 /// conversion; set through the automation port).
 pub static FULL_SIZE_CONVERSION: AtomicBool = AtomicBool::new(false);
 
+/// Decode received streams with OpenH264 even when the GPU could (A/B; automation port).
+pub static CPU_DECODE: AtomicBool = AtomicBool::new(false);
+
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }

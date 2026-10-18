@@ -1118,7 +1118,7 @@ impl ScreenCaptureManager {
             .spawn(move || {
                 crate::cpu_profiler::set_current_thread_name("video-decoder-worker");
                 info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada com buffer elástico de 120 quadros!");
-                let mut h264_decoders: HashMap<u64, openh264::decoder::Decoder> = HashMap::new();
+                let mut decoders = StreamDecoders::default();
                 let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
                 let mut rx_frame_count: HashMap<u64, u64> = HashMap::new();
                 let mut rx_last_stats: HashMap<u64, Instant> = HashMap::new();
@@ -1206,6 +1206,8 @@ impl ScreenCaptureManager {
                             if !streams_watched() {
                                 RX_FRAMES_UNWATCHED.fetch_add(1, Ordering::Relaxed);
                                 waiting_for_idr.insert(peer_uid, true);
+                                // Also free the GPU decoder (device and surfaces) meanwhile.
+                                decoders.release_gpu();
                                 continue;
                             }
 
@@ -1231,7 +1233,8 @@ impl ScreenCaptureManager {
                                 log::info!("✅ [DECODER RECOVERY] IDR/SPS recebido para peer {} — retomando decodificação!", peer_uid);
                             }
 
-                            if let Some((pixel_buffer, _w, h)) = decode_video_frame(&mut h264_decoders, peer_uid, &frame_data) {
+                            let decoded = decode_video_frame(&mut decoders, peer_uid, &frame_data);
+                            if let Decoded::Picture(pixel_buffer, _w, h) = decoded {
                                 let dec_us = t_dec_start.elapsed().as_micros();
                                 let count = rx_frame_count.entry(peer_uid).or_insert(0);
                                 *count += 1;
@@ -1265,12 +1268,15 @@ impl ScreenCaptureManager {
                                 rx_error_streak.remove(&peer_uid);
                                 RX_FRAMES_SHOWN.fetch_add(1, Ordering::Relaxed);
                                 on_frame(peer_uid, peer_name, quality_label, pixel_buffer);
-                            } else {
+                            } else if let Decoded::NeedKeyframe = decoded {
+                                waiting_for_idr.insert(peer_uid, true);
+                                send_pli(peer_uid);
+                            } else if let Decoded::Failed = decoded {
                                 let streak = rx_error_streak.entry(peer_uid).or_insert(0);
                                 *streak += 1;
                                 if *streak >= 60 {
-                                    log::info!("🔄 [DECODER RECOVERY] Resetando instância do OpenH264 para peer {} após {} falhas consecutivas — aguardando IDR", peer_uid, *streak);
-                                    h264_decoders.remove(&peer_uid);
+                                    log::info!("🔄 [DECODER RECOVERY] Resetando o decodificador do peer {} após {} falhas consecutivas — aguardando IDR", peer_uid, *streak);
+                                    decoders.reset(peer_uid);
                                     waiting_for_idr.insert(peer_uid, true);
                                     *streak = 0;
                                 }
@@ -1288,6 +1294,8 @@ impl ScreenCaptureManager {
                             }
                             if !has_recent && CURRENT_RX_FPS.load(Ordering::Relaxed) > 0 {
                                 CURRENT_RX_FPS.store(0, Ordering::Relaxed);
+                                // No stream arriving: let the GPU decoder go until the next one.
+                                decoders.release_gpu();
                             }
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
