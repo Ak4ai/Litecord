@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resultado (Windows 11, fora de chamada): na bandeja, de 338 para **0,9 acordadas por segundo** e 0,00% de CPU; janela aberta em 0,08% de CPU; ~10 MB de RAM na bandeja e 16–25 MB com a janela aberta.
 
 ### 🎙️ Voz e chamadas
+- **Chamadas não caem mais quando o Discord pede reconexão.** O Litecord reconectava abrindo uma sessão nova, e cerca de 1m45s depois o Discord tirava a conta da chamada (e encerrava a transmissão) porque a sessão que tinha entrado nela havia sumido. Isso acontece sozinho em chamadas longas, sem nenhuma falha de rede. Agora a sessão é retomada: num teste derrubando a conexão dos dois lados no meio de uma transmissão, ela voltou em 2 s e ninguém saiu da chamada.
 - **Envio de voz no ritmo do microfone** em vez de um timer de 20 ms: o timer de 1 ms do Windows não é mais usado durante chamadas. No teste de ponta a ponta, o maior intervalo entre pacotes de fala caiu de 131 ms para 22 ms.
 - **Microfone fechado ao sair da chamada**: ele continuava capturando até fechar o app, com o indicador de microfone do Windows ligado.
 - **Entrar num canal não congela mais a interface**: o microfone é aberto numa thread própria (com headset sem fio isso podia levar segundos).
@@ -32,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurações → Rede & Proxy ganhou um **diagnóstico de rede**: testa se a transmissão com alguém de outra rede consegue conectar direto (tipo de NAT pelo STUN de três provedores, UDP bloqueado, servidor de sinalização) e copia um relatório para colar numa issue. O relatório esconde os dois últimos números do IP público.
 
 ### 🎞️ Assistir transmissões
+- **No Windows, a transmissão é decodificada e exibida pela GPU sem passar pela CPU.** O decodificador da placa (Intel, NVIDIA ou AMD) recebe o vídeo direto, sem Media Foundation, e a imagem vai para a tela numa camada do Windows por baixo da interface, com os controles da transmissão desenhados por cima. Assistir uma transmissão 1080p a 60 FPS passou de **68% para 8% de um núcleo** (em tela cheia, de 106% para 8%). Vale para a janela principal e para a janela destacada.
+- **Nada é decodificado quando nenhuma janela mostra a transmissão** (Litecord na bandeja ou minimizado durante um jogo): 2–3% de um núcleo, contra 53% antes. Ao voltar, a imagem reaparece em cerca de 0,1 s (0,5 s saindo da bandeja).
+- Quando a GPU não pode decodificar a transmissão (máquina virtual, driver sem decodificador H.264, vídeo entrelaçado), ela continua pela CPU como antes, agora convertida já no tamanho em que é exibida (de 68% para 46% de um núcleo). O mesmo vale para quem usa a renderização da interface pela GPU, que não usa as camadas.
+- As cores das transmissões feitas com NVENC estavam declaradas como BT.709 de faixa completa, mas o Litecord as converte em BT.601 de faixa limitada; quem confia na declaração (navegadores assistindo pela web, o decodificador da GPU) via os pretos acinzentados. A declaração foi corrigida, e o receptor trata as transmissões de versões antigas.
+- **Transmitir com o codificador do Media Foundation** (escolhido à mão em Configurações → Vídeo) não funcionava: ele gravava um arquivo MP4 e mandava os bytes novos, e o cabeçalho com os parâmetros do vídeo só existe quando o arquivo termina. Agora o codificador da placa (Intel Quick Sync, NVIDIA ou AMD) é usado diretamente, com quadro-chave sob pedido.
+- A etiqueta de qualidade voltou a mostrar a resolução da transmissão (mostrava o tamanho em que ela era desenhada).
 - A fila de decodificação caiu de 120 para 30 quadros (0,5 s): quando o receptor atrasa, a imagem não fica mais até 2 s atrás da transmissão. Engasgos de até meio segundo passam sem descartar nada.
 - Quando quadros são descartados, o pedido de quadro-chave agora vai para **quem transmite** (ia para o próprio codificador), e o receptor espera esse quadro em vez de decodificar imagens corrompidas.
 
@@ -47,8 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Voz de ponta a ponta**: uma fala de referência atravessa o Discord e é comparada com o que o remetente capturou: mediana de semelhança 0,99, 2 de 283 trechos danificados, 0,2% de perda; um pacote a cada 20 ms (máximo 21 ms). No ritmo antigo, por timer, o maior intervalo chegou a 131 ms.
 - **Em chamada com microfone real**: CPU de 13,6% para 0,6% de um núcleo com a janela aberta e de 4,0% para 0,4% na bandeja.
 - **Receptor lento**: engasgos simulados de 300 ms passam sem descarte; de 800 ms, um único pedido de quadro-chave e volta a 60 FPS no segundo seguinte.
-- **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. Assistir custou 9,7% de um núcleo com a janela normal (14,4% numa janela 1920×1080) pela CPU, contra 11,6% (9,4%) pela GPU.
-- 39 testes unitários. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
+- **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. CPU do receptor contada em ciclos (a contagem de tempo do Windows deixa de fora threads que acordam por pouco tempo, como uma de 60 FPS): 68% de um núcleo antes, 46% com a conversão no tamanho exibido, 34% decodificando pela GPU e copiando de volta, **8% com as camadas**; em tela cheia, 103–110% pela CPU contra 8%. Na bandeja ou minimizado, 2–3%.
+- **Decodificador da GPU**: comparado quadro a quadro com o OpenH264 e o ffmpeg em placas Intel e NVIDIA, com vídeos de x264 (vários perfis, quadros B, várias referências e fatias), NVENC, Quick Sync, Media Foundation e OpenH264 configurado como no app: todos idênticos. Ao perder pacotes, para de mostrar imagens até o próximo quadro-chave, sem mostrar imagem corrompida.
+- Enquanto alguém assiste pela GPU, o receptor usa cerca de 80 MB a mais de memória; o driver de vídeo guarda parte dela depois (medido isolado: até ~100 MB comprometidos, fora da memória em uso).
+- 63 testes unitários (incluindo a contagem de quadros de referência do H.264 com vídeos sintéticos). A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
 - Medido só neste PC (Intel e NVIDIA); falta AMD.
 
 ## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
