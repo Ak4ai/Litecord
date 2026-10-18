@@ -83,6 +83,15 @@ fn serve(stream: TcpStream, weak: slint::Weak<AppWindow>) {
             continue;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
+            Ok(cmd) if cmd["cmd"] == "web_share_answer" => {
+                match serde_json::from_value(cmd["offer"].clone()) {
+                    Ok(offer) => match crate::screen_capture::web_share::answer_manual(offer) {
+                        Ok(answer) => json!({"ok":true,"answer":answer}),
+                        Err(error) => json!({"ok":false,"error":error}),
+                    },
+                    Err(e) => json!({"ok":false,"error":e.to_string()}),
+                }
+            },
             Ok(cmd) => run_on_ui_thread(&weak, cmd),
             Err(e) => json!({ "ok": false, "error": format!("invalid json: {e}") }),
         };
@@ -268,11 +277,14 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             Ok(json!({ "ok": true }))
         }
         "web_share_start" => {
-            let url = crate::screen_capture::web_share::start().map_err(|e| e.to_string())?;
-            Ok(json!({ "ok": true, "url": url }))
+            if !ui.get_is_screen_sharing() { return Err("start a screen share first".into()); }
+            if !ui.get_web_share_active() && !ui.get_web_share_pending() { ui.invoke_toggle_web_share(); }
+            Ok(json!({ "ok": true, "pending": ui.get_web_share_pending(), "url": ui.get_web_share_url().to_string() }))
         }
         "web_share_stop" => {
             crate::screen_capture::web_share::stop();
+            ui.set_web_share_active(false);
+            ui.set_web_share_url("".into());
             Ok(json!({ "ok": true }))
         }
         "state" => Ok(state(ui)),
@@ -328,6 +340,11 @@ fn state(ui: &AppWindow) -> Value {
             "is_deafened": ui.get_is_deafened(),
         },
         "stream": {
+            "web_active": ui.get_web_share_active(),
+            "web_pending": ui.get_web_share_pending(),
+            "web_url": ui.get_web_share_url().to_string(),
+            "web_error": ui.get_web_share_error().to_string(),
+            "web_viewers": crate::screen_capture::web_share::viewer_count(),
             "is_screen_sharing": ui.get_is_screen_sharing(),
             "has_active_stream": ui.get_has_active_stream(),
             "active_stream_user": ui.get_active_stream_user().to_string(),
