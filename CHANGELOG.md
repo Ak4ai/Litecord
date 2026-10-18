@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v1.2.1-beta] - não publicada — Leveza para quem joga (#27)
 
+> **Atualização obrigatória.** As transmissões passam a ser enviadas só para quem pede para assistir, com uma chave sorteada a cada transmissão (protocolo 3). Versões anteriores não conseguem assistir nem ser assistidas por esta, então o servidor de sinalização passa a pedir a atualização.
+
 ### ⚡ Parado de verdade na bandeja
 - **Laço infinito da interface com a janela escondida**: qualquer animação que começasse com o app na bandeja (alguém entrando num canal de voz, um contador de não lidas mudando) fazia o Slint pedir quadros para sempre, ~130 vezes por segundo, até a janela ser reaberta. A causa está no backend winit do Slint (também na 1.18.1); o Litecord passa a usar uma cópia local da versão 1.17.1 com a correção (`vendor/`).
 - **A interface é desenhada pela CPU por padrão.** Sem contexto de GPU, o driver de vídeo não fica com threads acordando ao lado do jogo e a memória privada cai pela metade. A renderização pela GPU continua disponível em Configurações → Vídeo e Interface (vale ao reiniciar).
@@ -24,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - O timer de 1 ms e a saída de áudio de transmissões ficavam ligados para sempre depois da primeira chamada; agora são liberados ao sair.
 
 ### 📡 Transmissão e sinalização
+- **Assistir sob demanda.** Uma transmissão nova aparece com o selo AO VIVO e o botão **Assistir**, como no Discord; nada é recebido antes disso. Quem transmite só envia para quem pediu, e sem ninguém assistindo não codifica nada e captura a tela só no ritmo da própria pré-visualização: **de 25–33% para 5% de um núcleo**. Esconder a transmissão, fechar ou deixar o Litecord na bandeja ou minimizado para de receber; ao voltar, a imagem reaparece em 0,1–0,45 s.
+- **Chave por transmissão.** Antes, vídeo e áudio eram cifrados com uma chave derivada do ID do canal, e qualquer pessoa que o conhecesse podia entrar na sala de sinalização, passar a receber a transmissão e decifrá-la; o receptor também aceitava imagens sem criptografia. Agora cada transmissão sorteia uma chave, entregue só a quem pediu para assistir e está no canal de voz, cifrada para ele (X25519). Detalhes e limites em `docs/WATCH_ON_DEMAND.md`.
+- **Qualidade que volta a subir.** A taxa só caía quando havia perda e nunca voltava. Agora começa cheia a cada transmissão, cai 20% com perda acima de 8% e sobe 0,5 Mbps a cada 5 s sem perda, seguindo o pior espectador do momento; quem sai deixa de contar.
+- Fora de quem assiste e de quem transmite, ninguém troca heartbeats na chamada; o broadcast na rede local só acontece com o servidor de sinalização fora do ar.
 - **Compartilhar na web**: link com chave por sessão, vídeo H.264 e áudio da transmissão em Opus por WebRTC, até três espectadores sem login. A página e a sinalização usam o worker existente; a mídia vai diretamente aos navegadores. Encerrar a web, parar a transmissão ou sair da chamada desconecta os espectadores. Sem TURN: redes restritivas podem não conectar. A atualização do worker precisa ser publicada antes do uso pela internet.
 - Fora de chamada a recepção P2P dorme por completo (sem heartbeat nem broadcast); em chamada sem transmissão, acorda uma vez por segundo.
 - Depois de sair de uma chamada, a sinalização voltava a entrar na sala antiga e o filtro de privacidade aceitava pacotes dela.

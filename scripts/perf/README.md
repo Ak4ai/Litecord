@@ -26,6 +26,9 @@ test changes which account the installed app opens with.
 ```
 powershell -File scripts\perf\voice_e2e.ps1  -Sender "<name>" -Receiver "<name>" -Server "<server>" -Channel "<voice channel>"
 powershell -File scripts\perf\stream_e2e.ps1 -Sender "<name>" -Receiver "<name>" -Server "<server>" -Channel "<voice channel>"
+powershell -File scripts\perf\watch_on_demand.ps1 -Sender "<name>" -Receiver "<name>" -Server "<server>" -Channel "<voice channel>"
+powershell -File scripts\perf\gateway_resume.ps1 -Sender "<name>" -Receiver "<name>" -Server "<server>" -Channel "<voice channel>"
+powershell -File scripts\perf\soak.ps1 -Sender "<name>" -Receiver "<name>" -Server "<server>" -Channel "<voice channel>" -Minutes 120 -Cycle
 ```
 
 - `voice_e2e.ps1` plays a synthesized reference speech into the sender (through a loopback
@@ -35,6 +38,13 @@ powershell -File scripts\perf\stream_e2e.ps1 -Sender "<name>" -Receiver "<name>"
 - `stream_e2e.ps1` shares the sender's screen and reports whether the receiver got it,
   plus the receiver's CPU and FPS while watching. `-ReceiverBackend winit-software`
   compares renderers; `-Fullscreen` watches at 1920x1080.
+- `watch_on_demand.ps1` checks that nothing is received or encoded until the receiver
+  presses Watch, that hiding the stream or going to the tray stops it, and how long the
+  picture takes to come back ([design](../../docs/WATCH_ON_DEMAND.md)).
+- `gateway_resume.ps1` drops the Discord gateway connection of both sides mid-stream and
+  checks that nobody leaves the call.
+- `soak.ps1` keeps a stream running for hours, cycling the tray and the popout, and
+  samples CPU and memory on both sides into a CSV.
 
 ## Browser sharing without Discord accounts
 

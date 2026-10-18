@@ -32,19 +32,13 @@ Este documento registra o estado; não autoriza publicação.
 
 ## Implementações maiores ainda pendentes
 
-- [ ] **Etapa 4 — Receber vídeo com a GPU.** O receptor nativo ainda usa OpenH264
-  por software. Falta decodificação por hardware e apresentação do vídeo pela GPU,
-  avaliando o custo das cópias e preservando a interface leve por CPU.
-- [ ] **Etapa 5 — Assistir sob demanda no protocolo nativo.** Receber/decodificar
-  somente após clicar em assistir; enviar só a espectadores que solicitaram;
-  esconder/parar de assistir deve interromper a recepção.
-- [ ] Na mesma etapa: chave nativa por sessão, ajuste de bitrate que possa voltar
-  a subir e seja reiniciado a cada transmissão, e expiração de espectadores.
-  A chave aleatória da web não corrige o caminho nativo, que ainda deriva a chave
-  do ID do canal.
-- [ ] Planejar a transição do protocolo nativo e as mudanças do worker juntas.
-  Definir compatibilidade/atualização necessária antes de alterar `MIN_PROTOCOL`;
-  atualizar o worker pode desconectar temporariamente WebSockets existentes.
+- [x] **Etapa 4 — Receber vídeo com a GPU** (Windows): decodificação DXVA e camadas
+  do DirectComposition; OpenH264 continua como reserva. Linux (VA-API) não feito.
+- [x] **Etapa 5 — Assistir sob demanda** (local, [desenho](WATCH_ON_DEMAND.md)):
+  pedido de assistir, envio só a quem pediu, chave por transmissão entregue com
+  X25519, ajuste de taxa pelo pior espectador, codificação pausada sem espectador.
+- [x] Transição decidida: protocolo 3, atualização obrigatória. O worker local já
+  exige `v=3` (`MIN_PROTOCOL = 3`); publicar **junto** com a release, nunca antes.
 - [ ] **Etapa 6.2 — Prioridade de threads não relacionadas a áudio.** Comparar
   antes/depois com jogo rodando; só adotar se houver ganho sem prejudicar vídeo.
 
@@ -55,9 +49,10 @@ Este documento registra o estado; não autoriza publicação.
 - [ ] VM/Linux: executar atalhos globais e NAT simulado, deixados para o fim.
 - [ ] Compilar e testar o estado atual no Linux. O CI anterior não cobre as novas
   mudanças de WebRTC/Opus/interface ainda locais.
-- [ ] Medir custo de transmissão web com captura real, resolução/FPS alvo e
-  um/três espectadores. As amostras da fonte sintética não provam 1080p60 real.
-- [ ] Teste prolongado de 2–3 h para verificar memória/CPU; ainda não executado.
+- [x] Custo da transmissão web com captura real 1080p60, um e três espectadores
+  (`web_share_real.cjs`, Chrome/Edge/Firefox).
+- [ ] Teste prolongado de 2–3 h: rodou 101 min (parado por falta de memória no PC),
+  CPU estável; a memória privada do receptor subiu de 222 para 277 MB, a investigar.
 - [ ] Hardware AMD e outros navegadores: continuam sem validação.
 - [ ] Medição final de leveza após as últimas mudanças, usando `scripts/perf/`.
 
