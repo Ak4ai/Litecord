@@ -3,6 +3,7 @@
 pub mod helpers;
 pub mod data_loader;
 pub mod message_grouping;
+pub mod gpu_video;
 
 pub use helpers::*;
 pub use data_loader::*;

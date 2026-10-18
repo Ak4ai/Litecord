@@ -168,19 +168,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => None,
         };
+        // The same changes decide whether a window shows its stream through the GPU.
+        let refresh_gpu_video = {
+            let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+            move || {
+                if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
+                    crate::ui::gpu_video::refresh(&a, &p);
+                }
+            }
+        };
+        let refresh_main = refresh_gpu_video.clone();
         app.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
                 screen_capture::set_main_window_has_area(has);
+                refresh_main();
             }
             EventResult::Propagate
         });
+        let (aw, pw) = (app_weak.clone(), popout_weak.clone());
         popout_window.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
                 screen_capture::set_popout_has_area(has);
+                if let (winit::event::WindowEvent::Resized(s), Some(a), Some(p)) = (ev, aw.upgrade(), pw.upgrade()) {
+                    crate::ui::gpu_video::popout_resized(&a, &p, s.width, s.height);
+                }
             }
             EventResult::Propagate
         });
-        popout_window.on_user_id_changed(|uid| screen_capture::set_popout_has_stream(!uid.is_empty()));
+        let refresh_pop = refresh_gpu_video.clone();
+        popout_window.on_user_id_changed(move |uid| {
+            screen_capture::set_popout_has_stream(!uid.is_empty());
+            refresh_pop();
+        });
+        let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+        app.on_stream_viewport_changed(move |x, y, w, h| {
+            if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
+                crate::ui::gpu_video::viewport_changed(&a, &p, x, y, w, h);
+            }
+        });
     }
 
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
@@ -256,6 +281,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             ui.window().request_redraw();
+            if let Some(pop_win) = popout_weak_init.upgrade() {
+                crate::ui::gpu_video::install(&ui, &pop_win);
+            }
         }
     });
 
@@ -520,6 +548,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     w.set_minimized(false);
                     w.focus_window();
                 });
+                // Shown and restored now (showing a hidden window brings no resize event).
+                screen_capture::set_popout_has_area(true);
+                crate::ui::gpu_video::refresh(&ui, &pop_win);
             }
         }
     });
@@ -830,6 +861,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_tr_stream_quality(quality.into());
                                 ui.set_remote_stream_frame(frame.clone());
                                 ui.set_remote_stream_fps(rx_fps_str.clone().into());
+                                if let Some(pop) = pop_w2.upgrade() {
+                                    crate::ui::gpu_video::refresh(&ui, &pop);
+                                }
 
                                 // Garantir que o participante na lista de voz esteja marcado como streaming
                                 let cur_model = ui.get_voice_participants();
@@ -910,6 +944,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+                        }
+                        if let Some(pop) = pop_w2.upgrade() {
+                            crate::ui::gpu_video::refresh(&ui, &pop);
                         }
                     }
                 });

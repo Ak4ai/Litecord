@@ -1119,6 +1119,10 @@ impl ScreenCaptureManager {
                 crate::cpu_profiler::set_current_thread_name("video-decoder-worker");
                 info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada com buffer elástico de 120 quadros!");
                 let mut decoders = StreamDecoders::default();
+                // Pictures the GPU draws straight into a window never reach the UI; it is
+                // told once a second (FPS, stream state) with the last known height.
+                let mut last_height: HashMap<u64, u32> = HashMap::new();
+                let mut last_gpu_ping: HashMap<u64, Instant> = HashMap::new();
                 let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
                 let mut rx_frame_count: HashMap<u64, u64> = HashMap::new();
                 let mut rx_last_stats: HashMap<u64, Instant> = HashMap::new();
@@ -1234,7 +1238,16 @@ impl ScreenCaptureManager {
                             }
 
                             let decoded = decode_video_frame(&mut decoders, peer_uid, &frame_data);
-                            if let Decoded::Picture(pixel_buffer, _w, h) = decoded {
+                            let shown = match decoded {
+                                Decoded::Picture(ref buf, _w, h) => {
+                                    last_height.insert(peer_uid, h);
+                                    Some(Some(buf.clone()))
+                                }
+                                Decoded::ShownByGpu => Some(None),
+                                _ => None,
+                            };
+                            if let Some(picture) = shown {
+                                let h = last_height.get(&peer_uid).copied().unwrap_or(0);
                                 let dec_us = t_dec_start.elapsed().as_micros();
                                 let count = rx_frame_count.entry(peer_uid).or_insert(0);
                                 *count += 1;
@@ -1253,6 +1266,19 @@ impl ScreenCaptureManager {
                                 if is_stream_recently_stopped(peer_uid) {
                                     continue;
                                 }
+                                let pixel_buffer = match picture {
+                                    Some(buf) => buf,
+                                    None => {
+                                        RX_FRAMES_SHOWN.fetch_add(1, Ordering::Relaxed);
+                                        rx_error_streak.remove(&peer_uid);
+                                        let due = last_gpu_ping.get(&peer_uid).map(|t| t.elapsed() >= Duration::from_secs(1)).unwrap_or(true);
+                                        if !due {
+                                            continue;
+                                        }
+                                        last_gpu_ping.insert(peer_uid, Instant::now());
+                                        SharedPixelBuffer::<Rgba8Pixel>::new(1, 1)
+                                    }
+                                };
                                 if let Ok(mut f_map) = get_active_stream_frames().lock() {
                                     f_map.insert(peer_uid, pixel_buffer.clone());
                                 }
@@ -1265,8 +1291,10 @@ impl ScreenCaptureManager {
                                     log::trace!("⏱️ [A/V SYNC] Frame {} | Video PTS: {}ms | Audio PTS: {}ms | Delta: {}ms", seq, pts_ms, audio_pts, delta);
                                 }
 
-                                rx_error_streak.remove(&peer_uid);
-                                RX_FRAMES_SHOWN.fetch_add(1, Ordering::Relaxed);
+                                if pixel_buffer.width() > 1 {
+                                    rx_error_streak.remove(&peer_uid);
+                                    RX_FRAMES_SHOWN.fetch_add(1, Ordering::Relaxed);
+                                }
                                 on_frame(peer_uid, peer_name, quality_label, pixel_buffer);
                             } else if let Decoded::NeedKeyframe = decoded {
                                 waiting_for_idr.insert(peer_uid, true);

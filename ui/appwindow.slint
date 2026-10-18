@@ -427,6 +427,11 @@ export component AppWindow inherits Window {
     in-out property <string> active_stream_user_id: "";
     in-out property <image> active_stream_frame;
     in-out property <image> remote_stream_frame;
+    // The remote stream is drawn by the GPU under the window (Windows): its area is painted
+    // in the hole colour (#010203), which the renderer leaves transparent.
+    in property <bool> gpu_video_main: false;
+    // Where the remote stream area is, in logical pixels (window coordinates).
+    callback stream_viewport_changed(length, length, length, length);
     in-out property <bool> is_stream_fullscreen: false;
     in-out property <string> focused_stream_uid: "";
     in-out property <string> tr_start_screen_share: Tr.start_stream;
@@ -1480,6 +1485,12 @@ export component AppWindow inherits Window {
                                         ? (!p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self")
                                         : (root.has_active_stream && (p.is_streaming || root.active_stream_user_id == p.user_id || root.active_stream_user_id == "") && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
                                     property <bool> is_this_stream_focused: (root.focused_stream_uid == p.user_id || (p.is_self && (root.focused_stream_uid == "self" || root.focused_stream_uid == p.user_id)));
+                                    // The stream area goes away (hidden, popped out): no GPU video here.
+                                    changed is_streaming_attached => {
+                                        if (!is_streaming_attached && p.user_id == root.active_stream_user_id) {
+                                            root.stream_viewport_changed(0px, 0px, 0px, 0px);
+                                        }
+                                    }
 
                                     height: is_streaming_attached
                                         ? (is_this_stream_focused
@@ -1491,16 +1502,26 @@ export component AppWindow inherits Window {
 
                                     // 1. EXPANDED STREAM VIEWPORT (When Streaming in the room & NOT popped out)
                                     if is_streaming_attached: Rectangle {
+                                        // The remote stream the GPU may draw under this area.
+                                        property <bool> remote_view: !(p.is_self && root.is_screen_sharing) && p.user_id == root.active_stream_user_id;
+                                        property <length> view_x: self.absolute-position.x;
+                                        property <length> view_y: self.absolute-position.y;
+                                        init => { if (remote_view) { root.stream_viewport_changed(view_x, view_y, self.width, self.height); } }
+                                        changed view_x => { if (remote_view) { root.stream_viewport_changed(view_x, view_y, self.width, self.height); } }
+                                        changed view_y => { if (remote_view) { root.stream_viewport_changed(view_x, view_y, self.width, self.height); } }
+                                        changed width => { if (remote_view) { root.stream_viewport_changed(view_x, view_y, self.width, self.height); } }
+                                        changed height => { if (remote_view) { root.stream_viewport_changed(view_x, view_y, self.width, self.height); } }
+                                        changed remote_view => { if (remote_view) { root.stream_viewport_changed(view_x, view_y, self.width, self.height); } }
                                         y: 4px;
                                         height: parent.height - 8px;
-                                        background: AppTheme.surface-media;
+                                        background: (root.gpu_video_main && remote_view) ? #010203 : AppTheme.surface-media;
                                         border-radius: 8px;
                                         border-width: p.is_speaking ? 3px : ((p.is_self && root.is_screen_sharing) ? 2px : 1px);
                                         border-color: p.is_speaking ? AppTheme.success : ((p.is_self && root.is_screen_sharing) ? AppTheme.accent : AppTheme.border-subtle);
                                         clip: true;
 
                                         // Video Canvas (Independent dual buffers: active_stream_frame for self transmitter, remote_stream_frame for remote peer)
-                                        Image {
+                                        if !(root.gpu_video_main && remote_view): Image {
                                             source: (p.is_self && root.is_screen_sharing) ? root.active_stream_frame : root.remote_stream_frame;
                                             width: 100%;
                                             height: 100%;
@@ -4751,7 +4772,9 @@ export component AppWindow inherits Window {
 export component PopoutStreamWindow inherits Window {
     title: Tr.detached_title;
     no-frame: true;
-    background: AppTheme.surface-media;
+    // The GPU draws the stream under the window: the hole colour leaves it transparent.
+    in property <bool> gpu_video: false;
+    background: root.gpu_video ? #010203 : AppTheme.surface-media;
     preferred-width: 640px;
     preferred-height: 360px;
     min-width: 180px;
@@ -4803,7 +4826,7 @@ export component PopoutStreamWindow inherits Window {
     }
 
     // Video Canvas Viewport
-    Image {
+    if !root.gpu_video: Image {
         width: 100%;
         height: 100%;
         source: root.stream_frame;

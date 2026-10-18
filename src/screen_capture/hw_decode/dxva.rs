@@ -1,17 +1,16 @@
 //! Windows backend: the D3D11 video decoder (DXVA), fed in the "short slice" format so the
 //! driver parses each slice and we only describe the picture and its references.
 //!
-//! The device is created on the adapter that drives the screen: on a laptop with two GPUs
-//! that keeps the decoded picture where the window is shown, and leaves the other GPU to
-//! the game.
+//! It runs on the shared device (see device.rs), so the windows can show its pictures.
+
+use std::sync::Arc;
 
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use windows::core::Interface;
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::*;
 
+use super::device::{shared_device, SharedDevice};
 use super::h264_state::{H264State, Parsed, Picture, StateError, StreamInfo};
 use super::HwError;
 use crate::screen_capture::video_pipeline::{nv12_to_rgba_scaled, Colour};
@@ -95,6 +94,7 @@ pub struct Frame {
 }
 
 pub struct DxvaDecoder {
+    shared: Arc<SharedDevice>,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     vdev: ID3D11VideoDevice,
@@ -113,22 +113,20 @@ unsafe impl Send for DxvaDecoder {}
 impl DxvaDecoder {
     pub fn new() -> Result<Self, HwError> {
         unsafe {
-            let adapter = display_adapter()?;
-            let mut device = None;
-            let mut context = None;
-            D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, None, D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut context))?;
-            let (device, context) = (device.ok_or(HwError::Unsupported("no D3D11 device".into()))?, context.ok_or(HwError::Unsupported("no D3D11 context".into()))?);
-            if let Ok(mt) = context.cast::<ID3D11Multithread>() {
-                let _ = mt.SetMultithreadProtected(true);
-            }
+            let shared = shared_device()?;
+            let (device, context) = (shared.device.clone(), shared.context.clone());
             let vdev: ID3D11VideoDevice = device.cast()?;
             let vctx: ID3D11VideoContext = context.cast()?;
             let has_h264 = (0..vdev.GetVideoDecoderProfileCount()).filter_map(|i| vdev.GetVideoDecoderProfile(i).ok()).any(|g| g == D3D11_DECODER_PROFILE_H264_VLD_NOFGT);
             if !has_h264 || !vdev.CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_H264_VLD_NOFGT, DXGI_FORMAT_NV12)?.as_bool() {
                 return Err(HwError::Unsupported("the GPU has no H.264 decoder".into()));
             }
-            Ok(Self { device, context, vdev, vctx, state: H264State::new(), session: None, feedback: 0, bitstream: Vec::new(), slices: Vec::new(), staging: None })
+            Ok(Self { shared, device, context, vdev, vctx, state: H264State::new(), session: None, feedback: 0, bitstream: Vec::new(), slices: Vec::new(), staging: None })
         }
+    }
+
+    pub fn shared(&self) -> &SharedDevice {
+        &self.shared
     }
 
     /// Decodes one access unit (Annex B). Returns the pictures now due on screen.
@@ -333,19 +331,6 @@ unsafe fn fill(vctx: &ID3D11VideoContext, decoder: &ID3D11VideoDecoder, kind: D3
     std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
     vctx.ReleaseDecoderBuffer(decoder, kind)?;
     Ok(D3D11_VIDEO_DECODER_BUFFER_DESC { BufferType: kind, DataSize: data.len() as u32, NumMBsInBuffer: mbs, ..Default::default() })
-}
-
-/// The adapter with a screen attached (the first one, when several have screens).
-unsafe fn display_adapter() -> Result<IDXGIAdapter1, HwError> {
-    let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
-    let mut i = 0;
-    while let Ok(a) = factory.EnumAdapters1(i) {
-        if a.EnumOutputs(0).is_ok() {
-            return Ok(a);
-        }
-        i += 1;
-    }
-    Err(HwError::Unsupported("no adapter drives a screen".into()))
 }
 
 impl From<StateError> for HwError {

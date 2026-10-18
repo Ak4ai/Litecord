@@ -159,6 +159,16 @@ pub fn streams_watched() -> bool {
     )
 }
 
+/// The main window can show a stream (visible, not minimized).
+pub fn main_window_watching() -> bool {
+    crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed) && MAIN_WINDOW_HAS_AREA.load(Ordering::Relaxed)
+}
+
+/// The popout shows a stream and is not minimized.
+pub fn popout_watching() -> bool {
+    POPOUT_HAS_STREAM.load(Ordering::Relaxed) && POPOUT_HAS_AREA.load(Ordering::Relaxed)
+}
+
 fn anyone_watching(app_visible: bool, main_has_area: bool, popout_has_stream: bool, popout_has_area: bool) -> bool {
     (app_visible && main_has_area) || (popout_has_stream && popout_has_area)
 }
@@ -403,6 +413,8 @@ impl StreamDecoders {
 
 pub enum Decoded {
     Picture(SharedPixelBuffer<Rgba8Pixel>, u32, u32),
+    /// Drawn by the GPU straight into the windows showing the stream.
+    ShownByGpu,
     /// Nothing to show yet, and nothing wrong (parameter sets, a picture held for reordering).
     Nothing,
     /// The picture could not be decoded.
@@ -438,11 +450,15 @@ pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_da
     let gpu_allowed = !crate::utils::test_hooks::CPU_DECODE.load(Ordering::Relaxed);
     #[cfg(not(feature = "automation"))]
     let gpu_allowed = true;
+    if !gpu_allowed {
+        // Its windows go back to CPU pictures once this decoder is gone.
+        decoders.gpu.remove(&peer_uid);
+    }
     if gpu_allowed && !decoders.cpu_only.contains(&peer_uid) {
-        use super::hw_decode::{GpuDecoder, HwError};
+        use super::hw_decode::{GpuDecoder, GpuPicture, HwError};
         let gpu = match decoders.gpu.entry(peer_uid) {
             std::collections::hash_map::Entry::Occupied(e) => Some(e.into_mut()),
-            std::collections::hash_map::Entry::Vacant(v) => match GpuDecoder::new() {
+            std::collections::hash_map::Entry::Vacant(v) => match GpuDecoder::new(peer_uid) {
                 Ok(d) => {
                     log::info!("🎞️ [DECODER RX] Decodificando a transmissão do peer {} pela GPU", peer_uid);
                     Some(v.insert(d))
@@ -455,10 +471,14 @@ pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_da
             },
         };
         if let Some(gpu) = gpu {
-            match gpu.decode_rgba(&annex_b, shown_size) {
-                Ok(Some((buf, w, h))) => {
+            match gpu.decode(&annex_b, shown_size) {
+                Ok(Some(GpuPicture::Rgba(buf, w, h))) => {
                     RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
                     return Decoded::Picture(buf, w, h);
+                }
+                Ok(Some(GpuPicture::Shown)) => {
+                    RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
+                    return Decoded::ShownByGpu;
                 }
                 Ok(None) => return Decoded::Nothing,
                 Err(HwError::NeedKeyframe(why)) => {
