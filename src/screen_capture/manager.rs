@@ -184,6 +184,7 @@ impl ScreenCaptureManager {
             }
         }
         if self.is_running.swap(false, Ordering::SeqCst) {
+            super::watch::end_session();
             CURRENT_TX_FPS.store(0, Ordering::Relaxed);
             info!("🛑 Parando captura e transmissão de tela P2P...");
             let mut cid = self.channel_id.load(Ordering::Relaxed);
@@ -251,6 +252,10 @@ impl ScreenCaptureManager {
             warn!("Transmissão de tela já está em execução.");
             return;
         }
+        // New stream: new key, nobody watching yet, full bitrate.
+        super::watch::start_session();
+        TX_WATCHED.store(false, Ordering::Relaxed);
+        REQUESTED_BITRATE_BPS.store(MAX_STREAM_BITRATE, Ordering::Relaxed);
         force_signaling_broadcast();
 
         let on_local_arc: Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static> = Arc::new(on_local_frame);
@@ -287,7 +292,6 @@ impl ScreenCaptureManager {
                 Arc::clone(&self.is_running),
                 Arc::clone(&self.channel_id),
                 Arc::clone(&self.my_user_id),
-                Arc::clone(&self.known_peers),
             );
         }
 
@@ -342,6 +346,8 @@ impl ScreenCaptureManager {
                         is_running: Arc<AtomicBool>,
                         target_w: u32,
                         target_h: u32,
+                        /// When a frame was last copied out of the GPU.
+                        last_copy: Option<Instant>,
                     }
 
                     struct WgcFlags {
@@ -364,6 +370,7 @@ impl ScreenCaptureManager {
                                 is_running: ctx.flags.is_running,
                                 target_w: ctx.flags.target_w,
                                 target_h: ctx.flags.target_h,
+                                last_copy: None,
                             })
                         }
 
@@ -377,6 +384,12 @@ impl ScreenCaptureManager {
                                 return Ok(());
                             }
 
+                            // Copying the frame out of the GPU is the costly part: while nobody
+                            // watches, only as often as the local preview needs.
+                            if !TX_WATCHED.load(Ordering::Relaxed) && self.last_copy.is_some_and(|t| t.elapsed() < IDLE_FRAME_INTERVAL) {
+                                return Ok(());
+                            }
+                            self.last_copy = Some(Instant::now());
                             let (w, h) = (frame.width(), frame.height());
                             if let Ok(mut fb) = frame.buffer() {
                                 let slice = fb.as_raw_buffer();
@@ -444,8 +457,9 @@ impl ScreenCaptureManager {
                                             let _ = tx_frame_fallback.try_send((cur_buf.clone(), target_w, target_h, blt, pix));
                                         }
                                         let el = t_start.elapsed();
-                                        if el < frame_interval {
-                                            std::thread::sleep(frame_interval - el);
+                                        let pace = capture_pace(frame_interval);
+                                        if el < pace {
+                                            std::thread::sleep(pace - el);
                                         }
                                     }
                                 }
@@ -533,8 +547,13 @@ impl ScreenCaptureManager {
                                             }
 
                                             let el = t_start.elapsed();
-                                            if el < frame_interval {
-                                                std::thread::sleep(frame_interval - el);
+
+                                            let pace = capture_pace(frame_interval);
+
+                                            if el < pace {
+
+                                                std::thread::sleep(pace - el);
+
                                             }
                                         }
                                     }
@@ -561,8 +580,9 @@ impl ScreenCaptureManager {
                                                     let _ = tx_frame_fallback_inner.try_send((cur_buf.clone(), target_w, target_h, blt, pix));
                                                 }
                                                 let el = t_start.elapsed();
-                                                if el < frame_interval {
-                                                    std::thread::sleep(frame_interval - el);
+                                                let pace = capture_pace(frame_interval);
+                                                if el < pace {
+                                                    std::thread::sleep(pace - el);
                                                 }
                                             }
                                         }
@@ -691,6 +711,8 @@ impl ScreenCaptureManager {
                                     let _ = tx_frame.try_send((cur_buf, w, h, blt, pix));
                                 }
 
+                                // Nobody watching: only the local preview uses frames (4 per second).
+                                let frame_interval = if TX_WATCHED.load(Ordering::Relaxed) { frame_interval } else { IDLE_FRAME_INTERVAL };
                                 let now = Instant::now();
                                 if now < next_cap_time {
                                     let rem = next_cap_time - now;
@@ -728,6 +750,9 @@ impl ScreenCaptureManager {
                 let frame_target_interval = Duration::from_micros(1_000_000 / target_fps.max(1));
                 let mut next_tick = Instant::now();
                 let mut latest_cached_frame: Option<(Vec<u8>, u32, u32, u128, u128)> = None;
+                let mut rate = super::watch::RateControl::new(MAX_STREAM_BITRATE);
+                let mut last_rate_update = Instant::now();
+                let mut was_watched = false;
 
                 while is_running.load(Ordering::Relaxed) {
                     let mut cid = channel_id_atomic.load(Ordering::Relaxed);
@@ -819,6 +844,8 @@ impl ScreenCaptureManager {
                     }
 
                     // Pacer CFR de precisão (Sem busy spinloop para 0% CPU overhead)
+                    // Nobody watching: the preview's pace (a new viewer is noticed within it).
+                    let frame_target_interval = if was_watched { frame_target_interval } else { IDLE_FRAME_INTERVAL };
                     let now = Instant::now();
                     if now < next_tick {
                         let sleep_dur = (next_tick - now).min(frame_target_interval);
@@ -888,8 +915,30 @@ impl ScreenCaptureManager {
                     let t_preview_us = t_preview_start.elapsed().as_micros();
                     total_preview_us += t_preview_us;
 
+                    if last_rate_update.elapsed() >= Duration::from_secs(1) {
+                        last_rate_update = Instant::now();
+                        let before = rate.current();
+                        let bps = rate.update(super::watch::worst_loss(), last_rate_update);
+                        if bps != before {
+                            info!("📶 [ABR] Taxa da transmissão: {:.1} -> {:.1} Mbps (pior perda entre espectadores: {:?}‰)", before as f64 / 1e6, bps as f64 / 1e6, super::watch::worst_loss());
+                        }
+                        REQUESTED_BITRATE_BPS.store(bps, Ordering::Relaxed);
+                    }
+
+                    // Nobody watching (natively or in a browser): no encoding, nothing sent.
+                    // The first viewer to arrive asks for a keyframe.
+                    let viewer_addrs = super::watch::viewer_addrs();
+                    let watched = !viewer_addrs.is_empty() || super::web_share::viewer_count() > 0;
+                    if watched != was_watched {
+                        was_watched = watched;
+                        TX_WATCHED.store(watched, Ordering::Relaxed);
+                        info!("👀 [ASSISTIR SOB DEMANDA] {}", if watched { "Alguém começou a assistir: codificando." } else { "Ninguém assistindo: codificação pausada." });
+                    }
+
                     let enc_start = Instant::now();
-                    let frame_bytes_opt = if let Some(ref mut enc) = h264_encoder {
+                    let frame_bytes_opt = if !watched {
+                        None
+                    } else if let Some(ref mut enc) = h264_encoder {
                         let target_bitrate = REQUESTED_BITRATE_BPS.load(Ordering::Relaxed);
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
@@ -915,8 +964,9 @@ impl ScreenCaptureManager {
                         // Browsers watching over WebRTC get the same encoded frame.
                         super::web_share::offer_frame(&raw_frame_bytes);
                         let t_crypt_start = Instant::now();
-                        let sec_key = get_voice_encryption_key(cid);
-                        let frame_bytes = encrypt_signaling_payload(&sec_key, &raw_frame_bytes).unwrap_or(raw_frame_bytes);
+                        let Some(frame_bytes) = super::watch::session_key().and_then(|k| encrypt_signaling_payload(&k, &raw_frame_bytes)) else {
+                            continue;
+                        };
                         let t_crypt_us = t_crypt_start.elapsed().as_micros();
                         total_crypt_us += t_crypt_us;
 
@@ -924,39 +974,9 @@ impl ScreenCaptureManager {
                         let total_len = frame_bytes.len();
                         let total_chunks = ((total_len + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
 
-                        // Send directly to verified active peers in current voice channel
-                        let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
-
-                        if let Ok(guard) = LAST_SEEN_PEER_ADDR.lock() {
-                            if let Some(map) = guard.as_ref() {
-                                for (&p_uid, &active_addr) in map.iter() {
-                                    if p_uid != uid && !is_tailscale_or_forbidden(&active_addr) && !target_addrs.contains(&active_addr) {
-                                        target_addrs.push(active_addr);
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Ok(mut peers) = peers_store.lock() {
-                            let now = Instant::now();
-                            peers.retain(|_, (_, seen)| {
-                                now.duration_since(*seen) < Duration::from_secs(60)
-                            });
-                            for (&_p_key, &(addr, _)) in peers.iter() {
-                                if !is_tailscale_or_forbidden(&addr) && !target_addrs.contains(&addr) {
-                                    target_addrs.push(addr);
-                                }
-                            }
-                        }
-                        if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
-                            if let Some(map) = last_guard.as_ref() {
-                                for (&p_uid, &addr) in map.iter() {
-                                    if p_uid != uid && !is_tailscale_or_forbidden(&addr) && !target_addrs.contains(&addr) {
-                                        target_addrs.push(addr);
-                                    }
-                                }
-                            }
-                        }
+                        // Only the viewers that asked for this stream (each at the address its
+                        // request came from).
+                        let target_addrs = viewer_addrs;
 
                         let t_fec_start = Instant::now();
                         // Compute Sunshine-grade Forward Error Correction (FEC) XOR parity
@@ -1426,6 +1446,8 @@ impl ScreenCaptureManager {
                 let mut active_streaming_users: HashMap<u64, bool> = HashMap::new();
                 let mut last_stream_activity: HashMap<u64, Instant> = HashMap::new();
                 let mut last_qos_feedback_time = Instant::now();
+                let mut last_watch_request = Instant::now() - Duration::from_secs(10);
+                let mut requested: Vec<u64> = Vec::new();
 
                 let my_instance_id = get_process_instance_id();
                 let mut last_outbound_heartbeat = Instant::now() - Duration::from_secs(10);
@@ -1470,10 +1492,9 @@ impl ScreenCaptureManager {
                                 qos_pkt.extend_from_slice(&peer_uid.to_be_bytes());
                                 qos_pkt.extend_from_slice(&loss_permille.to_be_bytes());
 
-                                if let Ok(peers) = peers_store.lock() {
-                                    if let Some(&(p_addr, _)) = peers.get(&peer_uid) {
-                                        let _ = socket.send_to(&qos_pkt, p_addr);
-                                    }
+                                // To where the stream comes from (presence entries are not keyed by uid alone).
+                                if let Some(&p_addr) = peer_addrs(peer_uid, &peers_store).first() {
+                                    let _ = socket.send_to(&qos_pkt, p_addr);
                                 }
 
                                 if qos.fec_recovered > 0 || qos.frames_lost > 0 {
@@ -1488,13 +1509,53 @@ impl ScreenCaptureManager {
                         }
                     }
 
+                    // Watch requests: renewed every second for the streams the user wants and
+                    // a window can show; the others get an UNWATCH right away.
+                    let wanted: Vec<u64> = if in_call && current_cid > 0 && my_uid > 0 { super::watch::streams_to_request() } else { Vec::new() };
+                    if (wanted != requested || last_watch_request.elapsed() >= super::watch::RENEW_EVERY) && (!wanted.is_empty() || !requested.is_empty()) {
+                        last_watch_request = Instant::now();
+                        let my_public = get_or_create_local_ecdh_keypair();
+                        for &peer in &wanted {
+                            let mut pkt = Vec::with_capacity(65);
+                            pkt.extend_from_slice(MAGIC);
+                            pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+                            pkt.push(OP_WATCH);
+                            pkt.extend_from_slice(&current_cid.to_be_bytes());
+                            pkt.extend_from_slice(&my_uid.to_be_bytes());
+                            pkt.extend_from_slice(&peer.to_be_bytes());
+                            pkt.extend_from_slice(&my_public);
+                            for addr in peer_addrs(peer, &peers_store) {
+                                let _ = socket.send_to(&pkt, addr);
+                            }
+                        }
+                        for &peer in requested.iter().filter(|p| !wanted.contains(p)) {
+                            let mut pkt = Vec::with_capacity(33);
+                            pkt.extend_from_slice(MAGIC);
+                            pkt.extend_from_slice(&my_instance_id.to_be_bytes());
+                            pkt.push(OP_UNWATCH);
+                            pkt.extend_from_slice(&current_cid.to_be_bytes());
+                            pkt.extend_from_slice(&my_uid.to_be_bytes());
+                            pkt.extend_from_slice(&peer.to_be_bytes());
+                            for addr in peer_addrs(peer, &peers_store) {
+                                for _ in 0..3 {
+                                    let _ = socket.send_to(&pkt, addr);
+                                }
+                            }
+                        }
+                        requested = wanted;
+                    }
+
+                    // Heartbeats keep NAT routes open only where a stream flows (the watch
+                    // requests above already do it for viewers), or find peers on the local
+                    // network while the signaling server is unreachable.
+                    let needs_heartbeat = is_tx_running.load(Ordering::Relaxed) || !requested.is_empty() || !signaling_connected();
                     // Proactive presence heartbeat every 1.5s to maintain direct peer routes and NAT pinholes
                     let heartbeat_every = if peers_store.lock().map(|p| p.is_empty()).unwrap_or(false) {
                         Duration::from_millis(4000)
                     } else {
                         Duration::from_millis(1500)
                     };
-                    if in_call && last_outbound_heartbeat.elapsed() >= heartbeat_every {
+                    if in_call && needs_heartbeat && last_outbound_heartbeat.elapsed() >= heartbeat_every {
                         last_outbound_heartbeat = Instant::now();
                         let mut uname = my_username_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
                         if uname.is_empty() {
@@ -1517,7 +1578,8 @@ impl ScreenCaptureManager {
                         hb_pkt.extend_from_slice(uname_bytes);
                         hb_pkt.extend_from_slice(&my_rx.to_be_bytes());
 
-                        let bcasts = get_broadcast_addresses();
+                        // Local-network broadcast only while the signaling server is out of reach.
+                        let bcasts = if signaling_connected() { Vec::new() } else { get_broadcast_addresses() };
                         for target in &bcasts {
                             let _ = socket.send_to(&hb_pkt, target);
                         }
@@ -1556,6 +1618,12 @@ impl ScreenCaptureManager {
                         match socket.recv_from(&mut recv_buf) {
                             Ok((len, src_addr)) => {
                                 packets_drained += 1;
+                                // Woken from a long wait: drain the rest with the short timeout,
+                                // or this loop keeps blocking for up to 128 packets.
+                                if idle_timeout.is_some() {
+                                    let _ = socket.set_read_timeout(Some(Duration::from_millis(2)));
+                                    idle_timeout = None;
+                                }
                                 // 1. STUN Binding Success Response (0x01, 0x01 with Magic Cookie 0x2112A442)
                                 if len >= 20 && recv_buf[0] == 0x01 && recv_buf[1] == 0x01 && &recv_buf[4..8] == &[0x21, 0x12, 0xa4, 0x42] {
                                     let mut i = 20;
@@ -1700,6 +1768,9 @@ impl ScreenCaptureManager {
                                         }
                                         let prev_state = active_streaming_users.insert(pkt_uid, is_streaming);
                                         if prev_state != Some(is_streaming) {
+                                            if is_streaming {
+                                                PEER_STREAMING_STATES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(pkt_uid, true);
+                                            }
                                             info!("📡 Usuário {} alterou estado de stream: {}", pkt_uid, is_streaming);
                                             if is_streaming {
                                                 on_state_arc(pkt_uid, true);
@@ -1824,14 +1895,10 @@ impl ScreenCaptureManager {
                                             }
                                             user_frames.remove(&seq);
 
-                                            let sec_key = get_voice_encryption_key(my_current_cid);
-                                            let final_frame_opt = if let Some(decrypted) = decrypt_signaling_payload(&sec_key, &complete_frame) {
-                                                Some(decrypted)
-                                            } else if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) || (complete_frame.len() >= 2 && complete_frame[0] == 0xFF && complete_frame[1] == 0xD8) {
-                                                Some(complete_frame)
-                                            } else {
-                                                None
-                                            };
+                                            // Only what opens with the key this sender handed us counts: no
+                                            // plaintext, and nothing from streams we did not ask for.
+                                            let final_frame_opt = super::watch::stream_key(pkt_uid)
+                                                .and_then(|k| decrypt_signaling_payload(&k, &complete_frame));
 
                                             if let Some(valid_frame) = final_frame_opt {
                                                 let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
@@ -1946,14 +2013,10 @@ impl ScreenCaptureManager {
                                             }
                                             user_frames.remove(&seq);
 
-                                            let sec_key = get_voice_encryption_key(my_current_cid);
-                                            let final_frame_opt = if let Some(decrypted) = decrypt_signaling_payload(&sec_key, &complete_frame) {
-                                                Some(decrypted)
-                                            } else if complete_frame.starts_with(&[0, 0, 0, 1]) || complete_frame.starts_with(&[0, 0, 1]) || (complete_frame.len() >= 2 && complete_frame[0] == 0xFF && complete_frame[1] == 0xD8) {
-                                                Some(complete_frame)
-                                            } else {
-                                                None
-                                            };
+                                            // Only what opens with the key this sender handed us counts: no
+                                            // plaintext, and nothing from streams we did not ask for.
+                                            let final_frame_opt = super::watch::stream_key(pkt_uid)
+                                                .and_then(|k| decrypt_signaling_payload(&k, &complete_frame));
 
                                             if let Some(valid_frame) = final_frame_opt {
                                                 let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
@@ -2017,21 +2080,65 @@ impl ScreenCaptureManager {
                                 OP_QOS_FEEDBACK => {
                                     if len >= 35 && is_tx_running.load(Ordering::Relaxed) {
                                         let target_peer = u64::from_be_bytes(recv_buf[25..33].try_into().unwrap());
-                                        if target_peer == my_uid || target_peer == 0 {
+                                        if target_peer == my_uid {
+                                            // The sender's rate follows the worst current viewer (screen-capture-tx).
                                             let loss_permille = u16::from_be_bytes(recv_buf[33..35].try_into().unwrap());
-                                            let current_bps = REQUESTED_BITRATE_BPS.load(Ordering::Relaxed);
-                                            if loss_permille > 80 {
-                                                // Congestion / Loss > 8%: Multiplicative Decrease (-20% to relieve queue buffers)
-                                                let new_bps = ((current_bps as f64) * 0.80).round() as u32;
-                                                let clamped = new_bps.clamp(3_000_000, 8_000_000);
-                                                if (current_bps as i32 - clamped as i32).abs() >= 1_000_000 {
-                                                    info!("📉 [DYNAMIC ABR] Perda de {:.1}% reportada pelo receptor. Reduzindo bitrate: {:.2} Mbps -> {:.2} Mbps",
-                                                        (loss_permille as f64) / 10.0,
-                                                        (current_bps as f64) / 1_000_000.0,
-                                                        (clamped as f64) / 1_000_000.0
-                                                    );
-                                                    REQUESTED_BITRATE_BPS.store(clamped, Ordering::Relaxed);
+                                            super::watch::on_loss_report(pkt_uid, loss_permille);
+                                        }
+                                    }
+                                }
+                                OP_WATCH => {
+                                    if len >= 65 && is_tx_running.load(Ordering::Relaxed) && u64::from_be_bytes(recv_buf[25..33].try_into().unwrap()) == my_uid {
+                                        let viewer_public: [u8; 32] = recv_buf[33..65].try_into().unwrap();
+                                        let in_channel = in_my_voice_channel(pkt_uid, my_current_cid);
+                                        match super::watch::on_watch(pkt_uid, viewer_public, src_addr, in_channel) {
+                                            Some(super::watch::Verdict::Accepted { new }) => {
+                                                if new {
+                                                    info!("👀 [ASSISTIR SOB DEMANDA] UID={} começou a assistir (de {}).", pkt_uid, src_addr);
+                                                    KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
                                                 }
+                                                let wrapped = super::watch::session_key().zip(pair_key(&viewer_public, my_uid, pkt_uid, my_current_cid))
+                                                    .and_then(|(stream_key, pair)| encrypt_signaling_payload(&pair, &stream_key));
+                                                if let Some(wrapped) = wrapped {
+                                                    let mut ack = Vec::with_capacity(125);
+                                                    ack.extend_from_slice(MAGIC);
+                                                    ack.extend_from_slice(&my_instance_id.to_be_bytes());
+                                                    ack.push(OP_WATCH_ACK);
+                                                    ack.extend_from_slice(&my_current_cid.to_be_bytes());
+                                                    ack.extend_from_slice(&my_uid.to_be_bytes());
+                                                    ack.extend_from_slice(&pkt_uid.to_be_bytes());
+                                                    ack.extend_from_slice(&get_or_create_local_ecdh_keypair());
+                                                    ack.extend_from_slice(&wrapped);
+                                                    let _ = socket.send_to(&ack, src_addr);
+                                                }
+                                            }
+                                            Some(refused) => {
+                                                static REFUSED: crate::utils::logger::LogThrottle = crate::utils::logger::LogThrottle::new(5000);
+                                                if let Some(n) = REFUSED.hit() {
+                                                    warn!("🚫 [ASSISTIR SOB DEMANDA] Pedido de UID={} ({}) recusado: {:?} ({} desde o último aviso)", pkt_uid, src_addr, refused, n);
+                                                }
+                                            }
+                                            None => {}
+                                        }
+                                    }
+                                }
+                                OP_UNWATCH => {
+                                    if len >= 33 && u64::from_be_bytes(recv_buf[25..33].try_into().unwrap()) == my_uid {
+                                        if super::watch::on_unwatch(pkt_uid) {
+                                            info!("👀 [ASSISTIR SOB DEMANDA] UID={} parou de assistir.", pkt_uid);
+                                        }
+                                    }
+                                }
+                                OP_WATCH_ACK => {
+                                    if len >= 125 && u64::from_be_bytes(recv_buf[25..33].try_into().unwrap()) == my_uid {
+                                        let sender_public: [u8; 32] = recv_buf[33..65].try_into().unwrap();
+                                        let key = pair_key(&sender_public, my_uid, pkt_uid, my_current_cid)
+                                            .and_then(|pair| decrypt_signaling_payload(&pair, &recv_buf[65..125]))
+                                            .and_then(|k| <[u8; 32]>::try_from(k.as_slice()).ok());
+                                        if let Some(key) = key {
+                                            if super::watch::stream_key(pkt_uid) != Some(key) {
+                                                info!("🔑 [ASSISTIR SOB DEMANDA] Chave da transmissão de UID={} recebida.", pkt_uid);
+                                                super::watch::set_stream_key(pkt_uid, key);
                                             }
                                         }
                                     }
@@ -2061,12 +2168,7 @@ impl ScreenCaptureManager {
                                         let sample_count = u16::from_be_bytes(recv_buf[38..40].try_into().unwrap()) as usize;
                                         let pcm_payload = &recv_buf[40..len];
 
-                                        let sec_key = get_voice_encryption_key(my_current_cid);
-                                        let raw_pcm = if let Some(decrypted) = decrypt_signaling_payload(&sec_key, pcm_payload) {
-                                            decrypted
-                                        } else if pcm_payload.len() == sample_count * 2 {
-                                            pcm_payload.to_vec()
-                                        } else {
+                                        let Some(raw_pcm) = super::watch::stream_key(pkt_uid).and_then(|k| decrypt_signaling_payload(&k, pcm_payload)) else {
                                             continue;
                                         };
 
@@ -2241,6 +2343,50 @@ impl ScreenCaptureManager {
             })
             .expect("Falha ao iniciar thread RX");
     }
+}
+
+/// Capture and send pace while nobody watches: the local preview's rate.
+const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Somebody watches the stream being sent (natively or in a browser); read by the
+/// capture thread to choose its pace.
+static TX_WATCHED: AtomicBool = AtomicBool::new(false);
+
+/// How long a capture loop waits between frames: the stream's pace while somebody
+/// watches, the preview's otherwise.
+fn capture_pace(frame_interval: Duration) -> Duration {
+    if TX_WATCHED.load(Ordering::Relaxed) { frame_interval } else { IDLE_FRAME_INTERVAL.max(frame_interval) }
+}
+
+/// The highest bitrate a stream starts at and climbs back to.
+const MAX_STREAM_BITRATE: u32 = 8_000_000;
+
+/// `uid` is in the voice channel `cid` (gateway voice states).
+fn in_my_voice_channel(uid: u64, cid: u64) -> bool {
+    cid != 0
+        && crate::gateway::get_guild_voice_states_store()
+            .lock()
+            .map(|m| m.get(&uid).is_some_and(|c| c.parse::<u64>().ok() == Some(cid)))
+            .unwrap_or(false)
+}
+
+/// Every address we know for `uid`: the last one its packets came from, and the ones its
+/// signaling presence announced.
+fn peer_addrs(uid: u64, peers_store: &Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>) -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    if let Some(a) = LAST_SEEN_PEER_ADDR.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&uid).copied())) {
+        out.push(a);
+    }
+    if let Ok(peers) = peers_store.lock() {
+        for (&k, &(a, _)) in peers.iter() {
+            // Presence entries are keyed by uid mixed with the instance in the high bits.
+            let same = k == uid || (k & 0xFFFF_FFFF) as u32 == (uid as u32) || k == uid.wrapping_add(0x8000_0000_0000_0000);
+            if same && !out.contains(&a) && !is_tailscale_or_forbidden(&a) {
+                out.push(a);
+            }
+        }
+    }
+    out
 }
 
 fn mark_decode_resync(peer_uid: u64) {

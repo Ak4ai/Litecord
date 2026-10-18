@@ -2176,7 +2176,8 @@ export component AppWindow inherits Window {
 
                                                      // Live Badge if streaming while card is audio-only/hidden
                                                      if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
-                                                                        background: AppTheme.danger-subtle;
+                                                         horizontal-stretch: 0;
+                                                         background: AppTheme.danger-subtle;
                                                          border-radius: 4px;
                                                          border-width: 1px;
                                                          border-color: AppTheme.danger;
@@ -2270,23 +2271,37 @@ export component AppWindow inherits Window {
                                                           }
                                                       }
 
-                                                     // Square button in top-right corner to re-enable/unhide stream (ONLY visible if user is currently streaming!)
+                                                     // The space between the badges and the button below.
+                                                     Rectangle { horizontal-stretch: 1; }
+
+                                                     // Top-right button that shows the stream (ONLY visible while the user streams).
+                                                     // Someone else's stream arrives only after Watch: nothing is received before.
                                                      if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
-                                                         width: 26px;
+                                                         width: p.is_self ? 26px : watch_label.preferred-width + 34px;
                                                          height: 22px;
                                                          border-radius: 4px;
-                                                         background: unhide_stream_ta.has-hover ? AppTheme.accent : AppTheme.interactive-hover;
+                                                         background: unhide_stream_ta.has-hover ? AppTheme.accent : (p.is_self ? AppTheme.interactive-hover : AppTheme.accent);
 
                                                          VerticalLayout {
                                                              alignment: center;
                                                              HorizontalLayout {
                                                                  alignment: center;
+                                                                 spacing: 6px;
                                                                  Image {
                                                                      source: @image-url("../assets/window.svg");
                                                                      width: 12px;
                                                                      height: 12px;
                                                                      colorize: AppTheme.text-on-accent;
                                                                      image-fit: contain;
+                                                                 }
+                                                                 watch_label := Text {
+                                                                     visible: !p.is_self;
+                                                                     width: p.is_self ? 0px : self.preferred-width;
+                                                                     text: Tr.watch_stream;
+                                                                     color: AppTheme.text-on-accent;
+                                                                     font-size: 11px;
+                                                                     font-weight: 700;
+                                                                     vertical-alignment: center;
                                                                  }
                                                              }
                                                          }

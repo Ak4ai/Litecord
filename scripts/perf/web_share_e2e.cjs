@@ -32,7 +32,7 @@ async function stats(page) {
 
 async function nativeSignalingRegression() {
   const peers = [];
-  function peer(user, channel, version = 2) {
+  function peer(user, channel, version = 3) {
     const ws = new drivers.TestWebSocket(`ws://127.0.0.1:8787/ws?user=${user}&channel=${channel}&v=${version}`);
     const messages = [];
     ws.onmessage = event => messages.push(event.data);
@@ -58,7 +58,7 @@ async function nativeSignalingRegression() {
     assert(!c.messages.includes(payload), 'Native rooms must remain isolated');
     a.ws.send('{"op":"ping"}'); await a.wait(s => JSON.parse(s).op === 'pong');
     a.ws.close(); await b.wait(s => JSON.parse(s).op === 'peer_leave');
-    const old = peer('404', room, 1); await old.wait(s => JSON.parse(s).op === 'upgrade_required');
+    const old = peer('404', room, 2); await old.wait(s => JSON.parse(s).op === 'upgrade_required');
     console.log('PASS: native signaling room/join/relay/no-echo/isolation/ping/leave/old-version regression');
   } finally { for (const p of peers) p.ws.terminate(); }
 }

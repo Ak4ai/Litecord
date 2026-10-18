@@ -10,6 +10,7 @@ pub mod audio_loopback;
 pub mod manager;
 pub mod net_diagnostics;
 pub mod web_share;
+pub mod watch;
 
 pub use types::*;
 pub use crypto::*;

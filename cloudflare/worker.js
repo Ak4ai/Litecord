@@ -17,7 +17,7 @@
 //   {"op":"peer_join","uid":"..."}      sent to everybody else when a client connects
 //   {"op":"peer_leave","uid":"...","cid":"..."}  sent to everybody else when it leaves
 //   {"op":"pong"}                       answer to {"op":"ping"}
-//   {"op":"upgrade_required","min_protocol":2}  sent once to a parked outdated client
+//   {"op":"upgrade_required","min_protocol":3}  sent once to a parked outdated client
 // User ids are 64-bit snowflakes, so they are always strings (a JSON number would
 // lose precision above 2^53).
 //
@@ -58,8 +58,10 @@ export default {
         return new Response("Expected Upgrade: websocket", { status: 426 });
       }
 
-      // Clients older than protocol 2 (Litecord <= 1.1.0) announce themselves every
-      // 2s, which keeps a room awake around the clock. They are parked instead.
+      // Clients older than protocol 3 are parked: protocol 2 (Litecord 1.2.0) sends its
+      // stream to the whole room with a key derived from the channel id and cannot
+      // watch streams sent on demand (docs/WATCH_ON_DEMAND.md); protocol 1 (<= 1.1.0)
+      // also announced itself every 2s, keeping rooms awake around the clock.
       const protocol = parseInt(url.searchParams.get("v") || "1", 10) || 1;
       if (protocol < MIN_PROTOCOL) {
         return parkOutdatedClient();
@@ -76,7 +78,7 @@ export default {
   },
 };
 
-const MIN_PROTOCOL = 2;
+const MIN_PROTOCOL = 3;
 
 // Holds the socket open without ever touching a Durable Object: the outdated
 // client stops reconnecting every 2s (one worker request per connection instead)

@@ -138,16 +138,24 @@ static MAIN_WINDOW_HAS_AREA: AtomicBool = AtomicBool::new(true);
 static POPOUT_HAS_STREAM: AtomicBool = AtomicBool::new(false);
 static POPOUT_HAS_AREA: AtomicBool = AtomicBool::new(true);
 
+// A change wakes the receive thread: it asks for (or stops asking for) the watched
+// streams right away instead of on its next wake.
 pub fn set_main_window_has_area(has: bool) {
-    MAIN_WINDOW_HAS_AREA.store(has, Ordering::Relaxed);
+    if MAIN_WINDOW_HAS_AREA.swap(has, Ordering::Relaxed) != has {
+        super::types::wake_p2p_receiver();
+    }
 }
 
 pub fn set_popout_has_stream(has: bool) {
-    POPOUT_HAS_STREAM.store(has, Ordering::Relaxed);
+    if POPOUT_HAS_STREAM.swap(has, Ordering::Relaxed) != has {
+        super::types::wake_p2p_receiver();
+    }
 }
 
 pub fn set_popout_has_area(has: bool) {
-    POPOUT_HAS_AREA.store(has, Ordering::Relaxed);
+    if POPOUT_HAS_AREA.swap(has, Ordering::Relaxed) != has {
+        super::types::wake_p2p_receiver();
+    }
 }
 
 pub fn streams_watched() -> bool {

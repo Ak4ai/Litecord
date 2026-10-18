@@ -39,6 +39,7 @@ macro_rules! ui_strings {
 }
 
 ui_strings! {
+    (watch_stream, set_watch_stream, "Watch", "Assistir", "Ver", "Ansehen", "Regarder", "Смотреть", "視聴"),
     (web_share_start, set_web_share_start, "Share on web", "Compartilhar na web", "Compartir en la web", "Im Web teilen", "Partager sur le web", "Поделиться в браузере", "ウェブで共有"),
     (web_share_stop, set_web_share_stop, "Stop web", "Encerrar web", "Detener web", "Web beenden", "Arrêter le web", "Остановить веб", "ウェブ共有を停止"),
     (web_share_connecting, set_web_share_connecting, "Connecting…", "Conectando…", "Conectando…", "Verbinden…", "Connexion…", "Подключение…", "接続中…"),

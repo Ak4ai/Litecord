@@ -26,7 +26,8 @@
 //! {"cmd":"leave_voice"}                      same as the leave button
 //! {"cmd":"start_screen_share","res":"1080p","fps":60,"screen":0,"audio":false}
 //! {"cmd":"stop_screen_share"}
-//! {"cmd":"watch_stream","user_id":"123"}     open a peer's stream in the main view
+//! {"cmd":"watch_stream","user_id":"123"}     Watch a peer's stream and open it in the main view
+//! {"cmd":"unwatch_stream","user_id":"123"}   hide it (stop receiving it)
 //! {"cmd":"stream_fullscreen"}                toggle the stream full screen button
 //! {"cmd":"resize","width":1920,"height":1080} set the window size in logical pixels
 //! {"cmd":"web_share_start"}                  start sharing to browsers; replies with the link
@@ -288,8 +289,16 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             Ok(json!({ "ok": true }))
         }
         "watch_stream" => {
+            // Like the Watch button, then the stream in the main view.
             let uid = cmd["user_id"].as_str().ok_or("missing \"user_id\"")?;
-            ui.invoke_focus_stream(uid.into());
+            ui.invoke_unhide_stream(uid.into());
+            ui.set_focused_stream_uid(uid.into());
+            Ok(json!({ "ok": true }))
+        }
+        "unwatch_stream" => {
+            // Like hiding the stream: stop receiving it.
+            let uid = cmd["user_id"].as_str().ok_or("missing \"user_id\"")?;
+            ui.invoke_hide_stream(uid.into());
             Ok(json!({ "ok": true }))
         }
         "stream_fullscreen" => {

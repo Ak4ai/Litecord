@@ -370,6 +370,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 APP_IS_VISIBLE.store(true, Ordering::Relaxed);
+                // Watched streams are asked for again right away.
+                screen_capture::types::wake_p2p_receiver();
                 NEED_UI_REFRESH.store(true, Ordering::Relaxed);
                 utils::wake_hardware_monitor();
                 wake_ui_loops();
@@ -914,16 +916,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w2.upgrade() {
                         if is_streaming {
+                            // Someone else's stream starts hidden, with a Watch button: nothing
+                            // is received until the user asks for it.
+                            let not_watching = uid != gateway::get_my_user_id() && !screen_capture::watch::is_wanted(uid);
+                            if not_watching {
+                                hidden_streams_inner.lock().unwrap().insert(uid_str.clone());
+                            }
                             let cur_model = ui.get_voice_participants();
                             for i in 0..cur_model.row_count() {
                                 if let Some(mut p) = cur_model.row_data(i) {
                                     if p.user_id == uid_str.as_str() {
                                         p.is_streaming = true;
+                                        if not_watching {
+                                            p.is_stream_hidden = true;
+                                        }
                                         cur_model.set_row_data(i, p);
                                     }
                                 }
                             }
                         } else {
+                            if uid == 0 {
+                                screen_capture::watch::clear_wanted();
+                            } else {
+                                screen_capture::watch::set_wanted(uid, false);
+                            }
                             hidden_streams_inner.lock().unwrap().remove(uid_str.as_str());
                             let cur_act_id = ui.get_active_stream_user_id().to_string();
                             if cur_act_id == uid_str || cur_act_id.is_empty() || uid == 0 {
@@ -1313,6 +1329,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uid = uid_str.to_string();
         info!("👁️ Ocultando stream de vídeo do usuário {}", uid);
         hidden_streams_hide.lock().unwrap().insert(uid.clone());
+        // Hiding someone's stream stops receiving it (the sender stops sending to us).
+        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), false);
         if let Some(ui) = app_weak_hide.upgrade() {
             if ui.get_focused_stream_uid() == uid.as_str() {
                 ui.set_focused_stream_uid("".into());
@@ -1338,6 +1356,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uid = uid_str.to_string();
         info!("👁️ Reexibindo stream de vídeo do usuário {}", uid);
         hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
+        // Watch: ask the sender for the stream.
+        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), true);
         if let Some(ui) = app_weak_unhide.upgrade() {
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
@@ -1668,10 +1688,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         let act_uid = ui.get_active_stream_user_id();
                         let act_uname = ui.get_active_stream_user();
-                        ui.get_has_active_stream() && (
+                        // Streams arrive only once watched: the sender's own announcement is
+                        // what shows the LIVE badge and the Watch button before that.
+                        screen_capture::peer_is_streaming(user_id) || (ui.get_has_active_stream() && (
                             (!act_uid.is_empty() && act_uid.as_str() == uid_str.as_str())
                             || (!act_uname.is_empty() && act_uname.as_str() == username.as_str())
-                        )
+                        ))
                     };
 
                     let is_hidden = hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false);
@@ -2405,6 +2427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sm_leave.set_context(0, 0, "");
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
+        screen_capture::watch::clear_wanted();
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);

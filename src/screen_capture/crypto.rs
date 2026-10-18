@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use aes_gcm::{
@@ -13,7 +12,6 @@ use super::types::get_process_instance_id;
 
 static LOCAL_ECDH_SECRET: Mutex<Option<StaticSecret>> = Mutex::new(None);
 static LOCAL_ECDH_PUBLIC: Mutex<Option<[u8; 32]>> = Mutex::new(None);
-static PEER_ECDH_KEYS: Mutex<Option<HashMap<u64, [u8; 32]>>> = Mutex::new(None);
 
 /// Obtém ou gera o par de chaves X25519 efêmero na RAM para esta sessão
 pub fn get_or_create_local_ecdh_keypair() -> [u8; 32] {
@@ -29,38 +27,23 @@ pub fn get_or_create_local_ecdh_keypair() -> [u8; 32] {
     pub_bytes
 }
 
-/// Deriva a chave simétrica AES-256-GCM exclusiva via multiplicação escalar X25519 ECDH
-pub fn compute_peer_shared_key(peer_uid: u64, peer_pub_bytes: &[u8; 32], fallback_cid: u64) -> [u8; 32] {
-    let secret_lock = LOCAL_ECDH_SECRET.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref local_secret) = *secret_lock {
-        let peer_public = PublicKey::from(*peer_pub_bytes);
-        let shared_secret = local_secret.diffie_hellman(&peer_public);
-        let mut hasher = Sha256::new();
-        hasher.update(b"litecord_x25519_ecdh_aes256_gcm_salt_v1_2026");
-        hasher.update(shared_secret.as_bytes());
-        hasher.update(&peer_uid.to_be_bytes());
-        let res = hasher.finalize();
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&res);
-
-        let mut keys_guard = PEER_ECDH_KEYS.lock().unwrap_or_else(|e| e.into_inner());
-        let map = keys_guard.get_or_insert_with(HashMap::new);
-        map.insert(peer_uid, key);
-        return key;
-    }
-    get_voice_encryption_key(fallback_cid)
+/// The key two peers share: X25519 of our secret with their public key, bound to both
+/// user ids (in a fixed order, so both sides derive the same one) and the channel.
+pub fn pair_key(peer_public: &[u8; 32], my_uid: u64, peer_uid: u64, cid: u64) -> Option<[u8; 32]> {
+    get_or_create_local_ecdh_keypair();
+    let secret = LOCAL_ECDH_SECRET.lock().unwrap_or_else(|e| e.into_inner());
+    Some(pair_key_from(secret.as_ref()?, peer_public, my_uid, peer_uid, cid))
 }
 
-/// Retorna a chave negociada via ECDH para o peer ou fallback para a chave do canal
-pub fn get_peer_encryption_key(peer_uid: u64, fallback_cid: u64) -> [u8; 32] {
-    if peer_uid != 0 {
-        if let Some(ref map) = *PEER_ECDH_KEYS.lock().unwrap_or_else(|e| e.into_inner()) {
-            if let Some(&key) = map.get(&peer_uid) {
-                return key;
-            }
-        }
-    }
-    get_voice_encryption_key(fallback_cid)
+fn pair_key_from(secret: &StaticSecret, peer_public: &[u8; 32], uid_a: u64, uid_b: u64, cid: u64) -> [u8; 32] {
+    let shared = secret.diffie_hellman(&PublicKey::from(*peer_public));
+    let mut hasher = Sha256::new();
+    hasher.update(b"litecord-p2p-pair-v3\0");
+    hasher.update(shared.as_bytes());
+    hasher.update(uid_a.min(uid_b).to_be_bytes());
+    hasher.update(uid_a.max(uid_b).to_be_bytes());
+    hasher.update(cid.to_be_bytes());
+    hasher.finalize().into()
 }
 
 /// Deriva uma chave AES de 32 bytes exclusiva e sincronizada para todos os participantes do canal de voz
@@ -109,4 +92,28 @@ pub fn decrypt_signaling_payload(key_bytes: &[u8; 32], encrypted_data: &[u8]) ->
     let ciphertext = &encrypted_data[12..];
 
     cipher.decrypt(nonce, ciphertext).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_peers_derive_the_same_pair_key_and_only_they_open_what_it_wraps() {
+        let (a, b, c) = (StaticSecret::from([7u8; 32]), StaticSecret::from([9u8; 32]), StaticSecret::from([11u8; 32]));
+        let (pa, pb) = (*PublicKey::from(&a).as_bytes(), *PublicKey::from(&b).as_bytes());
+        let ka = pair_key_from(&a, &pb, 100, 200, 5);
+        let kb = pair_key_from(&b, &pa, 200, 100, 5);
+        assert_eq!(ka, kb);
+        // Another channel, or a third party with B's public key, gets something else.
+        assert_ne!(ka, pair_key_from(&a, &pb, 100, 200, 6));
+        let kc = pair_key_from(&c, &pb, 100, 200, 5);
+        assert_ne!(ka, kc);
+
+        let stream_key = [42u8; 32];
+        let wrapped = encrypt_signaling_payload(&ka, &stream_key).unwrap();
+        assert_eq!(wrapped.len(), 60);
+        assert_eq!(decrypt_signaling_payload(&kb, &wrapped).unwrap(), stream_key);
+        assert!(decrypt_signaling_payload(&kc, &wrapped).is_none());
+    }
 }

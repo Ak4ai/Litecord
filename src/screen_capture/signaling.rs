@@ -13,6 +13,20 @@ use futures_util::{SinkExt, StreamExt};
 use super::types::*;
 use super::crypto::*;
 
+/// Signaling protocol this version speaks. 3: watching on demand with a key per stream
+/// (docs/WATCH_ON_DEMAND.md); older versions cannot watch these streams, so the worker
+/// parks them.
+pub const SIGNALING_PROTOCOL: u32 = 3;
+
+/// Set when the signaling server parked this version (it no longer relays our messages).
+pub static SIGNALING_PARKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The signaling server is reachable and relays our messages: peers find each other
+/// through it, so the local-network broadcast fallback is not needed.
+pub fn signaling_connected() -> bool {
+    !SIGNALING_PARKED.load(Ordering::Relaxed) && SIGNALING_OUT_TX.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
 pub fn invalidate_cached_stun_address() {
     if let Ok(mut guard) = CACHED_STUN_ADDR.lock() {
         *guard = None;
@@ -161,25 +175,6 @@ pub fn process_signaling_json(
             // Se o peer parou de transmitir tela, fecha imediatamente (<50ms) sem esperar timeout de pacotes UDP
             if !is_streaming && was_streaming {
                 trigger_stream_stopped(pkt_uid);
-            }
-
-            // Negociação X25519 ECDH: computa a chave de sessão compartilhada exclusiva do peer
-            if let Some(pub_hex) = val["ecdh_pub"].as_str() {
-                if pub_hex.len() == 64 {
-                    let mut pub_bytes = [0u8; 32];
-                    let mut valid = true;
-                    for i in 0..32 {
-                        if let Ok(byte_val) = u8::from_str_radix(&pub_hex[i * 2..i * 2 + 2], 16) {
-                            pub_bytes[i] = byte_val;
-                        } else {
-                            valid = false;
-                            break;
-                        }
-                    }
-                    if valid {
-                        compute_peer_shared_key(pkt_uid, &pub_bytes, current_cid);
-                    }
-                }
             }
 
             let mut addrs_to_punch = Vec::new();
@@ -350,6 +345,7 @@ pub fn handle_incoming_ws_message(
                     return;
                 } else if val["op"] == "upgrade_required" {
                     // A newer signaling server parked us: no peers until the app is updated.
+                    SIGNALING_PARKED.store(true, Ordering::Relaxed);
                     warn!("⚠️ [SIGNALING] O servidor de sinalização exige uma versão mais nova do Litecord. Atualize para voltar a transmitir pela internet.");
                     return;
                 } else if val["op"] == "room" {
@@ -430,7 +426,7 @@ pub async fn run_cloudflare_signaling_loop(
             }
         }
 
-        let ws_url = format!("{}/ws?channel={}&user={}&v=2", base_url, cid, my_uid);
+        let ws_url = format!("{}/ws?channel={}&user={}&v={}", base_url, cid, my_uid, SIGNALING_PROTOCOL);
         info!("📡 [SIGNALING] Conectando ao Cloudflare Worker WebSocket em {}...", ws_url);
 
         let mut req = match ws_url.as_str().into_client_request() {

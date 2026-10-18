@@ -430,7 +430,6 @@ pub fn start_audio_loopback_tx(
     is_running: Arc<AtomicBool>,
     channel_id: Arc<AtomicU64>,
     my_user_id: Arc<AtomicU64>,
-    peers_store: Arc<Mutex<HashMap<u64, (SocketAddr, Instant)>>>,
 ) {
     std::thread::Builder::new()
         .name("audio-loopback-tx".to_string())
@@ -732,17 +731,24 @@ pub fn start_audio_loopback_tx(
                 }
                 let inst = get_process_instance_id();
 
+                // Only to the viewers that asked for the stream, with the stream's key.
+                let target_addrs = super::watch::viewer_addrs();
+                let stream_key = super::watch::session_key();
                 for chunk in chunks_to_send {
                     super::web_share::offer_audio(&chunk, active_sample_rate);
                     seq = seq.wrapping_add(1);
+                    let Some(stream_key) = stream_key.filter(|_| !target_addrs.is_empty()) else {
+                        continue;
+                    };
                     let pts_ms = get_tx_pts_ms();
                     let sample_count = chunk.len() as u16;
                     let mut raw_pcm = Vec::with_capacity(chunk.len() * 2);
                     for &s in &chunk {
                         raw_pcm.extend_from_slice(&s.to_le_bytes());
                     }
-                    let sec_key = get_voice_encryption_key(cid);
-                    let audio_payload = encrypt_signaling_payload(&sec_key, &raw_pcm).unwrap_or(raw_pcm);
+                    let Some(audio_payload) = encrypt_signaling_payload(&stream_key, &raw_pcm) else {
+                        continue;
+                    };
                     let mut pkt = Vec::with_capacity(36 + audio_payload.len());
                     pkt.extend_from_slice(MAGIC);
                     pkt.extend_from_slice(&inst.to_be_bytes());
@@ -756,23 +762,6 @@ pub fn start_audio_loopback_tx(
                     pkt.extend_from_slice(&sample_count.to_be_bytes());
                     pkt.extend_from_slice(&audio_payload);
 
-                    let mut target_addrs: Vec<SocketAddr> = Vec::with_capacity(8);
-                    if let Ok(peers) = peers_store.lock() {
-                        for (&_p_key, &(addr, _)) in peers.iter() {
-                            if !is_tailscale_or_forbidden(&addr) && !target_addrs.contains(&addr) {
-                                target_addrs.push(addr);
-                            }
-                        }
-                    }
-                    if let Ok(last_guard) = LAST_SEEN_PEER_ADDR.lock() {
-                        if let Some(map) = last_guard.as_ref() {
-                            for (&p_uid, &addr) in map.iter() {
-                                if p_uid != uid && !is_tailscale_or_forbidden(&addr) && !target_addrs.contains(&addr) {
-                                    target_addrs.push(addr);
-                                }
-                            }
-                        }
-                    }
                     for target in &target_addrs {
                         let _ = socket.send_to(&pkt, target);
                     }
