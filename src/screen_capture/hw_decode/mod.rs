@@ -28,9 +28,9 @@ pub enum HwError {
 
 /// A picture decoded on the GPU.
 pub enum GpuPicture {
-    /// Drawn straight into the windows that show the stream.
-    Shown,
-    /// No window shows it on the GPU: copied back as RGBA (width, height).
+    /// Drawn straight into the windows that show the stream (its height).
+    Shown(u32),
+    /// No window shows it on the GPU: copied back as RGBA (the stream's width, height).
     Rgba(SharedPixelBuffer<Rgba8Pixel>, u32, u32),
 }
 
@@ -79,10 +79,10 @@ impl GpuDecoder {
             let Some(frame) = self.inner.decode(au)?.pop() else { return Ok(None) };
             mark_peer(self.peer, true);
             if layers::present(self.peer, &frame, self.inner.shared()) {
-                return Ok(Some(GpuPicture::Shown));
+                return Ok(Some(GpuPicture::Shown(frame.info.height)));
             }
             let (w, h) = fit(frame.info.width, frame.info.height);
-            Ok(Some(GpuPicture::Rgba(self.inner.read_rgba(&frame, w, h)?, w, h)))
+            Ok(Some(GpuPicture::Rgba(self.inner.read_rgba(&frame, w, h)?, frame.info.width, frame.info.height)))
         }
         #[cfg(not(windows))]
         {

@@ -412,9 +412,11 @@ impl StreamDecoders {
 }
 
 pub enum Decoded {
+    /// A picture for the UI, and the stream's own width and height (the picture may be
+    /// converted smaller, to the size it is shown at).
     Picture(SharedPixelBuffer<Rgba8Pixel>, u32, u32),
-    /// Drawn by the GPU straight into the windows showing the stream.
-    ShownByGpu,
+    /// Drawn by the GPU straight into the windows showing the stream (its height).
+    ShownByGpu(u32),
     /// Nothing to show yet, and nothing wrong (parameter sets, a picture held for reordering).
     Nothing,
     /// The picture could not be decoded.
@@ -476,9 +478,9 @@ pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_da
                     RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
                     return Decoded::Picture(buf, w, h);
                 }
-                Ok(Some(GpuPicture::Shown)) => {
+                Ok(Some(GpuPicture::Shown(h))) => {
                     RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
-                    return Decoded::ShownByGpu;
+                    return Decoded::ShownByGpu(h);
                 }
                 Ok(None) => return Decoded::Nothing,
                 Err(HwError::NeedKeyframe(why)) => {
@@ -528,7 +530,7 @@ fn decode_on_cpu(
                     decoded_yuv.y(), decoded_yuv.u(), decoded_yuv.v(), ys, us, w, h,
                     pixel_buffer.make_mut_bytes(), out_w as usize, out_h as usize,
                 );
-                return Some((pixel_buffer, out_w, out_h));
+                return Some((pixel_buffer, w as u32, h as u32));
             }
             if w > 0 && h > 0 {
                 use rayon::prelude::*;

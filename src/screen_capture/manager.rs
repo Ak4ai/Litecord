@@ -1243,7 +1243,10 @@ impl ScreenCaptureManager {
                                     last_height.insert(peer_uid, h);
                                     Some(Some(buf.clone()))
                                 }
-                                Decoded::ShownByGpu => Some(None),
+                                Decoded::ShownByGpu(h) => {
+                                    last_height.insert(peer_uid, h);
+                                    Some(None)
+                                }
                                 _ => None,
                             };
                             if let Some(picture) = shown {
