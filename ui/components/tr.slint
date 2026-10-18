@@ -79,6 +79,17 @@ export global Tr {
     in-out property <string> economy_notice: "Reduced Preview Notice";
     in-out property <string> economy_notice_desc: "Shows the warning pill in your own preview when the stream starts, telling you the frame rate is reduced to save resources.";
     in-out property <string> perf_monitor: "Performance Monitor (CPU / RAM / GPU)";
+    in-out property <string> net_diag_title: "Network diagnostics";
+    in-out property <string> net_diag_desc: "Checks whether screen sharing with someone on another network can connect directly from here. “Copy report” puts the details on the clipboard for a bug report.";
+    in-out property <string> net_diag_run: "Test network";
+    in-out property <string> net_diag_running: "Testing...";
+    in-out property <string> net_diag_copy: "Copy report";
+    in-out property <string> net_diag_copied: "Copied!";
+    in-out property <string> net_diag_ok: "Your network allows direct connections: screen sharing with other networks should work.";
+    in-out property <string> net_diag_symmetric: "Your router or provider uses symmetric NAT: screen sharing across the internet may not connect (the local network works).";
+    in-out property <string> net_diag_varying_ip: "Your provider shows a different public address per server (carrier-grade NAT): screen sharing across the internet may not connect.";
+    in-out property <string> net_diag_udp_blocked: "No test server answered: UDP looks blocked on this network, so screen sharing across the internet will not connect.";
+    in-out property <string> net_diag_signaling_down: "The signaling server did not answer, so peers cannot find each other over the internet.";
     in-out property <string> gpu_render: "GPU rendering";
     in-out property <string> gpu_render_desc: "Draws the interface with the graphics card. Off (default), the CPU draws it, which costs almost nothing while the app is idle and does not share the GPU with your game. Takes effect after restarting Litecord.";
     in-out property <string> perf_monitor_desc: "Shows live RAM, CPU and GPU usage in the application title bar next to the settings.";

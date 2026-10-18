@@ -2044,6 +2044,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Network diagnostics: a few seconds of blocking network checks on their own thread;
+    // the report stays here until "Copy report".
+    let net_diag_report: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let app_weak_net_diag = app.as_weak();
+    let net_diag_report_run = Arc::clone(&net_diag_report);
+    app.on_run_network_diagnostics(move || {
+        if let Some(ui) = app_weak_net_diag.upgrade() {
+            ui.set_net_diag_running(true);
+            ui.set_net_diag_copied(false);
+        }
+        let app_w = app_weak_net_diag.clone();
+        let report_slot = Arc::clone(&net_diag_report_run);
+        let _ = std::thread::Builder::new().name("network-diagnostics".into()).spawn(move || {
+            let diag = screen_capture::net_diagnostics::run();
+            info!("🩺 [DIAGNÓSTICO DE REDE]\n{}", diag.report);
+            *report_slot.lock().unwrap() = diag.report;
+            let verdict = diag.verdict as i32;
+            let signaling_ok = diag.signaling_ms.is_some();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    ui.set_net_diag_verdict(verdict);
+                    ui.set_net_diag_signaling_ok(signaling_ok);
+                    ui.set_net_diag_running(false);
+                }
+            });
+        });
+    });
+    let app_weak_net_copy = app.as_weak();
+    app.on_copy_network_diagnostics(move || {
+        let report = net_diag_report.lock().unwrap().clone();
+        let copied = copypasta::ClipboardContext::new()
+            .and_then(|mut ctx| copypasta::ClipboardProvider::set_contents(&mut ctx, report))
+            .is_ok();
+        if let Some(ui) = app_weak_net_copy.upgrade() {
+            ui.set_net_diag_copied(copied);
+        }
+    });
+
     let app_weak_gpu = app.as_weak();
     app.on_toggle_gpu_renderer(move || {
         let new_val = video_settings::toggle_use_gpu_renderer();

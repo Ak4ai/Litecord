@@ -7,6 +7,7 @@ pub mod video_pipeline;
 pub mod sources;
 pub mod audio_loopback;
 pub mod manager;
+pub mod net_diagnostics;
 
 pub use types::*;
 pub use crypto::*;

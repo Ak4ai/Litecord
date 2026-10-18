@@ -290,7 +290,7 @@ fn json_uid(v: &serde_json::Value) -> u64 {
 
 /// `LITECORD_SIGNALING_URL` points the client at another signaling server
 /// (e.g. `ws://192.168.1.15:8787` for a local `wrangler dev`).
-fn signaling_base_url() -> String {
+pub(crate) fn signaling_base_url() -> String {
     match std::env::var("LITECORD_SIGNALING_URL") {
         Ok(url) if !url.trim().is_empty() => url.trim().trim_end_matches('/').to_string(),
         _ => "wss://litecord-signal.ricosgames-henrique.workers.dev".to_string(),

@@ -319,6 +319,10 @@ export component AppWindow inherits Window {
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
     in-out property <bool> use_gpu_renderer: false;
+    in-out property <bool> net_diag_running: false;
+    in-out property <int> net_diag_verdict: -1;
+    in-out property <bool> net_diag_signaling_ok: true;
+    in-out property <bool> net_diag_copied: false;
     in-out property <string> hardware_cpu_text: "CPU --%";
     in-out property <string> hardware_ram_text: "RAM -- MB";
     in-out property <string> hardware_gpu_text: "GPU --%";
@@ -336,6 +340,8 @@ export component AppWindow inherits Window {
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
     callback toggle_gpu_renderer();
+    callback run_network_diagnostics();
+    callback copy_network_diagnostics();
     callback toggle_theme();
 
 
@@ -2920,6 +2926,10 @@ export component AppWindow inherits Window {
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
         use_gpu_renderer: root.use_gpu_renderer;
+        net_diag_running: root.net_diag_running;
+        net_diag_verdict: root.net_diag_verdict;
+        net_diag_signaling_ok: root.net_diag_signaling_ok;
+        net_diag_copied: root.net_diag_copied;
         proxy_mode_options: root.proxy_mode_options;
         selected_proxy_mode <=> root.selected_proxy_mode;
         proxy_host_input <=> root.proxy_host_input;
@@ -2949,6 +2959,8 @@ export component AppWindow inherits Window {
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
         toggle_hardware_monitor => { root.toggle_hardware_monitor(); }
         toggle_gpu_renderer => { root.toggle_gpu_renderer(); }
+        run_network_diagnostics => { root.run_network_diagnostics(); }
+        copy_network_diagnostics => { root.copy_network_diagnostics(); }
         select_proxy_mode(arg0) => { root.select_proxy_mode(arg0); }
         test_proxy_requested(arg0, arg1, arg2, arg3, arg4) => { root.test_proxy_requested(arg0, arg1, arg2, arg3, arg4); }
         save_proxy_settings(arg0, arg1, arg2, arg3, arg4, arg5) => { root.save_proxy_settings(arg0, arg1, arg2, arg3, arg4, arg5); }
