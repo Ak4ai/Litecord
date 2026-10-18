@@ -18,6 +18,7 @@ param(
     [switch]$Fullscreen,            # watch with the stream full screen (the costliest view)
     [int]$DecodeDelayMs = 0,        # slow the receiver's decoder down to test falling behind
     [string]$DecodeStall = "",      # "<ms>,<every ms>": stall the receiver's decoder now and then
+    [switch]$TrayCheck,             # then hide the receiver in the tray and bring it back
     [int]$ConversionAB = 0          # then <n> rounds alternating scaled / full-size conversion
 )
 $ErrorActionPreference = "Stop"
@@ -79,6 +80,34 @@ try {
         }
     }
     Send-Litecord 47132 '{"cmd":"set_full_conversion","on":false}' | Out-Null
+    if ($TrayCheck) {
+        # Hidden (tray, minimized) nothing should be decoded and the picture must come back
+        # once restored (from a keyframe the receiver asks for). With the popout open the
+        # stream is still seen, so it keeps decoding while the main window is in the tray.
+        function Stream-State { (Send-Litecord 47132 '{"cmd":"state"}').stream }
+        function Check-Hidden([string]$hideCmd, [string]$label) {
+            Send-Litecord 47132 "{`"cmd`":`"$hideCmd`"}" | Out-Null
+            Start-Sleep -Seconds 3
+            $rx0 = [Cycles]::OfProcess($receiverProc.Id); $s0 = Stream-State
+            Start-Sleep -Seconds 10
+            $s1 = Stream-State
+            "${label}: receiver CPU $([math]::Round((Cpu-Percent $rx0 ([Cycles]::OfProcess($receiverProc.Id)) 10), 1))% of a 3 GHz core, pictures shown $($s1.frames_shown - $s0.frames_shown), skipped $($s1.frames_unwatched - $s0.frames_unwatched)"
+            Send-Litecord 47132 '{"cmd":"restore"}' | Out-Null
+            $t0 = Get-Date
+            while (((Get-Date) - $t0).TotalSeconds -lt 10) {
+                if ((Stream-State).frames_shown -gt $s1.frames_shown + 5) { return "  picture back $([math]::Round(((Get-Date) - $t0).TotalSeconds, 2)) s after restoring" }
+                Start-Sleep -Milliseconds 100
+            }
+            throw "the picture did not come back after restoring from '$label'"
+        }
+        Check-Hidden "minimize_to_tray" "in the tray"
+        Check-Hidden "minimize" "minimized"
+        Send-Litecord 47132 (@{ cmd = "popout_stream"; user_id = "$($a.user_id)" } | ConvertTo-Json -Compress) | Out-Null
+        Start-Sleep -Seconds 2
+        $p = (Check-Hidden "minimize_to_tray" "popout open, main window in the tray") -join "`n"
+        $p
+        if ($p -notmatch "picture back") { throw "popout check failed" }
+    }
     "RESULT: PASS (stream opened)"
 } finally {
     try { Send-Litecord 47131 '{"cmd":"stop_screen_share"}' | Out-Null } catch { }

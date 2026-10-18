@@ -1201,6 +1201,14 @@ impl ScreenCaptureManager {
                                 }
                             };
 
+                            // No window can show the stream: skip the decode. The picture shown
+                            // when a window comes back starts from a keyframe, asked for below.
+                            if !streams_watched() {
+                                RX_FRAMES_UNWATCHED.fetch_add(1, Ordering::Relaxed);
+                                waiting_for_idr.insert(peer_uid, true);
+                                continue;
+                            }
+
                             // Frames of this peer were dropped at the full queue: the ones after them
                             // cannot be decoded cleanly, so wait for a keyframe (and ask for it).
                             if take_decode_resync(peer_uid) {
@@ -1255,6 +1263,7 @@ impl ScreenCaptureManager {
                                 }
 
                                 rx_error_streak.remove(&peer_uid);
+                                RX_FRAMES_SHOWN.fetch_add(1, Ordering::Relaxed);
                                 on_frame(peer_uid, peer_name, quality_label, pixel_buffer);
                             } else {
                                 let streak = rx_error_streak.entry(peer_uid).or_insert(0);

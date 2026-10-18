@@ -219,6 +219,17 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             crate::utils::test_hooks::FULL_SIZE_CONVERSION.store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({ "ok": true }))
         }
+        "minimize" => {
+            // Like the taskbar button: the window stays "visible" but has no area.
+            use i_slint_backend_winit::WinitWindowAccessor;
+            let _ = ui.window().with_winit_window(|w| w.set_minimized(true));
+            Ok(json!({ "ok": true }))
+        }
+        "popout_stream" => {
+            let uid = cmd["user_id"].as_str().ok_or("missing \"user_id\"")?;
+            ui.invoke_popout_stream_window(uid.into(), "".into());
+            Ok(json!({ "ok": true }))
+        }
         "open_guild" => {
             let name = cmd["name"].as_str().ok_or("missing \"name\"")?;
             let guild = ui.get_guilds().iter().find(|g| g.name == name).ok_or(format!("no server named {name}"))?;
@@ -338,6 +349,8 @@ fn state(ui: &AppWindow) -> Value {
             "active_stream_user": ui.get_active_stream_user().to_string(),
             "remote_fps": ui.get_remote_stream_fps().to_string(),
             "local_fps": ui.get_local_preview_fps().to_string(),
+            "frames_shown": crate::screen_capture::RX_FRAMES_SHOWN.load(std::sync::atomic::Ordering::Relaxed),
+            "frames_unwatched": crate::screen_capture::RX_FRAMES_UNWATCHED.load(std::sync::atomic::Ordering::Relaxed),
             "peers_streaming": peer_streams,
             "peers_seen": peer_addrs,
         },

@@ -156,6 +156,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let popout_weak = popout_window.as_weak();
     let popout_hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
+    // Tell the stream decoder whether any window can show a stream, so nothing is decoded
+    // while Litecord sits minimized behind a game. Minimizing and restoring arrive as
+    // resizes (on Windows a minimized window reports a small caption-sized area).
+    {
+        use i_slint_backend_winit::{EventResult, WinitWindowAccessor};
+        let has_area = |window: &slint::Window, ev: &winit::event::WindowEvent| match ev {
+            winit::event::WindowEvent::Resized(s) => {
+                let minimized = window.with_winit_window(|w| w.is_minimized()).flatten().unwrap_or(false);
+                Some(!minimized && s.width > 0 && s.height > 0)
+            }
+            _ => None,
+        };
+        app.window().on_winit_window_event(move |window, ev| {
+            if let Some(has) = has_area(window, ev) {
+                screen_capture::set_main_window_has_area(has);
+            }
+            EventResult::Propagate
+        });
+        popout_window.window().on_winit_window_event(move |window, ev| {
+            if let Some(has) = has_area(window, ev) {
+                screen_capture::set_popout_has_area(has);
+            }
+            EventResult::Propagate
+        });
+        popout_window.on_user_id_changed(|uid| screen_capture::set_popout_has_stream(!uid.is_empty()));
+    }
+
     let hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
     utils::start_hardware_monitor_loop(app_weak.clone(), Arc::clone(&hwnd_store));
 

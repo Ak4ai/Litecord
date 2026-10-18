@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
@@ -128,6 +128,39 @@ pub fn set_stream_view_size(w: u32, h: u32) {
 fn stream_view_size() -> (u32, u32) {
     let v = STREAM_VIEW_PX.load(Ordering::Relaxed);
     ((v >> 32) as u32, v as u32)
+}
+
+/// Whether any window can show a received stream right now. When none can (Litecord in
+/// the tray or minimized while a game runs, popout closed or minimized) the decoder skips
+/// the frames instead of decoding them, and asks for a keyframe once a window shows the
+/// stream again.
+static MAIN_WINDOW_HAS_AREA: AtomicBool = AtomicBool::new(true);
+static POPOUT_HAS_STREAM: AtomicBool = AtomicBool::new(false);
+static POPOUT_HAS_AREA: AtomicBool = AtomicBool::new(true);
+
+pub fn set_main_window_has_area(has: bool) {
+    MAIN_WINDOW_HAS_AREA.store(has, Ordering::Relaxed);
+}
+
+pub fn set_popout_has_stream(has: bool) {
+    POPOUT_HAS_STREAM.store(has, Ordering::Relaxed);
+}
+
+pub fn set_popout_has_area(has: bool) {
+    POPOUT_HAS_AREA.store(has, Ordering::Relaxed);
+}
+
+pub fn streams_watched() -> bool {
+    anyone_watching(
+        crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed),
+        MAIN_WINDOW_HAS_AREA.load(Ordering::Relaxed),
+        POPOUT_HAS_STREAM.load(Ordering::Relaxed),
+        POPOUT_HAS_AREA.load(Ordering::Relaxed),
+    )
+}
+
+fn anyone_watching(app_visible: bool, main_has_area: bool, popout_has_stream: bool, popout_has_area: bool) -> bool {
+    (app_visible && main_has_area) || (popout_has_stream && popout_has_area)
 }
 
 pub fn cache_peer_sps_pps(peer_uid: u64, sps_pps_annex_b: &[u8]) {
@@ -560,6 +593,25 @@ pub fn i420_to_rgba_scaled(
             px[3] = 255;
         }
     });
+}
+
+#[cfg(test)]
+mod watching_tests {
+    use super::*;
+
+    #[test]
+    fn main_window_counts_only_when_shown_and_not_minimized() {
+        assert!(anyone_watching(true, true, false, false));
+        assert!(!anyone_watching(false, true, false, false), "in the tray");
+        assert!(!anyone_watching(true, false, false, false), "minimized");
+    }
+
+    #[test]
+    fn popout_counts_only_with_a_stream_and_not_minimized() {
+        assert!(anyone_watching(false, false, true, true));
+        assert!(!anyone_watching(false, false, true, false), "popout minimized");
+        assert!(!anyone_watching(false, false, false, true), "popout closed");
+    }
 }
 
 #[cfg(test)]

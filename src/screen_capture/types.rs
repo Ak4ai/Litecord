@@ -73,6 +73,10 @@ pub fn set_my_rx_port(port: u16) {
 
 pub static CURRENT_TX_FPS: AtomicU32 = AtomicU32::new(0);
 pub static CURRENT_RX_FPS: AtomicU32 = AtomicU32::new(0);
+/// Received stream pictures handed to the UI, and pictures skipped because no window
+/// could show them (read by tests).
+pub static RX_FRAMES_SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static RX_FRAMES_UNWATCHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static KEYFRAME_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub static REQUESTED_BITRATE_BPS: AtomicU32 = AtomicU32::new(8_000_000);
 

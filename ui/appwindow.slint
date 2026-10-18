@@ -4789,6 +4789,11 @@ export component PopoutStreamWindow inherits Window {
     callback drag_resize(string);
     callback mouse_activity();
     callback stream_volume_changed(string, float);
+    // Every place that closes the popout clears user_id, so this tells whether it shows a stream.
+    callback user_id_changed(string);
+    changed user_id => {
+        root.user_id_changed(root.user_id);
+    }
 
     // Global mouse activity tracker
     TouchArea {
