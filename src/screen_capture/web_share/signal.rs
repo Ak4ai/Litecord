@@ -20,7 +20,10 @@ pub(super) async fn run(mut ws: Socket, key: [u8; 32], commands: mpsc::Sender<Co
     let mut ping = tokio::time::interval(Duration::from_secs(40));
     loop {
         tokio::select! {
-            _ = stop.changed() => { let _ = ws.close(None).await; return Ok(()); },
+            _ = stop.changed() => {
+                let _ = tokio::time::timeout(Duration::from_millis(50), ws.close(None)).await;
+                return Ok(());
+            },
             _ = ping.tick() => {
                 ws.send(Message::Text("{\"op\":\"ping\"}".into())).await.map_err(|_| "Web sharing connection lost".to_string())?;
             },

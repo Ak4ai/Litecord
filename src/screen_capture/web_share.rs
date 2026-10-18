@@ -19,13 +19,12 @@ mod signal;
 #[cfg(test)]
 mod tests;
 pub const MAX_WEB_VIEWERS: usize = 3;
-static ACTIVE: AtomicBool = AtomicBool::new(false);
-static VIEWERS: AtomicUsize = AtomicUsize::new(0);
+// Only start/stop change this fast path. Retired workers never publish global state.
+static HAS_SESSION: AtomicBool = AtomicBool::new(false);
 static VIDEO_EPOCH: AtomicU64 = AtomicU64::new(0);
 static FRAMES: Mutex<Option<mpsc::Sender<MediaFrame>>> = Mutex::new(None);
 static COMMANDS: Mutex<Option<mpsc::Sender<Command>>> = Mutex::new(None);
 static SESSION: Mutex<Option<WebShare>> = Mutex::new(None);
-static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 type StatusCallback = Arc<dyn Fn() + Send + Sync>;
 static STATUS_CALLBACK: Mutex<Option<StatusCallback>> = Mutex::new(None);
 
@@ -38,8 +37,15 @@ fn status_changed() {
 }
 struct WebShare {
     url: String,
+    state: Arc<SessionState>,
     stop: watch::Sender<bool>,
     thread: std::thread::JoinHandle<()>,
+}
+#[derive(Default)]
+struct SessionState {
+    active: AtomicBool,
+    viewers: AtomicUsize,
+    error: Mutex<String>,
 }
 enum MediaFrame {
     Video(Arc<[u8]>, Instant, u64),
@@ -53,15 +59,17 @@ enum Command {
 pub fn start() -> io::Result<String> {
     let mut session = SESSION.lock().unwrap();
     if let Some(s) = session.as_ref() {
-        if is_active() { return Ok(s.url.clone()); }
+        if s.state.active.load(Ordering::Acquire) { return Ok(s.url.clone()); }
         if !s.thread.is_finished() { return Err(io::Error::new(io::ErrorKind::WouldBlock, "Web sharing is connecting")); }
     }
     if let Some(old) = session.take() {
-        let _ = old.stop.send(true);
-        let _ = old.thread.join();
+        HAS_SESSION.store(false, Ordering::Release);
+        *FRAMES.lock().unwrap() = None;
+        *COMMANDS.lock().unwrap() = None;
+        cancel_session(old);
     }
     install_crypto_provider();
-    LAST_ERROR.lock().unwrap().clear();
+    let state = Arc::new(SessionState::default());
     let key: [u8; 32] = random_bytes()?;
     let host_token = random_hex::<32>()?;
     // Ownership is verifiable without storing a record for every share forever.
@@ -86,11 +94,13 @@ pub fn start() -> io::Result<String> {
     let (commands_tx, commands_rx) = mpsc::channel(8);
     *COMMANDS.lock().unwrap() = Some(commands_tx.clone());
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let worker_state = Arc::clone(&state);
     let thread = std::thread::Builder::new().name("web-share".into()).spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(r) => r,
             Err(e) => { let _ = ready_tx.send(Err(e.to_string())); return; }
         };
+        let running_state = Arc::clone(&worker_state);
         runtime.block_on(async move {
             let public = signal::discover_public_address(&socket);
             if let Err(e) = socket.set_nonblocking(true) {
@@ -101,10 +111,10 @@ pub fn start() -> io::Result<String> {
                 Err(e) => { let _ = ready_tx.send(Err(e.to_string())); return; }
             };
             if manual {
-                ACTIVE.store(true, Ordering::Release);
+                running_state.active.store(true, Ordering::Release);
                 status_changed();
                 let _ = ready_tx.send(Ok(()));
-                run_rtc(socket, local, public, commands_rx, frames_rx, stop_rx).await;
+                run_rtc(socket, local, public, commands_rx, frames_rx, stop_rx, &running_state).await;
                 return;
             }
             let mut startup_stop = stop_rx.clone();
@@ -116,54 +126,76 @@ pub fn start() -> io::Result<String> {
                 Ok(ws) => ws,
                 Err(e) => { let _ = ready_tx.send(Err(e)); return; }
             };
-            ACTIVE.store(true, Ordering::Release);
+            running_state.active.store(true, Ordering::Release);
             status_changed();
             let _ = ready_tx.send(Ok(()));
             tokio::select! {
                 result = signal::run(ws, key, commands_tx, stop_rx.clone()) => {
-                    if let Err(e) = result { warn!("[WEB SHARE] {e}"); *LAST_ERROR.lock().unwrap() = e; }
+                    if let Err(e) = result { warn!("[WEB SHARE] {e}"); *running_state.error.lock().unwrap() = e; }
                 },
-                _ = run_rtc(socket, local, public, commands_rx, frames_rx, stop_rx) => {},
+                _ = run_rtc(socket, local, public, commands_rx, frames_rx, stop_rx, &running_state) => {},
             }
         });
-        ACTIVE.store(false, Ordering::Release);
-        VIEWERS.store(0, Ordering::Relaxed);
+        worker_state.active.store(false, Ordering::Release);
+        worker_state.viewers.store(0, Ordering::Relaxed);
         status_changed();
     })?;
     *FRAMES.lock().unwrap() = Some(frames_tx);
-    *session = Some(WebShare { url: url.clone(), stop, thread });
+    *session = Some(WebShare { url: url.clone(), state: Arc::clone(&state), stop, thread });
+    HAS_SESSION.store(true, Ordering::Release);
     drop(session);
     match ready_rx.recv_timeout(Duration::from_secs(20)) {
         Ok(Ok(())) => {},
         result => {
-            self::stop();
+            stop_if_current(Some(&state));
             return Err(io::Error::other(match result {
                 Ok(Err(e)) => e,
                 _ => "The web sharing server did not respond in time".into(),
             }));
         }
     }
-    if !is_active() { return Err(io::Error::other("Web sharing was cancelled")); }
+    let current = SESSION.lock().unwrap().as_ref().is_some_and(|s| Arc::ptr_eq(&s.state, &state));
+    if !current || !state.active.load(Ordering::Acquire) { return Err(io::Error::other("Web sharing was cancelled")); }
     info!("[WEB SHARE] Browser sharing enabled (up to {MAX_WEB_VIEWERS} viewers).");
     Ok(url)
 }
-/// Joining releases the old socket/encoder before a new session can start.
+/// Cancel immediately; dropping the handle detaches cleanup from the caller/UI.
+/// Every new session has fresh channels, socket, encoder and status storage.
 pub fn stop() {
+    stop_if_current(None);
+}
+fn stop_if_current(expected: Option<&Arc<SessionState>>) {
     let mut session = SESSION.lock().unwrap();
-    ACTIVE.store(false, Ordering::Release);
+    if let Some(expected) = expected {
+        if !session.as_ref().is_some_and(|s| Arc::ptr_eq(&s.state, expected)) { return; }
+    }
+    HAS_SESSION.store(false, Ordering::Release);
     *FRAMES.lock().unwrap() = None;
     *COMMANDS.lock().unwrap() = None;
-    if let Some(s) = session.take() {
-        let _ = s.stop.send(true);
-        let _ = s.thread.join();
+    let retired = session.take();
+    drop(session);
+    if let Some(s) = retired {
+        cancel_session(s);
         info!("[WEB SHARE] Browser sharing stopped.");
     }
-    VIEWERS.store(0, Ordering::Relaxed);
     status_changed();
 }
-pub fn is_active() -> bool { ACTIVE.load(Ordering::Acquire) }
-pub fn viewer_count() -> usize { VIEWERS.load(Ordering::Relaxed) }
-pub fn last_error() -> String { LAST_ERROR.lock().unwrap().clone() }
+fn cancel_session(s: WebShare) {
+    s.state.active.store(false, Ordering::Release);
+    s.state.viewers.store(0, Ordering::Relaxed);
+    let _ = s.stop.send(true);
+    // No join: a peer or an OS network call may still be stalled.
+}
+pub fn is_active() -> bool {
+    HAS_SESSION.load(Ordering::Acquire) && SESSION.lock().unwrap().as_ref()
+        .is_some_and(|s| s.state.active.load(Ordering::Acquire))
+}
+pub fn viewer_count() -> usize {
+    SESSION.lock().unwrap().as_ref().map_or(0, |s| s.state.viewers.load(Ordering::Relaxed))
+}
+pub fn last_error() -> String {
+    SESSION.lock().unwrap().as_ref().map_or_else(String::new, |s| s.state.error.lock().unwrap().clone())
+}
 /// Test-only manual SDP exchange. Must be called off the UI thread.
 pub fn answer_manual(offer: SdpOffer) -> Result<SdpAnswer, String> {
     if std::env::var("LITECORD_WEB_MANUAL").as_deref() != Ok("1") || !is_active() {
@@ -210,6 +242,7 @@ async fn run_rtc(
     socket: tokio::net::UdpSocket, local: SocketAddr, mut public: Option<SocketAddr>,
     mut commands: mpsc::Receiver<Command>, mut frames: mpsc::Receiver<MediaFrame>,
     mut stop: watch::Receiver<bool>,
+    state: &SessionState,
 ) {
     let started = Instant::now();
     let mut mapped_at = started;
@@ -249,7 +282,7 @@ async fn run_rtc(
             }
         });
         let count = viewers.iter().filter(|v| v.connected).count();
-        if VIEWERS.swap(count, Ordering::Relaxed) != count { status_changed(); }
+        if state.viewers.swap(count, Ordering::Relaxed) != count { status_changed(); }
         if viewers.is_empty() { audio = None; }
         tokio::select! {
             biased;
@@ -333,7 +366,7 @@ async fn run_rtc(
             },
         }
     }
-    VIEWERS.store(0, Ordering::Relaxed);
+    state.viewers.store(0, Ordering::Relaxed);
 }
 fn contains_idr(data: &[u8]) -> bool {
     data.windows(4).any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 5)

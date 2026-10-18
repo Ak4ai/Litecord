@@ -1,6 +1,96 @@
 use super::*;
 
 #[test]
+fn stop_does_not_wait_for_close_and_retired_session_cannot_change_restart() {
+    use std::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::tungstenite::{accept, client, Message};
+
+    // The worker accepts the WebSocket, but withholds its close acknowledgement.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (release_server, server_release) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut ws = accept(stream).unwrap();
+        ws.send(Message::Text("ready".into())).unwrap();
+        let _ = server_release.recv_timeout(Duration::from_secs(5));
+    });
+    let old_state = Arc::new(SessionState::default());
+    old_state.active.store(true, Ordering::Release);
+    old_state.viewers.store(2, Ordering::Relaxed);
+    let old_worker_state = Arc::clone(&old_state);
+    let old_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let old_port = old_socket.local_addr().unwrap().port();
+    let (stop_tx, mut stop_rx) = watch::channel(false);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (closing_tx, closing_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let old_thread = std::thread::spawn(move || {
+        let _socket_owner = old_socket;
+        let tcp = TcpStream::connect(addr).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let (mut ws, _) = client(format!("ws://{addr}"), tcp).unwrap();
+        ws.read().unwrap();
+        ready_tx.send(()).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async { let _ = stop_rx.changed().await; });
+        let _ = ws.close(None);
+        closing_tx.send(()).unwrap();
+        let _ = ws.read(); // Deliberately stalled network cleanup.
+        *old_worker_state.error.lock().unwrap() = "retired connection closed".into();
+        old_worker_state.active.store(false, Ordering::Release);
+        old_worker_state.viewers.store(0, Ordering::Relaxed);
+        status_changed();
+        let _ = done_tx.send(());
+    });
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    *SESSION.lock().unwrap() = Some(WebShare {
+        url: "old-session".into(), state: Arc::clone(&old_state), stop: stop_tx, thread: old_thread,
+    });
+    HAS_SESSION.store(true, Ordering::Release);
+    let started = Instant::now();
+    stop();
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_millis(100), "stop blocked for {elapsed:?}");
+    closing_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(done_rx.try_recv().is_err(), "the mock worker must still be waiting for close");
+    assert!(!is_active());
+
+    let new_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    assert_ne!(old_port, new_socket.local_addr().unwrap().port());
+    let new_state = Arc::new(SessionState::default());
+    new_state.active.store(true, Ordering::Release);
+    new_state.viewers.store(3, Ordering::Relaxed);
+    let (new_stop, mut new_stop_rx) = watch::channel(false);
+    let (new_done_tx, new_done_rx) = std::sync::mpsc::channel();
+    let new_thread = std::thread::spawn(move || {
+        let _socket_owner = new_socket;
+        tokio::runtime::Builder::new_current_thread().build().unwrap()
+            .block_on(async { let _ = new_stop_rx.changed().await; });
+        let _ = new_done_tx.send(());
+    });
+    let (new_frames, _frames_rx) = mpsc::channel(2);
+    *SESSION.lock().unwrap() = Some(WebShare {
+        url: "new-session".into(), state: Arc::clone(&new_state), stop: new_stop, thread: new_thread,
+    });
+    *FRAMES.lock().unwrap() = Some(new_frames.clone());
+    HAS_SESSION.store(true, Ordering::Release);
+    // A failed old start must not cancel the new session either.
+    stop_if_current(Some(&old_state));
+    release_server.send(()).unwrap();
+    server.join().unwrap();
+    done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(is_active());
+    assert_eq!(viewer_count(), 3);
+    assert_eq!(last_error(), "");
+    assert!(FRAMES.lock().unwrap().as_ref().unwrap().same_channel(&new_frames));
+    assert!(Arc::ptr_eq(&SESSION.lock().unwrap().as_ref().unwrap().state, &new_state));
+    stop();
+    new_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    println!("stop without close acknowledgement: {:.3} ms; restarted session remained active with 3 viewers", elapsed.as_secs_f64() * 1000.0);
+}
+
+#[test]
 fn signaling_authenticates_key_and_rejects_tampering() {
     let key = [7; 32];
     let payload = signal::encrypt(&key, b"private SDP").unwrap();

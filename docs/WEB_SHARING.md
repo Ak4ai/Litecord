@@ -69,6 +69,19 @@ até `stream.web_url` estar disponível, ou `stream.web_error` indicar a falha.
 
 ## Publicação e limites
 
+### Parada e reinício da sessão
+
+A parada retira os canais da sessão da interface e sinaliza o encerramento sem
+esperar a thread ou a rede. Cada início cria socket, canais, codificador e estado
+próprios; a limpeza de uma sessão anterior não altera a sessão atual. O fechamento
+do WebSocket tem limite de 50 ms em segundo plano.
+
+Validação local em 17/10/2026: com um servidor que não confirma o fechamento,
+`stop()` retornou em **0,040 ms**. O teste também manteve uma nova sessão com três
+espectadores após a limpeza da anterior. Passaram **47 testes Rust** (uma fixture
+de navegador ignorada por padrão) e os **quatro testes do worker**. Este teste de
+parada não substitui a validação de captura real e dos navegadores.
+
 O servidor em produção precisa receber `cloudflare/worker.js`, `web-share.js`, a
 página e a regra de módulos HTML do `wrangler.toml`. O Wrangler empacota a página
 por importação. Nenhuma migration ou nova classe de Durable Object é necessária:
