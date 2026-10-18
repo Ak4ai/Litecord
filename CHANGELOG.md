@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - O timer de 1 ms e a saída de áudio de transmissões ficavam ligados para sempre depois da primeira chamada; agora são liberados ao sair.
 
 ### 📡 Transmissão e sinalização
+- **Compartilhar na web**: link com chave por sessão, vídeo H.264 e áudio da transmissão em Opus por WebRTC, até três espectadores sem login. A página e a sinalização usam o worker existente; a mídia vai diretamente aos navegadores. Encerrar a web, parar a transmissão ou sair da chamada desconecta os espectadores. Sem TURN: redes restritivas podem não conectar. A atualização do worker precisa ser publicada antes do uso pela internet.
 - Fora de chamada a recepção P2P dorme por completo (sem heartbeat nem broadcast); em chamada sem transmissão, acorda uma vez por segundo.
 - Depois de sair de uma chamada, a sinalização voltava a entrar na sala antiga e o filtro de privacidade aceitava pacotes dela.
 - A sinalização acorda por evento em vez de checar a cada 500 ms, e o keepalive passou de 15 s para 40 s.
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quando quadros são descartados, o pedido de quadro-chave agora vai para **quem transmite** (ia para o próprio codificador), e o receptor espera esse quadro em vez de decodificar imagens corrompidas.
 
 ### 💬 Interface
+- Avatares e ícones de servidor são arredondados na imagem carregada, corrigindo o recorte quadrado do renderizador por software.
 - Canais de servidor não pulam mais para o topo da lista a cada mensagem (só DMs são ordenadas por atividade).
 - Atualizar contadores de voz não desfaz mais a ordem das DMs nem apaga as não lidas.
 
