@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 💬 Interface
 - Canais de servidor não pulam mais para o topo da lista a cada mensagem (só DMs são ordenadas por atividade).
 - Atualizar contadores de voz não desfaz mais a ordem das DMs nem apaga as não lidas.
+- Com a renderização pela CPU (o novo padrão), a janela voltava da bandeja ou de minimizada transparente, mostrando só o que se mexia (os cards da chamada, os contadores de CPU e RAM). O Windows apaga o conteúdo de uma janela escondida e não avisa o renderizador; agora ela é redesenhada inteira ao voltar.
+- A borda do card da transmissão fica por cima do vídeo: antes a imagem cobria a borda onde encostava, e os cantos do vídeo saíam da borda arredondada.
 
 ### 🐧 Linux
 - Atalhos globais esperam eventos do teclado (`poll` no evdev) em vez de ler as teclas a cada 20 ms. Ainda não testado num Linux real.
