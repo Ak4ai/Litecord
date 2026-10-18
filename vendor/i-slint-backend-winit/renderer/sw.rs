@@ -4,7 +4,7 @@
 //! Delegate the rendering to the [`i_slint_renderer_software::SoftwareRenderer`]
 
 use core::num::NonZeroU32;
-use core::ops::DerefMut;
+use core::ops::{Deref, DerefMut};
 use i_slint_core::graphics::Rgb8Pixel;
 use i_slint_core::platform::PlatformError;
 use i_slint_core::renderer::DrawOutcome;
@@ -23,7 +23,10 @@ pub struct WinitSoftwareRenderer {
     surface: RefCell<
         Option<softbuffer::Surface<Arc<winit::window::Window>, Arc<winit::window::Window>>>,
     >,
+    layer_sink: RefCell<Option<Rc<dyn crate::LayerSink>>>,
 }
+
+const HOLE: [u8; 3] = crate::LAYER_HOLE_RGB;
 
 #[repr(transparent)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -56,12 +59,19 @@ impl From<PremultipliedRgbaColor> for SoftBufferPixel {
 
 impl TargetPixel for SoftBufferPixel {
     fn blend(&mut self, color: PremultipliedRgbaColor) {
+        if color.alpha == 255 && [color.red, color.green, color.blue] == HOLE {
+            *self = Self(0);
+            return;
+        }
         let mut x = PremultipliedRgbaColor::from(*self);
         x.blend(color);
         *self = x.into();
     }
 
     fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        if [r, g, b] == HOLE {
+            return Self(0);
+        }
         Self(0xff000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
     }
 
@@ -78,6 +88,7 @@ impl WinitSoftwareRenderer {
             renderer: SoftwareRenderer::new(),
             _context: RefCell::new(None),
             surface: RefCell::new(None),
+            layer_sink: RefCell::new(None),
         }))
     }
 }
@@ -150,6 +161,11 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
         };
 
         let size = region.bounding_box_size();
+        if let Some(sink) = self.layer_sink.borrow().as_ref() {
+            let pos = region.bounding_box_origin();
+            let pixels: &[u32] = bytemuck::cast_slice(target_buffer.deref());
+            sink.present(pixels, width.get(), height.get(), [pos.x.max(0) as u32, pos.y.max(0) as u32, size.width, size.height]);
+        }
         if let Some((w, h)) = Option::zip(NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         {
             winit_window.pre_present_notify();
@@ -200,6 +216,13 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
         *self.surface.borrow_mut() = Some(surface);
 
         Ok(winit_window)
+    }
+
+    fn set_layer_sink(&self, sink: Option<Rc<dyn crate::LayerSink>>) -> bool {
+        *self.layer_sink.borrow_mut() = sink;
+        // The sink needs a whole frame first.
+        self.renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        true
     }
 
     fn suspend(&self) -> Result<(), PlatformError> {

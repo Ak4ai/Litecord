@@ -61,6 +61,39 @@ pub enum EventResult {
     PreventDefault,
 }
 
+/// Receives what the software renderer drew in a window whose content the application
+/// composes itself (for example video shown under the UI by the GPU, see
+/// [`set_layer_sink`]). `pixels` holds `width` x `height` premultiplied ARGB pixels
+/// (0xAARRGGBB); `dirty` is the area redrawn since the last call (x, y, width, height).
+/// Pixels drawn in [`LAYER_HOLE_RGB`] arrive fully transparent.
+pub trait LayerSink {
+    /// Called after each frame the renderer draws in the window.
+    fn present(&self, pixels: &[u32], width: u32, height: u32, dirty: [u32; 4]);
+}
+
+/// Opaque colour the software renderer turns into transparent pixels: an element filled
+/// with it leaves a hole in which whatever the application composes underneath shows,
+/// while elements drawn over it still blend normally.
+pub const LAYER_HOLE_RGB: [u8; 3] = [1, 2, 3];
+
+/// Hands every frame the software renderer draws in `window` to `sink` (after drawing it
+/// on the window as usual), or stops doing so with `None`. Returns false when the window
+/// does not use the software renderer.
+pub fn set_layer_sink(window: &i_slint_core::api::Window, sink: Option<std::rc::Rc<dyn LayerSink>>) -> bool {
+    let Some(adapter) = i_slint_core::window::WindowInner::from_pub(window)
+        .window_adapter()
+        .internal(i_slint_core::InternalToken)
+        .and_then(|wa| (wa as &dyn core::any::Any).downcast_ref::<WinitWindowAdapter>())
+        .map(|wa| wa.self_weak.clone())
+        .and_then(|w| w.upgrade())
+    else {
+        return false;
+    };
+    let accepted = adapter.renderer().set_layer_sink(sink);
+    adapter.request_redraw();
+    accepted
+}
+
 mod renderer {
     use std::sync::Arc;
 
@@ -83,6 +116,11 @@ mod renderer {
             active_event_loop: &ActiveEventLoop,
             window_attributes: winit::window::WindowAttributes,
         ) -> Result<Arc<winit::window::Window>, PlatformError>;
+
+        /// See [`crate::set_layer_sink`]; only the software renderer supports it.
+        fn set_layer_sink(&self, _sink: Option<std::rc::Rc<dyn crate::LayerSink>>) -> bool {
+            false
+        }
     }
 
     #[cfg(enable_femtovg_renderer)]
