@@ -10,6 +10,8 @@
 //! LITECORD_TEST_VOICE_LOG=<file.csv>       one row per mic block, sent and received voice packet
 //! LITECORD_TEST_RX_PCM=<file.f32>          decoded received voice, 48 kHz mono f32, in arrival order
 //! LITECORD_TEST_TX_PCM=<file.f32>          what the microphone captured, 48 kHz mono f32
+//! LITECORD_TEST_DECODE_DELAY_MS=<ms>       slow every video decode down (simulates a busy receiver)
+//! LITECORD_TEST_DECODE_STALL=<ms>,<every ms> stall the decoder now and then (simulates game hitches)
 //! ```
 
 use std::io::Write;
@@ -30,6 +32,31 @@ pub fn mic_from_loopback() -> bool {
 
 pub fn timer_pacing() -> bool {
     env("LITECORD_TEST_TIMER_PACING").is_some()
+}
+
+pub fn decode_delay() -> Option<std::time::Duration> {
+    static DELAY: OnceLock<Option<std::time::Duration>> = OnceLock::new();
+    *DELAY.get_or_init(|| env("LITECORD_TEST_DECODE_DELAY_MS")?.parse().ok().map(std::time::Duration::from_millis))
+}
+
+/// A stall to apply now, if one is due (LITECORD_TEST_DECODE_STALL=<ms>,<every ms>).
+pub fn decode_stall_due() -> Option<std::time::Duration> {
+    static CFG: OnceLock<Option<(u64, u64)>> = OnceLock::new();
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let (stall_ms, every_ms) = (*CFG.get_or_init(|| {
+        let v = env("LITECORD_TEST_DECODE_STALL")?;
+        let (a, b) = v.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    }))?;
+    let mut last = LAST.lock().ok()?;
+    let now = Instant::now();
+    match *last {
+        Some(t) if now.duration_since(t).as_millis() < every_ms as u128 => None,
+        _ => {
+            *last = Some(now);
+            Some(std::time::Duration::from_millis(stall_ms))
+        }
+    }
 }
 
 pub fn mute_output() -> bool {

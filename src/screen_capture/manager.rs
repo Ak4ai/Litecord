@@ -1,6 +1,16 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+
+/// Peers whose frames were dropped because the decode queue was full. The decoder skips
+/// their following frames (they reference the dropped one and would come out corrupted)
+/// and asks that peer for a keyframe.
+static DECODE_RESYNC: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Frames waiting for the decoder: half a second at 60 FPS, enough to ride out a short
+/// stall (a game hitch) without dropping anything. Past that it is better to skip to a
+/// fresh keyframe than to show the stream seconds late (it used to hold 120 frames).
+const DECODE_QUEUE_FRAMES: usize = 30;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1093,7 +1103,7 @@ impl ScreenCaptureManager {
             frame_data: Vec<u8>,
         }
 
-        let (tx_decode, rx_decode) = std::sync::mpsc::sync_channel::<QueuedVideoFrame>(120);
+        let (tx_decode, rx_decode) = std::sync::mpsc::sync_channel::<QueuedVideoFrame>(DECODE_QUEUE_FRAMES);
 
         let is_running_decoder = Arc::clone(&self.is_receiver_running);
         let channel_id_decoder = Arc::clone(&self.channel_id);
@@ -1126,6 +1136,14 @@ impl ScreenCaptureManager {
                         Ok(item) => {
                             let QueuedVideoFrame { peer_uid, peer_name, peer_fps, seq, pts_ms, frame_data } = item;
                             let t_dec_start = Instant::now();
+                            #[cfg(feature = "automation")]
+                            if let Some(delay) = crate::utils::test_hooks::decode_delay() {
+                                std::thread::sleep(delay);
+                            }
+                            #[cfg(feature = "automation")]
+                            if let Some(stall) = crate::utils::test_hooks::decode_stall_due() {
+                                std::thread::sleep(stall);
+                            }
 
                             let mut send_pli = |target_uid: u64| {
                                 let should_req_pli = match last_pli_req.get(&target_uid) {
@@ -1180,6 +1198,12 @@ impl ScreenCaptureManager {
                                     }
                                 }
                             };
+
+                            // Frames of this peer were dropped at the full queue: the ones after them
+                            // cannot be decoded cleanly, so wait for a keyframe (and ask for it).
+                            if take_decode_resync(peer_uid) {
+                                waiting_for_idr.insert(peer_uid, true);
+                            }
 
                             // Se estiver aguardando IDR, verificar se o frame atual contém SPS ou IDR antes de decodificar
                             if *waiting_for_idr.entry(peer_uid).or_insert(false) {
@@ -1789,11 +1813,11 @@ impl ScreenCaptureManager {
 
                                                     if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
                                                         queue_full_dropped += 1;
+                                                        mark_decode_resync(pkt_uid);
                                                         if queue_full_last.elapsed() >= Duration::from_secs(1) {
-                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia (>120 quadros): {} quadro(s) descartado(s), solicitando Keyframe para ressincronização", queue_full_dropped);
+                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia ({} quadros): {} quadro(s) descartado(s); pedindo Keyframe ao transmissor {}", DECODE_QUEUE_FRAMES, queue_full_dropped, pkt_uid);
                                                             queue_full_dropped = 0;
                                                             queue_full_last = Instant::now();
-                                                            request_intra_keyframe();
                                                         }
                                                     }
                                                 }
@@ -1912,8 +1936,9 @@ impl ScreenCaptureManager {
 
                                                     if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
                                                         queue_full_dropped += 1;
+                                                        mark_decode_resync(pkt_uid);
                                                         if queue_full_last.elapsed() >= Duration::from_secs(1) {
-                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia: {} quadro(s) descartado(s) (último: {}) para manter a latência baixa", queue_full_dropped, seq);
+                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia ({} quadros): {} quadro(s) descartado(s) (último: {}); pedindo Keyframe ao transmissor {}", DECODE_QUEUE_FRAMES, queue_full_dropped, seq, pkt_uid);
                                                             queue_full_dropped = 0;
                                                             queue_full_last = Instant::now();
                                                         }
@@ -2164,5 +2189,42 @@ impl ScreenCaptureManager {
                 }
             })
             .expect("Falha ao iniciar thread RX");
+    }
+}
+
+fn mark_decode_resync(peer_uid: u64) {
+    if let Ok(mut peers) = DECODE_RESYNC.lock() {
+        if !peers.contains(&peer_uid) {
+            peers.push(peer_uid);
+        }
+    }
+}
+
+fn take_decode_resync(peer_uid: u64) -> bool {
+    match DECODE_RESYNC.lock() {
+        Ok(mut peers) => match peers.iter().position(|&p| p == peer_uid) {
+            Some(i) => {
+                peers.swap_remove(i);
+                true
+            }
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod decode_resync_tests {
+    use super::*;
+
+    #[test]
+    fn resync_mark_is_taken_once_per_peer() {
+        mark_decode_resync(7);
+        mark_decode_resync(7);
+        mark_decode_resync(8);
+        assert!(take_decode_resync(7));
+        assert!(!take_decode_resync(7));
+        assert!(take_decode_resync(8));
+        assert!(!take_decode_resync(9));
     }
 }

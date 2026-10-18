@@ -15,7 +15,9 @@ param(
     [string]$Resolution = "1080p",
     [int]$Fps = 60,
     [int]$WatchSeconds = 30,
-    [switch]$Fullscreen             # watch with the stream full screen (the costliest view)
+    [switch]$Fullscreen,            # watch with the stream full screen (the costliest view)
+    [int]$DecodeDelayMs = 0,        # slow the receiver's decoder down to test falling behind
+    [string]$DecodeStall = ""       # "<ms>,<every ms>": stall the receiver's decoder now and then
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "lib.ps1")
@@ -25,6 +27,8 @@ New-Item -ItemType Directory -Force $OutDir | Out-Null
 
 $receiverEnv = @{ LITECORD_TEST_ACCOUNT = $Receiver; LITECORD_TEST_MUTE_OUTPUT = "1" }
 if ($ReceiverBackend) { $receiverEnv.SLINT_BACKEND = $ReceiverBackend }
+if ($DecodeDelayMs -gt 0) { $receiverEnv.LITECORD_TEST_DECODE_DELAY_MS = "$DecodeDelayMs" }
+if ($DecodeStall) { $receiverEnv.LITECORD_TEST_DECODE_STALL = $DecodeStall }
 $senderProc = Start-Litecord $Exe (Join-Path $OutDir "sender") 47131 @{ LITECORD_TEST_ACCOUNT = $Sender; LITECORD_TEST_MUTE_OUTPUT = "1" }
 $receiverProc = Start-Litecord $Exe (Join-Path $OutDir "receiver") 47132 $receiverEnv
 try {
