@@ -58,15 +58,14 @@ try {
     Start-Sleep -Seconds 5
     "receiver window: $((Send-Litecord 47132 '{"cmd":"size"}').logical -join 'x')"
 
-    $cpu0 = $receiverProc.TotalProcessorTime.TotalSeconds; $snd0 = $senderProc.TotalProcessorTime.TotalSeconds
+    $rx0 = [Cycles]::OfProcess($receiverProc.Id); $tx0 = [Cycles]::OfProcess($senderProc.Id)
     & (Join-Path $PSScriptRoot "wakeups.ps1") -ProcId $receiverProc.Id -Seconds $WatchSeconds -Label "receiver watching" -Out (Join-Path $OutDir "receiver-wakeups.txt")
-    $receiverProc.Refresh(); $senderProc.Refresh()
+    $rxCpu = Cpu-Percent $rx0 ([Cycles]::OfProcess($receiverProc.Id)) $WatchSeconds
+    $txCpu = Cpu-Percent $tx0 ([Cycles]::OfProcess($senderProc.Id)) $WatchSeconds
     $s = (Send-Litecord 47132 '{"cmd":"state"}').stream
     $cores = [Environment]::ProcessorCount
-    $rxCpu = ($receiverProc.TotalProcessorTime.TotalSeconds - $cpu0) / $WatchSeconds * 100
-    $txCpu = ($senderProc.TotalProcessorTime.TotalSeconds - $snd0) / $WatchSeconds * 100
-    "receiver CPU while watching: $([math]::Round($rxCpu, 1))% of one core ($([math]::Round($rxCpu / $cores, 2))% of the machine), shown FPS: $($s.remote_fps)"
-    "sender CPU while sharing:    $([math]::Round($txCpu, 1))% of one core, local FPS: $((Send-Litecord 47131 '{"cmd":"state"}').stream.local_fps)"
+    "receiver CPU while watching: $([math]::Round($rxCpu, 1))% of a 3 GHz core ($([math]::Round($rxCpu / $cores, 2))% of the machine), shown FPS: $($s.remote_fps)"
+    "sender CPU while sharing:    $([math]::Round($txCpu, 1))% of a 3 GHz core, local FPS: $((Send-Litecord 47131 '{"cmd":"state"}').stream.local_fps)"
     Get-Content (Join-Path $OutDir "receiver-wakeups.txt") | Select-Object -First 12
     "RESULT: PASS (stream opened)"
 } finally {

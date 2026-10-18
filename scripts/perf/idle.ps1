@@ -19,11 +19,11 @@ if ($Backend) { $env_.SLINT_BACKEND = $Backend }
 $proc = Start-Litecord $Exe (Join-Path $OutDir "instance") 47131 $env_
 $report = Join-Path $OutDir "wakeups.txt"
 function Measure-Phase($label) {
-    $proc.Refresh(); $cpu0 = $proc.TotalProcessorTime.TotalSeconds
+    $cyc0 = [Cycles]::OfProcess($proc.Id)
     & (Join-Path $PSScriptRoot "wakeups.ps1") -ProcId $proc.Id -Seconds $Seconds -Label $label -Out $report
     $proc.Refresh()
-    "{0}: CPU {1:N2}% of one core, working set {2:N1} MB, private {3:N1} MB" -f $label,
-        (($proc.TotalProcessorTime.TotalSeconds - $cpu0) / $Seconds * 100),
+    "{0}: CPU {1:N2}% of a 3 GHz core, working set {2:N1} MB, private {3:N1} MB" -f $label,
+        (Cpu-Percent $cyc0 ([Cycles]::OfProcess($proc.Id)) $Seconds),
         ($proc.WorkingSet64 / 1MB), ($proc.PrivateMemorySize64 / 1MB)
 }
 try {
