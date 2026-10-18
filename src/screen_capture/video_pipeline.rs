@@ -396,7 +396,13 @@ pub struct StreamDecoders {
     gpu: HashMap<u64, super::hw_decode::GpuDecoder>,
     /// Streams decoded on the CPU for good (GPU decoder missing, unsupported or failed).
     cpu_only: std::collections::HashSet<u64>,
+    /// Keyframes in a row the GPU decoder could not start from, per stream.
+    gpu_keyframe_misses: HashMap<u64, u32>,
 }
+
+/// After this many keyframes the GPU decoder could not start from, the stream goes to the
+/// CPU decoder: something in it is beyond our parser, and waiting would show nothing.
+const GPU_KEYFRAME_MISSES: u32 = 3;
 
 impl StreamDecoders {
     /// Starts the decoders of this stream over (the next picture must be a keyframe).
@@ -475,10 +481,12 @@ pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_da
         if let Some(gpu) = gpu {
             match gpu.decode(&annex_b, shown_size) {
                 Ok(Some(GpuPicture::Rgba(buf, w, h))) => {
+                    decoders.gpu_keyframe_misses.remove(&peer_uid);
                     RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
                     return Decoded::Picture(buf, w, h);
                 }
                 Ok(Some(GpuPicture::Shown(h))) => {
+                    decoders.gpu_keyframe_misses.remove(&peer_uid);
                     RX_GPU_FRAMES.fetch_add(1, Ordering::Relaxed);
                     return Decoded::ShownByGpu(h);
                 }
@@ -487,6 +495,15 @@ pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_da
                     static WAITING: crate::utils::logger::LogThrottle = crate::utils::logger::LogThrottle::new(1000);
                     if let Some(n) = WAITING.hit() {
                         log::info!("⏳ [DECODER RX] GPU aguardando keyframe do peer {} ({}; {} quadro(s) desde o último aviso)", peer_uid, why, n);
+                    }
+                    if has_idr(&annex_b) {
+                        let misses = decoders.gpu_keyframe_misses.entry(peer_uid).or_insert(0);
+                        *misses += 1;
+                        if *misses >= GPU_KEYFRAME_MISSES {
+                            log::warn!("🎞️ [DECODER RX] A GPU não conseguiu começar de {} keyframes do peer {} ({}); ele vai pela CPU", misses, peer_uid, why);
+                            decoders.gpu.remove(&peer_uid);
+                            decoders.cpu_only.insert(peer_uid);
+                        }
                     }
                     return Decoded::NeedKeyframe;
                 }
@@ -506,6 +523,11 @@ pub fn decode_video_frame(decoders: &mut StreamDecoders, peer_uid: u64, frame_da
         Some((b, w, h)) => Decoded::Picture(b, w, h),
         None => Decoded::Failed,
     }
+}
+
+/// The access unit holds an IDR slice.
+fn has_idr(annex_b: &[u8]) -> bool {
+    super::hw_decode::h264_state::nal_ranges(annex_b).iter().any(|r| annex_b[r.start] & 0x1f == 5)
 }
 
 fn decode_on_cpu(

@@ -121,7 +121,7 @@ pub fn refresh(app: &AppWindow, popout: &PopoutStreamWindow) {
 
 #[cfg(windows)]
 fn apply(layers: &WindowLayers, wants: bool, peer: u64, set_hole: impl Fn(bool)) {
-    if wants && layers.peer() != Some(peer) {
+    if wants && layers.usable() && layers.peer() != Some(peer) {
         match layers.start(peer) {
             Ok(()) => {
                 log::info!("🎞️ [GPU VIDEO] Transmissão do peer {} exibida direto pela GPU", peer);

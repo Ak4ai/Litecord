@@ -296,9 +296,11 @@ impl DxvaDecoder {
 
         unsafe {
             let view = &session.views[pic.surface as usize];
+            // The driver may still be busy with the surface; a GPU that stays busy failed.
+            let since = std::time::Instant::now();
             loop {
                 match self.vctx.DecoderBeginFrame(&session.decoder, view, 0, None) {
-                    Err(e) if e.code().0 == E_PENDING => std::thread::yield_now(),
+                    Err(e) if e.code().0 == E_PENDING && since.elapsed() < std::time::Duration::from_millis(100) => std::thread::yield_now(),
                     r => break r?,
                 }
             }

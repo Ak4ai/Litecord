@@ -157,7 +157,7 @@ enum State {
 }
 
 struct Live {
-    _device: Arc<SharedDevice>,
+    device: Arc<SharedDevice>,
     dcomp: IDCompositionDevice,
     target: IDCompositionTarget,
     root: IDCompositionVisual,
@@ -170,6 +170,8 @@ struct Live {
 /// One window's layers (UI thread). Install it once as the window's layer sink.
 pub struct WindowLayers {
     hwnd: isize,
+    /// The layers could not be created here: this window stays on CPU pictures.
+    failed: Cell<bool>,
     state: Cell<State>,
     live: RefCell<Option<Live>>,
     rect: Cell<(i32, i32, u32, u32)>,
@@ -177,13 +179,16 @@ pub struct WindowLayers {
 
 impl WindowLayers {
     pub fn new(hwnd: isize) -> Self {
-        Self { hwnd, state: Cell::new(State::Off), live: RefCell::new(None), rect: Cell::new((0, 0, 0, 0)) }
+        Self { hwnd, failed: Cell::new(false), state: Cell::new(State::Off), live: RefCell::new(None), rect: Cell::new((0, 0, 0, 0)) }
     }
 
     /// Stream `peer` is shown on the GPU in this window, in `rect` (physical pixels).
     pub fn start(&self, peer: u64) -> Result<(), HwError> {
+        if self.failed.get() {
+            return Err(HwError::Unsupported("layers failed earlier in this window".into()));
+        }
         if self.live.borrow().is_none() {
-            let live = unsafe { self.create(peer)? };
+            let live = unsafe { self.create(peer) }.inspect_err(|_| self.failed.set(true))?;
             *self.live.borrow_mut() = Some(live);
         }
         if let Some(l) = self.live.borrow().as_ref() {
@@ -225,6 +230,11 @@ impl WindowLayers {
             }
         }
         self.state.set(State::Off);
+    }
+
+    /// Whether this window can use layers (they did not fail to start here).
+    pub fn usable(&self) -> bool {
+        !self.failed.get()
     }
 
     pub fn is_active(&self) -> bool {
@@ -284,7 +294,7 @@ impl WindowLayers {
         root.AddVisual(&ui_visual, true, &video_visual)?;
         let output = Arc::new(Mutex::new(VideoOutput { peer, swapchain, size: (w, h), wanted: (w, h), processor: None, out_view: None, in_views: HashMap::new() }));
         // The UI visual gets its surface with the first frame (it has the window's size).
-        Ok(Live { _device: device, dcomp, target, root, video_visual, ui_visual, ui_surface: None, output })
+        Ok(Live { device, dcomp, target, root, video_visual, ui_visual, ui_surface: None, output })
     }
 
     unsafe fn upload(&self, l: &mut Live, pixels: &[u32], width: u32, height: u32, dirty: [u32; 4]) -> Result<(), HwError> {
@@ -310,10 +320,9 @@ impl WindowLayers {
         let rect = RECT { left: x as i32, top: y as i32, right: (x + w) as i32, bottom: (y + h) as i32 };
         let mut offset = POINT::default();
         let tex: ID3D11Texture2D = surface.BeginDraw(Some(&rect), &mut offset)?;
-        let device = shared_device()?;
         let b = D3D11_BOX { left: offset.x as u32, top: offset.y as u32, front: 0, right: offset.x as u32 + w, bottom: offset.y as u32 + h, back: 1 };
         let src = pixels.as_ptr().add((y * width + x) as usize) as *const core::ffi::c_void;
-        device.context.UpdateSubresource(&tex, 0, Some(&b), src, width * 4, 0);
+        l.device.context.UpdateSubresource(&tex, 0, Some(&b), src, width * 4, 0);
         surface.EndDraw()?;
         Ok(())
     }

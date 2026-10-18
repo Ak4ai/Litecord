@@ -142,7 +142,9 @@ impl H264State {
                     self.ctx.put_seq_param_set(sps);
                 }
                 UnitType::PicParameterSet => {
-                    let pps = PicParameterSet::from_bits(&self.ctx, rn.rbsp_bits()).map_err(|e| StateError::NeedKeyframe(format!("PPS: {e:?}")))?;
+                    // Parameter sets arrive whole with keyframes: one we cannot read is a stream
+                    // this parser does not handle, not a lost packet.
+                    let pps = PicParameterSet::from_bits(&self.ctx, rn.rbsp_bits()).map_err(|e| StateError::Unsupported(format!("PPS: {e:?}")))?;
                     self.ctx.put_pic_param_set(pps);
                 }
                 UnitType::SliceLayerWithoutPartitioningNonIdr | UnitType::SliceLayerWithoutPartitioningIdr => {
