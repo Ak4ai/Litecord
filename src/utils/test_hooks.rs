@@ -12,6 +12,7 @@
 //! LITECORD_TEST_TX_PCM=<file.f32>          what the microphone captured, 48 kHz mono f32
 //! LITECORD_TEST_DECODE_DELAY_MS=<ms>       slow every video decode down (simulates a busy receiver)
 //! LITECORD_TEST_DECODE_STALL=<ms>,<every ms> stall the decoder now and then (simulates game hitches)
+//! LITECORD_TEST_HIDE_OUTPUT_SECS=<s>       voice sees no output device for the first <s> seconds
 //! ```
 
 use std::io::Write;
@@ -57,6 +58,15 @@ pub fn decode_stall_due() -> Option<std::time::Duration> {
             Some(std::time::Duration::from_millis(stall_ms))
         }
     }
+}
+
+/// True while the voice output device should look absent (LITECORD_TEST_HIDE_OUTPUT_SECS).
+pub fn hide_output_device() -> bool {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = *START.get_or_init(Instant::now);
+    env("LITECORD_TEST_HIDE_OUTPUT_SECS")
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|secs| start.elapsed().as_secs() < secs)
 }
 
 pub fn mute_output() -> bool {

@@ -670,6 +670,7 @@ pub async fn connect_voice_gateway(
                                                 std::thread::spawn(move || {
                                                     use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
                                                     let mut current_target_dev = get_selected_output_device_store().lock().unwrap().clone();
+                                                    let mut no_device_wait: Option<Duration> = None;
 
                                                     while CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) == out_session_id {
                                                         let host = cpal::default_host();
@@ -689,14 +690,25 @@ pub async fn connect_voice_gateway(
                                                             host.default_output_device()
                                                         };
 
+                                                        #[cfg(feature = "automation")]
+                                                        let device = device.filter(|_| !crate::utils::test_hooks::hide_output_device());
                                                         let device = match device {
                                                             Some(d) => d,
                                                             None => {
-                                                                warn!("Nenhum dispositivo de saída de áudio encontrado! Aguardando...");
-                                                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                                                // Retry with backoff (each try enumerates every endpoint)
+                                                                // and say it once, not every half second.
+                                                                if no_device_wait.is_none() {
+                                                                    warn!("Nenhum dispositivo de saída de áudio encontrado! Aguardando...");
+                                                                }
+                                                                let wait = next_no_device_wait(no_device_wait);
+                                                                no_device_wait = Some(wait);
+                                                                std::thread::sleep(wait);
                                                                 continue;
                                                             }
                                                         };
+                                                        if no_device_wait.take().is_some() {
+                                                            info!("🔊 Dispositivo de saída de áudio disponível novamente.");
+                                                        }
 
                                                         let config = match device.default_output_config() {
                                                             Ok(c) => c,
@@ -1667,4 +1679,26 @@ pub async fn connect_voice_gateway(
         }
     }
 }
+}
+
+/// Wait before looking for an output device again: 0.5 s, doubling up to 5 s.
+fn next_no_device_wait(previous: Option<Duration>) -> Duration {
+    previous.map_or(Duration::from_millis(500), |d| (d * 2).min(Duration::from_secs(5)))
+}
+
+#[cfg(test)]
+mod output_device_wait_tests {
+    use super::*;
+
+    #[test]
+    fn output_device_retry_backs_off_to_five_seconds() {
+        let mut wait = None;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            let next = next_no_device_wait(wait);
+            seen.push(next.as_millis());
+            wait = Some(next);
+        }
+        assert_eq!(seen, vec![500, 1000, 2000, 4000, 5000, 5000]);
+    }
 }
