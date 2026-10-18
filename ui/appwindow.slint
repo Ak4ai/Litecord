@@ -1516,8 +1516,6 @@ export component AppWindow inherits Window {
                                         height: parent.height - 8px;
                                         background: (root.gpu_video_main && remote_view) ? #010203 : AppTheme.surface-media;
                                         border-radius: 8px;
-                                        border-width: p.is_speaking ? 3px : ((p.is_self && root.is_screen_sharing) ? 2px : 1px);
-                                        border-color: p.is_speaking ? AppTheme.success : ((p.is_self && root.is_screen_sharing) ? AppTheme.accent : AppTheme.border-subtle);
                                         clip: true;
 
                                         // Video Canvas (Independent dual buffers: active_stream_frame for self transmitter, remote_stream_frame for remote peer)
@@ -1526,6 +1524,25 @@ export component AppWindow inherits Window {
                                             width: 100%;
                                             height: 100%;
                                             image-fit: contain;
+                                        }
+
+                                        // The border goes over the video: the software renderer clips children
+                                        // square, so the picture would cover the border and stick out of the
+                                        // rounded corners. The outer ring paints those corners in the colour
+                                        // behind the card (its inner edge is the card's rounded outline).
+                                        Rectangle {
+                                            x: -4px;
+                                            y: -4px;
+                                            width: parent.width + 8px;
+                                            height: parent.height + 8px;
+                                            border-radius: 12px;
+                                            border-width: 4px;
+                                            border-color: AppTheme.surface-input;
+                                        }
+                                        Rectangle {
+                                            border-radius: 8px;
+                                            border-width: p.is_speaking ? 3px : ((p.is_self && root.is_screen_sharing) ? 2px : 1px);
+                                            border-color: p.is_speaking ? AppTheme.success : ((p.is_self && root.is_screen_sharing) ? AppTheme.accent : AppTheme.border-subtle);
                                         }
 
                                         // Top Overlay Bar (Left: Live badge, username, mute, prio | Right: Popout, Fullscreen)
