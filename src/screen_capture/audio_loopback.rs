@@ -733,6 +733,7 @@ pub fn start_audio_loopback_tx(
                 let inst = get_process_instance_id();
 
                 for chunk in chunks_to_send {
+                    super::web_share::offer_audio(&chunk, active_sample_rate);
                     seq = seq.wrapping_add(1);
                     let pts_ms = get_tx_pts_ms();
                     let sample_count = chunk.len() as u16;
