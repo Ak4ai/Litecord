@@ -17,7 +17,8 @@ param(
     [int]$WatchSeconds = 30,
     [switch]$Fullscreen,            # watch with the stream full screen (the costliest view)
     [int]$DecodeDelayMs = 0,        # slow the receiver's decoder down to test falling behind
-    [string]$DecodeStall = ""       # "<ms>,<every ms>": stall the receiver's decoder now and then
+    [string]$DecodeStall = "",      # "<ms>,<every ms>": stall the receiver's decoder now and then
+    [int]$ConversionAB = 0          # then <n> rounds alternating scaled / full-size conversion
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "lib.ps1")
@@ -67,6 +68,17 @@ try {
     "receiver CPU while watching: $([math]::Round($rxCpu, 1))% of a 3 GHz core ($([math]::Round($rxCpu / $cores, 2))% of the machine), shown FPS: $($s.remote_fps)"
     "sender CPU while sharing:    $([math]::Round($txCpu, 1))% of a 3 GHz core, local FPS: $((Send-Litecord 47131 '{"cmd":"state"}').stream.local_fps)"
     Get-Content (Join-Path $OutDir "receiver-wakeups.txt") | Select-Object -First 12
+    for ($i = 0; $i -lt $ConversionAB; $i++) {
+        # Same content, alternating, so drift in what is on screen affects both sides alike.
+        foreach ($full in $false, $true) {
+            Send-Litecord 47132 (@{ cmd = "set_full_conversion"; on = $full } | ConvertTo-Json -Compress) | Out-Null
+            Start-Sleep -Seconds 2
+            $rx0 = [Cycles]::OfProcess($receiverProc.Id); $tx0 = [Cycles]::OfProcess($senderProc.Id)
+            Start-Sleep -Seconds 10
+            "conversion $(if ($full) { 'full size' } else { 'scaled   ' }): receiver $([math]::Round((Cpu-Percent $rx0 ([Cycles]::OfProcess($receiverProc.Id)) 10), 1))%, sender $([math]::Round((Cpu-Percent $tx0 ([Cycles]::OfProcess($senderProc.Id)) 10), 1))% of a 3 GHz core"
+        }
+    }
+    Send-Litecord 47132 '{"cmd":"set_full_conversion","on":false}' | Out-Null
     "RESULT: PASS (stream opened)"
 } finally {
     try { Send-Litecord 47131 '{"cmd":"stop_screen_share"}' | Out-Null } catch { }

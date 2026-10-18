@@ -16,8 +16,13 @@
 //! ```
 
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
+
+/// Convert received frames at full size even when shown smaller (A/B of the scaled
+/// conversion; set through the automation port).
+pub static FULL_SIZE_CONVERSION: AtomicBool = AtomicBool::new(false);
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())

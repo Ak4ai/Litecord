@@ -214,6 +214,11 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             });
             Ok(json!({ "ok": true }))
         }
+        "set_full_conversion" => {
+            let on = cmd["on"].as_bool().ok_or("missing \"on\"")?;
+            crate::utils::test_hooks::FULL_SIZE_CONVERSION.store(on, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "ok": true }))
+        }
         "open_guild" => {
             let name = cmd["name"].as_str().ok_or("missing \"name\"")?;
             let guild = ui.get_guilds().iter().find(|g| g.name == name).ok_or(format!("no server named {name}"))?;

@@ -780,6 +780,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 "".to_string()
                             };
+                            // Next frames are converted at the largest size they are shown at.
+                            {
+                                let main_px = app_w2.upgrade().map(|ui| ui.window().size());
+                                let pop_px = pop_w2.upgrade().filter(|p| p.window().is_visible()).map(|p| p.window().size());
+                                let (mut vw, mut vh) = main_px.map(|s| (s.width, s.height)).unwrap_or((0, 0));
+                                if let Some(p) = pop_px {
+                                    vw = vw.max(p.width);
+                                    vh = vh.max(p.height);
+                                }
+                                screen_capture::set_stream_view_size(vw, vh);
+                            }
                             let mut should_update_pop = false;
                             if let Some(ui) = app_w2.upgrade() {
                                 let popped_uid = ui.get_popped_out_stream_uid().to_string();

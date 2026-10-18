@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
@@ -114,6 +115,20 @@ pub fn fit_bgra_to_canvas(
 }
 
 static PEER_SPS_PPS_CACHE: Mutex<Option<HashMap<u64, Vec<u8>>>> = Mutex::new(None);
+
+/// Largest size (physical pixels, `w << 32 | h`) a received stream is shown at, set by the
+/// UI. Frames are converted straight to that size: converting and then drawing a 1080p
+/// frame shown in a 980 px window cost about four times the pixels that end up on screen.
+static STREAM_VIEW_PX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_stream_view_size(w: u32, h: u32) {
+    STREAM_VIEW_PX.store((w as u64) << 32 | h as u64, Ordering::Relaxed);
+}
+
+fn stream_view_size() -> (u32, u32) {
+    let v = STREAM_VIEW_PX.load(Ordering::Relaxed);
+    ((v >> 32) as u32, v as u32)
+}
 
 pub fn cache_peer_sps_pps(peer_uid: u64, sps_pps_annex_b: &[u8]) {
     if sps_pps_annex_b.is_empty() { return; }
@@ -352,6 +367,20 @@ pub fn decode_video_frame(
     match decoder.decode(&annex_b) {
         Ok(Some(decoded_yuv)) => {
             let (w, h) = decoded_yuv.dimensions();
+            let (view_w, view_h) = stream_view_size();
+            let (out_w, out_h) = fit_within(w as u32, h as u32, view_w, view_h);
+            #[cfg(feature = "automation")]
+            let (out_w, out_h) = if crate::utils::test_hooks::FULL_SIZE_CONVERSION.load(Ordering::Relaxed) { (w as u32, h as u32) } else { (out_w, out_h) };
+            if w > 0 && h > 0 && (out_w as usize, out_h as usize) != (w, h) {
+                let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(out_w, out_h);
+                let (ys, us, vs) = decoded_yuv.strides();
+                debug_assert_eq!(us, vs);
+                i420_to_rgba_scaled(
+                    decoded_yuv.y(), decoded_yuv.u(), decoded_yuv.v(), ys, us, w, h,
+                    pixel_buffer.make_mut_bytes(), out_w as usize, out_h as usize,
+                );
+                return Some((pixel_buffer, out_w, out_h));
+            }
             if w > 0 && h > 0 {
                 use rayon::prelude::*;
                 let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w as u32, h as u32);
@@ -478,4 +507,105 @@ pub fn decode_jpeg(jpeg_data: &[u8]) -> Option<(SharedPixelBuffer<Rgba8Pixel>, u
     }
 
     Some((pixel_buffer, width, height))
+}
+
+/// Largest size that fits `max_w` x `max_h` with the frame's aspect ratio, never larger
+/// than the frame itself (even dimensions; 0 means "no limit").
+pub fn fit_within(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    if max_w == 0 || max_h == 0 || w == 0 || h == 0 {
+        return (w, h);
+    }
+    let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64).min(1.0);
+    if scale >= 1.0 {
+        return (w, h);
+    }
+    let even = |v: f64| ((v.round() as u32) & !1).max(2);
+    (even(w as f64 * scale), even(h as f64 * scale))
+}
+
+/// Converts an I420 frame to RGBA at `out_w` x `out_h` (smaller than or equal to the frame),
+/// sampling luma bilinearly so text stays readable when shrunk.
+#[allow(clippy::too_many_arguments)]
+pub fn i420_to_rgba_scaled(
+    y: &[u8], u: &[u8], v: &[u8], y_stride: usize, uv_stride: usize,
+    w: usize, h: usize, out: &mut [u8], out_w: usize, out_h: usize,
+) {
+    use rayon::prelude::*;
+    if out_w == 0 || out_h == 0 || w == 0 || h == 0 {
+        return;
+    }
+    // Source position of each output column, in 1/256 pixel steps.
+    let map = |o: usize, n_out: usize, n_in: usize| -> (usize, usize, u32) {
+        let pos = ((o as f64 + 0.5) * n_in as f64 / n_out as f64 - 0.5).max(0.0);
+        let i0 = (pos as usize).min(n_in - 1);
+        let i1 = (i0 + 1).min(n_in - 1);
+        (i0, i1, ((pos - i0 as f64) * 256.0) as u32)
+    };
+    let cols: Vec<(usize, usize, u32)> = (0..out_w).map(|x| map(x, out_w, w)).collect();
+    out[..out_w * out_h * 4].par_chunks_mut(out_w * 4).enumerate().for_each(|(oy, row)| {
+        let (y0, y1, fy) = map(oy, out_h, h);
+        let (r0, r1) = (&y[y0 * y_stride..], &y[y1 * y_stride..]);
+        let uv_row = (y0.min(h - 1) / 2) * uv_stride;
+        for (ox, px) in row.chunks_exact_mut(4).enumerate() {
+            let (x0, x1, fx) = cols[ox];
+            let top = r0[x0] as u32 * (256 - fx) + r0[x1] as u32 * fx;
+            let bottom = r1[x0] as u32 * (256 - fx) + r1[x1] as u32 * fx;
+            let luma = ((top * (256 - fy) + bottom * fy + 32768) >> 16) as i32;
+            let d = u[uv_row + x0 / 2] as i32 - 128;
+            let e = v[uv_row + x0 / 2] as i32 - 128;
+            let c = 298 * (luma - 16);
+            px[0] = ((c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            px[1] = ((c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            px[2] = ((c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            px[3] = 255;
+        }
+    });
+}
+
+#[cfg(test)]
+mod scaled_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn fit_keeps_aspect_and_never_upscales() {
+        assert_eq!(fit_within(1920, 1080, 980, 620), (980, 550));
+        assert_eq!(fit_within(1920, 1080, 3840, 2160), (1920, 1080));
+        assert_eq!(fit_within(1920, 1080, 0, 0), (1920, 1080));
+        assert_eq!(fit_within(1080, 1920, 620, 620), (348, 620));
+    }
+
+    fn solid_i420(w: usize, h: usize, yv: u8, uv: u8, vv: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        (vec![yv; w * h], vec![uv; (w / 2) * (h / 2)], vec![vv; (w / 2) * (h / 2)])
+    }
+
+    #[test]
+    fn converts_colours_like_the_full_size_path() {
+        // BT.601 limited range: Y=235/U=V=128 is white, Y=16 black, (81, 90, 240) red.
+        for ((yv, uv, vv), expect) in [((235, 128, 128), [255, 255, 255]), ((16, 128, 128), [0, 0, 0]), ((81, 90, 240), [255, 0, 0])] {
+            let (y, u, v) = solid_i420(16, 8, yv, uv, vv);
+            let mut out = vec![0u8; 8 * 4 * 4];
+            i420_to_rgba_scaled(&y, &u, &v, 16, 8, 16, 8, &mut out, 8, 4);
+            for px in out.chunks_exact(4) {
+                for c in 0..3 {
+                    assert!((px[c] as i32 - expect[c] as i32).abs() <= 3, "got {:?}, expected {:?}", &px[..3], expect);
+                }
+                assert_eq!(px[3], 255);
+            }
+        }
+    }
+
+    #[test]
+    fn downscaling_keeps_left_and_right_halves_apart() {
+        let (w, h) = (64, 16);
+        let mut y = vec![16u8; w * h];
+        for row in 0..h { for col in w / 2..w { y[row * w + col] = 235; } }
+        let (u, v) = (vec![128u8; (w / 2) * (h / 2)], vec![128u8; (w / 2) * (h / 2)]);
+        let (ow, oh) = (16, 4);
+        let mut out = vec![0u8; ow * oh * 4];
+        i420_to_rgba_scaled(&y, &u, &v, w, w / 2, w, h, &mut out, ow, oh);
+        for row in 0..oh {
+            assert!(out[(row * ow) * 4] < 10, "left edge should stay black");
+            assert!(out[(row * ow + ow - 1) * 4] > 245, "right edge should stay white");
+        }
+    }
 }
