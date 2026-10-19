@@ -17,6 +17,8 @@
 //! {"cmd":"key","key":"Return"}               Return, Escape, Tab, Backspace, arrows...
 //! {"cmd":"set","prop":"show_settings_modal","value":true}
 //! {"cmd":"set_language","code":"de"}
+//! {"cmd":"video_encoder_options"}           choices and the current capture path
+//! {"cmd":"select_video_encoder","id":"auto"} same callback as the settings radio button
 //! {"cmd":"size"}
 //! {"cmd":"minimize_to_tray"}                 same as the title bar button
 //! {"cmd":"restore"}                          same as clicking the tray icon
@@ -208,6 +210,28 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             crate::ui::helpers::apply_i18n_translations(ui, lang);
             Ok(json!({ "ok": true, "language": lang.code() }))
         }
+        "video_encoder_options" => {
+            let options: Vec<Value> = ui.get_video_encoder_options().iter().map(|o|
+                json!({"id":o.id.to_string(),"name":o.name.to_string(),"description":o.desc.to_string(),"selected":o.is_selected})
+            ).collect();
+            let reply = json!({"ok":true,"options":options,"selected":ui.get_selected_video_encoder().to_string(),"capture":ui.get_stream_capture_status().to_string()});
+            #[cfg(windows)]
+            let reply = {
+                let mut reply = reply;
+                reply["gpu_path"] = json!(crate::screen_capture::gpu_tx::active());
+                reply["stream_choice"] = json!(crate::screen_capture::gpu_tx::encoder_choice());
+                reply
+            };
+            Ok(reply)
+        }
+        "select_video_encoder" => {
+            let id = cmd["id"].as_str().ok_or("missing \"id\"")?;
+            if !ui.get_video_encoder_options().iter().any(|o| o.id == id) {
+                return Err(format!("no video encoder option {id}"));
+            }
+            ui.invoke_select_video_encoder(id.into());
+            Ok(json!({"ok":true,"selected":ui.get_selected_video_encoder().to_string()}))
+        }
         "minimize_to_tray" => {
             ui.invoke_minimize_to_tray();
             Ok(json!({ "ok": true }))
@@ -274,7 +298,15 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             if ui.get_is_screen_sharing() {
                 return Err("already sharing".into());
             }
-            ui.set_stream_source_tab("screens".into());
+            if let Some(title) = cmd["window_title"].as_str() {
+                let matches: Vec<_> = crate::screen_capture::list_capturable_windows().into_iter()
+                    .filter(|w| w.title.contains(title)).collect();
+                if matches.len() != 1 { return Err(format!("expected one window matching {title}, found {}", matches.len())); }
+                ui.set_stream_source_tab("windows".into());
+                ui.set_stream_selected_window_id(matches[0].id.clone().into());
+            } else {
+                ui.set_stream_source_tab("screens".into());
+            }
             ui.set_stream_selected_res(cmd["res"].as_str().unwrap_or("1080p").into());
             ui.set_stream_selected_fps(cmd["fps"].as_i64().unwrap_or(60) as i32);
             ui.set_stream_selected_source_index(cmd["screen"].as_i64().unwrap_or(0) as i32);
