@@ -50,7 +50,6 @@ pub struct WmfGpuEncoder {
     nv12: Vec<u8>,
     need_input: u32,
     in_flight: u32,
-    out: Vec<u8>,
     pub current_width: u32,
     pub current_height: u32,
     pub target_fps: u32,
@@ -58,6 +57,11 @@ pub struct WmfGpuEncoder {
     pub frame_count: u64,
     pub gpu_name: String,
     pub needs_keyframe: bool,
+    /// (primaries, transfer, matrix) written into the SPS: the encoder leaves them out.
+    colour: (u8, u8, u8),
+    /// Finished pictures, one access unit each, handed out one per call: a picture that
+    /// comes late must not be glued to the next one (receivers would drop one of them).
+    ready: std::collections::VecDeque<Vec<u8>>,
 }
 
 #[cfg(target_os = "windows")]
@@ -107,10 +111,47 @@ impl WmfGpuEncoder {
     unsafe fn open(act: &IMFActivate, vendor: &str, width: u32, height: u32, target_fps: u32, bitrate_bps: u32) -> Result<Self> {
         let adapter = adapter_of_vendor(vendor)?;
         let mut device = None;
-        let mut context = None;
-        D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, None, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut context))?;
+        D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, None, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, None)?;
         let device: ID3D11Device = device.ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
-        let context: ID3D11DeviceContext = context.ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
+        // encode() converts on the CPU with BT.601 coefficients.
+        Self::open_on(act, device, false, width, height, target_fps, bitrate_bps)
+    }
+
+    /// An encoder for textures of `device` (the capture device), which already hold NV12
+    /// in BT.709 limited range (gpu_tx): `encode_texture` only copies them on the GPU.
+    pub fn for_device(device: &ID3D11Device, vendor_id: u32, width: u32, height: u32, target_fps: u32, bitrate_bps: u32) -> Result<Self> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_LITE)?;
+            let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
+            let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+            let mut list: *mut Option<IMFActivate> = std::ptr::null_mut();
+            let mut count = 0u32;
+            MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, Some(&input), Some(&output), &mut list, &mut count)?;
+            let activates: Vec<IMFActivate> = std::slice::from_raw_parts(list, count as usize).iter().flatten().cloned().collect();
+            CoTaskMemFree(Some(list as *const _));
+            // Only the encoder of the GPU the textures are on.
+            let wanted = format!("VEN_{:04X}", vendor_id);
+            let mut last_err = Error::from(windows::Win32::Foundation::E_FAIL);
+            for act in activates.iter().filter(|a| string_attr(a, &MFT_ENUM_HARDWARE_VENDOR_ID_Attribute).eq_ignore_ascii_case(&wanted)) {
+                let name = string_attr(act, &MFT_FRIENDLY_NAME_Attribute);
+                match Self::open_on(act, device.clone(), true, width, height, target_fps, bitrate_bps) {
+                    Ok(mut enc) => {
+                        enc.gpu_name = name;
+                        return Ok(enc);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [WMF GPU ENGINE] '{}' indisponível para texturas: {}", name, e);
+                        last_err = e;
+                    }
+                }
+            }
+            Err(last_err)
+        }
+    }
+
+    unsafe fn open_on(act: &IMFActivate, device: ID3D11Device, bt709: bool, width: u32, height: u32, target_fps: u32, bitrate_bps: u32) -> Result<Self> {
+        let context = device.GetImmediateContext()?;
         let _ = context.cast::<ID3D11Multithread>()?.SetMultithreadProtected(true);
         let mut token = 0u32;
         let mut manager = None;
@@ -146,9 +187,14 @@ impl WmfGpuEncoder {
         out.SetUINT64(&MF_MT_FRAME_RATE, (target_fps as u64) << 32 | 1)?;
         out.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
-        // What encode() writes: BT.601, limited range.
+        // What the pictures hold, limited range: BT.601 from encode(), BT.709 from gpu_tx.
+        let matrix = if bt709 { MFVideoTransferMatrix_BT709 } else { MFVideoTransferMatrix_BT601 };
         let _ = out.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32);
-        let _ = out.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT601.0 as u32);
+        let _ = out.SetUINT32(&MF_MT_YUV_MATRIX, matrix.0 as u32);
+        if bt709 {
+            let _ = out.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32);
+            let _ = out.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32);
+        }
         mft.SetOutputType(0, &out, 0)?;
         let mut i = 0;
         let input = loop {
@@ -161,7 +207,11 @@ impl WmfGpuEncoder {
         input.SetUINT64(&MF_MT_FRAME_SIZE, (width as u64) << 32 | height as u64)?;
         input.SetUINT64(&MF_MT_FRAME_RATE, (target_fps as u64) << 32 | 1)?;
         let _ = input.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32);
-        let _ = input.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT601.0 as u32);
+        let _ = input.SetUINT32(&MF_MT_YUV_MATRIX, matrix.0 as u32);
+        if bt709 {
+            let _ = input.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32);
+            let _ = input.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32);
+        }
         mft.SetInputType(0, &input, 0)?;
         mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
         mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
@@ -197,7 +247,6 @@ impl WmfGpuEncoder {
             nv12: vec![0; (width * height * 3 / 2) as usize],
             need_input: 0,
             in_flight: 0,
-            out: Vec::with_capacity(512 * 1024),
             current_width: width,
             current_height: height,
             target_fps,
@@ -205,6 +254,8 @@ impl WmfGpuEncoder {
             frame_count: 0,
             gpu_name: String::new(),
             needs_keyframe: true,
+            colour: if bt709 { (1, 1, 1) } else { (6, 6, 6) },
+            ready: std::collections::VecDeque::new(),
         })
     }
 
@@ -242,7 +293,7 @@ impl WmfGpuEncoder {
         let mut p = std::ptr::null_mut();
         let mut len = 0u32;
         if mb.Lock(&mut p, None, Some(&mut len)).is_ok() {
-            self.out.extend_from_slice(std::slice::from_raw_parts(p, len as usize));
+            self.ready.push_back(std::slice::from_raw_parts(p, len as usize).to_vec());
             let _ = mb.Unlock();
             self.in_flight = self.in_flight.saturating_sub(1);
         }
@@ -282,42 +333,18 @@ impl VideoEncoder for WmfGpuEncoder {
             }
         }
         unsafe {
-            self.out.clear();
             self.drain_events();
             if self.need_input == 0 {
                 // Still busy with earlier pictures: skip this one.
-                return (!self.out.is_empty()).then(|| self.out.clone());
+                return self.next_output();
             }
             bgra_to_nv12(bgra_data, width as usize, &mut self.nv12, w as usize, h as usize);
             let tex = self.ring[self.ring_pos].clone();
             self.ring_pos = (self.ring_pos + 1) % RING;
             self.context.UpdateSubresource(&tex, 0, None, self.nv12.as_ptr() as *const _, w, 0);
-            let Ok(buffer) = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &tex, 0, false) else { return None };
-            let Ok(sample) = MFCreateSample() else { return None };
-            let _ = sample.AddBuffer(&buffer);
-            let duration = 10_000_000 / self.target_fps.max(1) as i64;
-            let _ = sample.SetSampleTime(self.frame_count as i64 * duration);
-            let _ = sample.SetSampleDuration(duration);
-            if self.needs_keyframe {
-                let _ = self.codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
-                self.needs_keyframe = false;
-            }
-            if self.mft.ProcessInput(0, &sample, 0).is_err() {
-                return None;
-            }
-            self.need_input -= 1;
-            self.in_flight += 1;
-            self.frame_count += 1;
-            // Usually the picture is ready within a few milliseconds.
-            let start = Instant::now();
-            while self.in_flight > 0 && start.elapsed() < OUTPUT_WAIT {
-                self.drain_events();
-                if self.in_flight > 0 {
-                    std::thread::sleep(Duration::from_micros(500));
-                }
-            }
+            self.submit(&tex);
         }
-        (!self.out.is_empty()).then(|| self.out.clone())
+        self.next_output()
     }
 
     fn force_intra_frame(&mut self) {
@@ -340,6 +367,64 @@ impl VideoEncoder for WmfGpuEncoder {
     }
 
     fn is_hardware_accelerated(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl WmfGpuEncoder {
+    /// Encodes an NV12 texture of the encoder device and size: a GPU copy into the
+    /// encoder textures (it reads them asynchronously), nothing through the CPU.
+    pub fn encode_texture(&mut self, texture: &ID3D11Texture2D) -> std::result::Result<Vec<u8>, String> {
+        unsafe {
+            self.drain_events();
+            if self.need_input == 0 {
+                return Ok(self.next_output().unwrap_or_default());
+            }
+            let tex = self.ring[self.ring_pos].clone();
+            self.ring_pos = (self.ring_pos + 1) % RING;
+            self.context.CopyResource(&tex, texture);
+            if !self.submit(&tex) {
+                return Err("ProcessInput failed".into());
+            }
+        }
+        Ok(self.next_output().unwrap_or_default())
+    }
+
+    /// The oldest finished picture, with its colours declared in the SPS (Quick Sync
+    /// writes only the range).
+    fn next_output(&mut self) -> Option<Vec<u8>> {
+        let au = self.ready.pop_front()?;
+        let (p, t, m) = self.colour;
+        Some(super::h264_vui::declare_colour(&au, p, t, m))
+    }
+
+    /// Hands `tex` to the encoder and waits briefly for the picture.
+    unsafe fn submit(&mut self, tex: &ID3D11Texture2D) -> bool {
+        let Ok(buffer) = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, tex, 0, false) else { return false };
+        let Ok(sample) = MFCreateSample() else { return false };
+        let _ = sample.AddBuffer(&buffer);
+        let duration = 10_000_000 / self.target_fps.max(1) as i64;
+        let _ = sample.SetSampleTime(self.frame_count as i64 * duration);
+        let _ = sample.SetSampleDuration(duration);
+        if self.needs_keyframe {
+            let _ = self.codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
+            self.needs_keyframe = false;
+        }
+        if self.mft.ProcessInput(0, &sample, 0).is_err() {
+            return false;
+        }
+        self.need_input -= 1;
+        self.in_flight += 1;
+        self.frame_count += 1;
+        // Usually the picture is ready within a few milliseconds.
+        let start = Instant::now();
+        while self.in_flight > 0 && start.elapsed() < OUTPUT_WAIT {
+            self.drain_events();
+            if self.in_flight > 0 {
+                std::thread::sleep(Duration::from_micros(500));
+            }
+        }
         true
     }
 }
