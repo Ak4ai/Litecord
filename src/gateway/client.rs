@@ -42,6 +42,48 @@ fn close_ends_session(code: u16) -> bool {
     matches!(code, 4004 | 4007 | 4009 | 4010 | 4011 | 4012 | 4013 | 4014)
 }
 
+/// Dispatch events this client acts on. The others (presences, typing, reactions, member
+/// updates...: most of what a big account receives) are dropped after reading their
+/// header, without building a JSON tree for their payload.
+const HANDLED_EVENTS: &[&str] = &[
+    "READY",
+    "READY_SUPPLEMENTAL",
+    "RESUMED",
+    "GUILD_CREATE",
+    "GUILD_MEMBERS_CHUNK",
+    "VOICE_STATE_UPDATE",
+    "VOICE_SERVER_UPDATE",
+    "MESSAGE_CREATE",
+    "MESSAGE_UPDATE",
+    "MESSAGE_DELETE",
+    "CALL_CREATE",
+    "CALL_UPDATE",
+    "CALL_DELETE",
+];
+
+#[derive(Debug, PartialEq, Eq)]
+struct Peek {
+    op: u64,
+    seq: Option<i64>,
+    /// Worth parsing whole: a non-dispatch op, or a dispatch event in HANDLED_EVENTS.
+    wanted: bool,
+}
+
+/// Reads only `op`, `s` and `t` of a gateway message; the payload is skipped, not built.
+fn peek(text: &str) -> Option<Peek> {
+    #[derive(serde::Deserialize)]
+    struct Head<'a> {
+        op: u64,
+        #[serde(default)]
+        s: Option<i64>,
+        #[serde(default, borrow)]
+        t: Option<std::borrow::Cow<'a, str>>,
+    }
+    let h: Head = serde_json::from_str(text).ok()?;
+    let wanted = h.op != 0 || h.t.as_deref().is_some_and(|t| HANDLED_EVENTS.contains(&t));
+    Some(Peek { op: h.op, seq: h.s, wanted })
+}
+
 /// The resume URL READY gives, with the query the first connection used.
 fn resume_url(base: &str) -> String {
     format!("{}/?v=9&encoding=json", base.trim_end_matches('/'))
@@ -254,6 +296,15 @@ impl GatewayClient {
                         }
                         match msg_result {
                             Ok(Message::Text(text)) => {
+                                // Every sequence counts (RESUME replays from the last one),
+                                // but only events the app uses are parsed whole.
+                                let Some(head) = peek(&text) else { continue };
+                                if let Some(s) = head.seq {
+                                    last_seq_arc.store(s, Ordering::Relaxed);
+                                }
+                                if !head.wanted {
+                                    continue;
+                                }
                                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
                                     let op = value["op"].as_u64().unwrap_or(99);
                                     if let Some(s) = value["s"].as_i64() {
@@ -607,14 +658,16 @@ impl GatewayClient {
                             None
                         };
 
-                        if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                        let previous_chan = if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                             if let Some(ref cid) = event_chan {
-                                gvs.insert(event_uid, cid.clone());
                                 info!("📌 [VOICE_STATE_UPDATE] User {} -> Canal {}", event_uid, cid);
+                                gvs.insert(event_uid, cid.clone())
                             } else {
-                                gvs.remove(&event_uid);
+                                gvs.remove(&event_uid)
                             }
-                        }
+                        } else {
+                            None
+                        };
                         let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
 
                         if let Some(ref my_cid) = my_voice_chan {
@@ -622,7 +675,11 @@ impl GatewayClient {
                                 info!("👥 [VOICE CHANNEL JOIN] Usuário {} ({}) entrou no nosso canal de voz!", event_uid, display_name);
                                 register_voice_participant(event_uid as u32, event_uid);
                             } else {
-                                info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
+                                // Voice states of every server arrive here: only someone who was
+                                // in our channel left it.
+                                if previous_chan.as_deref() == Some(my_cid.as_str()) {
+                                    info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
+                                }
                                 remove_voice_participant_by_user_id(event_uid);
                             }
                         }
@@ -954,6 +1011,24 @@ impl GatewayClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_events_the_app_uses_are_parsed_whole_but_every_sequence_counts() {
+        // Presence and typing are most of what a big account receives: skipped.
+        let presence = r#"{"t":"PRESENCE_UPDATE","s":42,"op":0,"d":{"user":{"id":"1"},"status":"online","activities":[{"name":"x"}]}}"#;
+        assert_eq!(peek(presence), Some(Peek { op: 0, seq: Some(42), wanted: false }));
+        // Fields in any order, nested objects named like the head fields.
+        let msg = r#"{"op":0,"d":{"t":"x","s":1,"op":9,"content":"hi"},"s":43,"t":"MESSAGE_CREATE"}"#;
+        assert_eq!(peek(msg), Some(Peek { op: 0, seq: Some(43), wanted: true }));
+        for t in HANDLED_EVENTS {
+            let ev = format!(r#"{{"op":0,"s":1,"t":"{t}","d":{{}}}}"#);
+            assert!(peek(&ev).unwrap().wanted, "{t}");
+        }
+        // Everything that is not a dispatch (hello, ack, reconnect...) is parsed.
+        assert_eq!(peek(r#"{"op":11,"d":null,"s":null,"t":null}"#), Some(Peek { op: 11, seq: None, wanted: true }));
+        assert_eq!(peek(r#"{"op":10,"d":{"heartbeat_interval":41250}}"#), Some(Peek { op: 10, seq: None, wanted: true }));
+        assert_eq!(peek("not json"), None);
+    }
 
     #[test]
     fn resume_url_keeps_the_query_of_the_first_connection() {
