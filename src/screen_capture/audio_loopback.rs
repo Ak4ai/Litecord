@@ -442,6 +442,8 @@ pub fn start_audio_loopback_tx(
             crate::cpu_profiler::set_current_thread_name("audio-loopback-tx");
 
             let mut seq: u32 = 0;
+            // Opus encoder of the stream audio, alive only while someone watches.
+            let mut opus: Option<super::stream_audio::StreamAudioEncoder> = None;
             let pcm_buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(4800)));
             let pcm_buffer_cb = Arc::clone(&pcm_buffer);
 
@@ -736,34 +738,36 @@ pub fn start_audio_loopback_tx(
                 let stream_key = super::watch::session_key();
                 for chunk in chunks_to_send {
                     super::web_share::offer_audio(&chunk, active_sample_rate);
-                    seq = seq.wrapping_add(1);
                     let Some(stream_key) = stream_key.filter(|_| !target_addrs.is_empty()) else {
+                        opus = None;
                         continue;
                     };
-                    let pts_ms = get_tx_pts_ms();
-                    let sample_count = chunk.len() as u16;
-                    let mut raw_pcm = Vec::with_capacity(chunk.len() * 2);
-                    for &s in &chunk {
-                        raw_pcm.extend_from_slice(&s.to_le_bytes());
+                    if opus.is_none() {
+                        opus = super::stream_audio::StreamAudioEncoder::new();
                     }
-                    let Some(audio_payload) = encrypt_signaling_payload(&stream_key, &raw_pcm) else {
-                        continue;
-                    };
-                    let mut pkt = Vec::with_capacity(36 + audio_payload.len());
-                    pkt.extend_from_slice(MAGIC);
-                    pkt.extend_from_slice(&inst.to_be_bytes());
-                    pkt.push(OP_AUDIO_FRAME);
-                    pkt.extend_from_slice(&cid.to_be_bytes());
-                    pkt.extend_from_slice(&uid.to_be_bytes());
-                    pkt.extend_from_slice(&seq.to_be_bytes());
-                    pkt.extend_from_slice(&pts_ms.to_be_bytes());
-                    pkt.push(1); // 1 channel
-                    pkt.extend_from_slice(&active_sample_rate.to_be_bytes());
-                    pkt.extend_from_slice(&sample_count.to_be_bytes());
-                    pkt.extend_from_slice(&audio_payload);
-
-                    for target in &target_addrs {
-                        let _ = socket.send_to(&pkt, target);
+                    let Some(encoder) = opus.as_mut() else { continue };
+                    let pts_ms = get_tx_pts_ms();
+                    // One packet per 20 ms Opus frame (48 kHz, two equal channels).
+                    for frame in encoder.push(&chunk, active_sample_rate) {
+                        seq = seq.wrapping_add(1);
+                        let Some(audio_payload) = encrypt_signaling_payload(&stream_key, &frame) else {
+                            continue;
+                        };
+                        let mut pkt = Vec::with_capacity(40 + audio_payload.len());
+                        pkt.extend_from_slice(MAGIC);
+                        pkt.extend_from_slice(&inst.to_be_bytes());
+                        pkt.push(OP_AUDIO_FRAME);
+                        pkt.extend_from_slice(&cid.to_be_bytes());
+                        pkt.extend_from_slice(&uid.to_be_bytes());
+                        pkt.extend_from_slice(&seq.to_be_bytes());
+                        pkt.extend_from_slice(&pts_ms.to_be_bytes());
+                        pkt.push(2); // channels
+                        pkt.extend_from_slice(&48_000u32.to_be_bytes());
+                        pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
+                        pkt.extend_from_slice(&audio_payload);
+                        for target in &target_addrs {
+                            let _ = socket.send_to(&pkt, target);
+                        }
                     }
 
                     let mut peak_tx: i16 = 0;

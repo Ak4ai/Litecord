@@ -1520,6 +1520,8 @@ impl ScreenCaptureManager {
                 let mut last_stream_activity: HashMap<u64, Instant> = HashMap::new();
                 let mut last_qos_feedback_time = Instant::now();
                 let mut last_watch_request = Instant::now() - Duration::from_secs(10);
+                // Opus decoders of the streams being watched, by peer.
+                let mut audio_decoders: HashMap<u64, super::stream_audio::StreamAudioDecoder> = HashMap::new();
                 let mut requested: Vec<u64> = Vec::new();
 
                 let my_instance_id = get_process_instance_id();
@@ -2238,23 +2240,20 @@ impl ScreenCaptureManager {
                                         if pkt_inst == my_instance_id {
                                             continue;
                                         }
-                                        let sample_rate = u32::from_be_bytes(recv_buf[34..38].try_into().unwrap_or([0, 0, 0xbb, 0x80]));
-                                        let sample_count = u16::from_be_bytes(recv_buf[38..40].try_into().unwrap()) as usize;
-                                        let pcm_payload = &recv_buf[40..len];
-
-                                        let Some(raw_pcm) = super::watch::stream_key(pkt_uid).and_then(|k| decrypt_signaling_payload(&k, pcm_payload)) else {
+                                        // One Opus frame (stream_audio), decoded to 48 kHz mono.
+                                        let audio_seq = u32::from_be_bytes(recv_buf[25..29].try_into().unwrap());
+                                        let Some(opus_frame) = super::watch::stream_key(pkt_uid).and_then(|k| decrypt_signaling_payload(&k, &recv_buf[40..len])) else {
                                             continue;
                                         };
-
-                                        let samples_i16: Vec<i16> = (0..sample_count)
-                                            .filter_map(|i| {
-                                                if i * 2 + 1 < raw_pcm.len() {
-                                                    Some(i16::from_le_bytes([raw_pcm[i * 2], raw_pcm[i * 2 + 1]]))
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .collect();
+                                        let Some(decoder) = (match audio_decoders.entry(pkt_uid) {
+                                            std::collections::hash_map::Entry::Occupied(e) => Some(e.into_mut()),
+                                            std::collections::hash_map::Entry::Vacant(e) => super::stream_audio::StreamAudioDecoder::new().map(|d| e.insert(d)),
+                                        }) else {
+                                            continue;
+                                        };
+                                        let samples_i16 = decoder.decode(audio_seq, &opus_frame);
+                                        let sample_rate = 48_000u32;
+                                        let sample_count = samples_i16.len();
 
                                         let mut peak_rx: i16 = 0;
                                         for &s in &samples_i16 {
