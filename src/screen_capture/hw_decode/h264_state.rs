@@ -142,9 +142,14 @@ impl H264State {
                     self.ctx.put_seq_param_set(sps);
                 }
                 UnitType::PicParameterSet => {
-                    // Parameter sets arrive whole with keyframes: one we cannot read is a stream
-                    // this parser does not handle, not a lost packet.
-                    let pps = PicParameterSet::from_bits(&self.ctx, rn.rbsp_bits()).map_err(|e| StateError::Unsupported(format!("PPS: {e:?}")))?;
+                    // A PPS of an SPS we do not have yet is a stream joined mid-way (Quick Sync
+                    // repeats the PPS in every picture, the SPS only with keyframes): wait for
+                    // a keyframe. Any other PPS we cannot read is a stream this parser does
+                    // not handle, not a lost packet.
+                    let pps = PicParameterSet::from_bits(&self.ctx, rn.rbsp_bits()).map_err(|e| match e {
+                        h264_reader::nal::pps::PpsError::UnknownSeqParamSetId(_) => StateError::NeedKeyframe(format!("PPS: {e:?}")),
+                        _ => StateError::Unsupported(format!("PPS: {e:?}")),
+                    })?;
                     self.ctx.put_pic_param_set(pps);
                 }
                 UnitType::SliceLayerWithoutPartitioningNonIdr | UnitType::SliceLayerWithoutPartitioningIdr => {
@@ -483,6 +488,21 @@ pub fn nal_ranges(data: &[u8]) -> Vec<Range<usize>> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Quick Sync repeats the PPS in every picture but the SPS only with keyframes: a
+    /// receiver that starts mid-stream sees a PPS of an SPS it does not have yet. That is
+    /// "wait for a keyframe", not a stream the GPU cannot decode.
+    #[test]
+    fn a_pps_before_its_sps_waits_for_a_keyframe() {
+        let mut st = H264State::new();
+        let au = [0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80];
+        match st.parse(&au) {
+            Err(StateError::NeedKeyframe(_)) => {}
+            other => panic!("expected NeedKeyframe, got {:?}", other.map(|p| p.is_some())),
+        }
+    }
+
     use super::*;
 
     /// Writes H.264 syntax elements (with emulation prevention) for synthetic streams.
