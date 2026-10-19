@@ -315,6 +315,7 @@ impl ScreenCaptureManager {
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 }
                 crate::cpu_profiler::set_current_thread_name("screen-capture-tx");
+                *TX_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current());
 
                 // Created with the first CPU picture: when the GPU path works, never.
                 let mut h264_encoder: Option<Box<dyn crate::encoder::VideoEncoder>> = None;
@@ -857,6 +858,10 @@ impl ScreenCaptureManager {
                         gpu_frame = Some(f);
                     }
                     #[cfg(windows)]
+                    if let Some((device, w, h)) = super::gpu_tx::take_new_device() {
+                        open_gpu_encoder(&mut gpu_encoder, &device, w, h, target_fps as u32);
+                    }
+                    #[cfg(windows)]
                     let gpu_path = super::gpu_tx::active();
                     #[cfg(not(windows))]
                     let gpu_path = false;
@@ -900,7 +905,8 @@ impl ScreenCaptureManager {
                     let now = Instant::now();
                     if now < next_tick {
                         let sleep_dur = (next_tick - now).min(frame_target_interval);
-                        std::thread::sleep(sleep_dur);
+                        // Woken early when a viewer arrives (wake_tx), instead of a full idle tick.
+                        std::thread::park_timeout(sleep_dur);
                     }
                     next_tick += frame_target_interval;
                     if now > next_tick + frame_target_interval * 2 {
@@ -2163,6 +2169,7 @@ impl ScreenCaptureManager {
                                                 if new {
                                                     info!("👀 [ASSISTIR SOB DEMANDA] UID={} começou a assistir (de {}).", pkt_uid, src_addr);
                                                     KEYFRAME_REQUESTED.store(true, Ordering::Relaxed);
+                                                    wake_tx();
                                                 }
                                                 let wrapped = super::watch::session_key().zip(pair_key(&viewer_public, my_uid, pkt_uid, my_current_cid))
                                                     .and_then(|(stream_key, pair)| encrypt_signaling_payload(&pair, &stream_key));
@@ -2415,6 +2422,16 @@ impl ScreenCaptureManager {
 /// Capture and send pace while nobody watches: the local preview's rate.
 pub(super) const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
 
+/// The stream's send thread, woken when a viewer arrives.
+static TX_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
+
+/// Wakes the send thread now (it sleeps up to a quarter second while nobody watches).
+pub(crate) fn wake_tx() {
+    if let Some(t) = TX_THREAD.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        t.unpark();
+    }
+}
+
 /// Somebody watches the stream being sent (natively or in a browser); read by the
 /// capture thread to choose its pace.
 static TX_WATCHED: AtomicBool = AtomicBool::new(false);
@@ -2432,18 +2449,9 @@ fn encode_on_gpu(
     frame: Option<&super::gpu_tx::GpuFrame>,
     fps: u32,
 ) -> Option<Vec<u8>> {
-    use ::windows::core::Interface;
     let f = frame?;
-    let key = f.device.as_raw() as usize;
-    if encoder.as_ref().map(|(k, _)| *k != key).unwrap_or(true) {
-        let vendor = super::gpu_tx::vendor_of(&f.device).unwrap_or(0);
-        match crate::encoder::create_gpu_encoder(&f.device, vendor, f.width, f.height, fps, REQUESTED_BITRATE_BPS.load(Ordering::Relaxed)) {
-            Ok(e) => *encoder = Some((key, e)),
-            Err(e) => {
-                super::gpu_tx::give_up(&format!("codificador pela GPU indisponível ({e})"));
-                return None;
-            }
-        }
+    if !open_gpu_encoder(encoder, &f.device, f.width, f.height, fps) {
+        return None;
     }
     let (_, enc) = encoder.as_mut()?;
     enc.set_bitrate(REQUESTED_BITRATE_BPS.load(Ordering::Relaxed));
@@ -2459,6 +2467,35 @@ fn encode_on_gpu(
             *encoder = None;
             super::gpu_tx::give_up(&format!("falha ao codificar pela GPU ({e})"));
             None
+        }
+    }
+}
+
+/// Opens the texture encoder of `device` unless it is open already. Opening Quick Sync
+/// takes over half a second, so this runs as soon as the capture knows its device rather
+/// than when the first viewer arrives. False (and the CPU path) when it cannot open.
+#[cfg(windows)]
+fn open_gpu_encoder(
+    encoder: &mut Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)>,
+    device: &::windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> bool {
+    use ::windows::core::Interface;
+    let key = device.as_raw() as usize;
+    if encoder.as_ref().is_some_and(|(k, _)| *k == key) {
+        return true;
+    }
+    let vendor = super::gpu_tx::vendor_of(device).unwrap_or(0);
+    match crate::encoder::create_gpu_encoder(device, vendor, width, height, fps, REQUESTED_BITRATE_BPS.load(Ordering::Relaxed)) {
+        Ok(e) => {
+            *encoder = Some((key, e));
+            true
+        }
+        Err(e) => {
+            super::gpu_tx::give_up(&format!("codificador pela GPU indisponível ({e})"));
+            false
         }
     }
 }

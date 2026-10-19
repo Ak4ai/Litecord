@@ -331,6 +331,7 @@ const PREVIEW_WIDTH: u32 = 480;
 pub fn begin_stream(allowed: bool) {
     *ENCODER_CHOICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::video_settings::get_video_encoder());
     MODE.store(if allowed { UNDECIDED } else { CPU }, Ordering::Relaxed);
+    *NEW_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *PREVIEW.lock().unwrap_or_else(|e| e.into_inner()) = None;
     super::gpu_capture::clear_status();
@@ -345,6 +346,7 @@ pub fn encoder_choice() -> String {
 /// Release queued pictures at stop; no texture or device is kept for a later stream.
 pub fn end_stream() {
     MODE.store(CPU, Ordering::Relaxed);
+    *NEW_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *PREVIEW.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
@@ -367,6 +369,13 @@ pub fn give_up(why: &str) {
     }
     *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if changed { super::gpu_capture::status_changed(); }
+}
+
+/// The capture device of this stream, once, when the capture starts using it.
+static NEW_DEVICE: Mutex<Option<(ID3D11Device, u32, u32)>> = Mutex::new(None);
+
+pub fn take_new_device() -> Option<(ID3D11Device, u32, u32)> {
+    NEW_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 /// The newest converted picture, if one arrived since the last call.
@@ -425,7 +434,11 @@ impl CaptureSide {
                 }
             }
             match GpuStage::new(device, self.out.0, self.out.1) {
-                Ok(stage) => self.stage = Some((device.as_raw() as usize, stage)),
+                Ok(stage) => {
+                    self.stage = Some((device.as_raw() as usize, stage));
+                    // The send thread opens its encoder now, before anyone watches.
+                    *NEW_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some((device.clone(), self.out.0 & !1, self.out.1 & !1));
+                }
                 Err(e) => {
                     give_up(&format!("conversão pela GPU indisponível ({e})"));
                     return false;

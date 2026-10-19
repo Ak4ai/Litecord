@@ -357,6 +357,14 @@ pub fn start(req: Request) -> bool {
     ready
 }
 
+/// After this long without a reason to capture, the capture stops asking for frames.
+const IDLE_CLOSE_AFTER: Duration = Duration::from_secs(1);
+
+/// Someone watches the stream, or a window shows its local preview.
+fn frames_wanted() -> bool {
+    super::manager::tx_watched() || super::video_pipeline::streams_watched()
+}
+
 fn duplicate(
     device: &ID3D11Device,
     output: &IDXGIOutput1,
@@ -375,6 +383,12 @@ fn run_duplication(
     let frame_interval = Duration::from_nanos(1_000_000_000 / req.fps.max(1));
     while req.is_running.load(Ordering::Relaxed) && !sink.cancelled.load(Ordering::Acquire) {
         let start = Instant::now();
+        // Nobody watching and no preview shown: no frames asked for (the duplication stays
+        // open, so the next one comes at once when they are wanted again).
+        if !frames_wanted() {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
         if duplication.is_none() {
             duplication = duplicate(device, output).ok();
             if duplication.is_none() {
@@ -443,48 +457,45 @@ fn run_wgc(
         };
         let dxgi: IDXGIDevice = device.cast()?;
         let d3d: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
-        let size = item.Size()?;
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            &d3d,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            2,
-            size,
-        )?;
-        let session: GraphicsCaptureSession = pool.CreateCaptureSession(&item)?;
-        let _ = session.SetIsBorderRequired(false);
-        let _ = session.SetIsCursorCaptureEnabled(true);
         let cancelled = Arc::clone(&sink.cancelled);
         let sink = Arc::new(Mutex::new(sink));
-        let last_size = Arc::new(Mutex::new(size));
-        let (sink_cb, size_cb) = (sink.clone(), last_size.clone());
-        pool.FrameArrived(&TypedEventHandler::<
-            Direct3D11CaptureFramePool,
-            windows::core::IInspectable,
-        >::new(move |pool, _| {
-            let Some(pool) = pool.as_ref() else {
-                return Ok(());
-            };
-            let frame = pool.TryGetNextFrame()?;
-            let content = frame.ContentSize()?;
-            if content.Width <= 0 || content.Height <= 0 {
-                return Ok(());
-            }
-            let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
-            let tex: ID3D11Texture2D = access.GetInterface()?;
-            let mut sink = sink_cb.lock().unwrap_or_else(|e| e.into_inner());
-            sink.deliver(&tex);
-            drop(frame);
-            // A window that changed size: new buffers of its size.
-            let mut last = size_cb.lock().unwrap_or_else(|e| e.into_inner());
-            if content.Width != last.Width || content.Height != last.Height {
-                let dxgi: IDXGIDevice = sink.device.cast()?;
-                let d3d: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
-                pool.Recreate(&d3d, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, content)?;
-                *last = content;
-            }
-            Ok(())
-        }))?;
-        session.StartCapture()?;
+        // Opens a capture session; frames go to the sink until it is closed.
+        let open = || -> windows::core::Result<(Direct3D11CaptureFramePool, GraphicsCaptureSession)> {
+            let size = item.Size()?;
+            let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&d3d, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size)?;
+            let session: GraphicsCaptureSession = pool.CreateCaptureSession(&item)?;
+            let _ = session.SetIsBorderRequired(false);
+            let _ = session.SetIsCursorCaptureEnabled(true);
+            let last_size = Arc::new(Mutex::new(size));
+            let (sink_cb, size_cb) = (sink.clone(), last_size.clone());
+            pool.FrameArrived(&TypedEventHandler::<Direct3D11CaptureFramePool, windows::core::IInspectable>::new(move |pool, _| {
+                let Some(pool) = pool.as_ref() else {
+                    return Ok(());
+                };
+                let frame = pool.TryGetNextFrame()?;
+                let content = frame.ContentSize()?;
+                if content.Width <= 0 || content.Height <= 0 {
+                    return Ok(());
+                }
+                let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+                let tex: ID3D11Texture2D = access.GetInterface()?;
+                let mut sink = sink_cb.lock().unwrap_or_else(|e| e.into_inner());
+                sink.deliver(&tex);
+                drop(frame);
+                // A window that changed size: new buffers of its size.
+                let mut last = size_cb.lock().unwrap_or_else(|e| e.into_inner());
+                if content.Width != last.Width || content.Height != last.Height {
+                    let dxgi: IDXGIDevice = sink.device.cast()?;
+                    let d3d: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
+                    pool.Recreate(&d3d, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, content)?;
+                    *last = content;
+                }
+                Ok(())
+            }))?;
+            session.StartCapture()?;
+            Ok((pool, session))
+        };
+        let mut live = Some(open()?);
         info!(
             "🖥️ [CAPTURA GPU] {} capturada por WGC na {}",
             if hwnd != 0 { "Janela" } else { "Tela" },
@@ -494,11 +505,36 @@ fn run_wgc(
             cancelled.store(true, Ordering::Release);
         }
         report(gpu, "WGC", &cancelled);
+        // Windows Graphics Capture delivers every display refresh, and Windows 11 23H2 and
+        // older cannot slow it down: with nobody watching and no window showing the local
+        // preview (Litecord hidden behind a game), the session is closed, and opened again
+        // when someone watches or the preview shows.
+        let mut unwanted_since: Option<Instant> = None;
         while req.is_running.load(Ordering::Relaxed) && !cancelled.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(100));
+            if frames_wanted() {
+                unwanted_since = None;
+                if live.is_none() {
+                    match open() {
+                        Ok(l) => {
+                            info!("🖥️ [CAPTURA GPU] Captura WGC retomada");
+                            live = Some(l);
+                        }
+                        Err(e) => warn!("⚠️ [CAPTURA GPU] Não foi possível retomar o WGC: {}", e),
+                    }
+                }
+            } else if live.is_some() && unwanted_since.get_or_insert_with(Instant::now).elapsed() >= IDLE_CLOSE_AFTER {
+                if let Some((pool, session)) = live.take() {
+                    let _ = session.Close();
+                    let _ = pool.Close();
+                    info!("🖥️ [CAPTURA GPU] Captura WGC pausada: ninguém assistindo e a prévia escondida");
+                }
+            }
         }
-        let _ = session.Close();
-        let _ = pool.Close();
+        if let Some((pool, session)) = live.take() {
+            let _ = session.Close();
+            let _ = pool.Close();
+        }
     }
     Ok(())
 }
