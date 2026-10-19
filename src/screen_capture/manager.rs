@@ -184,6 +184,10 @@ impl ScreenCaptureManager {
             }
         }
         if self.is_running.swap(false, Ordering::SeqCst) {
+            #[cfg(windows)]
+            super::gpu_capture::stop();
+            #[cfg(windows)]
+            super::gpu_tx::end_stream();
             super::watch::end_session();
             CURRENT_TX_FPS.store(0, Ordering::Relaxed);
             info!("🛑 Parando captura e transmissão de tela P2P...");
@@ -257,7 +261,7 @@ impl ScreenCaptureManager {
         TX_WATCHED.store(false, Ordering::Relaxed);
         #[cfg(windows)]
         super::gpu_tx::begin_stream(
-            camera_index.is_none() && matches!(crate::video_settings::get_video_encoder().as_str(), "auto" | "nvenc" | "wmf" | "amf"),
+            camera_index.is_none() && super::gpu_capture::choice() != super::gpu_capture::Choice::Cpu,
         );
         REQUESTED_BITRATE_BPS.store(MAX_STREAM_BITRATE, Ordering::Relaxed);
         force_signaling_broadcast();
@@ -330,11 +334,28 @@ impl ScreenCaptureManager {
                 let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
                 let is_running_cap = Arc::clone(&is_running);
 
+                #[cfg(windows)]
+                let rx_recycle_gpu = Arc::new(Mutex::new(rx_recycle));
+                #[cfg(windows)]
+                let selected_gpu_started = camera_index.is_none() && {
+                    use windows_capture::monitor::Monitor;
+                    let monitor = Monitor::enumerate().ok().and_then(|m| m.into_iter().nth(screen_index))
+                        .or_else(|| Monitor::primary().ok());
+                    monitor.is_some_and(|m| super::gpu_capture::start(super::gpu_capture::Request {
+                        hwnd: target_hwnd, monitor: m.as_raw_hmonitor() as isize,
+                        width: target_w, height: target_h, fps: target_fps,
+                        is_running: Arc::clone(&is_running), tx_frame: tx_frame.clone(),
+                        rx_recycle: Arc::clone(&rx_recycle_gpu),
+                    }))
+                };
+
                 // =========================================================================
                 // ESTÁGIO 1: Captura Windows Graphics Capture (WGC - GPU Direct 60-100 FPS)
                 // =========================================================================
                 #[cfg(windows)]
-                let wgc_started = if camera_index.is_none() {
+                let wgc_started = if selected_gpu_started {
+                    true
+                } else if camera_index.is_none() {
                     use windows_capture::{
                         capture::{Context, GraphicsCaptureApiHandler},
                         frame::Frame,
@@ -432,7 +453,7 @@ impl ScreenCaptureManager {
                         }
                     }
 
-                    let rx_recycle_arc = Arc::new(std::sync::Mutex::new(rx_recycle));
+                    let rx_recycle_arc = Arc::clone(&rx_recycle_gpu);
                     let flags = WgcFlags {
                         tx_frame: tx_frame.clone(),
                         rx_recycle: Arc::clone(&rx_recycle_arc),
@@ -2392,11 +2413,16 @@ impl ScreenCaptureManager {
 }
 
 /// Capture and send pace while nobody watches: the local preview's rate.
-const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
+pub(super) const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Somebody watches the stream being sent (natively or in a browser); read by the
 /// capture thread to choose its pace.
 static TX_WATCHED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+pub(super) fn tx_watched() -> bool {
+    TX_WATCHED.load(Ordering::Relaxed)
+}
 
 /// Encodes the newest GPU picture with the texture encoder of its device (created on
 /// first use). Any failure sends the rest of the stream back to the CPU path.
@@ -2439,7 +2465,7 @@ fn encode_on_gpu(
 
 /// How long a capture loop waits between frames: the stream's pace while somebody
 /// watches, the preview's otherwise.
-fn capture_pace(frame_interval: Duration) -> Duration {
+pub(super) fn capture_pace(frame_interval: Duration) -> Duration {
     if TX_WATCHED.load(Ordering::Relaxed) { frame_interval } else { IDLE_FRAME_INTERVAL.max(frame_interval) }
 }
 

@@ -150,6 +150,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_network_proxy_settings(&app);
 
     let app_weak = app.as_weak();
+    #[cfg(windows)]
+    {
+        let weak = app_weak.clone();
+        screen_capture::gpu_capture::set_status_callback(Arc::new(move || {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    crate::ui::helpers::refresh_stream_capture_status(&ui);
+                }
+            });
+        }));
+    }
     avatar_cache::get_avatar_cache().set_app(app_weak.clone());
 
     let popout_window = PopoutStreamWindow::new()?;

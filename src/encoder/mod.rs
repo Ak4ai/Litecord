@@ -122,10 +122,23 @@ pub fn detect_gpu_hardware() -> GpuHardwareType {
 pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn VideoEncoder> {
     info!("🔍 [VIDEO CODEC FACTORY] Avaliando melhor engine de codificação para o sistema...");
 
-    let manual_selection = crate::video_settings::get_video_encoder();
+    #[cfg(target_os = "windows")]
+    let selection = crate::screen_capture::gpu_tx::encoder_choice();
+    #[cfg(not(target_os = "windows"))]
+    let selection = crate::video_settings::get_video_encoder();
+    #[cfg(target_os = "windows")]
+    let manual_selection = match crate::screen_capture::gpu_capture::parse_choice(&selection) {
+        crate::screen_capture::gpu_capture::Choice::Cpu => "openh264",
+        crate::screen_capture::gpu_capture::Choice::Gpu { vendor: 0x10de, .. } => "nvenc",
+        crate::screen_capture::gpu_capture::Choice::Gpu { vendor: 0x8086, .. } => "wmf",
+        crate::screen_capture::gpu_capture::Choice::Gpu { vendor: 0x1002, .. } => "amf",
+        _ => "auto",
+    };
+    #[cfg(not(target_os = "windows"))]
+    let manual_selection = selection.as_str();
     if manual_selection != "auto" {
         info!("🎯 [VIDEO CODEC FACTORY] Codificador manual configurado pelo usuário: '{}'", manual_selection);
-        match manual_selection.as_str() {
+        match manual_selection {
             "nvenc" | "ffmpeg" => {
                 match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
                     Ok(enc) => {
@@ -295,18 +308,14 @@ impl GpuVideoEncoder for amd_amf::AmfD3d11Encoder {
 
 /// Whether some encoder can read textures of a device from this GPU vendor (PCI id), given
 /// the encoder chosen in the settings: NVENC on NVIDIA, Quick Sync (through Media
-/// Foundation) on Intel; Media Foundation on any GPU when chosen by hand. AMF reads
-/// textures only when chosen by hand, until it has run on AMD hardware.
+/// Foundation) on Intel. AMF reads textures only when an AMD GPU is chosen by hand,
+/// until it has run on AMD hardware.
 #[cfg(target_os = "windows")]
 pub fn gpu_encoder_supports(vendor_id: u32) -> bool {
-    let choice = crate::video_settings::get_video_encoder();
-    match (vendor_id, choice.as_str()) {
-        (_, "wmf") => true,
-        (0x10de, "auto" | "nvenc") => true,
-        (0x8086, "auto") => true,
-        (0x1002, "amf") => true,
-        _ => false,
-    }
+    use crate::screen_capture::gpu_capture::{parse_choice, Choice};
+    let choice = parse_choice(&crate::screen_capture::gpu_tx::encoder_choice());
+    choice != Choice::Cpu && (matches!(vendor_id, 0x10de | 0x8086)
+        || (vendor_id == 0x1002 && matches!(choice, Choice::Gpu { vendor: 0x1002, .. })))
 }
 
 /// The texture encoder for `device` (the capture's), for pictures of this size.
@@ -319,13 +328,12 @@ pub fn create_gpu_encoder(
     fps: u32,
     bitrate_bps: u32,
 ) -> Result<Box<dyn GpuVideoEncoder>, String> {
-    let choice = crate::video_settings::get_video_encoder();
-    if vendor_id == 0x10de && choice != "wmf" {
+    if vendor_id == 0x10de {
         let enc = nvenc_d3d11::NvencD3d11Encoder::new(device, width, height, fps, bitrate_bps)?;
         info!("🚀 [VIDEO CODEC FACTORY] NVENC direto pela GPU ativado ({}x{} {} FPS, {:.1} Mbps), sem passar quadros pela CPU", width, height, fps, bitrate_bps as f64 / 1e6);
         return Ok(Box::new(enc));
     }
-    if vendor_id == 0x1002 && choice == "amf" {
+    if vendor_id == 0x1002 && gpu_encoder_supports(vendor_id) {
         let enc = amd_amf::AmfD3d11Encoder::new(device, width, height, fps, bitrate_bps)?;
         info!("🚀 [VIDEO CODEC FACTORY] AMD AMF pela GPU ativado ({}x{} {} FPS, {:.1} Mbps), sem passar quadros pela CPU", width, height, fps, bitrate_bps as f64 / 1e6);
         return Ok(Box::new(enc));

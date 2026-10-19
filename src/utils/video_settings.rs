@@ -6,7 +6,7 @@ pub const VIDEO_SETTINGS_FILE: &str = ".litecord_video_settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoSettings {
-    pub video_encoder: String,             // "auto", "nvenc", "amf", "ffmpeg", "wmf", "openh264"
+    pub video_encoder: String,             // "auto", "gpu:VVVV:DDDD" (Windows), "openh264", or legacy encoder names
     pub video_capture_backend: String,     // "auto", "printwindow", "bitblt" (Win) / "auto", "portal", "x11" (Linux)
     pub audio_loopback_backend: String,    // "auto", "wasapi_isolated", "cpal" (Win) / "auto", "pulsesrc", "cpal" (Linux)
     pub enable_self_preview_notice: bool, // default true

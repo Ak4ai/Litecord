@@ -306,6 +306,8 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
         }
     }).collect();
     ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
+    #[cfg(windows)]
+    populate_video_interface_settings(ui);
 }
 
 pub fn populate_video_interface_settings(ui: &AppWindow) {
@@ -325,44 +327,41 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     ui.set_use_light_theme(use_light_theme);
 
     #[cfg(target_os = "windows")]
-    let enc_items = vec![
-        SettingOptionItem {
-            id: "auto".into(),
-            name: "Automático (Recomendado)".into(),
-            desc: "Prioriza aceleração por hardware GPU disponível com fallback para CPU.".into(),
-            is_selected: enc == "auto",
-        },
-        SettingOptionItem {
-            id: "nvenc".into(),
-            name: "NVIDIA NVENC".into(),
-            desc: "Codificação dedicada ultrarrápida para GPUs NVIDIA GeForce / RTX.".into(),
-            is_selected: enc == "nvenc",
-        },
-        SettingOptionItem {
-            id: "amf".into(),
-            name: "AMD AMF (Zero-Copy)".into(),
-            desc: "Aceleração nativa Direct3D 11 / VCE para placas AMD Radeon.".into(),
-            is_selected: enc == "amf",
-        },
-        SettingOptionItem {
-            id: "ffmpeg".into(),
-            name: "FFmpeg Hardware".into(),
-            desc: "Pipeline GPU unificado FFmpeg (NVENC, AMF ou Intel QuickSync).".into(),
-            is_selected: enc == "ffmpeg",
-        },
-        SettingOptionItem {
-            id: "wmf".into(),
-            name: "Windows Media Foundation".into(),
-            desc: "Codificador Direct3D 11 nativo do Windows (H.264 MFT).".into(),
-            is_selected: enc == "wmf",
-        },
-        SettingOptionItem {
-            id: "openh264".into(),
-            name: "Cisco OpenH264 (CPU)".into(),
-            desc: "Codificação universal por software multithread com otimizações SIMD.".into(),
-            is_selected: enc == "openh264",
-        },
-    ];
+    let enc_items = {
+        use crate::screen_capture::gpu_capture::{self, Choice};
+        ui.set_gpu_selection_available(true);
+        let text = i18n_ui::ui_text();
+        let choice = gpu_capture::parse_choice(&enc);
+        let gpus = gpu_capture::gpus();
+        let selected = match choice {
+            Choice::Gpu { vendor, device } => gpus.iter()
+                .find(|g| g.vendor == vendor && (device == 0 || device == g.device)).map(|g| g.id()),
+            _ => None,
+        };
+        let mut items = vec![SettingOptionItem {
+            id: "auto".into(), name: text.gpu_auto.into(), desc: text.gpu_auto_desc.into(),
+            is_selected: choice == Choice::Auto,
+        }];
+        for gpu in gpus {
+            let codec = match gpu.vendor { 0x10de => "NVENC", 0x8086 => "Quick Sync", 0x1002 => "AMF", _ => "GPU" };
+            items.push(SettingOptionItem {
+                id: gpu.id().into(), name: gpu.name.clone().into(),
+                desc: format!("{} · {}", codec, if gpu.drives_display { text.gpu_display_desc } else { text.gpu_other_desc }).into(),
+                is_selected: selected.as_deref() == Some(gpu.id().as_str()),
+            });
+        }
+        if matches!(choice, Choice::Gpu { .. }) && selected.is_none() {
+            items.push(SettingOptionItem {
+                id: enc.clone().into(), name: text.gpu_missing.into(), desc: text.gpu_next_stream.into(), is_selected: true,
+            });
+        }
+        items.push(SettingOptionItem {
+            id: "openh264".into(), name: text.gpu_cpu.into(), desc: text.gpu_cpu_desc.into(),
+            is_selected: choice == Choice::Cpu,
+        });
+        refresh_stream_capture_status(ui);
+        items
+    };
 
     #[cfg(not(target_os = "windows"))]
     let enc_items = vec![
@@ -483,6 +482,16 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     ui.set_video_encoder_options(std::rc::Rc::new(slint::VecModel::from(enc_items)).into());
     ui.set_video_capture_options(std::rc::Rc::new(slint::VecModel::from(vcap_items)).into());
     ui.set_audio_loopback_options(std::rc::Rc::new(slint::VecModel::from(aloop_items)).into());
+}
+
+#[cfg(target_os = "windows")]
+pub fn refresh_stream_capture_status(ui: &AppWindow) {
+    let text = i18n_ui::ui_text();
+    let value = crate::screen_capture::gpu_capture::status().map(|(gpu, backend)| {
+        let path = if crate::screen_capture::gpu_tx::active() { text.gpu_path } else { text.gpu_compat_path };
+        format!("{}: {} · {} · {}", text.gpu_capture_now, gpu, backend, path)
+    }).unwrap_or_default();
+    ui.set_stream_capture_status(value.into());
 }
 
 pub fn populate_network_proxy_settings(ui: &AppWindow) {

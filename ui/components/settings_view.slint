@@ -60,6 +60,8 @@ export component SettingsView inherits Rectangle {
     in property <string> tr_keybind_deafen_desc;
     in property <string> keybind_deafen_str;
     in property <[SettingOptionItem]> video_encoder_options;
+    in property <bool> gpu_selection_available;
+    in property <string> stream_capture_status;
     in property <bool> use-light-theme;
     in property <[SettingOptionItem]> video_capture_options;
     in property <[SettingOptionItem]> audio_loopback_options;
@@ -1985,6 +1987,7 @@ export component SettingsView inherits Rectangle {
                                             text: Tr.encoder_desc;
                                             color: AppTheme.text-muted;
                                             font-size: 11px;
+                                            wrap: word-wrap;
                                         }
 
                                         Rectangle {
@@ -2001,7 +2004,7 @@ export component SettingsView inherits Rectangle {
                                                 spacing: 4px;
 
                                                 for opt in root.video_encoder_options: Rectangle {
-                                                    height: 44px;
+                                                    min-height: root.gpu_selection_available ? 76px : 44px;
                                                     background: opt.is_selected ? AppTheme.interactive-hover : (opt_enc_ta.has-hover ? AppTheme.surface-sidebar : transparent);
                                                     border-radius: 6px;
                                                     animate background { duration: 120ms; }
@@ -2024,22 +2027,24 @@ export component SettingsView inherits Rectangle {
                                                         VerticalLayout {
                                                             alignment: center;
                                                             spacing: 2px;
+                                                            horizontal-stretch: 1;
 
                                                             Text {
                                                                 text: opt.name;
                                                                 color: opt.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
                                                                 font-size: 12px;
                                                                 font-weight: opt.is_selected ? 700 : 500;
+                                                                wrap: word-wrap;
                                                             }
 
                                                             Text {
                                                                 text: opt.desc;
                                                                 color: opt.is_selected ? AppTheme.text-muted : AppTheme.text-subtle;
                                                                 font-size: 10px;
+                                                                wrap: word-wrap;
                                                             }
                                                         }
 
-                                                        Rectangle { horizontal-stretch: 1; }
                                                     }
 
                                                     opt_enc_ta := TouchArea {
@@ -2048,6 +2053,19 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
                                             }
+                                        }
+
+                                        if root.gpu_selection_available: Text {
+                                            text: Tr.gpu_next_stream;
+                                            color: AppTheme.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                        if root.stream_capture_status != "": Text {
+                                            text: root.stream_capture_status;
+                                            color: AppTheme.text-secondary;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
                                         }
 
                                         // --- APARÊNCIA ---
@@ -2160,9 +2178,10 @@ export component SettingsView inherits Rectangle {
                                         }
 
                                         Text {
-                                            text: Tr.capture_method_desc;
+                                            text: root.gpu_selection_available ? Tr.gpu_gdi_help : Tr.capture_method_desc;
                                             color: AppTheme.text-muted;
                                             font-size: 11px;
+                                            wrap: word-wrap;
                                         }
 
                                         Rectangle {
