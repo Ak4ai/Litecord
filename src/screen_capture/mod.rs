@@ -13,6 +13,8 @@ pub mod web_share;
 pub mod watch;
 #[cfg(windows)]
 pub mod gpu_tx;
+#[cfg(windows)]
+pub mod gpu_capture;
 
 pub use types::*;
 pub use crypto::*;

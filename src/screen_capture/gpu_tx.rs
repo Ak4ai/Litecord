@@ -321,6 +321,7 @@ const CPU: u8 = 2;
 static MODE: AtomicU8 = AtomicU8::new(CPU);
 static LATEST: Mutex<Option<GpuFrame>> = Mutex::new(None);
 static PREVIEW: Mutex<Option<SharedPixelBuffer<Rgba8Pixel>>> = Mutex::new(None);
+static ENCODER_CHOICE: Mutex<Option<String>> = Mutex::new(None);
 
 /// How often the local preview is refreshed from the GPU (as the CPU path does).
 const PREVIEW_EVERY: Duration = Duration::from_millis(250);
@@ -328,7 +329,22 @@ const PREVIEW_WIDTH: u32 = 480;
 
 /// A new stream: try the GPU path if `allowed` (screen capture with a hardware encoder).
 pub fn begin_stream(allowed: bool) {
+    *ENCODER_CHOICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::video_settings::get_video_encoder());
     MODE.store(if allowed { UNDECIDED } else { CPU }, Ordering::Relaxed);
+    *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *PREVIEW.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    super::gpu_capture::clear_status();
+}
+
+/// Settings changes take effect on the next stream, including its CPU fallback.
+pub fn encoder_choice() -> String {
+    ENCODER_CHOICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        .unwrap_or_else(crate::video_settings::get_video_encoder)
+}
+
+/// Release queued pictures at stop; no texture or device is kept for a later stream.
+pub fn end_stream() {
+    MODE.store(CPU, Ordering::Relaxed);
     *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *PREVIEW.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
@@ -345,10 +361,12 @@ pub fn confirm() {
 
 /// Back to the CPU path for the rest of this stream.
 pub fn give_up(why: &str) {
-    if MODE.swap(CPU, Ordering::Relaxed) != CPU {
+    let changed = MODE.swap(CPU, Ordering::Relaxed) != CPU;
+    if changed {
         log::warn!("🎞️ [GPU TX] Transmissão volta a passar pela CPU: {}", why);
     }
     *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if changed { super::gpu_capture::status_changed(); }
 }
 
 /// The newest converted picture, if one arrived since the last call.
@@ -393,6 +411,11 @@ impl CaptureSide {
         let (Some(device), Some(texture)) = (unsafe { ID3D11Device::from_raw_borrowed(&device) }, unsafe { ID3D11Texture2D::from_raw_borrowed(&texture) }) else {
             return false;
         };
+        self.handle_typed(device, texture, watched)
+    }
+
+    pub fn handle_typed(&mut self, device: &ID3D11Device, texture: &ID3D11Texture2D, watched: bool) -> bool {
+        if !active() { return false; }
         if self.stage.as_ref().map(|(k, _)| *k != device.as_raw() as usize).unwrap_or(true) {
             match vendor_of(device) {
                 Some(v) if crate::encoder::gpu_encoder_supports(v) => {}
@@ -413,13 +436,19 @@ impl CaptureSide {
         if self.last_preview.map_or(true, |t| t.elapsed() >= PREVIEW_EVERY) {
             self.last_preview = Some(Instant::now());
             match stage.preview(texture, PREVIEW_WIDTH) {
-                Ok(p) => *PREVIEW.lock().unwrap_or_else(|e| e.into_inner()) = Some(p),
+                Ok(p) => {
+                    let mut preview = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+                    if active() { *preview = Some(p); }
+                }
                 Err(e) => log::debug!("preview: {e}"),
             }
         }
         if watched {
             match stage.convert(texture) {
-                Ok(Some(frame)) => *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame),
+                Ok(Some(frame)) => {
+                    let mut latest = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+                    if active() { *latest = Some(frame); }
+                }
                 // The encoder still holds every texture: this picture is skipped.
                 Ok(None) => {}
                 Err(e) => {
