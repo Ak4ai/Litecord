@@ -19,7 +19,13 @@ pub mod amd_amf;
 #[cfg(target_os = "windows")]
 pub mod wmf;
 
+#[cfg(target_os = "windows")]
+pub mod nvenc_api;
+#[cfg(target_os = "windows")]
+pub mod nvenc_d3d11;
+
 pub mod software;
+pub mod h264_vui;
 
 pub use nvenc::FfmpegNvencEncoder;
 #[cfg(target_os = "windows")]
@@ -223,4 +229,108 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
             Box::new(OpenH264Encoder::new(target_fps, false).expect("Falha crítica no encoder H.264"))
         }
     }
+}
+
+/// An encoder that reads pictures straight from GPU textures (NV12, BT.709 limited range,
+/// on the capture's D3D11 device): nothing goes through the CPU.
+#[cfg(target_os = "windows")]
+pub trait GpuVideoEncoder: Send {
+    fn encode_texture(&mut self, texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Result<Vec<u8>, String>;
+    fn force_idr(&mut self);
+    fn set_bitrate(&mut self, bitrate_bps: u32);
+    fn name(&self) -> &'static str;
+}
+
+#[cfg(target_os = "windows")]
+impl GpuVideoEncoder for nvenc_d3d11::NvencD3d11Encoder {
+    fn encode_texture(&mut self, texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Result<Vec<u8>, String> {
+        nvenc_d3d11::NvencD3d11Encoder::encode_texture(self, texture)
+    }
+    fn force_idr(&mut self) {
+        nvenc_d3d11::NvencD3d11Encoder::force_idr(self)
+    }
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if let Err(e) = nvenc_d3d11::NvencD3d11Encoder::set_bitrate(self, bitrate_bps) {
+            warn!("⚠️ [NVENC D3D11] Não foi possível mudar a taxa: {}", e);
+        }
+    }
+    fn name(&self) -> &'static str {
+        "NVIDIA NVENC (GPU, sem cópia)"
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl GpuVideoEncoder for wmf::WmfGpuEncoder {
+    fn encode_texture(&mut self, texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Result<Vec<u8>, String> {
+        wmf::WmfGpuEncoder::encode_texture(self, texture)
+    }
+    fn force_idr(&mut self) {
+        VideoEncoder::force_intra_frame(self)
+    }
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if VideoEncoder::get_bitrate_bps(self) != bitrate_bps {
+            VideoEncoder::set_bitrate_bps(self, bitrate_bps)
+        }
+    }
+    fn name(&self) -> &'static str {
+        "Media Foundation (GPU, sem cópia)"
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl GpuVideoEncoder for amd_amf::AmfD3d11Encoder {
+    fn encode_texture(&mut self, texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Result<Vec<u8>, String> {
+        amd_amf::AmfD3d11Encoder::encode_texture(self, texture)
+    }
+    fn force_idr(&mut self) {
+        amd_amf::AmfD3d11Encoder::force_idr(self)
+    }
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        amd_amf::AmfD3d11Encoder::set_bitrate(self, bitrate_bps)
+    }
+    fn name(&self) -> &'static str {
+        "AMD AMF (GPU, sem cópia)"
+    }
+}
+
+/// Whether some encoder can read textures of a device from this GPU vendor (PCI id), given
+/// the encoder chosen in the settings: NVENC on NVIDIA, Quick Sync (through Media
+/// Foundation) on Intel; Media Foundation on any GPU when chosen by hand. AMF reads
+/// textures only when chosen by hand, until it has run on AMD hardware.
+#[cfg(target_os = "windows")]
+pub fn gpu_encoder_supports(vendor_id: u32) -> bool {
+    let choice = crate::video_settings::get_video_encoder();
+    match (vendor_id, choice.as_str()) {
+        (_, "wmf") => true,
+        (0x10de, "auto" | "nvenc") => true,
+        (0x8086, "auto") => true,
+        (0x1002, "amf") => true,
+        _ => false,
+    }
+}
+
+/// The texture encoder for `device` (the capture's), for pictures of this size.
+#[cfg(target_os = "windows")]
+pub fn create_gpu_encoder(
+    device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    vendor_id: u32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate_bps: u32,
+) -> Result<Box<dyn GpuVideoEncoder>, String> {
+    let choice = crate::video_settings::get_video_encoder();
+    if vendor_id == 0x10de && choice != "wmf" {
+        let enc = nvenc_d3d11::NvencD3d11Encoder::new(device, width, height, fps, bitrate_bps)?;
+        info!("🚀 [VIDEO CODEC FACTORY] NVENC direto pela GPU ativado ({}x{} {} FPS, {:.1} Mbps), sem passar quadros pela CPU", width, height, fps, bitrate_bps as f64 / 1e6);
+        return Ok(Box::new(enc));
+    }
+    if vendor_id == 0x1002 && choice == "amf" {
+        let enc = amd_amf::AmfD3d11Encoder::new(device, width, height, fps, bitrate_bps)?;
+        info!("🚀 [VIDEO CODEC FACTORY] AMD AMF pela GPU ativado ({}x{} {} FPS, {:.1} Mbps), sem passar quadros pela CPU", width, height, fps, bitrate_bps as f64 / 1e6);
+        return Ok(Box::new(enc));
+    }
+    let enc = wmf::WmfGpuEncoder::for_device(device, vendor_id, width, height, fps, bitrate_bps).map_err(|e| e.to_string())?;
+    info!("🚀 [VIDEO CODEC FACTORY] '{}' pela GPU ativado ({}x{} {} FPS, {:.1} Mbps), sem passar quadros pela CPU", enc.gpu_name, width, height, fps, bitrate_bps as f64 / 1e6);
+    Ok(Box::new(enc))
 }

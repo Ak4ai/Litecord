@@ -804,3 +804,210 @@ impl Drop for AmdAmfZeroCopyEncoder {
 
 #[cfg(target_os = "windows")]
 unsafe impl Send for AmdAmfZeroCopyEncoder {}
+
+/// AMF fed with NV12 textures of the capture device (gpu_tx): the encoder wraps each
+/// texture without a copy. Used only when AMF is chosen in the settings, until it has run
+/// on AMD hardware (no AMD GPU was available while it was written).
+#[cfg(target_os = "windows")]
+pub struct AmfD3d11Encoder {
+    amf_dll: windows_sys::Win32::Foundation::HMODULE,
+    context: *mut AMFContext,
+    encoder: *mut AMFComponent,
+    _device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    width: u32,
+    height: u32,
+    bitrate_bps: u32,
+    frame_idx: u64,
+    needs_keyframe: bool,
+    /// The last SPS and PPS, put back in front of keyframes that come without them.
+    headers: Vec<u8>,
+}
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for AmfD3d11Encoder {}
+
+#[cfg(target_os = "windows")]
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+impl AmfD3d11Encoder {
+    pub fn new(device: &windows::Win32::Graphics::Direct3D11::ID3D11Device, width: u32, height: u32, fps: u32, bitrate_bps: u32) -> Result<Self, String> {
+        use windows::core::Interface;
+        unsafe {
+            let amf_dll = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(b"amfrt64.dll\0".as_ptr());
+            if amf_dll.is_null() {
+                return Err("amfrt64.dll ausente".into());
+            }
+            let init: Option<FnAMFInit> = std::mem::transmute(windows_sys::Win32::System::LibraryLoader::GetProcAddress(amf_dll, b"AMFInit\0".as_ptr()));
+            let mut me = Self {
+                amf_dll,
+                context: std::ptr::null_mut(),
+                encoder: std::ptr::null_mut(),
+                _device: device.clone(),
+                width: width & !1,
+                height: height & !1,
+                bitrate_bps,
+                frame_idx: 0,
+                needs_keyframe: true,
+                headers: Vec::new(),
+            };
+            let init = init.ok_or("AMFInit não encontrado")?;
+            let mut factory: *mut AMFFactory = std::ptr::null_mut();
+            if init((1u64 << 48) | (4u64 << 32), &mut factory) != 0 || factory.is_null() {
+                return Err("AMFInit falhou".into());
+            }
+            let fv = (*factory).vtbl;
+            if ((*fv).create_context)(factory, &mut me.context) != 0 || me.context.is_null() {
+                return Err("CreateContext falhou".into());
+            }
+            let r = ((*(*me.context).vtbl).init_dx11)(me.context, device.as_raw(), 110);
+            if r != 0 {
+                return Err(format!("InitDX11 falhou: {r}"));
+            }
+            let name = wide("AMFVideoEncoderVCE_AVC");
+            if ((*fv).create_component)(factory, me.context, name.as_ptr(), &mut me.encoder) != 0 || me.encoder.is_null() {
+                return Err("CreateComponent(AMFVideoEncoderVCE_AVC) falhou".into());
+            }
+            let set = |n: &str, v: i64| {
+                let n = wide(n);
+                ((*(*me.encoder).vtbl).set_property)(me.encoder, n.as_ptr(), AMFVariantStruct::from_int64(v))
+            };
+            let gop = (fps.max(1) * 2) as i64;
+            set("Usage", 1); // ultra low latency
+            set("Profile", 77); // Main
+            set("RateControlMethod", 1); // CBR
+            set("TargetBitrate", bitrate_bps as i64);
+            set("PeakBitrate", bitrate_bps as i64);
+            set("VBVBufferSize", (bitrate_bps / fps.max(1)) as i64);
+            set("IDRPeriod", gop);
+            set("HeaderInsertionSpacing", gop);
+            set("BPicturesPattern", 0);
+            set("QualityPreset", 1); // speed
+            // The textures hold BT.709 limited range; newer drivers write it in the VUI
+            // (h264_vui adds it when they do not).
+            set("FullRangeColor", 0);
+            set("OutColorProfile", 2); // 709
+            set("OutColorTransferChar", 1);
+            set("OutColorPrimaries", 1);
+            let fname = wide("FrameRate");
+            ((*(*me.encoder).vtbl).set_property)(me.encoder, fname.as_ptr(), AMFVariantStruct { variant_type: 7, int64_val: fps as i64 | (1i64 << 32), padding: [0; 16] });
+            let r = ((*(*me.encoder).vtbl).init)(me.encoder, 1, me.width as i32, me.height as i32); // NV12
+            if r != 0 {
+                return Err(format!("AMFComponent::Init falhou: {r}"));
+            }
+            Ok(me)
+        }
+    }
+
+    pub fn encode_texture(&mut self, texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Result<Vec<u8>, String> {
+        use windows::core::Interface;
+        unsafe {
+            let mut surface: *mut c_void = std::ptr::null_mut();
+            let r = ((*(*self.context).vtbl).create_surface_from_dx11_native)(self.context, texture.as_raw(), &mut surface, std::ptr::null_mut());
+            if r != 0 || surface.is_null() {
+                return Err(format!("CreateSurfaceFromDX11Native falhou: {r}"));
+            }
+            let surf = surface as *mut AMFSurface;
+            let sv = (*surf).vtbl;
+            let duration = 10_000_000 / 60;
+            ((*sv).set_pts)(surf, self.frame_idx as i64 * duration);
+            ((*sv).set_duration)(surf, duration);
+            self.frame_idx += 1;
+            if std::mem::take(&mut self.needs_keyframe) {
+                for (n, v) in [("ForcePictureType", 2), ("InsertSPS", 1), ("InsertPPS", 1)] {
+                    let n = wide(n);
+                    ((*sv).set_property)(surf, n.as_ptr(), AMFVariantStruct::from_int64(v));
+                }
+            }
+            let ev = (*self.encoder).vtbl;
+            let r = ((*ev).submit_input)(self.encoder, surface);
+            ((*sv).release)(surf);
+            if r != 0 && r != 24 {
+                return Err(format!("SubmitInput falhou: {r}"));
+            }
+            // The picture is ready within a few milliseconds (and the texture is free again).
+            let mut out = Vec::new();
+            let start = std::time::Instant::now();
+            loop {
+                let mut data: *mut c_void = std::ptr::null_mut();
+                if ((*ev).query_output)(self.encoder, &mut data) == 0 && !data.is_null() {
+                    let buf = data as *mut AMFBuffer;
+                    let bv = (*buf).vtbl;
+                    let size = ((*bv).get_size)(buf);
+                    let ptr = ((*bv).get_native)(buf) as *const u8;
+                    if !ptr.is_null() && size > 0 {
+                        out.extend_from_slice(std::slice::from_raw_parts(ptr, size));
+                    }
+                    ((*bv).release)(buf);
+                    break;
+                }
+                if start.elapsed() > std::time::Duration::from_millis(20) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(500));
+            }
+            Ok(self.with_headers(out))
+        }
+    }
+
+    /// Remembers SPS/PPS, puts them back in front of keyframes without them, and declares
+    /// the colours in the SPS.
+    fn with_headers(&mut self, au: Vec<u8>) -> Vec<u8> {
+        let ranges = crate::screen_capture::hw_decode::h264_state::nal_ranges(&au);
+        let types: Vec<u8> = ranges.iter().map(|r| au[r.start] & 0x1f).collect();
+        let au = if types.contains(&7) {
+            let mut h = Vec::new();
+            for (r, t) in ranges.iter().zip(&types) {
+                if *t == 7 || *t == 8 {
+                    h.extend_from_slice(&[0, 0, 0, 1]);
+                    h.extend_from_slice(&au[r.clone()]);
+                }
+            }
+            self.headers = h;
+            au
+        } else if types.contains(&5) && !self.headers.is_empty() {
+            [self.headers.as_slice(), &au].concat()
+        } else {
+            au
+        };
+        crate::encoder::h264_vui::declare_colour(&au, 1, 1, 1)
+    }
+
+    pub fn force_idr(&mut self) {
+        self.needs_keyframe = true;
+    }
+
+    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if bitrate_bps == self.bitrate_bps {
+            return;
+        }
+        self.bitrate_bps = bitrate_bps;
+        unsafe {
+            for (n, v) in [("TargetBitrate", bitrate_bps as i64), ("PeakBitrate", bitrate_bps as i64)] {
+                let n = wide(n);
+                ((*(*self.encoder).vtbl).set_property)(self.encoder, n.as_ptr(), AMFVariantStruct::from_int64(v));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for AmfD3d11Encoder {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.encoder.is_null() {
+                let ev = (*self.encoder).vtbl;
+                ((*ev).terminate)(self.encoder);
+                ((*ev).release)(self.encoder);
+            }
+            if !self.context.is_null() {
+                let cv = (*self.context).vtbl;
+                ((*cv).terminate)(self.context);
+                ((*cv).release)(self.context);
+            }
+            windows_sys::Win32::Foundation::FreeLibrary(self.amf_dll);
+        }
+    }
+}

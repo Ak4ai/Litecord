@@ -255,6 +255,10 @@ impl ScreenCaptureManager {
         // New stream: new key, nobody watching yet, full bitrate.
         super::watch::start_session();
         TX_WATCHED.store(false, Ordering::Relaxed);
+        #[cfg(windows)]
+        super::gpu_tx::begin_stream(
+            camera_index.is_none() && matches!(crate::video_settings::get_video_encoder().as_str(), "auto" | "nvenc" | "wmf" | "amf"),
+        );
         REQUESTED_BITRATE_BPS.store(MAX_STREAM_BITRATE, Ordering::Relaxed);
         force_signaling_broadcast();
 
@@ -308,9 +312,12 @@ impl ScreenCaptureManager {
                 }
                 crate::cpu_profiler::set_current_thread_name("screen-capture-tx");
 
-                let mut h264_encoder: Option<Box<dyn crate::encoder::VideoEncoder>> = Some(
-                    crate::encoder::create_best_encoder(target_fps as u32, camera_index.is_none())
-                );
+                // Created with the first CPU picture: when the GPU path works, never.
+                let mut h264_encoder: Option<Box<dyn crate::encoder::VideoEncoder>> = None;
+                #[cfg(windows)]
+                let mut gpu_encoder: Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)> = None;
+                #[cfg(windows)]
+                let mut gpu_frame: Option<super::gpu_tx::GpuFrame> = None;
 
                 let socket = get_shared_p2p_socket().unwrap_or_else(|| {
                     let s = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -348,6 +355,7 @@ impl ScreenCaptureManager {
                         target_h: u32,
                         /// When a frame was last copied out of the GPU.
                         last_copy: Option<Instant>,
+                        gpu: super::gpu_tx::CaptureSide,
                     }
 
                     struct WgcFlags {
@@ -371,6 +379,7 @@ impl ScreenCaptureManager {
                                 target_w: ctx.flags.target_w,
                                 target_h: ctx.flags.target_h,
                                 last_copy: None,
+                                gpu: super::gpu_tx::CaptureSide::new(ctx.flags.target_w, ctx.flags.target_h),
                             })
                         }
 
@@ -384,6 +393,12 @@ impl ScreenCaptureManager {
                                 return Ok(());
                             }
 
+                            // The GPU path: the texture never leaves the GPU.
+                            let device: *mut std::ffi::c_void = unsafe { std::mem::transmute_copy(frame.device()) };
+                            let texture: *mut std::ffi::c_void = unsafe { std::mem::transmute_copy(frame.as_raw_texture()) };
+                            if self.gpu.handle(device, texture, TX_WATCHED.load(Ordering::Relaxed)) {
+                                return Ok(());
+                            }
                             // Copying the frame out of the GPU is the costly part: while nobody
                             // watches, only as often as the local preview needs.
                             if !TX_WATCHED.load(Ordering::Relaxed) && self.last_copy.is_some_and(|t| t.elapsed() < IDLE_FRAME_INTERVAL) {
@@ -497,6 +512,7 @@ impl ScreenCaptureManager {
                                         let canvas_h = target_h;
                                         let total_canvas_bytes = (canvas_w * canvas_h * 4) as usize;
                                         let frame_interval = Duration::from_nanos(1_000_000_000 / target_fps.max(1));
+                                        let mut gpu_side = super::gpu_tx::CaptureSide::new(canvas_w, canvas_h);
 
                                         while is_running_dxgi.load(Ordering::Relaxed) {
                                             let t_start = Instant::now();
@@ -504,7 +520,12 @@ impl ScreenCaptureManager {
                                                 match dup.acquire_next_frame(20) {
                                                     Ok(mut frame) => {
                                                         let (w, h) = (frame.width(), frame.height());
-                                                        if let Ok(mut fb) = frame.buffer() {
+                                                        let device: *mut std::ffi::c_void = unsafe { std::mem::transmute_copy(frame.device()) };
+                                                        let texture: *mut std::ffi::c_void = unsafe { std::mem::transmute_copy(frame.texture()) };
+                                                        let on_gpu = gpu_side.handle(device, texture, TX_WATCHED.load(Ordering::Relaxed));
+                                                        if on_gpu {
+                                                            // Handled on the GPU.
+                                                        } else if let Ok(mut fb) = frame.buffer() {
                                                             let slice = fb.as_raw_buffer();
                                                             let mut cur_buf = if let Ok(rx) = rx_recycle_dxgi.lock() {
                                                                 rx.try_recv().unwrap_or_else(|_| Vec::with_capacity(total_canvas_bytes))
@@ -810,6 +831,15 @@ impl ScreenCaptureManager {
                         last_announce = Instant::now();
                     }
 
+                    #[cfg(windows)]
+                    if let Some(f) = super::gpu_tx::take_latest() {
+                        gpu_frame = Some(f);
+                    }
+                    #[cfg(windows)]
+                    let gpu_path = super::gpu_tx::active();
+                    #[cfg(not(windows))]
+                    let gpu_path = false;
+
                     // Drena quadros novos da GPU para sempre ter o frame mais atualizado
                     while let Ok(new_frame) = rx_frame.try_recv() {
                         if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
@@ -818,7 +848,7 @@ impl ScreenCaptureManager {
                     }
 
                     // Se nenhum quadro chegou ainda, aguarda até 20ms ou usa fallback GDI imediato para captura de tela (vital para notebooks com GPUs híbridas)
-                    if latest_cached_frame.is_none() {
+                    if latest_cached_frame.is_none() && !gpu_path {
                         match rx_frame.recv_timeout(Duration::from_millis(20)) {
                             Ok(first_frame) => {
                                 latest_cached_frame = Some(first_frame);
@@ -856,17 +886,31 @@ impl ScreenCaptureManager {
                         next_tick = now + frame_target_interval;
                     }
 
-                    let (bgra_slice, cur_w, cur_h, blt_us, pix_us) = match latest_cached_frame {
-                        Some(ref f) => (f.0.as_slice(), f.1, f.2, f.3, f.4),
-                        None => continue,
+                    // On the GPU path the pictures (and the preview) stay on the GPU: the loop goes
+                    // on without a CPU copy, so it keeps noticing viewers.
+                    let cpu_frame = if gpu_path {
+                        None
+                    } else {
+                        match latest_cached_frame {
+                            Some(ref f) => Some((f.0.as_slice(), f.1, f.2, f.3, f.4)),
+                            None => continue,
+                        }
                     };
-
-                    total_blt_us += blt_us;
-                    total_pix_us += pix_us;
+                    if let Some((_, _, _, blt_us, pix_us)) = cpu_frame {
+                        total_blt_us += blt_us;
+                        total_pix_us += pix_us;
+                    }
 
                     let t_preview_start = Instant::now();
+                    #[cfg(windows)]
+                    if gpu_path {
+                        if let Some(p) = super::gpu_tx::take_preview() {
+                            buffer.publish(p.clone());
+                            on_local_tx(p);
+                        }
+                    }
                     // Decouple UI local preview with fast downsampler (480w) to eliminate UI thread lag and memory overhead
-                    if last_local_preview.elapsed() >= Duration::from_millis(250) {
+                    if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| last_local_preview.elapsed() >= Duration::from_millis(250)) {
                         if (camera_index.is_some() || cfg!(windows)) && cur_w > 0 && cur_h > 0 {
                             let prev_w = 480u32.min(cur_w);
                             let prev_h = (((prev_w as f32 / cur_w as f32) * (cur_h as f32)).round() as u32).max(1);
@@ -938,7 +982,15 @@ impl ScreenCaptureManager {
                     let enc_start = Instant::now();
                     let frame_bytes_opt = if !watched {
                         None
-                    } else if let Some(ref mut enc) = h264_encoder {
+                    } else if gpu_path {
+                        #[cfg(windows)]
+                        {
+                            encode_on_gpu(&mut gpu_encoder, gpu_frame.as_ref(), target_fps as u32)
+                        }
+                        #[cfg(not(windows))]
+                        None
+                    } else if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame {
+                        let enc = h264_encoder.get_or_insert_with(|| crate::encoder::create_best_encoder(target_fps as u32, camera_index.is_none()));
                         let target_bitrate = REQUESTED_BITRATE_BPS.load(Ordering::Relaxed);
                         if enc.get_bitrate_bps() != target_bitrate {
                             enc.set_bitrate_bps(target_bitrate);
@@ -949,13 +1001,7 @@ impl ScreenCaptureManager {
                         }
                         enc.encode(bgra_slice, cur_w, cur_h)
                     } else {
-                        let mut rgb = Vec::with_capacity((cur_w * cur_h * 3) as usize);
-                        for p in bgra_slice.chunks_exact(4) {
-                            rgb.push(p[2]);
-                            rgb.push(p[1]);
-                            rgb.push(p[0]);
-                        }
-                        encode_jpeg(&rgb, cur_w, cur_h, 55)
+                        None
                     };
                     let enc_dur = enc_start.elapsed().as_micros();
                     total_encode_us += enc_dur;
@@ -2351,6 +2397,45 @@ const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
 /// Somebody watches the stream being sent (natively or in a browser); read by the
 /// capture thread to choose its pace.
 static TX_WATCHED: AtomicBool = AtomicBool::new(false);
+
+/// Encodes the newest GPU picture with the texture encoder of its device (created on
+/// first use). Any failure sends the rest of the stream back to the CPU path.
+#[cfg(windows)]
+fn encode_on_gpu(
+    encoder: &mut Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)>,
+    frame: Option<&super::gpu_tx::GpuFrame>,
+    fps: u32,
+) -> Option<Vec<u8>> {
+    use ::windows::core::Interface;
+    let f = frame?;
+    let key = f.device.as_raw() as usize;
+    if encoder.as_ref().map(|(k, _)| *k != key).unwrap_or(true) {
+        let vendor = super::gpu_tx::vendor_of(&f.device).unwrap_or(0);
+        match crate::encoder::create_gpu_encoder(&f.device, vendor, f.width, f.height, fps, REQUESTED_BITRATE_BPS.load(Ordering::Relaxed)) {
+            Ok(e) => *encoder = Some((key, e)),
+            Err(e) => {
+                super::gpu_tx::give_up(&format!("codificador pela GPU indisponível ({e})"));
+                return None;
+            }
+        }
+    }
+    let (_, enc) = encoder.as_mut()?;
+    enc.set_bitrate(REQUESTED_BITRATE_BPS.load(Ordering::Relaxed));
+    if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) {
+        enc.force_idr();
+    }
+    match enc.encode_texture(&f.texture) {
+        Ok(bytes) => {
+            super::gpu_tx::confirm();
+            Some(bytes)
+        }
+        Err(e) => {
+            *encoder = None;
+            super::gpu_tx::give_up(&format!("falha ao codificar pela GPU ({e})"));
+            None
+        }
+    }
+}
 
 /// How long a capture loop waits between frames: the stream's pace while somebody
 /// watches, the preview's otherwise.

@@ -88,6 +88,7 @@ windows = { version = "0.58", features = [
     "Foundation_Numerics",
     "Win32_System_Com",
     "Win32_System_Variant",
+    "Win32_System_LibraryLoader",
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",

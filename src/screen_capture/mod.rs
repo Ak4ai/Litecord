@@ -11,6 +11,8 @@ pub mod manager;
 pub mod net_diagnostics;
 pub mod web_share;
 pub mod watch;
+#[cfg(windows)]
+pub mod gpu_tx;
 
 pub use types::*;
 pub use crypto::*;
