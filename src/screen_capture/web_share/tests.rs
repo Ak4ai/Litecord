@@ -117,14 +117,37 @@ fn opus_accepts_loopback_rates_with_continuous_timestamps() {
         let mut encoder = audio::AudioEncoder::new().unwrap();
         let chunk = vec![1000; rate / 100];
         let packets: Vec<_> = (0..100).flat_map(|_| encoder.push(&chunk, rate as u32)).collect();
-        assert_eq!(packets.len(), 50);
-        let mut decoder = opus_rs::OpusDecoder::new(48000, 1).unwrap();
+        // One second of input; resampling 44.1 kHz interpolates towards the next sample, so
+        // the last one waits for the next block and the 50th packet with it.
+        assert!((49..=50).contains(&packets.len()), "{rate}: {} packets", packets.len());
+        let mut decoder = opus_rs::OpusDecoder::new(48000, 2).unwrap();
         for (i, (packet, timestamp)) in packets.iter().enumerate() {
             assert_eq!(*timestamp, i as u64 * 960);
-            let mut pcm = vec![0.0f32; 960];
+            let mut pcm = vec![0.0f32; 1920];
             assert_eq!(decoder.decode(packet, 960, &mut pcm).unwrap(), 960);
         }
     }
+}
+
+/// Browsers must hear the stream at its level: opus-rs encodes mono wrongly (a chord came
+/// out more than four times louder in libopus), so the web audio goes out as stereo.
+#[test]
+fn web_audio_keeps_its_level() {
+    let tau = std::f32::consts::TAU;
+    let input: Vec<i16> = (0..48_000)
+        .map(|i| (4000.0 * [261.6f32, 329.6, 392.0].iter().map(|f| (i as f32 / 48_000.0 * f * tau).sin()).sum::<f32>()) as i16)
+        .collect();
+    let mut encoder = audio::AudioEncoder::new().unwrap();
+    let mut decoder = opus_rs::OpusDecoder::new(48000, 2).unwrap();
+    let mut out = Vec::new();
+    for (packet, _) in input.chunks(480).flat_map(|c| encoder.push(c, 48_000)) {
+        let mut pcm = vec![0.0f32; 1920];
+        let n = decoder.decode(&packet, 960, &mut pcm).unwrap();
+        out.extend(pcm[..n * 2].iter().step_by(2).map(|&s| s * 32768.0));
+    }
+    let rms = |x: &mut dyn Iterator<Item = f32>| { let v: Vec<f32> = x.collect(); (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt() };
+    let level = rms(&mut out[9600..].iter().copied()) / rms(&mut input[9600..out.len()].iter().map(|&s| s as f32));
+    assert!((0.8..1.25).contains(&level), "level {level:.2}");
 }
 
 #[test]
