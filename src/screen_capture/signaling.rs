@@ -354,7 +354,13 @@ pub fn handle_incoming_ws_message(
                     return;
                 } else if val["op"] == "peer_leave" {
                     let pkt_uid = json_uid(&val["uid"]);
-                    if pkt_uid != 0 {
+                    // The server cannot tell who a user really is: anyone can join the room
+                    // under someone's id and leave. While authentic video still comes from
+                    // that user, the claim is ignored (if they really left, the video stops
+                    // and the stream ends on its activity timeout).
+                    if pkt_uid != 0 && super::watch::video_recently_from(pkt_uid) {
+                        warn!("🚪 [SIGNALING] Saída do peer UID={} ignorada: o vídeo dele continua chegando.", pkt_uid);
+                    } else if pkt_uid != 0 {
                         info!("🚪 [SIGNALING] Peer UID={} saiu da sala de sinalização Cloudflare.", pkt_uid);
                         trigger_stream_stopped(pkt_uid);
                         if let Ok(mut peers) = peers_store.lock() {

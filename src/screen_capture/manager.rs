@@ -188,6 +188,8 @@ impl ScreenCaptureManager {
             super::gpu_capture::stop();
             #[cfg(windows)]
             super::gpu_tx::end_stream();
+            // Viewers believe an OP_STOP only with this proof (taken before the key goes).
+            let stop_proof = super::watch::session_key().and_then(|k| super::watch::stop_proof(&k));
             super::watch::end_session();
             CURRENT_TX_FPS.store(0, Ordering::Relaxed);
             info!("🛑 Parando captura e transmissão de tela P2P...");
@@ -226,6 +228,9 @@ impl ScreenCaptureManager {
                     stop_pkt.push(OP_STOP);
                     stop_pkt.extend_from_slice(&cid.to_be_bytes());
                     stop_pkt.extend_from_slice(&uid.to_be_bytes());
+                    if let Some(proof) = &stop_proof {
+                        stop_pkt.extend_from_slice(proof);
+                    }
 
                     for _ in 0..10 {
                         if let Ok(peers) = known_peers_clone.lock() {
@@ -1847,10 +1852,10 @@ impl ScreenCaptureManager {
                                                 PEER_STREAMING_STATES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(pkt_uid, true);
                                             }
                                             info!("📡 Usuário {} alterou estado de stream: {}", pkt_uid, is_streaming);
+                                            // Senders announce only while streaming: an announce saying
+                                            // otherwise is forged, and does not end anybody's stream.
                                             if is_streaming {
                                                 on_state_arc(pkt_uid, true);
-                                            } else {
-                                                trigger_stream_stopped(pkt_uid);
                                             }
                                         }
                                     }
@@ -1974,6 +1979,9 @@ impl ScreenCaptureManager {
                                             // plaintext, and nothing from streams we did not ask for.
                                             let final_frame_opt = super::watch::stream_key(pkt_uid)
                                                 .and_then(|k| decrypt_signaling_payload(&k, &complete_frame));
+                                            if final_frame_opt.is_some() {
+                                                super::watch::video_arrived(pkt_uid);
+                                            }
 
                                             if let Some(valid_frame) = final_frame_opt {
                                                 let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
@@ -2092,6 +2100,9 @@ impl ScreenCaptureManager {
                                             // plaintext, and nothing from streams we did not ask for.
                                             let final_frame_opt = super::watch::stream_key(pkt_uid)
                                                 .and_then(|k| decrypt_signaling_payload(&k, &complete_frame));
+                                            if final_frame_opt.is_some() {
+                                                super::watch::video_arrived(pkt_uid);
+                                            }
 
                                             if let Some(valid_frame) = final_frame_opt {
                                                 let last_seq = last_rendered_seq.get(&pkt_uid).copied().unwrap_or(0);
@@ -2222,7 +2233,9 @@ impl ScreenCaptureManager {
                                 OP_STOP => {
                                     if len >= 25 {
                                         let pkt_uid = u64::from_be_bytes(recv_buf[17..25].try_into().unwrap());
-                                        if pkt_inst != my_instance_id {
+                                        // Only the sender (proved by the stream key) ends its stream; without
+                                        // the key (not watching), the signaling server and the activity timeout do.
+                                        if pkt_inst != my_instance_id && super::watch::is_authentic_stop(super::watch::stream_key(pkt_uid), &recv_buf[25..len]) {
                                             // The sender repeats OP_STOP in a burst; tear down once.
                                             let was = active_streaming_users.insert(pkt_uid, false);
                                             in_flight.remove(&pkt_uid);

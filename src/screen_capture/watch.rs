@@ -198,6 +198,42 @@ pub fn worst_loss() -> Option<u16> {
     SESSION.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.viewers.worst_loss(Instant::now()))
 }
 
+// ---- Ending a stream ------------------------------------------------------------------
+
+const STOP_MESSAGE: &[u8] = b"litecord-stream-stop";
+
+/// What OP_STOP carries: proof that it comes from the sender, which alone (with its
+/// viewers) holds the stream key. A bare OP_STOP could be sent by anyone who knows the
+/// channel and the user id.
+pub fn stop_proof(stream_key: &[u8; 32]) -> Option<Vec<u8>> {
+    super::crypto::encrypt_signaling_payload(stream_key, STOP_MESSAGE)
+}
+
+/// An OP_STOP payload that opens with the key the sender handed us.
+pub fn is_authentic_stop(stream_key: Option<[u8; 32]>, payload: &[u8]) -> bool {
+    stream_key
+        .and_then(|k| super::crypto::decrypt_signaling_payload(&k, payload))
+        .is_some_and(|m| m == STOP_MESSAGE)
+}
+
+/// When authentic video (it opened with the stream key) last came from each sender.
+static LAST_VIDEO: Mutex<Option<HashMap<u64, Instant>>> = Mutex::new(None);
+
+pub fn video_arrived(uid: u64) {
+    LAST_VIDEO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(uid, Instant::now());
+}
+
+/// The sender is provably still streaming to us (its video arrived in the last 2.5 s):
+/// a claim that it left (the signaling server cannot tell who a user really is) is ignored.
+pub fn video_recently_from(uid: u64) -> bool {
+    LAST_VIDEO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&uid))
+        .is_some_and(|t| t.elapsed() < Duration::from_millis(2500))
+}
+
 // ---- Viewer: the streams the user wants ---------------------------------------------
 
 static WANTED: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
@@ -250,6 +286,18 @@ pub fn forget_stream(uid: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_sender_can_say_its_stream_stopped() {
+        let key = [3u8; 32];
+        let proof = stop_proof(&key).unwrap();
+        assert!(is_authentic_stop(Some(key), &proof));
+        assert!(!is_authentic_stop(Some([4u8; 32]), &proof), "another key");
+        assert!(!is_authentic_stop(None, &proof), "not watching: no key to check with");
+        assert!(!is_authentic_stop(Some(key), &[]), "a bare OP_STOP (anyone can send one)");
+        let other = crate::screen_capture::crypto::encrypt_signaling_payload(&key, b"something else").unwrap();
+        assert!(!is_authentic_stop(Some(key), &other));
+    }
 
     fn addr(port: u16) -> SocketAddr {
         SocketAddr::from(([10, 0, 0, 1], port))
