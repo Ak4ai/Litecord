@@ -186,7 +186,9 @@ impl WmfGpuEncoder {
         out.SetUINT64(&MF_MT_FRAME_SIZE, (width as u64) << 32 | height as u64)?;
         out.SetUINT64(&MF_MT_FRAME_RATE, (target_fps as u64) << 32 | 1)?;
         out.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-        out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+        // Main, as NVENC: receivers decoding on the CPU (OpenH264) managed 44 FPS with High,
+        // 49-53 with Main.
+        out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main.0 as u32)?;
         // What the pictures hold, limited range: BT.601 from encode(), BT.709 from gpu_tx.
         let matrix = if bt709 { MFVideoTransferMatrix_BT709 } else { MFVideoTransferMatrix_BT601 };
         let _ = out.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32);
