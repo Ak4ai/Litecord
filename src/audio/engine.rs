@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use std::sync::Arc;
 use std::collections::VecDeque;
 use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
-use log::info;
+use log::{info, warn};
 use crate::gateway;
 
 pub static CACHED_AUDIO_DEVICES: std::sync::OnceLock<Arc<std::sync::Mutex<Option<(Vec<String>, Vec<String>)>>>> = std::sync::OnceLock::new();
@@ -105,15 +105,37 @@ pub fn start_mic_capture(
 
     info!("Capturando microfone: {}Hz, {} canal(is), formato={:?}", sample_rate, channels, config.sample_format());
 
-    let target_buffer_frames = (sample_rate * 20 / 1000).max(128);
+    let raw_target = (sample_rate * 20 / 1000).max(128);
+    // Align to multiple of 64 for ALSA hardware/DMA buffer periods (e.g. 44100Hz -> 896, 48000Hz -> 960)
+    let target_buffer_frames = ((raw_target + 63) / 64) * 64;
     let buffer_size = match config.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => {
             cpal::BufferSize::Fixed(target_buffer_frames.clamp(*min, *max))
         }
         cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Fixed(target_buffer_frames),
     };
-    let mut stream_config: cpal::StreamConfig = config.clone().into();
-    stream_config.buffer_size = buffer_size;
+    let mut fixed_stream_config: cpal::StreamConfig = config.clone().into();
+    fixed_stream_config.buffer_size = buffer_size;
+
+    let probe_res = match config.sample_format() {
+        cpal::SampleFormat::F32 => target_dev.build_input_stream(&fixed_stream_config, |_: &[f32], _| {}, |_| {}, None).map(|_| ()),
+        cpal::SampleFormat::I16 => target_dev.build_input_stream(&fixed_stream_config, |_: &[i16], _| {}, |_| {}, None).map(|_| ()),
+        cpal::SampleFormat::I32 => target_dev.build_input_stream(&fixed_stream_config, |_: &[i32], _| {}, |_| {}, None).map(|_| ()),
+        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+    };
+
+    let stream_config = match probe_res {
+        Ok(_) => {
+            info!("🎤 Buffer CPAL de 20ms ativo no microfone: BufferSize::Fixed({}) aceito!", target_buffer_frames);
+            fixed_stream_config
+        }
+        Err(e) => {
+            warn!("⚠ Microfone rejeitou BufferSize::Fixed({}) ({:?}). Recorrendo ao BufferSize::Default do driver...", target_buffer_frames, e);
+            let mut def: cpal::StreamConfig = config.clone().into();
+            def.buffer_size = cpal::BufferSize::Default;
+            def
+        }
+    };
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {

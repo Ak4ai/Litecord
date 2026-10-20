@@ -680,15 +680,36 @@ pub async fn connect_voice_gateway(
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
 
-                                                    let target_buffer_frames = (out_sample_rate * 20 / 1000).max(128);
+                                                    let raw_target = (out_sample_rate * 20 / 1000).max(128);
+                                                    // Align to multiple of 64 for ALSA hardware/DMA buffer periods (e.g. 44100Hz -> 896, 48000Hz -> 960)
+                                                    let target_buffer_frames = ((raw_target + 63) / 64) * 64;
                                                     let buffer_size = match config.buffer_size() {
                                                         cpal::SupportedBufferSize::Range { min, max } => {
                                                             cpal::BufferSize::Fixed(target_buffer_frames.clamp(*min, *max))
                                                         }
                                                         cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Fixed(target_buffer_frames),
                                                     };
-                                                    let mut stream_config: cpal::StreamConfig = config.clone().into();
-                                                    stream_config.buffer_size = buffer_size;
+                                                    let mut fixed_stream_config: cpal::StreamConfig = config.clone().into();
+                                                    fixed_stream_config.buffer_size = buffer_size;
+
+                                                    let probe_res = match config.sample_format() {
+                                                        cpal::SampleFormat::F32 => device.build_output_stream(&fixed_stream_config, |_: &mut [f32], _| {}, |_| {}, None).map(|_| ()),
+                                                        cpal::SampleFormat::I16 => device.build_output_stream(&fixed_stream_config, |_: &mut [i16], _| {}, |_| {}, None).map(|_| ()),
+                                                        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+                                                    };
+
+                                                    let stream_config = match probe_res {
+                                                        Ok(_) => {
+                                                            info!("🔊 Buffer CPAL de 20ms ativo: BufferSize::Fixed({}) aceito pelo dispositivo de saída!", target_buffer_frames);
+                                                            fixed_stream_config
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("⚠ Dispositivo de saída rejeitou BufferSize::Fixed({}) ({:?}). Recorrendo ao BufferSize::Default do driver...", target_buffer_frames, e);
+                                                            let mut def: cpal::StreamConfig = config.clone().into();
+                                                            def.buffer_size = cpal::BufferSize::Default;
+                                                            def
+                                                        }
+                                                    };
 
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
