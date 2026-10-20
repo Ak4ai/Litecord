@@ -3095,6 +3095,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_logout.upgrade() {
             ui.set_is_logged_in(false);
             ui.set_user_tag(crate::utils::i18n_ui::ui_text().not_connected.into());
+            ui.set_user_display_name("".into());
+            ui.set_user_handle("".into());
+            ui.set_user_avatar_initials("".into());
+            ui.set_user_avatar_has_image(false);
+            ui.set_user_avatar_img(slint::Image::default());
+            ui.set_user_avatar_url("".into());
             ui.set_connection_status(crate::utils::i18n_ui::ui_text().signed_out.into());
             ui.set_is_in_voice(false);
             ui.set_current_voice_channel("".into());
@@ -3276,6 +3282,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_add.upgrade() {
             ui.set_is_logged_in(false);
             ui.set_user_tag(crate::utils::i18n_ui::ui_text().not_connected.into());
+            ui.set_user_display_name("".into());
+            ui.set_user_handle("".into());
+            ui.set_user_avatar_initials("".into());
+            ui.set_user_avatar_has_image(false);
+            ui.set_user_avatar_img(slint::Image::default());
+            ui.set_user_avatar_url("".into());
             ui.set_connection_status("Conecte a nova conta escaneando o QR Code ou inserindo o Token.".into());
             ui.set_is_in_voice(false);
             ui.set_current_voice_channel("".into());
@@ -3366,12 +3378,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let vault = save_or_update_account(&token_str, user_id, global_name, &tag);
                     sync_ui_saved_accounts(&app_weak_inner, &vault);
 
+                    let avatar_hash = user_info["avatar"].as_str().unwrap_or("");
+                    let avatar_url = if !avatar_hash.is_empty() && !user_id.is_empty() {
+                        format!("https://cdn.discordapp.com/avatars/{}/{}.png?size=64", user_id, avatar_hash)
+                    } else {
+                        String::new()
+                    };
+                    let display_name_val = if !global_name.is_empty() {
+                        global_name.to_string()
+                    } else {
+                        username.to_string()
+                    };
+                    let handle_val = tag.clone();
+                    let initials_val = crate::ui::helpers::get_guild_initials(&display_name_val);
+
                     let app_w = app_weak_inner.clone();
                     let display_tag_clone = display_tag.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_is_logged_in(true);
                             ui.set_user_tag(display_tag_clone.into());
+                            ui.set_user_display_name(display_name_val.into());
+                            ui.set_user_handle(handle_val.into());
+                            ui.set_user_avatar_initials(initials_val.into());
+                            ui.set_user_avatar_url(avatar_url.clone().into());
+                            if !avatar_url.is_empty() {
+                                let img = avatar_cache::get_avatar_cache().image_for(&avatar_url);
+                                if img.size().width > 0 {
+                                ui.set_user_avatar_img(img);
+                                ui.set_user_avatar_has_image(true);
+                                }
+                            }
                             ui.set_connection_status("Conectado com sucesso!".into());
                             ui.set_login_alert_message("".into());
                             ui.set_titlebar_error("".into());

@@ -414,6 +414,10 @@ impl AvatarCache {
                         if let Some(slot) = ui_cache.slot_of(&ui_url) {
                             pool_set(slot, &ui_url, image.clone());
                         }
+                        if ui.get_user_avatar_url() == ui_url.as_str() {
+                            ui.set_user_avatar_img(image.clone());
+                            ui.set_user_avatar_has_image(true);
+                        }
                         let participants = ui.get_voice_participants();
                         for index in 0..participants.row_count() {
                             if let Some(mut participant) = participants.row_data(index) {

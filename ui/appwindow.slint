@@ -376,6 +376,12 @@ export component AppWindow inherits Window {
     in-out property <bool> is_logged_in: false;
     in-out property <string> connection_status: Tr.waiting_token;
     in-out property <string> user_tag: Tr.not_connected;
+    in-out property <string> user_display_name: "";
+    in-out property <string> user_handle: "";
+    in-out property <string> user_avatar_initials: "";
+    in-out property <bool> user_avatar_has_image: false;
+    in-out property <image> user_avatar_img;
+    in-out property <string> user_avatar_url: "";
     in-out property <string> active_channel_name: Tr.select_channel;
     in-out property <string> active_channel_id: "";
     in-out property <string> active_guild_name: "";
@@ -1228,6 +1234,11 @@ export component AppWindow inherits Window {
                 current_voice_channel: root.current_voice_channel;
                 tr_leave: root.tr_leave;
                 user_tag: root.user_tag;
+                user_display_name: root.user_display_name;
+                user_handle: root.user_handle;
+                user_avatar_initials: root.user_avatar_initials;
+                user_avatar_has_image: root.user_avatar_has_image;
+                user_avatar_img: root.user_avatar_img;
                 active_channel_id <=> root.active_channel_id;
                 select_channel(id) => { root.select_channel(id); }
                 toggle_category(id) => { root.toggle_category(id); }
