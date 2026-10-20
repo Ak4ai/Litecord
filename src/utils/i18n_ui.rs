@@ -260,6 +260,11 @@ ui_strings! {
     (download_image_size, set_download_image_size, "Download Image (", "Baixar Imagem (", "Descargar imagen (", "Bild herunterladen (", "Télécharger l'image (", "Скачать изображение (", "画像をダウンロード ("),
     (download_image, set_download_image, "Download Image", "Baixar Imagem", "Descargar imagen", "Bild herunterladen", "Télécharger l'image", "Скачать изображение", "画像をダウンロード"),
     (attachment_label, set_attachment_label, "Attachment", "Anexo", "Adjunto", "Anhang", "Pièce jointe", "Вложение", "添付ファイル"),
+    // Discord relative timestamps (<t:...:R>); {} is "5 min", "3 h" or "2 d".
+    (time_in, set_time_in, "in {}", "em {}", "en {}", "in {}", "dans {}", "через {}", "{}後"),
+    (time_ago, set_time_ago, "{} ago", "há {}", "hace {}", "vor {}", "il y a {}", "{} назад", "{}前"),
+    (time_soon, set_time_soon, "in a moment", "em instantes", "en un momento", "gleich", "dans un instant", "сейчас", "まもなく"),
+    (time_just_now, set_time_just_now, "just now", "há instantes", "hace un momento", "gerade eben", "à l'instant", "только что", "たった今"),
 }
 
 #[cfg(test)]

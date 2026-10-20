@@ -321,47 +321,30 @@ where
     replace_between(input, prefix, suffix, replacer)
 }
 
+/// A Discord timestamp (`<t:SECS:STYLE>`) in local time. Dates stay numeric, so they
+/// read the same in every language; relative ones (`R`) use the UI's language.
 fn format_discord_timestamp(unix_secs: i64, style: Option<&str>) -> String {
-    if unix_secs <= 0 {
-        return "data desconhecida".to_string();
-    }
     use chrono::{DateTime, Local};
-    let dt = match DateTime::from_timestamp(unix_secs, 0) {
-        Some(d) => d.with_timezone(&Local),
-        None => return format_unix_timestamp(unix_secs),
+    let Some(dt) = DateTime::from_timestamp(unix_secs, 0).filter(|_| unix_secs > 0).map(|d| d.with_timezone(&Local)) else {
+        return format_unix_timestamp(unix_secs);
     };
-
     match style.unwrap_or("f") {
         "t" => dt.format("%H:%M").to_string(),
         "T" => dt.format("%H:%M:%S").to_string(),
-        "d" => dt.format("%d/%m/%Y").to_string(),
-        "D" => dt.format("%d de %B de %Y").to_string(),
-        "F" => dt.format("%A, %d de %B de %Y %H:%M").to_string(),
+        "d" | "D" => dt.format("%d/%m/%Y").to_string(),
         "R" => {
-            let now = Local::now();
-            let diff = unix_secs - now.timestamp();
-            if diff > 0 {
-                if diff < 60 {
-                    "em instantes".to_string()
-                } else if diff < 3600 {
-                    format!("em {} min", diff / 60)
-                } else if diff < 86400 {
-                    format!("em {} h", diff / 3600)
-                } else {
-                    format!("em {} d", diff / 86400)
-                }
-            } else {
-                let past = -diff;
-                if past < 60 {
-                    "há instantes".to_string()
-                } else if past < 3600 {
-                    format!("há {} min", past / 60)
-                } else if past < 86400 {
-                    format!("há {} h", past / 3600)
-                } else {
-                    format!("há {} d", past / 86400)
-                }
+            let t = crate::utils::i18n_ui::ui_text();
+            let diff = unix_secs - Local::now().timestamp();
+            let span = diff.abs();
+            if span < 60 {
+                return if diff > 0 { t.time_soon } else { t.time_just_now }.to_string();
             }
+            let amount = match span {
+                s if s < 3600 => format!("{} min", s / 60),
+                s if s < 86400 => format!("{} h", s / 3600),
+                s => format!("{} d", s / 86400),
+            };
+            if diff > 0 { t.time_in } else { t.time_ago }.replace("{}", &amount)
         }
         _ => dt.format("%d/%m/%Y %H:%M").to_string(),
     }
@@ -1121,10 +1104,10 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
         let question = poll.get("question")
             .and_then(|q| q.get("text"))
             .and_then(|t| t.as_str())
-            .unwrap_or("Enquete");
+            .unwrap_or("");
 
         let mut poll_lines = Vec::new();
-        poll_lines.push(format!("📊 **{}**", question));
+        poll_lines.push(if question.is_empty() { "📊".to_string() } else { format!("📊 **{}**", question) });
 
         if let Some(answers) = poll.get("answers").and_then(|a| a.as_array()) {
             for (idx, ans) in answers.iter().enumerate() {
@@ -1584,6 +1567,18 @@ mod tests {
         assert!(content.contains("Opção A"));
         assert!(!content_lines.is_empty());
         assert_ne!(content, "[Conteudo especial]");
+    }
+
+    #[test]
+    fn timestamps_stay_numeric_and_relative_ones_follow_the_ui_language() {
+        let now = chrono::Local::now().timestamp();
+        // Long dates used to come out with English month names ("20 de October").
+        let long = format_discord_timestamp(1_760_000_000, Some("D"));
+        assert!(long.chars().all(|c| c.is_ascii_digit() || c == '/'), "{long}");
+        let t = crate::utils::i18n_ui::ui_text();
+        assert_eq!(format_discord_timestamp(now - 120, Some("R")), t.time_ago.replace("{}", "2 min"));
+        assert_eq!(format_discord_timestamp(now + 3 * 3600 + 30, Some("R")), t.time_in.replace("{}", "3 h"));
+        assert_eq!(format_discord_timestamp(now - 10, Some("R")), t.time_just_now);
     }
 }
 
