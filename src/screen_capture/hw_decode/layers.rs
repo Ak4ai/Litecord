@@ -159,15 +159,32 @@ enum State {
     Stopping,
 }
 
+// Fields drop in order, children before parents: the device goes last, once everything
+// made from it is gone, so its final flush destroys them (it used to go first, and every
+// device outlived us with all it had made).
 struct Live {
-    device: Arc<SharedDevice>,
-    dcomp: IDCompositionDevice,
-    target: IDCompositionTarget,
-    root: IDCompositionVisual,
-    video_visual: IDCompositionVisual,
-    ui_visual: IDCompositionVisual,
     ui_surface: Option<(IDCompositionSurface, u32, u32)>,
+    ui_visual: IDCompositionVisual,
+    video_visual: IDCompositionVisual,
+    root: IDCompositionVisual,
+    target: IDCompositionTarget,
+    dcomp: IDCompositionDevice,
     output: Arc<Mutex<VideoOutput>>,
+    device: Arc<SharedDevice>,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        // The compositor holds the tree until the commit that removes it is done.
+        unsafe {
+            let _ = self.video_visual.SetContent(None);
+            let _ = self.ui_visual.SetContent(None);
+            let _ = self.root.RemoveAllVisuals();
+            let _ = self.target.SetRoot(None);
+            let _ = self.dcomp.Commit();
+            let _ = self.dcomp.WaitForCommitCompletion();
+        }
+    }
 }
 
 /// One window's layers (UI thread). Install it once as the window's layer sink.
@@ -216,7 +233,7 @@ impl WindowLayers {
             State::On => self.state.set(State::Stopping),
             State::Starting => {
                 self.state.set(State::Off);
-                self.park();
+                self.release();
             }
             _ => {}
         }
@@ -226,22 +243,13 @@ impl WindowLayers {
     /// come off now instead of with the next frame.
     pub fn stop_now(&self) {
         self.stop();
-        self.park();
+        self.release();
         self.state.set(State::Off);
     }
 
-    /// Takes the layers off the window but keeps them for the next stream shown here.
-    /// Creating them again every time a stream was watched (composition device, swap
-    /// chain, video processor) left about 30-50 MB behind each time, inside the driver.
-    /// The views of the decoder's pictures go now, so its textures can be freed.
-    fn park(&self) {
-        if let Some(l) = self.live.borrow().as_ref() {
-            unsafe {
-                let _ = l.target.SetRoot(None);
-                let _ = l.dcomp.Commit();
-            }
-            l.output.lock().unwrap_or_else(|e| e.into_inner()).in_views.clear();
-        }
+    /// Takes the layers off the window and frees them (see `Drop for Live`).
+    fn release(&self) {
+        self.live.borrow_mut().take();
     }
 
     /// Whether this window can use layers (they did not fail to start here).
@@ -348,7 +356,7 @@ impl i_slint_backend_winit::LayerSink for WindowLayers {
         }
         if state == State::Stopping {
             // This frame was drawn without the hole: GDI shows it all, the layers can go.
-            self.park();
+            self.release();
             self.state.set(State::Off);
             return;
         }

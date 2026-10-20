@@ -30,6 +30,27 @@ impl Drop for SharedDevice {
             self.context.Flush();
         }
         log::info!("🎞️ [GPU VIDEO] Dispositivo da GPU liberado (ninguém assiste pela GPU)");
+        unsafe { report_live_objects(&self.device) };
+    }
+}
+
+/// With `LITECORD_D3D_DEBUG` set (and the Windows "Graphics Tools" feature installed) the
+/// device is created with the debug layer, and this logs the objects still alive when it
+/// goes: only the device and its context should be left.
+unsafe fn report_live_objects(device: &ID3D11Device) {
+    let (Ok(dbg), Ok(q)) = (device.cast::<ID3D11Debug>(), device.cast::<ID3D11InfoQueue>()) else { return };
+    q.ClearStoredMessages();
+    let _ = dbg.ReportLiveDeviceObjects(D3D11_RLDO_DETAIL | D3D11_RLDO_IGNORE_INTERNAL);
+    for i in 0..q.GetNumStoredMessages() {
+        let mut len = 0usize;
+        let _ = q.GetMessage(i, None, &mut len);
+        let mut buf = vec![0u64; len / 8 + 1];
+        let m = buf.as_mut_ptr() as *mut D3D11_MESSAGE;
+        if q.GetMessage(i, Some(m), &mut len).is_ok() {
+            let d = &*m;
+            let text = std::slice::from_raw_parts(d.pDescription as *const u8, d.DescriptionByteLength.saturating_sub(1));
+            log::info!("🎞️ [GPU VIDEO] D3D11 vivo: {}", String::from_utf8_lossy(text));
+        }
     }
 }
 
@@ -50,7 +71,7 @@ unsafe fn create() -> Result<SharedDevice, HwError> {
     let adapter = display_adapter()?;
     let mut device = None;
     let mut context = None;
-    D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, None, D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut context))?;
+    D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, None, D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT | if std::env::var("LITECORD_D3D_DEBUG").is_ok() { D3D11_CREATE_DEVICE_DEBUG } else { D3D11_CREATE_DEVICE_FLAG(0) }, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut context))?;
     let device: ID3D11Device = device.ok_or(HwError::Unsupported("no D3D11 device".into()))?;
     let context: ID3D11DeviceContext = context.ok_or(HwError::Unsupported("no D3D11 context".into()))?;
     let mt: ID3D11Multithread = context.cast()?;

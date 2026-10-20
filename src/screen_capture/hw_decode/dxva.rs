@@ -94,7 +94,6 @@ pub struct Frame {
 }
 
 pub struct DxvaDecoder {
-    shared: Arc<SharedDevice>,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     vdev: ID3D11VideoDevice,
@@ -105,6 +104,8 @@ pub struct DxvaDecoder {
     bitstream: Vec<u8>,
     slices: Vec<SliceH264Short>,
     staging: Option<(ID3D11Texture2D, u32, u32)>,
+    /// Last: the shared device goes after everything made from it.
+    shared: Arc<SharedDevice>,
 }
 
 impl Drop for DxvaDecoder {

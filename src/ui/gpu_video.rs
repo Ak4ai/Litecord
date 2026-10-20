@@ -80,7 +80,9 @@ pub fn refresh(app: &AppWindow, popout: &PopoutStreamWindow) {
         let (_, _, vw, vh) = VIEWPORT.with(|v| v.get());
         let main_peer = parse(app.get_active_stream_user_id());
         let popped = app.get_popped_out_stream_uid();
+        // A hidden stream is no longer wanted: its window must not take the layers back.
         let main_wants = main_peer != 0
+            && screen_capture::watch::is_wanted(main_peer)
             && app.get_has_active_stream()
             && popped.as_str() != main_peer.to_string()
             && vw > 0
@@ -89,6 +91,7 @@ pub fn refresh(app: &AppWindow, popout: &PopoutStreamWindow) {
             && screen_capture::hw_decode::peer_on_gpu(main_peer);
         let pop_peer = parse(popout.get_user_id());
         let pop_wants = pop_peer != 0
+            && screen_capture::watch::is_wanted(pop_peer)
             && !popout.get_is_self()
             && screen_capture::popout_watching()
             && screen_capture::hw_decode::peer_on_gpu(pop_peer);

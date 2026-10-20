@@ -1,6 +1,6 @@
 # Receiver memory while a stream is hidden and watched again (or popped out and back)
-# many times. Each cycle used to leave 30-50 MB behind in the video driver (the video
-# layers were created again every time). The memory may swing while the driver frees
+# many times. Each cycle used to leave 30-50 MB behind in the video driver (the GPU
+# device was released before what was made from it). The memory may swing while the driver frees
 # what was released, but must not keep growing: fails when even the lowest of the last
 # five samples is more than 100 MB above the first.
 #
