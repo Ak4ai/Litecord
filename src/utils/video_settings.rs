@@ -19,10 +19,20 @@ pub struct VideoSettings {
     /// keep a GPU context (and its driver threads) next to the game.
     #[serde(default)]
     pub use_gpu_renderer: bool,           // default false
+    #[serde(default = "default_noise_suppression")]
+    pub noise_suppression: String,        // "advanced", "standard", "none" (default "none")
+    #[serde(default)]
+    pub echo_cancellation: bool,         // default false
+    #[serde(default)]
+    pub automatic_gain_control: bool,    // default false
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_noise_suppression() -> String {
+    "none".to_string()
 }
 
 impl Default for VideoSettings {
@@ -35,6 +45,9 @@ impl Default for VideoSettings {
             show_hardware_monitor: true,
             use_light_theme: false,
             use_gpu_renderer: false,
+            noise_suppression: "none".to_string(),
+            echo_cancellation: false,
+            automatic_gain_control: false,
         }
     }
 }
@@ -148,6 +161,45 @@ pub fn toggle_use_light_theme() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.use_light_theme = !store.use_light_theme;
     let new_val = store.use_light_theme;
+    save_video_settings(&store);
+    new_val
+}
+
+pub fn get_noise_suppression() -> String {
+    let mode = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).noise_suppression.clone();
+    if mode == "krisp" {
+        "advanced".to_string()
+    } else {
+        mode
+    }
+}
+
+pub fn set_noise_suppression(val: String) {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.noise_suppression = val;
+    save_video_settings(&store);
+}
+
+pub fn get_echo_cancellation() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).echo_cancellation
+}
+
+pub fn toggle_echo_cancellation() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.echo_cancellation = !store.echo_cancellation;
+    let new_val = store.echo_cancellation;
+    save_video_settings(&store);
+    new_val
+}
+
+pub fn get_automatic_gain_control() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).automatic_gain_control
+}
+
+pub fn toggle_automatic_gain_control() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.automatic_gain_control = !store.automatic_gain_control;
+    let new_val = store.automatic_gain_control;
     save_video_settings(&store);
     new_val
 }

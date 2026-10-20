@@ -161,6 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let keybind_mgr = Arc::new(keybinds::KeybindManager::new(initial_keybinds));
     sound_effects::init_sound_effects();
     populate_video_interface_settings(&app);
+    populate_voice_processing_settings(&app);
     populate_network_proxy_settings(&app);
 
     let app_weak = app.as_weak();
@@ -1951,6 +1952,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }).collect();
             ui.set_languages(std::rc::Rc::new(slint::VecModel::from(lang_items)).into());
             populate_video_interface_settings(&ui);
+            populate_voice_processing_settings(&ui);
             populate_network_proxy_settings(&ui);
 
             // 2. Populate devices immediately from cache if available
@@ -2293,6 +2295,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let use_light_theme = video_settings::toggle_use_light_theme();
         if let Some(ui) = app_weak_theme.upgrade() {
             ui.set_use_light_theme(use_light_theme);
+        }
+    });
+
+    // Voice Processing Settings Callbacks
+    let app_weak_ns = app_weak.clone();
+    app.on_select_noise_suppression(move |id: SharedString| {
+        video_settings::set_noise_suppression(id.to_string());
+        if let Some(ui) = app_weak_ns.upgrade() {
+            populate_voice_processing_settings(&ui);
+        }
+    });
+
+    let app_weak_aec = app_weak.clone();
+    app.on_toggle_echo_cancellation(move || {
+        let new_val = video_settings::toggle_echo_cancellation();
+        if let Some(ui) = app_weak_aec.upgrade() {
+            ui.set_echo_cancellation(new_val);
+        }
+    });
+
+    let app_weak_agc = app_weak.clone();
+    app.on_toggle_automatic_gain_control(move || {
+        let new_val = video_settings::toggle_automatic_gain_control();
+        if let Some(ui) = app_weak_agc.upgrade() {
+            ui.set_automatic_gain_control(new_val);
         }
     });
 
