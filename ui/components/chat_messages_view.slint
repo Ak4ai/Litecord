@@ -371,6 +371,11 @@ export component ChatMessagesView inherits Rectangle {
                         for line in msg.content_lines: VerticalLayout {
                             spacing: 0px;
 
+                            // Empty line spacer
+                            if line.blocks.length == 0: Rectangle {
+                                height: 6px;
+                            }
+
                             // Case 1: Pure single text line -> Native responsive word-wrap!
                             if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
                                 text: line.blocks[0].text;
@@ -613,6 +618,11 @@ export component ChatMessagesView inherits Rectangle {
                                     spacing: 3px;
                                     for line in msg.embed_lines: VerticalLayout {
                                         spacing: 0px;
+
+                                        // Empty line spacer
+                                        if line.blocks.length == 0: Rectangle {
+                                            height: 4px;
+                                        }
 
                                         if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
                                             text: line.blocks[0].text;
