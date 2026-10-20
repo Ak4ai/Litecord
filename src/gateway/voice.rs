@@ -20,6 +20,11 @@ use davey::{DaveSession, ProposalsOperationType, MediaType};
 
 use super::types::*;
 
+// 48 kHz stereo pairs. Cap after admission, including concealed Opus frames.
+const VOICE_QUEUE_LIMIT: usize = 28800;
+const VOICE_PREBUFFER_SAMPLES: usize = 1920;
+const VOICE_RESET_INACTIVE_CALLBACKS: u32 = 3;
+
 pub async fn connect_voice_gateway(
     raw_endpoint: &str,
     guild_id: &str,
@@ -298,7 +303,6 @@ pub async fn connect_voice_gateway(
                                                     let mut recv_buf = vec![0u8; 4096];
                                                     let mut pcm_out_buf = vec![0.0f32; 11520];
                                                     let mut detected_ssrcs = std::collections::HashSet::new();
-                                                    let mut total_pkts_recv = 0u64;
                                                     let mut decrypt_err_cnt = 0u64;
                                                     let mut opus_err_cnt = 0u64;
                                                     let mut dave_decrypt_fail_cnt = 0u64;
@@ -321,8 +325,6 @@ pub async fn connect_voice_gateway(
 
                                                                 let ssrc_recv = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
                                                                 if ssrc_recv == my_ssrc { continue; }
-
-                                                                total_pkts_recv += 1;
 
                                                                 if detected_ssrcs.insert(ssrc_recv) {
                                                                     info!("🎙️ NOVO SSRC DE VOZ REMOTO RECEBIDO! SSRC={} de {}", ssrc_recv, addr);
@@ -583,68 +585,18 @@ pub async fn connect_voice_gateway(
 
                                                                         if decode_success && decoded_count > 0 {
                                                                             register_voice_participant(ssrc_recv, sender_user_id);
-                                                                            let total_samples = if pkt_channels == 2 { decoded_count * 2 } else { decoded_count };
-                                                                            let mut sum_sq = 0.0f32;
-                                                                            let mut max_peak = 0.0f32;
-                                                                            let mut zc_count = 0usize;
-                                                                            let mut prev_s = 0.0f32;
-                                                                            let mut diff_energy = 0.0f32;
-
-                                                                            for (idx, &s) in pcm_out_buf[..total_samples].iter().enumerate() {
-                                                                                let abs_s = s.abs();
-                                                                                if abs_s > max_peak { max_peak = abs_s; }
-                                                                                sum_sq += s * s;
-                                                                                if idx > 0 {
-                                                                                    if (s >= 0.0 && prev_s < 0.0) || (s < 0.0 && prev_s >= 0.0) {
-                                                                                        zc_count += 1;
-                                                                                    }
-                                                                                    let diff = s - prev_s;
-                                                                                    diff_energy += diff * diff;
-                                                                                }
-                                                                                prev_s = s;
-                                                                            }
-                                                                            let frame_rms = (sum_sq / total_samples.max(1) as f32).sqrt();
-                                                                            let hf_noise_ratio = (diff_energy / (sum_sq + 1e-6)).sqrt();
-                                                                            let is_silence = frame_rms < 0.003 || opus_data.len() <= 3;
-
-                                                                            let mut dump_vec = Vec::with_capacity(decoded_count);
-                                                                            if is_silence {
-                                                                                for _ in 0..decoded_count { dump_vec.push((0.0, 0.0)); }
-                                                                            } else if pkt_channels == 2 {
-                                                                                for i in 0..decoded_count {
-                                                                                    dump_vec.push((pcm_out_buf[i * 2].clamp(-1.0, 1.0), pcm_out_buf[i * 2 + 1].clamp(-1.0, 1.0)));
-                                                                                }
-                                                                            } else {
-                                                                                for &s in &pcm_out_buf[..decoded_count] {
-                                                                                    let mono = s.clamp(-1.0, 1.0);
-                                                                                    dump_vec.push((mono, mono));
-                                                                                }
-                                                                            }
+                                                                            let total_samples = decoded_count * pkt_channels;
+                                                                            let dump_vec = decoded_voice_pairs(&pcm_out_buf[..total_samples], pkt_channels);
                                                                                     ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
 
                                                                                     if let Ok(mut queues) = speaker_queues_rx.lock() {
-                                                                                        let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(48000));
-                                                                                        // Maintain real-time jitter buffer: cap at 1s (48000 samples)
-                                                                                        while q.len() > 48000 {
-                                                                                            q.pop_front();
-                                                                                        }
+                                                                                        let q = queues.entry(ssrc_recv).or_insert_with(|| VecDeque::with_capacity(VOICE_QUEUE_LIMIT));
                                                                                         #[cfg(feature = "automation")]
                                                                                         {
                                                                                             crate::utils::test_hooks::voice_decoded(&plc_pairs);
                                                                                             crate::utils::test_hooks::voice_decoded(&dump_vec);
                                                                                         }
-                                                                                        // Push synthesized PLC concealed frames first to maintain unbroken audio stream
-                                                                                        for &pair in &plc_pairs {
-                                                                                            q.push_back(pair);
-                                                                                        }
-                                                                                        for &pair in &dump_vec {
-                                                                                            q.push_back(pair);
-                                                                                        }
-
-                                                                                        if total_pkts_recv % 100 == 0 {
-                                                                                            info!("📊 [ESPECTRO DE VOZ & NOISE DUMP] Pkts={:4} | SSRC={} | RMS={:.5} | Peak={:.4} | ZC={:3} | HF_Ratio={:.3} | QueueLen={:5}",
-                                                                                                total_pkts_recv, ssrc_recv, frame_rms, max_peak, zc_count, hf_noise_ratio, q.len());
-                                                                                        }
+                                                                                        push_voice_frame(q, &plc_pairs, &dump_vec);
                                                                                     }
                                                                                 } else if !opus_data.is_empty() {
                                                                                     opus_err_cnt += 1;
@@ -732,7 +684,10 @@ pub async fn connect_voice_gateway(
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
 
+                                                    #[cfg(not(target_os = "linux"))]
                                                     let stream_config: cpal::StreamConfig = config.clone().into();
+                                                    #[cfg(target_os = "linux")]
+                                                    let stream_config = crate::audio::engine::linux_voice_stream_config(&device, &config, false);
 
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
@@ -761,7 +716,7 @@ pub async fn connect_voice_gateway(
                                                                             if q.is_empty() {
                                                                                 let ticks = inactive_ticks.entry(ssrc).or_insert(0);
                                                                                 *ticks += 1;
-                                                                                if *ticks > 3 {
+                                                                                if *ticks > VOICE_RESET_INACTIVE_CALLBACKS {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
@@ -782,7 +737,7 @@ pub async fn connect_voice_gateway(
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
-                                                                            } else if q.len() >= 1920 { // 40ms Jitter Pre-buffer
+                                                                            } else if q.len() >= VOICE_PREBUFFER_SAMPLES { // 40ms Jitter Pre-buffer
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
@@ -906,7 +861,7 @@ pub async fn connect_voice_gateway(
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
                                                             device.build_output_stream(
-                                                                &config.into(),
+                                                                &stream_config,
                                                                 move |output: &mut [i16], _| {
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
@@ -928,7 +883,7 @@ pub async fn connect_voice_gateway(
                                                                             if q.is_empty() {
                                                                                 let ticks = inactive_ticks.entry(ssrc).or_insert(0);
                                                                                 *ticks += 1;
-                                                                                if *ticks > 3 {
+                                                                                if *ticks > VOICE_RESET_INACTIVE_CALLBACKS {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
@@ -949,7 +904,7 @@ pub async fn connect_voice_gateway(
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
-                                                                            } else if q.len() >= 1920 { // 40ms Jitter Pre-buffer
+                                                                            } else if q.len() >= VOICE_PREBUFFER_SAMPLES { // 40ms Jitter Pre-buffer
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
@@ -1700,5 +1655,51 @@ mod output_device_wait_tests {
             wait = Some(next);
         }
         assert_eq!(seen, vec![500, 1000, 2000, 4000, 5000, 5000]);
+    }
+}
+
+fn decoded_voice_pairs(pcm: &[f32], channels: usize) -> Vec<(f32, f32)> {
+    if channels == 2 {
+        pcm.chunks_exact(2).map(|s| (s[0].clamp(-1.0, 1.0), s[1].clamp(-1.0, 1.0))).collect()
+    } else {
+        pcm.iter().map(|s| { let mono = s.clamp(-1.0, 1.0); (mono, mono) }).collect()
+    }
+}
+
+fn push_voice_frame(q: &mut VecDeque<(f32, f32)>, plc: &[(f32, f32)], decoded: &[(f32, f32)]) {
+    let incoming = plc.len().saturating_add(decoded.len());
+    let discard = q.len().saturating_add(incoming).saturating_sub(VOICE_QUEUE_LIMIT);
+    q.drain(..discard.min(q.len()));
+    q.extend(plc.iter().chain(decoded).skip(incoming.saturating_sub(VOICE_QUEUE_LIMIT)).copied());
+}
+
+#[cfg(test)]
+mod voice_playout_tests {
+    use super::*;
+
+    #[test]
+    fn quiet_speech_keeps_its_samples_in_mono_and_stereo() {
+        assert_eq!(decoded_voice_pairs(&[0.001, -0.002], 1), vec![(0.001, 0.001), (-0.002, -0.002)]);
+        assert_eq!(decoded_voice_pairs(&[0.001, -0.002, 2.0, -2.0], 2), vec![(0.001, -0.002), (1.0, -1.0)]);
+    }
+
+    #[test]
+    fn backlog_keeps_latest_audio_and_orders_concealment_before_new_samples() {
+        let mut q: VecDeque<_> = (0..VOICE_QUEUE_LIMIT).map(|i| (i as f32, i as f32)).collect();
+        push_voice_frame(&mut q, &vec![(-1.0, -1.0); 960], &vec![(9.0, 9.0); 960]);
+        assert_eq!(q.len(), VOICE_QUEUE_LIMIT);
+        assert_eq!(q.front(), Some(&(1920.0, 1920.0)));
+        assert_eq!(q[VOICE_QUEUE_LIMIT - 1920], (-1.0, -1.0));
+        assert_eq!(q.back(), Some(&(9.0, 9.0)));
+    }
+
+    #[test]
+    fn even_an_oversized_input_never_exceeds_the_voice_backlog_limit() {
+        let mut q = VecDeque::from([(99.0, 99.0)]);
+        let decoded: Vec<_> = (0..VOICE_QUEUE_LIMIT + 2400).map(|i| (i as f32, i as f32)).collect();
+        push_voice_frame(&mut q, &vec![(-1.0, -1.0); 1920], &decoded);
+        assert_eq!(q.len(), VOICE_QUEUE_LIMIT);
+        assert_eq!(q.front(), Some(&(2400.0, 2400.0)));
+        assert_eq!(q.back(), Some(&((VOICE_QUEUE_LIMIT + 2399) as f32, (VOICE_QUEUE_LIMIT + 2399) as f32)));
     }
 }

@@ -2454,6 +2454,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
         screen_capture::watch::clear_wanted();
+        // Do this even if the window has gone away: the next call starts with fresh audio.
+        if let Ok(mut queues) = gateway::get_speaker_pcm_queues().lock() {
+            queues.clear();
+        }
+        if let Ok(mut queue) = gateway::get_mic_pcm_queue().lock() {
+            queue.clear();
+        }
         if let Some(ui) = app_weak_leave.upgrade() {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);

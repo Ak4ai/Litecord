@@ -8,6 +8,61 @@ use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
 use log::info;
 use crate::gateway;
 
+#[cfg(any(target_os = "linux", test))]
+fn voice_buffer_frames(rate: u32, supported: &cpal::SupportedBufferSize) -> u32 {
+    // Nominal 20 ms, rounded to a 64-frame period before applying device limits.
+    let frames = (rate / 50).max(128).div_ceil(64) * 64;
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } => frames.clamp(*min, *max),
+        cpal::SupportedBufferSize::Unknown => frames,
+    }
+}
+
+/// Probe only when opening a Linux voice device; no periodic device work.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_voice_stream_config(
+    device: &cpal::Device, config: &cpal::SupportedStreamConfig, input: bool,
+) -> cpal::StreamConfig {
+    let frames = voice_buffer_frames(config.sample_rate().0, config.buffer_size());
+    let mut fixed: cpal::StreamConfig = config.clone().into();
+    fixed.buffer_size = cpal::BufferSize::Fixed(frames);
+    let probe = match (input, config.sample_format()) {
+        (true, cpal::SampleFormat::F32) => device.build_input_stream(&fixed, |_: &[f32], _| {}, |_| {}, None).map(|_| ()),
+        (true, cpal::SampleFormat::I16) => device.build_input_stream(&fixed, |_: &[i16], _| {}, |_| {}, None).map(|_| ()),
+        (true, cpal::SampleFormat::I32) => device.build_input_stream(&fixed, |_: &[i32], _| {}, |_| {}, None).map(|_| ()),
+        (false, cpal::SampleFormat::F32) => device.build_output_stream(&fixed, |out: &mut [f32], _| out.fill(0.0), |_| {}, None).map(|_| ()),
+        (false, cpal::SampleFormat::I16) => device.build_output_stream(&fixed, |out: &mut [i16], _| out.fill(0), |_| {}, None).map(|_| ()),
+        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+    };
+    match probe {
+        Ok(()) => {
+            info!("Buffer de voz Linux aceito: {} frames ({})", frames, if input { "entrada" } else { "saída" });
+            fixed
+        },
+        Err(error) => {
+            log::warn!("Buffer de voz Linux de {} frames recusado ({error}); usando padrão do driver", frames);
+            let mut fallback: cpal::StreamConfig = config.clone().into();
+            fallback.buffer_size = cpal::BufferSize::Default;
+            fallback
+        },
+    }
+}
+
+#[cfg(test)]
+mod voice_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn twenty_ms_voice_period_is_aligned_and_respects_device_limits() {
+        use cpal::SupportedBufferSize::{Range, Unknown};
+        assert_eq!(voice_buffer_frames(48000, &Unknown), 960);
+        assert_eq!(voice_buffer_frames(44100, &Unknown), 896);
+        assert_eq!(voice_buffer_frames(8000, &Unknown), 192);
+        assert_eq!(voice_buffer_frames(48000, &Range {min: 1024, max: 4096}), 1024);
+        assert_eq!(voice_buffer_frames(48000, &Range {min: 64, max: 512}), 512);
+    }
+}
+
 pub static CACHED_AUDIO_DEVICES: std::sync::OnceLock<Arc<std::sync::Mutex<Option<(Vec<String>, Vec<String>)>>>> = std::sync::OnceLock::new();
 
 pub fn get_audio_devices_cache() -> Arc<std::sync::Mutex<Option<(Vec<String>, Vec<String>)>>> {
@@ -161,7 +216,10 @@ fn open_mic_stream(
 
     info!("Capturando microfone: {}Hz, {} canal(is), formato={:?}", sample_rate, channels, config.sample_format());
 
+    #[cfg(not(target_os = "linux"))]
     let stream_config: cpal::StreamConfig = config.clone().into();
+    #[cfg(target_os = "linux")]
+    let stream_config = linux_voice_stream_config(&target_dev, &config, true);
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
