@@ -38,6 +38,11 @@ export component ChannelSidebar inherits Rectangle {
     in property <string> current_voice_channel;
     in property <string> tr_leave;
     in property <string> user_tag;
+    in property <string> user_display_name;
+    in property <string> user_handle;
+    in property <string> user_avatar_initials;
+    in property <bool> user_avatar_has_image;
+    in property <image> user_avatar_img;
     callback select_channel(string);
     callback toggle_category(string);
     callback leave_voice();
@@ -405,38 +410,101 @@ export component ChannelSidebar inherits Rectangle {
 
         // User Footer in Channels bar
         Rectangle {
-            height: 58px;
+            height: 52px;
             background: AppTheme.surface-elevated;
             border-radius: 6px;
 
-            VerticalBox {
-                padding-top: 4px;
-                padding-bottom: 6px;
+            HorizontalLayout {
                 padding-left: 6px;
                 padding-right: 6px;
+                padding-top: 4px;
+                padding-bottom: 4px;
                 spacing: 2px;
+                alignment: space-between;
 
+                // Left: User Profile Box (Avatar + 2-line name)
                 Rectangle {
-                    background: user_tag_touch.has-hover ? AppTheme.interactive-hover : transparent;
+                    background: user_profile_touch.has-hover ? AppTheme.interactive-hover : transparent;
                     border-radius: 4px;
-                    height: 20px;
+                    horizontal-stretch: 1;
 
                     HorizontalLayout {
                         padding-left: 4px;
                         padding-right: 4px;
-                        spacing: 4px;
+                        spacing: 8px;
+                        alignment: start;
 
-                        Text {
-                            text: root.user_tag;
-                            color: user_tag_touch.has-hover ? AppTheme.accent : AppTheme.text-strong;
-                            font-size: 12px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                            overflow: elide;
+                        // 32x32 Avatar with status dot
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    border-radius: 16px;
+                                    clip: true;
+                                    background: AppTheme.accent;
+
+                                    if root.user_avatar_has_image: Image {
+                                        source: root.user_avatar_img;
+                                        width: 32px;
+                                        height: 32px;
+                                        image-fit: cover;
+                                    }
+
+                                    if !root.user_avatar_has_image: Text {
+                                        text: root.user_avatar_initials != "" ? root.user_avatar_initials : "U";
+                                        color: AppTheme.text-on-accent;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Status Dot (Online: #23A55A)
+                            Rectangle {
+                                x: 22px;
+                                y: 22px;
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: #23A55A;
+                                border-width: 2px;
+                                border-color: AppTheme.surface-elevated;
+                            }
+                        }
+
+                        // 2-line column: Display Name & @username
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: root.user_display_name != "" ? root.user_display_name : root.user_tag;
+                                color: AppTheme.text-strong;
+                                font-size: 12px;
+                                font-weight: 700;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: root.user_handle != "" ? root.user_handle : "Online";
+                                color: AppTheme.text-muted;
+                                font-size: 10.5px;
+                                font-weight: 500;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
                         }
                     }
 
-                    user_tag_touch := TouchArea {
+                    user_profile_touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
                             root.toggle_user_menu();
@@ -444,9 +512,10 @@ export component ChannelSidebar inherits Rectangle {
                     }
                 }
 
-                HorizontalBox {
-                    padding: 0px;
-                    spacing: 4px;
+                // Right: Controls
+                HorizontalLayout {
+                    spacing: 2px;
+                    alignment: center;
 
                     IconButton {
                         icon: root.is_muted ? @image-url("../../assets/microphone-mute.svg") : @image-url("../../assets/microphone.svg");

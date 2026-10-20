@@ -874,12 +874,37 @@ pub async fn try_login_with_candidates(
                 *last_token.lock().unwrap() = token_str.clone();
                 *http_client.lock().unwrap() = Some(http.clone());
 
+                let avatar_hash = user_info["avatar"].as_str().unwrap_or("");
+                let avatar_url = if !avatar_hash.is_empty() && !user_id.is_empty() {
+                    format!("https://cdn.discordapp.com/avatars/{}/{}.png?size=64", user_id, avatar_hash)
+                } else {
+                    String::new()
+                };
+                let display_name_val = if !global_name.is_empty() {
+                    global_name.to_string()
+                } else {
+                    username.to_string()
+                };
+                let handle_val = tag.clone();
+                let initials_val = crate::ui::helpers::get_guild_initials(&display_name_val);
+
                 let app_w = app_weak.clone();
                 let display_tag_clone = display_tag.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w.upgrade() {
                         ui.set_is_logged_in(true);
                         ui.set_user_tag(display_tag_clone.into());
+                        ui.set_user_display_name(display_name_val.into());
+                        ui.set_user_handle(handle_val.into());
+                        ui.set_user_avatar_initials(initials_val.into());
+                        ui.set_user_avatar_url(avatar_url.clone().into());
+                        if !avatar_url.is_empty() {
+                            let img = avatar_cache::get_avatar_cache().image_for(&avatar_url);
+                            if img.size().width > 0 {
+                                ui.set_user_avatar_img(img);
+                                ui.set_user_avatar_has_image(true);
+                            }
+                        }
                         ui.set_connection_status("Conectado com sucesso!".into());
                         ui.set_login_alert_message("".into());
                         ui.set_titlebar_error("".into());
