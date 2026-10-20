@@ -880,6 +880,7 @@ pub async fn load_messages_for_channel(
                     };
                     regroup_messages(&mut ui_msgs);
                     avatar_cache::get_avatar_cache().hydrate(&mut ui_msgs, &app_weak);
+                    crate::ui::invite_cards::hydrate(&mut ui_msgs, &app_weak);
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
 

@@ -284,6 +284,11 @@ ui_strings! {
     (settings_advanced, set_settings_advanced, "Advanced", "Avançado", "Avanzado", "Erweitert", "Avancé", "Дополнительно", "詳細設定"),
     (settings_advanced_desc, set_settings_advanced_desc, "Change these only if the stream freezes or goes black. Automatic tries each option and falls back to the next one.", "Só mude se a transmissão travar ou ficar preta. O automático testa cada opção e passa para a seguinte se uma falhar.", "Cámbialo solo si la transmisión se congela o se queda en negro. Automático prueba cada opción y pasa a la siguiente si una falla.", "Nur ändern, wenn die Übertragung hängt oder schwarz bleibt. Automatisch probiert jede Option und wechselt bei einem Fehler zur nächsten.", "À changer seulement si le partage se fige ou reste noir. Automatique essaie chaque option et passe à la suivante en cas d’échec.", "Меняйте, только если трансляция зависает или остаётся чёрной. Автоматический режим пробует каждый вариант и переходит к следующему при ошибке.", "配信が止まる・真っ黒になる場合のみ変更してください。自動では各方式を試し、失敗すると次に切り替えます。"),
     (settings_privacy_title, set_settings_privacy_title, "How your data is protected", "Como seus dados são protegidos", "Cómo se protegen tus datos", "Wie deine Daten geschützt werden", "Comment vos données sont protégées", "Как защищены ваши данные", "データの保護について"),
+    // Server invite cards; {} is a number already grouped for the language.
+    (invite_join, set_invite_join, "Join", "Entrar", "Unirse", "Beitreten", "Rejoindre", "Вступить", "参加"),
+    (invite_loading, set_invite_loading, "Loading invite…", "Carregando convite…", "Cargando invitación…", "Einladung wird geladen…", "Chargement de l’invitation…", "Загрузка приглашения…", "招待を読み込み中…"),
+    (invite_online, set_invite_online, "{} online", "{} online", "{} en línea", "{} online", "{} en ligne", "{} в сети", "{}人がオンライン"),
+    (invite_members, set_invite_members, "{} members", "{} membros", "{} miembros", "{} Mitglieder", "{} membres", "{} участников", "{}人のメンバー"),
 }
 
 #[cfg(test)]

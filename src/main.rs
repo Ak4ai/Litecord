@@ -2986,6 +2986,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 combined.extend(current_msgs);
                                 regroup_messages(&mut combined);
                                 avatar_cache::get_avatar_cache().hydrate(&mut combined, &app_w_inner);
+                                crate::ui::invite_cards::hydrate(&mut combined, &app_w_inner);
                                 let model = std::rc::Rc::new(slint::VecModel::from(combined));
                                 ui.set_messages(model.into());
                             }
@@ -4629,6 +4630,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // existing model so a new message does not rebuild the chat UI.
                                 let mut appended = current_msgs.pop().expect("message was appended");
                                 avatar_cache::get_avatar_cache().hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
+                                crate::ui::invite_cards::hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
                                 let messages = ui.get_messages();
                                 if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
                                     model.push(appended);
@@ -4732,6 +4734,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
                             regroup_messages(&mut current_msgs);
                             avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
+                            crate::ui::invite_cards::hydrate(&mut current_msgs, &app_weak_inner);
                             let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                             ui.set_messages(model.into());
                         }
