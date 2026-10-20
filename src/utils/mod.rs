@@ -17,6 +17,7 @@ pub mod image_shape;
 pub mod network_settings;
 pub mod hardware_monitor;
 pub mod client_identity;
+pub mod styled_text;
 #[cfg(feature = "automation")]
 pub mod test_hooks;
 

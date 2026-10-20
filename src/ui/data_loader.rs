@@ -688,7 +688,7 @@ pub async fn fetch_and_populate_dms(
 
                 ui_channels.push(ChannelItem {
                     id: ch_id.into(),
-                    name: ch_name.into(),
+                    name: crate::utils::styled_text::plain_display_name(&ch_name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: false,
