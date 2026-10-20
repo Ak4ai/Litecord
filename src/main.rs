@@ -493,8 +493,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_open_link = app_weak.clone();
     app.on_open_link(move |url_str: SharedString| {
         let url = url_str.trim().to_string();
+        // A link to a channel of the server on screen opens that channel here instead
+        // of the browser (channel mentions are shown as such links).
+        if let Some((_, channel_id)) = gateway::channel_names::channel_link_target(&url) {
+            if let Some(ui) = app_weak_open_link.upgrade() {
+                let on_screen = ui.get_channels().iter().any(|c| c.id.as_str() == channel_id);
+                if on_screen {
+                    ui.invoke_select_channel(channel_id.into());
+                    return;
+                }
+            }
+        }
         // Strict URL protocol validation: only allow HTTP and HTTPS
         if !url.starts_with("http://") && !url.starts_with("https://") {
             log::warn!("Tentativa de abrir link não-HTTP rejeitada por segurança: {}", url);
