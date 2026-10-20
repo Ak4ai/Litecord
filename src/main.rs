@@ -2153,7 +2153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_weak_rec = app_weak.clone();
     app.on_start_recording_keybind(move |target: i32| {
-        keybinds::RECORDING_TARGET.store(target as u8, Ordering::Relaxed);
+        keybinds::start_recording(target as u8);
         if let Some(ui) = app_weak_rec.upgrade() {
             ui.set_recording_keybind_for(target);
         }
