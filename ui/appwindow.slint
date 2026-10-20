@@ -139,6 +139,10 @@ export component AppWindow inherits Window {
     callback update_app_dismiss();
     callback update_app_ignore();
     callback check_for_updates();
+    callback reorder_guild(int, int);
+    callback reorder_channel(int, int);
+    in-out property <int> dragging_guild_idx: -1;
+    in-out property <int> drop_target_guild_idx: -1;
     callback load_older_messages();
     callback toggle_screen_share();
     callback toggle_web_share();
@@ -1157,60 +1161,101 @@ export component AppWindow inherits Window {
                                 spacing: 10px;
                                 alignment: start;
 
-                                for guild in root.guilds: HorizontalLayout {
-                                    alignment: center;
+                                for guild[idx] in root.guilds: VerticalLayout {
                                     spacing: 0px;
+                                    alignment: center;
 
-                                    // Left indicator pill (Discord style)
-                                    VerticalLayout {
+                                    // Drop indicator line above guild
+                                    if root.drop_target_guild_idx == idx && root.dragging_guild_idx >= 0 && root.dragging_guild_idx != idx: HorizontalLayout {
                                         alignment: center;
-                                        width: 8px;
+                                        padding-top: 2px;
+                                        padding-bottom: 2px;
                                         Rectangle {
-                                            width: 4px;
-                                            height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
-                                            background: AppTheme.text-strong;
-                                            border-top-right-radius: 4px;
-                                            border-bottom-right-radius: 4px;
-                                            animate height { duration: 150ms; easing: ease-out; }
+                                            width: 40px;
+                                            height: 3px;
+                                            border-radius: 2px;
+                                            background: #5865F2;
                                         }
                                     }
 
-                                    Rectangle {
-                                        height: 48px;
-                                        width: 48px;
-                                        background: (guild.id == root.active_guild_id) ? AppTheme.accent : (guild_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
-                                        border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 14px : 16px;
-                                        clip: true;
-                                        animate border-radius, background { duration: 150ms; easing: ease-out; }
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 0px;
 
-                                        if guild.has_image: Image {
-                                            source: guild.icon_image;
-                                            width: 48px;
-                                            height: 48px;
-                                            image-fit: cover;
-                                        }
-
-                                        if !guild.has_image: Text {
-                                            text: guild.icon;
-                                            color: AppTheme.text-on-accent;
-                                            font-size: 14px;
-                                            font-weight: 700;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                        }
-
-                                        guild_ta := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => {
-                                                root.active_guild_id = guild.id;
-                                                root.select_guild(guild.id);
+                                        // Left indicator pill (Discord style)
+                                        VerticalLayout {
+                                            alignment: center;
+                                            width: 8px;
+                                            Rectangle {
+                                                width: 4px;
+                                                height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
+                                                background: AppTheme.text-strong;
+                                                border-top-right-radius: 4px;
+                                                border-bottom-right-radius: 4px;
+                                                animate height { duration: 150ms; easing: ease-out; }
                                             }
                                         }
-                                    }
 
-                                    // Spacer to balance the 8px on the left
-                                    Rectangle { width: 8px; }
+                                        Rectangle {
+                                            height: 48px;
+                                            width: 48px;
+                                            background: (guild.id == root.active_guild_id) ? AppTheme.accent : (guild_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
+                                            border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 14px : 16px;
+                                            clip: true;
+                                            opacity: (root.dragging_guild_idx == idx) ? 0.4 : 1.0;
+                                            animate border-radius, background, opacity { duration: 150ms; easing: ease-out; }
+
+                                            if guild.has_image: Image {
+                                                source: guild.icon_image;
+                                                width: 48px;
+                                                height: 48px;
+                                                image-fit: cover;
+                                            }
+
+                                            if !guild.has_image: Text {
+                                                text: guild.icon;
+                                                color: AppTheme.text-on-accent;
+                                                font-size: 14px;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            guild_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                pointer-event(event) => {
+                                                    if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                                                        if (root.dragging_guild_idx >= 0 && root.drop_target_guild_idx >= 0 && root.dragging_guild_idx != root.drop_target_guild_idx) {
+                                                            root.reorder_guild(root.dragging_guild_idx, root.drop_target_guild_idx);
+                                                        }
+                                                        root.dragging_guild_idx = -1;
+                                                        root.drop_target_guild_idx = -1;
+                                                    }
+                                                }
+                                                moved => {
+                                                    if (self.pressed) {
+                                                        let diff_y = self.mouse-y - self.pressed-y;
+                                                        if (diff_y > 10px || diff_y < -10px) {
+                                                            root.dragging_guild_idx = idx;
+                                                        }
+                                                    }
+                                                    if (root.dragging_guild_idx >= 0 && self.has-hover) {
+                                                        root.drop_target_guild_idx = idx;
+                                                    }
+                                                }
+                                                clicked => {
+                                                    if (root.dragging_guild_idx < 0) {
+                                                        root.active_guild_id = guild.id;
+                                                        root.select_guild(guild.id);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Spacer to balance the 8px on the left
+                                        Rectangle { width: 8px; }
+                                    }
                                 }
                             }
                         }
@@ -1242,6 +1287,7 @@ export component AppWindow inherits Window {
                 active_channel_id <=> root.active_channel_id;
                 select_channel(id) => { root.select_channel(id); }
                 toggle_category(id) => { root.toggle_category(id); }
+                reorder_channel(from, to) => { root.reorder_channel(from, to); }
                 leave_voice => { root.leave_voice(); }
                 toggle_mute => { root.toggle_mute(); }
                 toggle_deafen => { root.toggle_deafen(); }

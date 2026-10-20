@@ -66,6 +66,22 @@ impl DiscordHttpClient {
         }
     }
 
+    pub async fn get_user_settings(&self) -> Result<serde_json::Value, String> {
+        let url = "https://discord.com/api/v10/users/@me/settings";
+        match self.client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(settings) = resp.json::<serde_json::Value>().await {
+                        return Ok(settings);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+        }
+    }
+
     pub async fn get_user_dms(&self) -> Result<Vec<serde_json::Value>, String> {
         let url = "https://discord.com/api/v10/users/@me/channels";
         match self.client.get(url).send().await {

@@ -3699,6 +3699,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Reorder Guild Callback
+    let app_weak_reorder_g = app_weak.clone();
+    app.on_reorder_guild(move |from_idx: i32, to_idx: i32| {
+        let from = from_idx as usize;
+        let to = to_idx as usize;
+        if let Some(ui) = app_weak_reorder_g.upgrade() {
+            let guilds_model = ui.get_guilds();
+            let count = guilds_model.row_count();
+            if from < count && to < count && from != to {
+                let mut list = Vec::new();
+                for i in 0..count {
+                    if let Some(item) = guilds_model.row_data(i) {
+                        list.push(item);
+                    }
+                }
+                let item = list.remove(from);
+                list.insert(to, item);
+                let order_ids: Vec<String> = list.iter().map(|g| g.id.to_string()).collect();
+                if let Ok(json) = serde_json::to_string_pretty(&order_ids) {
+                    let _ = std::fs::write(".litecord_guild_order.json", json);
+                }
+                ui.set_guilds(std::rc::Rc::new(slint::VecModel::from(list)).into());
+                info!("🔄 Servidores reordenados de {} para {} e persistidos em .litecord_guild_order.json", from, to);
+            }
+        }
+    });
+
+    // Reorder Channel Callback
+    let app_weak_reorder_c = app_weak.clone();
+    let guilds_map_reorder_c = Arc::clone(&guilds_map);
+    let active_guild_reorder_c = Arc::clone(&active_guild_id);
+    app.on_reorder_channel(move |from_idx: i32, to_idx: i32| {
+        let from = from_idx as usize;
+        let to = to_idx as usize;
+        let gid = active_guild_reorder_c.lock().unwrap().clone();
+        if gid.is_empty() || gid == "@me" { return; }
+
+        if let Ok(mut map) = guilds_map_reorder_c.lock() {
+            if let Some(g_data) = map.get_mut(&gid) {
+                if from < g_data.channels.len() && to < g_data.channels.len() && from != to {
+                    let item = g_data.channels.remove(from);
+                    g_data.channels.insert(to, item);
+                    let order_ids: Vec<String> = g_data.channels.iter().map(|c| c.id.clone()).collect();
+                    if let Ok(json) = serde_json::to_string_pretty(&order_ids) {
+                        let _ = std::fs::write(format!(".litecord_channel_order_{}.json", gid), json);
+                    }
+                    let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                    let ui_channels = build_ui_channels(&g_data.channels, &cats_guard);
+                    if let Some(ui) = app_weak_reorder_c.upgrade() {
+                        ui.set_channels(std::rc::Rc::new(slint::VecModel::from(ui_channels)).into());
+                    }
+                    info!("🔄 Canais do servidor {} reordenados e persistidos localmente!", gid);
+                }
+            }
+        }
+    });
+
     let sm_chan_select = Arc::clone(&screen_manager);
 
     app.on_select_channel(move |channel_id: SharedString| {
