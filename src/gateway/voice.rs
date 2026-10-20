@@ -732,7 +732,10 @@ pub async fn connect_voice_gateway(
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
 
+                                                    #[cfg(not(target_os = "linux"))]
                                                     let stream_config: cpal::StreamConfig = config.clone().into();
+                                                    #[cfg(target_os = "linux")]
+                                                    let stream_config = crate::audio::engine::linux_voice_stream_config(&device, &config, false);
 
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
@@ -906,7 +909,7 @@ pub async fn connect_voice_gateway(
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
                                                             device.build_output_stream(
-                                                                &config.into(),
+                                                                &stream_config,
                                                                 move |output: &mut [i16], _| {
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
