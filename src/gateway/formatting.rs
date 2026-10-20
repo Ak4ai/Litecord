@@ -779,7 +779,18 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                     }
 
                     if raw_url.len() > 8 {
-                        if !before.is_empty() {
+                        // `<https://…>` (spaces allowed inside) is a link without a preview:
+                        // the brackets are markup, not text.
+                        let mut before = before;
+                        let mut after_url = &rem[first_idx + raw_url.len()..];
+                        if let (Some(b), Some(a)) = (
+                            before.trim_end().strip_suffix('<'),
+                            after_url.trim_start().strip_prefix('>'),
+                        ) {
+                            before = b;
+                            after_url = a;
+                        }
+                        if !before.trim().is_empty() {
                             line_blocks.push(MessageBlockData {
                                 text: parse_discord_markdown(before),
                                 is_link: false,
@@ -805,7 +816,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: raw_url.to_string(),
                             });
                         }
-                        rem = &rem[first_idx + raw_url.len()..];
+                        rem = after_url;
                     } else {
                         let slice_len = first_idx + 4;
                         line_blocks.push(MessageBlockData {
@@ -1637,6 +1648,16 @@ mod tests {
             }
         }
         assert!(lines.iter().any(|l| l.blocks.len() == 1 && l.blocks[0].text.starts_with("talking about")));
+    }
+
+    #[test]
+    fn bare_links_in_angle_brackets_drop_the_brackets() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("Clean Code - < http://amzn.to/2tC >", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "http://amzn.to/2tC");
+        let text: String = lines[0].blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(!text.contains('<') && !text.contains('>'), "{text}");
     }
 
     #[test]
