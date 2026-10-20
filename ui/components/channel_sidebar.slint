@@ -477,47 +477,50 @@ export component ChannelSidebar inherits Rectangle {
                         spacing: 8px;
                         alignment: start;
 
-                        // 32x32 Avatar with status dot
-                        Rectangle {
-                            width: 32px;
-                            height: 32px;
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 32px;
-                                    height: 32px;
-                                    border-radius: 16px;
-                                    clip: true;
-                                    background: AppTheme.accent;
-
-                                    if root.user_avatar_has_image: Image {
-                                        source: root.user_avatar_img;
+                        // 32x32 Avatar with status dot, centred in the card
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 32px;
+                                height: 32px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
                                         width: 32px;
                                         height: 32px;
-                                        image-fit: cover;
-                                    }
+                                        border-radius: 16px;
+                                        clip: true;
+                                        background: AppTheme.accent;
 
-                                    if !root.user_avatar_has_image: Text {
-                                        text: root.user_avatar_initials != "" ? root.user_avatar_initials : "U";
-                                        color: AppTheme.text-on-accent;
-                                        font-size: 13px;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                        if root.user_avatar_has_image: Image {
+                                            source: root.user_avatar_img;
+                                            width: 32px;
+                                            height: 32px;
+                                            image-fit: cover;
+                                        }
+
+                                        if !root.user_avatar_has_image: Text {
+                                            text: root.user_avatar_initials != "" ? root.user_avatar_initials : "U";
+                                            color: AppTheme.text-on-accent;
+                                            font-size: 13px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
-                            }
 
-                            // Status Dot (Online: #23A55A)
-                            Rectangle {
-                                x: 22px;
-                                y: 22px;
-                                width: 10px;
-                                height: 10px;
-                                border-radius: 5px;
-                                background: #23A55A;
-                                border-width: 2px;
-                                border-color: AppTheme.surface-elevated;
+                                // Status Dot (Online: #23A55A)
+                                Rectangle {
+                                    x: 22px;
+                                    y: 22px;
+                                    width: 10px;
+                                    height: 10px;
+                                    border-radius: 5px;
+                                    background: #23A55A;
+                                    border-width: 2px;
+                                    border-color: AppTheme.surface-elevated;
+                                }
                             }
                         }
 
@@ -555,26 +558,29 @@ export component ChannelSidebar inherits Rectangle {
                     }
                 }
 
-                // Right: Controls
-                HorizontalLayout {
-                    spacing: 2px;
+                // Right: Controls, centred in the card
+                VerticalLayout {
                     alignment: center;
+                    HorizontalLayout {
+                        spacing: 2px;
+                        alignment: center;
 
-                    IconButton {
-                        icon: root.is_muted ? @image-url("../../assets/microphone-mute.svg") : @image-url("../../assets/microphone.svg");
-                        icon-color: root.is_muted ? AppTheme.danger : AppTheme.text-primary;
-                        clicked => { root.toggle_mute(); }
-                    }
+                        IconButton {
+                            icon: root.is_muted ? @image-url("../../assets/microphone-mute.svg") : @image-url("../../assets/microphone.svg");
+                            icon-color: root.is_muted ? AppTheme.danger : AppTheme.text-primary;
+                            clicked => { root.toggle_mute(); }
+                        }
 
-                    IconButton {
-                        icon: root.is_deafened ? @image-url("../../assets/headphones-mute.svg") : @image-url("../../assets/headphones.svg");
-                        icon-color: root.is_deafened ? AppTheme.danger : AppTheme.text-primary;
-                        clicked => { root.toggle_deafen(); }
-                    }
+                        IconButton {
+                            icon: root.is_deafened ? @image-url("../../assets/headphones-mute.svg") : @image-url("../../assets/headphones.svg");
+                            icon-color: root.is_deafened ? AppTheme.danger : AppTheme.text-primary;
+                            clicked => { root.toggle_deafen(); }
+                        }
 
-                    IconButton {
-                        icon: @image-url("../../assets/settings.svg");
-                        clicked => { root.open_settings(); }
+                        IconButton {
+                            icon: @image-url("../../assets/settings.svg");
+                            clicked => { root.open_settings(); }
+                        }
                     }
                 }
             }
