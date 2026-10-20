@@ -1186,11 +1186,15 @@ export component AppWindow inherits Window {
                                         alignment: center;
                                         spacing: 0px;
 
-                                        // Left indicator pill (Discord style)
-                                        VerticalLayout {
-                                            alignment: center;
+                                        // Left indicator pill (Discord style). Placed by hand in a box of
+                                        // fixed size: inside a layout, its animated height made every frame
+                                        // of a hover redo the layout of the whole server column.
+                                        Rectangle {
                                             width: 8px;
+                                            height: 48px;
                                             Rectangle {
+                                                x: 0;
+                                                y: (parent.height - self.height) / 2;
                                                 width: 4px;
                                                 height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
                                                 background: AppTheme.text-strong;
