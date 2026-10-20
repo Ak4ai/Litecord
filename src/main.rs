@@ -177,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
     avatar_cache::get_avatar_cache().set_app(app_weak.clone());
+    crate::ui::helpers::set_channel_emoji_app(app_weak.clone());
 
     let popout_window = PopoutStreamWindow::new()?;
     let popout_weak = popout_window.as_weak();
