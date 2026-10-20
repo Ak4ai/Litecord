@@ -1,8 +1,11 @@
-# Rust & Cargo build artifacts
+# ── Rust build output ─────────────────────────────────────────────────────────
 /target
 *.pdb
-*.old.exe
 *.rs.bk
+*.old.exe
+
+# Binaries and libraries (the FFmpeg runtime shipped with the Windows build is kept)
+*.exe
 *.dll
 !avcodec-61.dll
 !avutil-59.dll
@@ -11,21 +14,35 @@
 !w32-pthreads.dll
 !zlib.dll
 
-# Litecord user sessions, caches & configs
+# ── Litecord local data (sessions, caches, settings) ─────────────────────────
 .litecord_*
 .litecord_*/**
-.litecord_token
-.litecord_cache/
-.litecord_user_settings.json
-.litecord_audio_config.json
 .tui_status.txt
 
-# Backups and temporary files
-backup_*
-backup_*/
+# ── Logs, measurements and media dumps from local runs ───────────────────────
+*.log
+*.csv
+*.txt
+*.wav
+*.bin
+*.yuv
+*.h264
+*.dmp
+*.core
 build_*.txt
+# License texts (bundled fonts, vendored crates) must stay in the repository.
+!assets/**/*.txt
+!vendor/**/LICENSES/*.txt
+
+# Scratch files and one-off test scripts at the repository root
 scratch/
 scratch_*
+/test_*.py
+__pycache__/
+*.pyc
+
+# ── Backups and editor temporaries ───────────────────────────────────────────
+backup_*
 *.bak
 *.old
 *.orig
@@ -34,45 +51,25 @@ scratch_*
 *.swp
 *~
 
-# Logs, media test outputs and dumps
-*.log
-*.wav
-*.bin
-*.txt
-*.dmp
-*.core
-*.yuv
-*.h264
-test_*.py
-__pycache__/
-*.pyc
-!scripts/
-!scripts/**
-
-# Binaries & Executables
-*.exe
-
-
-# Archives & Packages
+# ── Archives and release packaging ───────────────────────────────────────────
 *.tar.gz
-*.zip
 *.tar
+*.zip
 *.patch
 *.diff
 *.bundle
 release-pkg/
 
-# IDE & OS files
+# ── IDE and OS files ─────────────────────────────────────────────────────────
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Secrets & Environment variables
+# ── Secrets ──────────────────────────────────────────────────────────────────
 *.pem
 *.key
 *.env
 *.env.*
 *.bat
-
