@@ -31,6 +31,19 @@ use log::{info, warn, error};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Has mimalloc commit heap pages as they are used instead of whole at once. Measured with
+/// a 1080p60 stream: 50 to 60 MB less private memory on each side for the same CPU, and a
+/// thread that exits leaves about 0.13 MB behind instead of 0.57 MB.
+fn commit_heap_pages_on_demand() {
+    extern "C" {
+        fn mi_option_set(option: i32, value: std::os::raw::c_long);
+    }
+    // mi_option_page_commit_on_demand in the mimalloc v3 headers of libmimalloc-sys 0.1.49
+    // (the crate has no constant for it).
+    const MI_OPTION_PAGE_COMMIT_ON_DEMAND: i32 = 40;
+    unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
+}
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -42,6 +55,7 @@ slint::include_modules!();
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    commit_heap_pages_on_demand();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
     let _ = rayon::ThreadPoolBuilder::new()

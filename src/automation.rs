@@ -34,6 +34,8 @@
 //! {"cmd":"resize","width":1920,"height":1080} set the window size in logical pixels
 //! {"cmd":"web_share_start"}                  start sharing to browsers; replies with the link
 //! {"cmd":"web_share_stop"}
+//! {"cmd":"spawn_threads","n":100,"alloc":true} start and join n threads (that allocate):
+//!                                            what a thread that exits costs in memory
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -63,11 +65,23 @@ pub fn start(ui: &AppWindow) {
     };
     warn!("🤖 [AUTOMATION] Controle remoto de TESTE ativo em 127.0.0.1:{} (build com --features automation)", port);
 
-    let weak = ui.as_weak();
+    // A few long-lived threads serve the connections: a thread per connection would
+    // leave some heap behind on every command and skew the memory the tests measure.
+    let (tx, rx) = mpsc::channel::<TcpStream>();
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    for _ in 0..4 {
+        let (rx, weak) = (rx.clone(), ui.as_weak());
+        let _ = std::thread::Builder::new().name("automation-conn".into()).spawn(move || loop {
+            let next = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+            match next {
+                Ok(stream) => serve(stream, weak.clone()),
+                Err(_) => return,
+            }
+        });
+    }
     let _ = std::thread::Builder::new().name("automation".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
-            let weak = weak.clone();
-            let _ = std::thread::Builder::new().name("automation-conn".into()).spawn(move || serve(stream, weak));
+            let _ = tx.send(stream);
         }
     });
 }
@@ -231,6 +245,20 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
             }
             ui.invoke_select_video_encoder(id.into());
             Ok(json!({"ok":true,"selected":ui.get_selected_video_encoder().to_string()}))
+        }
+        "spawn_threads" => {
+            let n = cmd["n"].as_u64().unwrap_or(10);
+            let alloc = cmd["alloc"].as_bool().unwrap_or(false);
+            for _ in 0..n {
+                let _ = std::thread::spawn(move || {
+                    if alloc {
+                        let v: Vec<String> = (0..2000).map(|i| format!("line {i}")).collect();
+                        std::hint::black_box(&v);
+                    }
+                })
+                .join();
+            }
+            Ok(json!({ "ok": true }))
         }
         "minimize_to_tray" => {
             ui.invoke_minimize_to_tray();
