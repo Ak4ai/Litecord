@@ -236,288 +236,345 @@ pub async fn fetch_and_populate_channels(
         }
     });
 
-    match http.get_guild_channels(guild_id).await {
-        Ok(chans_json) => {
-            info!("{} canais encontrados no servidor!", chans_json.len());
-            let permissions = match http.get_channel_permissions(guild_id).await {
-                Ok(permissions) => permissions,
-                Err(err) => {
-                    error!("Não foi possível verificar permissões do servidor: {}", err);
-                    *active_channel_id.lock().unwrap() = String::new();
-                    if let Some(guild) = guilds_map.lock().unwrap().get_mut(guild_id) {
-                        guild.channels.clear();
-                    }
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_weak.upgrade() {
-                            ui.set_channels(slint::ModelRc::default());
-                            ui.set_messages(slint::ModelRc::default());
-                            ui.set_active_channel_id("".into());
-                            ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().perms_unavailable.into());
-                            ui.set_titlebar_error(crate::utils::i18n_ui::ui_text().perms_failed.into());
-                        }
-                    });
-                    return;
-                }
-            };
-            let app_w_permissions = app_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = app_w_permissions.upgrade() {
-                    ui.set_titlebar_error("".into());
-                }
-            });
+    // A server visited before shows its channels and opens its chat at once; the REST
+    // answers below only correct the list.
+    let cached: Vec<ChannelData> = guilds_map.lock().unwrap().get(guild_id).map(|g| g.channels.clone()).unwrap_or_default();
+    if !cached.is_empty() {
+        show_guild_channels(&app_weak, &active_guild_id, guild_id, &cached);
+    }
 
-            pub struct RawChan {
-                id: String,
-                name: String,
-                ch_type: u64,
-                parent_id: Option<String>,
-                position: i64,
+    // Channels and permissions are fetched together, while the chat of the cached list loads.
+    let (opened, (chans_res, perms_res)) = tokio::join!(
+        async {
+            if cached.is_empty() {
+                None
+            } else {
+                open_first_readable_channel(http, &app_weak, &active_guild_id, &active_channel_id, guild_id, &cached).await
             }
+        },
+        async { tokio::join!(http.get_guild_channels(guild_id), http.get_channel_permissions(guild_id)) }
+    );
 
-            let mut raw_cats: Vec<RawChan> = Vec::new();
-            let mut raw_chans: Vec<RawChan> = Vec::new();
-
-            for ch in chans_json {
-                let ch_id = ch["id"].as_str().unwrap_or("").to_string();
-                let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
-                let ch_type = ch["type"].as_u64().unwrap_or(0);
-                let parent_id = ch["parent_id"].as_str().map(|s| s.to_string());
-                let position = ch["position"].as_i64().unwrap_or(0);
-
-                if ch_id.is_empty() { continue; }
-
-                if ch_type == 4 {
-                    raw_cats.push(RawChan {
-                        id: ch_id,
-                        name: ch_name.to_uppercase(),
-                        ch_type,
-                        parent_id: None,
-                        position,
-                    });
-                } else if ch_type == 0 || ch_type == 2 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
-                    match permissions.can_view(&ch) {
-                        Ok(true) => {}
-                        Ok(false) => continue,
-                        Err(err) => {
-                            error!("Canal {} omitido: {}", ch_id, err);
-                            continue;
-                        }
-                    }
-                    raw_chans.push(RawChan {
-                        id: ch_id,
-                        name: ch_name,
-                        ch_type,
-                        parent_id,
-                        position,
-                    });
-                }
-            }
-
-            raw_cats.sort_by_key(|c| c.position);
-
-            let cat_ids: std::collections::HashSet<String> = raw_cats.iter().map(|c| c.id.clone()).collect();
-            let mut cat_map: HashMap<String, Vec<RawChan>> = HashMap::new();
-            let mut uncategorized: Vec<RawChan> = Vec::new();
-
-            for ch in raw_chans {
-                if let Some(ref pid) = ch.parent_id {
-                    if cat_ids.contains(pid) {
-                        cat_map.entry(pid.clone()).or_default().push(ch);
-                        continue;
-                    }
-                }
-                uncategorized.push(ch);
-            }
-
-            let custom_chan_order: Option<Vec<String>> = std::fs::read_to_string(format!(".litecord_channel_order_{}.json", guild_id))
-                .ok()
-                .and_then(|d| serde_json::from_str(&d).ok());
-
-            let sort_channel_list = |list: &mut Vec<RawChan>| {
-                if let Some(ref order) = custom_chan_order {
-                    list.sort_by_key(|c| order.iter().position(|id| id == &c.id).unwrap_or(usize::MAX));
-                } else {
-                    list.sort_by(|a, b| {
-                        let a_is_voice = a.ch_type == 2 || a.ch_type == 13;
-                        let b_is_voice = b.ch_type == 2 || b.ch_type == 13;
-                        if a_is_voice == b_is_voice {
-                            a.position.cmp(&b.position)
-                        } else if !a_is_voice {
-                            std::cmp::Ordering::Less
-                        } else {
-                            std::cmp::Ordering::Greater
-                        }
-                    });
-                }
-            };
-
-            sort_channel_list(&mut uncategorized);
-            for children in cat_map.values_mut() {
-                sort_channel_list(children);
-            }
-
-            let mut channels_data: Vec<ChannelData> = Vec::new();
-
-            for ch in uncategorized {
-                let is_voice = ch.ch_type == 2 || ch.ch_type == 13;
-                channels_data.push(ChannelData {
-                    id: ch.id,
-                    name: ch.name,
-                    is_voice,
-                    is_category: false,
-                    parent_id: None,
-                    position: ch.position,
-                });
-            }
-
-            for cat in raw_cats {
-                let cat_id = cat.id.clone();
-                let children = cat_map.remove(&cat_id).unwrap_or_default();
-                if children.is_empty() { continue; }
-
-                channels_data.push(ChannelData {
-                    id: cat.id,
-                    name: cat.name,
-                    is_voice: false,
-                    is_category: true,
-                    parent_id: None,
-                    position: cat.position,
-                });
-
-                for ch in children {
-                    let is_voice = ch.ch_type == 2 || ch.ch_type == 13;
-                    channels_data.push(ChannelData {
-                        id: ch.id,
-                        name: ch.name,
-                        is_voice,
-                        is_category: false,
-                        parent_id: Some(cat_id.clone()),
-                        position: ch.position,
-                    });
-                }
-            }
-
-            // Subscribe via Gateway Opcode 14 for all voice channels in this guild to get live voice_states
-            let voice_cids: Vec<String> = channels_data.iter().filter(|c| c.is_voice).map(|c| c.id.clone()).collect();
-            if let Some(tx) = cmd_tx_store.lock().unwrap().as_ref() {
-                let _ = tx.try_send(GatewayCommand::SubscribeGuild {
-                    guild_id: guild_id.to_string(),
-                    channel_ids: voice_cids,
-                });
-            }
-
-            // Update channels in guilds_map
-            if let Some(g_data) = guilds_map.lock().unwrap().get_mut(guild_id) {
-                g_data.channels = channels_data.clone();
-            }
-
-            let ui_channels = {
-                let cats_guard = get_collapsed_categories().lock().unwrap().clone();
-                build_ui_channels(&channels_data, &cats_guard)
-            };
-
-            let app_w = app_weak.clone();
-            let ui_channels_clone = ui_channels.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = app_w.upgrade() {
-                    let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_clone));
-                    ui.set_channels(model.into());
-                }
-            });
-
-            // Fetch and cache all guild members via REST API asynchronously
-            if let Ok(members) = http.get_guild_members(guild_id).await {
-                for m in members {
-                    let uid_str = m["user"]["id"].as_str().unwrap_or("");
-                    if let Ok(uid) = uid_str.parse::<u64>() {
-                        let mut display_name = String::new();
-                        if let Some(nick) = m["nick"].as_str() {
-                            if !nick.is_empty() { display_name = nick.to_string(); }
-                        }
-                        if display_name.is_empty() {
-                            if let Some(gname) = m["user"]["global_name"].as_str() {
-                                if !gname.is_empty() { display_name = gname.to_string(); }
-                            }
-                        }
-                        if display_name.is_empty() {
-                            if let Some(uname) = m["user"]["username"].as_str() {
-                                if !uname.is_empty() { display_name = uname.to_string(); }
-                            }
-                        }
-                        if !display_name.is_empty() {
-                            gateway::register_user_name(uid, display_name);
-                        }
-                    }
-                }
-                info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
-            }
-
-            // Pre-load application commands for this guild (bots like music bots, 24/7, moderation)
-            load_guild_command_index(http, app_weak.clone(), guild_id).await;
-
-            // Try to find the first readable text channel automatically
-            let text_channels: Vec<&ChannelData> = channels_data.iter().filter(|c| !c.is_voice && !c.is_category).collect();
-            let mut loaded_readable = false;
-
-            for text_ch in text_channels {
-                let ch_id = text_ch.id.clone();
-                let ch_name = text_ch.name.clone();
-
-                *active_channel_id.lock().unwrap() = ch_id.clone();
-                if load_messages_for_channel(http, app_weak.clone(), &ch_id).await {
-                    let app_w2 = app_weak.clone();
-                    let ch_id_val = ch_id.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_w2.upgrade() {
-                            let clean_name = ch_name.trim_start_matches('#').trim();
-                            ui.set_active_channel_name(clean_name.into());
-                            ui.set_active_channel_id(ch_id_val.into());
-                        }
-                    });
-                    request_chat_scroll_to_bottom(app_weak.clone());
-                    loaded_readable = true;
-                    break;
-                }
-            }
-
-            if !loaded_readable {
-                *active_channel_id.lock().unwrap() = String::new();
-                let app_w_none = app_weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = app_w_none.upgrade() {
-                        ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().no_text_channel.into());
-                        ui.set_active_channel_id("".into());
-                        let empty_msgs = vec![ChatMessage {
-                            id: "".into(),
-                            author: "Litecord System".into(),
-                            content: "Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
-                            commands: slint::ModelRc::default(),
-                            content_lines: slint::ModelRc::default(),
-                            embed_content: "".into(),
-                            embed_lines: slint::ModelRc::default(),
-                            embed_color: slint::Color::from_rgb_u8(88, 101, 242),
-                            embed_footer: "".into(),
-                            code_block: "".into(),
-                            reply_author: "".into(),
-                            reply_content: "".into(),
-                            reply_command: "".into(),
-                            links: slint::ModelRc::default(),
-                            buttons: slint::ModelRc::default(),
-                            attachments: slint::ModelRc::default(),
-                            timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
-                            show_header: true,
-                            ..Default::default()
-                        }];
-                        let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
-                        ui.set_messages(model.into());
-                        ui.set_has_more_older_messages(false);
-                    }
-                });
-            }
+    let chans_json = match chans_res {
+        Ok(chans) => {
+            info!("{} canais encontrados no servidor!", chans.len());
+            chans
         }
         Err(e) => {
             error!("Erro ao buscar canais do servidor via REST: {}", e);
+            return;
         }
+    };
+    let permissions = match perms_res {
+        Ok(permissions) => permissions,
+        Err(err) => {
+            if !cached.is_empty() {
+                // The cached list stays on screen.
+                error!("Não foi possível verificar permissões do servidor: {}", err);
+                return;
+            }
+            error!("Não foi possível verificar permissões do servidor: {}", err);
+            *active_channel_id.lock().unwrap() = String::new();
+            if let Some(guild) = guilds_map.lock().unwrap().get_mut(guild_id) {
+                guild.channels.clear();
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_channels(slint::ModelRc::default());
+                    ui.set_messages(slint::ModelRc::default());
+                    ui.set_active_channel_id("".into());
+                    ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().perms_unavailable.into());
+                    ui.set_titlebar_error(crate::utils::i18n_ui::ui_text().perms_failed.into());
+                }
+            });
+            return;
+        }
+    };
+    let app_w_permissions = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_w_permissions.upgrade() {
+            ui.set_titlebar_error("".into());
+        }
+    });
+
+    pub struct RawChan {
+        id: String,
+        name: String,
+        ch_type: u64,
+        parent_id: Option<String>,
+        position: i64,
+    }
+
+    let mut raw_cats: Vec<RawChan> = Vec::new();
+    let mut raw_chans: Vec<RawChan> = Vec::new();
+
+    for ch in chans_json {
+        let ch_id = ch["id"].as_str().unwrap_or("").to_string();
+        let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
+        let ch_type = ch["type"].as_u64().unwrap_or(0);
+        let parent_id = ch["parent_id"].as_str().map(|s| s.to_string());
+        let position = ch["position"].as_i64().unwrap_or(0);
+
+        if ch_id.is_empty() { continue; }
+
+        if ch_type == 4 {
+            raw_cats.push(RawChan {
+                id: ch_id,
+                name: ch_name.to_uppercase(),
+                ch_type,
+                parent_id: None,
+                position,
+            });
+        } else if ch_type == 0 || ch_type == 2 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
+            match permissions.can_view(&ch) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => {
+                    error!("Canal {} omitido: {}", ch_id, err);
+                    continue;
+                }
+            }
+            raw_chans.push(RawChan {
+                id: ch_id,
+                name: ch_name,
+                ch_type,
+                parent_id,
+                position,
+            });
+        }
+    }
+
+    raw_cats.sort_by_key(|c| c.position);
+
+    let cat_ids: std::collections::HashSet<String> = raw_cats.iter().map(|c| c.id.clone()).collect();
+    let mut cat_map: HashMap<String, Vec<RawChan>> = HashMap::new();
+    let mut uncategorized: Vec<RawChan> = Vec::new();
+
+    for ch in raw_chans {
+        if let Some(ref pid) = ch.parent_id {
+            if cat_ids.contains(pid) {
+                cat_map.entry(pid.clone()).or_default().push(ch);
+                continue;
+            }
+        }
+        uncategorized.push(ch);
+    }
+
+    let custom_chan_order: Option<Vec<String>> = std::fs::read_to_string(format!(".litecord_channel_order_{}.json", guild_id))
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok());
+
+    let sort_channel_list = |list: &mut Vec<RawChan>| {
+        if let Some(ref order) = custom_chan_order {
+            list.sort_by_key(|c| order.iter().position(|id| id == &c.id).unwrap_or(usize::MAX));
+        } else {
+            list.sort_by(|a, b| {
+                let a_is_voice = a.ch_type == 2 || a.ch_type == 13;
+                let b_is_voice = b.ch_type == 2 || b.ch_type == 13;
+                if a_is_voice == b_is_voice {
+                    a.position.cmp(&b.position)
+                } else if !a_is_voice {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                }
+            });
+        }
+    };
+
+    sort_channel_list(&mut uncategorized);
+    for children in cat_map.values_mut() {
+        sort_channel_list(children);
+    }
+
+    let mut channels_data: Vec<ChannelData> = Vec::new();
+
+    for ch in uncategorized {
+        let is_voice = ch.ch_type == 2 || ch.ch_type == 13;
+        channels_data.push(ChannelData {
+            id: ch.id,
+            name: ch.name,
+            is_voice,
+            is_category: false,
+            parent_id: None,
+            position: ch.position,
+        });
+    }
+
+    for cat in raw_cats {
+        let cat_id = cat.id.clone();
+        let children = cat_map.remove(&cat_id).unwrap_or_default();
+        if children.is_empty() { continue; }
+
+        channels_data.push(ChannelData {
+            id: cat.id,
+            name: cat.name,
+            is_voice: false,
+            is_category: true,
+            parent_id: None,
+            position: cat.position,
+        });
+
+        for ch in children {
+            let is_voice = ch.ch_type == 2 || ch.ch_type == 13;
+            channels_data.push(ChannelData {
+                id: ch.id,
+                name: ch.name,
+                is_voice,
+                is_category: false,
+                parent_id: Some(cat_id.clone()),
+                position: ch.position,
+            });
+        }
+    }
+
+    // Subscribe via Gateway Opcode 14 for all voice channels in this guild to get live voice_states
+    let voice_cids: Vec<String> = channels_data.iter().filter(|c| c.is_voice).map(|c| c.id.clone()).collect();
+    if let Some(tx) = cmd_tx_store.lock().unwrap().as_ref() {
+        let _ = tx.try_send(GatewayCommand::SubscribeGuild {
+            guild_id: guild_id.to_string(),
+            channel_ids: voice_cids,
+        });
+    }
+
+    // Update channels in guilds_map
+    if let Some(g_data) = guilds_map.lock().unwrap().get_mut(guild_id) {
+        g_data.channels = channels_data.clone();
+    }
+
+    show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
+
+    // Members and bot commands are not needed to read the chat: they load in the background.
+    {
+        let (http, app_w, guild_id) = (http.clone(), app_weak.clone(), guild_id.to_string());
+        tokio::spawn(async move {
+            preload_guild_members(&http, &guild_id).await;
+            load_guild_command_index(&http, app_w, &guild_id).await;
+        });
+    }
+
+    // The chat opened from the cached list stays, unless that channel is no longer listed.
+    if opened.as_ref().is_some_and(|id| channels_data.iter().any(|c| &c.id == id)) {
+        return;
+    }
+    let opened_now = open_first_readable_channel(http, &app_weak, &active_guild_id, &active_channel_id, guild_id, &channels_data).await.is_some();
+    if !opened_now && *active_guild_id.lock().unwrap() == guild_id {
+        *active_channel_id.lock().unwrap() = String::new();
+        let app_w_none = app_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = app_w_none.upgrade() {
+                ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().no_text_channel.into());
+                ui.set_active_channel_id("".into());
+                let empty_msgs = vec![ChatMessage {
+                    id: "".into(),
+                    author: "Litecord System".into(),
+                    content: "Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                    commands: slint::ModelRc::default(),
+                    content_lines: slint::ModelRc::default(),
+                    embed_content: "".into(),
+                    embed_lines: slint::ModelRc::default(),
+                    embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                    embed_footer: "".into(),
+                    code_block: "".into(),
+                    reply_author: "".into(),
+                    reply_content: "".into(),
+                    reply_command: "".into(),
+                    links: slint::ModelRc::default(),
+                    buttons: slint::ModelRc::default(),
+                    attachments: slint::ModelRc::default(),
+                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                    show_header: true,
+                    ..Default::default()
+                }];
+                let model = std::rc::Rc::new(slint::VecModel::from(empty_msgs));
+                ui.set_messages(model.into());
+                ui.set_has_more_older_messages(false);
+            }
+        });
+    }
+}
+
+/// Puts `channels` in the sidebar, unless the user has moved to another server meanwhile.
+fn show_guild_channels(app_weak: &slint::Weak<AppWindow>, active_guild_id: &Arc<Mutex<String>>, guild_id: &str, channels: &[ChannelData]) {
+    let ui_channels = {
+        let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+        build_ui_channels(channels, &cats_guard)
+    };
+    let (app_w, active, gid) = (app_weak.clone(), Arc::clone(active_guild_id), guild_id.to_string());
+    let _ = slint::invoke_from_event_loop(move || {
+        if *active.lock().unwrap() != gid {
+            return;
+        }
+        if let Some(ui) = app_w.upgrade() {
+            ui.set_channels(std::rc::Rc::new(slint::VecModel::from(ui_channels)).into());
+        }
+    });
+}
+
+/// Opens the first text channel of `channels` the account can read. Stops when the user
+/// moves to another server or opens a channel meanwhile. Returns the channel now open.
+async fn open_first_readable_channel(
+    http: &DiscordHttpClient,
+    app_weak: &slint::Weak<AppWindow>,
+    active_guild_id: &Arc<Mutex<String>>,
+    active_channel_id: &Arc<Mutex<String>>,
+    guild_id: &str,
+    channels: &[ChannelData],
+) -> Option<String> {
+    for text_ch in channels.iter().filter(|c| !c.is_voice && !c.is_category) {
+        if *active_guild_id.lock().unwrap() != guild_id {
+            return None;
+        }
+        let ch_id = text_ch.id.clone();
+        *active_channel_id.lock().unwrap() = ch_id.clone();
+        let readable = load_messages_for_channel(http, app_weak.clone(), &ch_id).await;
+        let current = active_channel_id.lock().unwrap().clone();
+        if current != ch_id {
+            // The user opened another channel while this one loaded.
+            return (!current.is_empty()).then_some(current);
+        }
+        if readable {
+            let (app_w, name) = (app_weak.clone(), text_ch.name.clone());
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    ui.set_active_channel_name(name.trim_start_matches('#').trim().into());
+                    ui.set_active_channel_id(ch_id.into());
+                }
+            });
+            request_chat_scroll_to_bottom(app_weak.clone());
+            return Some(current);
+        }
+    }
+    *active_channel_id.lock().unwrap() = String::new();
+    None
+}
+
+/// Names of the server's members and bots, for mentions and voice rows.
+async fn preload_guild_members(http: &DiscordHttpClient, guild_id: &str) {
+    if let Ok(members) = http.get_guild_members(guild_id).await {
+        for m in members {
+            let uid_str = m["user"]["id"].as_str().unwrap_or("");
+            if let Ok(uid) = uid_str.parse::<u64>() {
+                let mut display_name = String::new();
+                if let Some(nick) = m["nick"].as_str() {
+                    if !nick.is_empty() { display_name = nick.to_string(); }
+                }
+                if display_name.is_empty() {
+                    if let Some(gname) = m["user"]["global_name"].as_str() {
+                        if !gname.is_empty() { display_name = gname.to_string(); }
+                    }
+                }
+                if display_name.is_empty() {
+                    if let Some(uname) = m["user"]["username"].as_str() {
+                        if !uname.is_empty() { display_name = uname.to_string(); }
+                    }
+                }
+                if !display_name.is_empty() {
+                    gateway::register_user_name(uid, display_name);
+                }
+            }
+        }
+        info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
     }
 }
 
