@@ -4389,14 +4389,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 🧹 Auto-Compactação Periódica de Memória RAM (3s após boot + a cada 60s)
+    // 🧹 Auto-Compactação Periódica de Memória RAM (progressiva pós-boot + a cada 30s)
     tokio::spawn(async {
-        // Aguarda 3 segundos para que a interface inicial, servidores e canais terminem de carregar
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        // Compactações progressivas para eliminar o pico de memória inicial do carregamento de fontes e assets
+        tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
         trim_process_memory();
-        log::info!("🧹 [MEMÓRIA] Faxina de inicialização concluída — Working Set compactado para ~90MB!");
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+        trim_process_memory();
+        tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+        trim_process_memory();
+        log::info!("🧹 [MEMÓRIA] Faxina de inicialização concluída — Working Set compactado!");
 
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
             trim_process_memory();

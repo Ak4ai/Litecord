@@ -198,35 +198,92 @@ pub async fn fetch_and_populate_channels(
         }
     });
 
-    match http.get_guild_channels(guild_id).await {
-        Ok(chans_json) => {
-            info!("{} canais encontrados no servidor!", chans_json.len());
-            let permissions = match http.get_channel_permissions(guild_id).await {
-                Ok(permissions) => permissions,
-                Err(err) => {
-                    error!("Não foi possível verificar permissões do servidor: {}", err);
-                    *active_channel_id.lock().unwrap() = String::new();
-                    if let Some(guild) = guilds_map.lock().unwrap().get_mut(guild_id) {
-                        guild.channels.clear();
-                    }
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_weak.upgrade() {
-                            ui.set_channels(slint::ModelRc::default());
-                            ui.set_messages(slint::ModelRc::default());
-                            ui.set_active_channel_id("".into());
-                            ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().perms_unavailable.into());
-                            ui.set_titlebar_error(crate::utils::i18n_ui::ui_text().perms_failed.into());
-                        }
-                    });
-                    return;
-                }
-            };
-            let app_w_permissions = app_weak.clone();
+    // ⚡ 1. Instant In-Memory Cache Check (<5ms switch)
+    let cached_channels = {
+        guilds_map.lock().unwrap().get(guild_id).map(|g| g.channels.clone())
+    };
+    if let Some(ref channels) = cached_channels {
+        if !channels.is_empty() {
+            let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+            let ui_channels = build_ui_channels(channels, &cats_guard);
+            let app_w_fast = app_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = app_w_permissions.upgrade() {
-                    ui.set_titlebar_error("".into());
+                if let Some(ui) = app_w_fast.upgrade() {
+                    let model = std::rc::Rc::new(slint::VecModel::from(ui_channels));
+                    ui.set_channels(model.into());
                 }
             });
+
+            // Fast-load messages of first readable text channel
+            if let Some(first_text_ch) = channels.iter().find(|c| !c.is_voice && !c.is_category) {
+                let ch_id = first_text_ch.id.clone();
+                let ch_name = first_text_ch.name.clone();
+                *active_channel_id.lock().unwrap() = ch_id.clone();
+                let http_clone = http.clone();
+                let app_w_msg = app_weak.clone();
+                tokio::spawn(async move {
+                    if load_messages_for_channel(&http_clone, app_w_msg.clone(), &ch_id).await {
+                        let app_w_ui = app_w_msg.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w_ui.upgrade() {
+                                let clean_name = ch_name.trim_start_matches('#').trim();
+                                ui.set_active_channel_name(clean_name.into());
+                                ui.set_active_channel_id(ch_id.into());
+                            }
+                        });
+                        request_chat_scroll_to_bottom(app_w_msg);
+                    }
+                });
+            }
+        }
+    }
+
+    // ⚡ 2. Parallel REST fetch: Get channels and permissions simultaneously
+    let (chans_res, perms_res) = tokio::join!(
+        http.get_guild_channels(guild_id),
+        http.get_channel_permissions(guild_id)
+    );
+
+    let permissions = match perms_res {
+        Ok(permissions) => permissions,
+        Err(err) => {
+            if cached_channels.as_ref().map_or(true, |c| c.is_empty()) {
+                error!("Não foi possível verificar permissões do servidor: {}", err);
+                *active_channel_id.lock().unwrap() = String::new();
+                if let Some(guild) = guilds_map.lock().unwrap().get_mut(guild_id) {
+                    guild.channels.clear();
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_weak.upgrade() {
+                        ui.set_channels(slint::ModelRc::default());
+                        ui.set_messages(slint::ModelRc::default());
+                        ui.set_active_channel_id("".into());
+                        ui.set_active_channel_name(crate::utils::i18n_ui::ui_text().perms_unavailable.into());
+                        ui.set_titlebar_error(crate::utils::i18n_ui::ui_text().perms_failed.into());
+                    }
+                });
+            }
+            return;
+        }
+    };
+
+    let chans_json = match chans_res {
+        Ok(chans) => {
+            info!("{} canais encontrados no servidor!", chans.len());
+            chans
+        }
+        Err(err) => {
+            error!("Erro ao buscar canais do servidor: {}", err);
+            return;
+        }
+    };
+
+    let app_w_permissions = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_w_permissions.upgrade() {
+            ui.set_titlebar_error("".into());
+        }
+    });
 
             pub struct RawChan {
                 id: String,
@@ -379,35 +436,40 @@ pub async fn fetch_and_populate_channels(
                 }
             });
 
-            // Fetch and cache all guild members via REST API asynchronously
-            if let Ok(members) = http.get_guild_members(guild_id).await {
-                for m in members {
-                    let uid_str = m["user"]["id"].as_str().unwrap_or("");
-                    if let Ok(uid) = uid_str.parse::<u64>() {
-                        let mut display_name = String::new();
-                        if let Some(nick) = m["nick"].as_str() {
-                            if !nick.is_empty() { display_name = nick.to_string(); }
-                        }
-                        if display_name.is_empty() {
-                            if let Some(gname) = m["user"]["global_name"].as_str() {
-                                if !gname.is_empty() { display_name = gname.to_string(); }
+            // ⚡ 3. Pre-load members and bot commands asynchronously in background
+            let http_bg = http.clone();
+            let gid_bg = guild_id.to_string();
+            let app_w_bg = app_weak.clone();
+            tokio::spawn(async move {
+                if let Ok(members) = http_bg.get_guild_members(&gid_bg).await {
+                    for m in members {
+                        let uid_str = m["user"]["id"].as_str().unwrap_or("");
+                        if let Ok(uid) = uid_str.parse::<u64>() {
+                            let mut display_name = String::new();
+                            if let Some(nick) = m["nick"].as_str() {
+                                if !nick.is_empty() { display_name = nick.to_string(); }
                             }
-                        }
-                        if display_name.is_empty() {
-                            if let Some(uname) = m["user"]["username"].as_str() {
-                                if !uname.is_empty() { display_name = uname.to_string(); }
+                            if display_name.is_empty() {
+                                if let Some(gname) = m["user"]["global_name"].as_str() {
+                                    if !gname.is_empty() { display_name = gname.to_string(); }
+                                }
                             }
-                        }
-                        if !display_name.is_empty() {
-                            gateway::register_user_name(uid, display_name);
+                            if display_name.is_empty() {
+                                if let Some(uname) = m["user"]["username"].as_str() {
+                                    if !uname.is_empty() { display_name = uname.to_string(); }
+                                }
+                            }
+                            if !display_name.is_empty() {
+                                gateway::register_user_name(uid, display_name);
+                            }
                         }
                     }
+                    info!("✅ Membros e Bots do servidor {} pré-carregados em segundo plano!", gid_bg);
                 }
-                info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
-            }
 
-            // Pre-load application commands for this guild (bots like music bots, 24/7, moderation)
-            load_guild_command_index(http, app_weak.clone(), guild_id).await;
+                // Pre-load application commands for this guild
+                load_guild_command_index(&http_bg, app_w_bg, &gid_bg).await;
+            });
 
             // Try to find the first readable text channel automatically
             let text_channels: Vec<&ChannelData> = channels_data.iter().filter(|c| !c.is_voice && !c.is_category).collect();
@@ -468,11 +530,6 @@ pub async fn fetch_and_populate_channels(
                     }
                 });
             }
-        }
-        Err(e) => {
-            error!("Erro ao buscar canais do servidor via REST: {}", e);
-        }
-    }
 }
 
 pub async fn fetch_and_populate_dms(
