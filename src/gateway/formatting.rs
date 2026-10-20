@@ -205,7 +205,8 @@ fn apply_inline_markdown(input: &str) -> String {
     s = regex_replace_simple(&s, "<t:", ">", |inner| {
         let parts: Vec<&str> = inner.splitn(2, ':').collect();
         let ts: i64 = parts[0].parse().unwrap_or(0);
-        format!("[{}]", format_unix_timestamp(ts))
+        let style = parts.get(1).copied();
+        format_discord_timestamp(ts, style)
     });
 
     // <@!USER_ID> and <@USER_ID> — user mentions
@@ -249,8 +250,10 @@ fn apply_inline_markdown(input: &str) -> String {
     s = replace_between(&s, "__", "__", |inner| inner.to_string());
     // Italic _
     s = replace_between(&s, "_", "_", |inner| inner.to_string());
-    // Strikethrough ~~
-    s = replace_between(&s, "~~", "~~", |inner| inner.to_string());
+    // Strikethrough ~~ (Unicode combining strike \u{0336})
+    s = replace_between(&s, "~~", "~~", |inner| {
+        inner.chars().flat_map(|c| [c, '\u{0336}']).collect::<String>()
+    });
 
     // ── Backslash escape removal ───────────────────────────────────────────
     let mut unescaped = String::with_capacity(s.len());
@@ -316,6 +319,52 @@ where
     F: Fn(&str) -> String,
 {
     replace_between(input, prefix, suffix, replacer)
+}
+
+fn format_discord_timestamp(unix_secs: i64, style: Option<&str>) -> String {
+    if unix_secs <= 0 {
+        return "data desconhecida".to_string();
+    }
+    use chrono::{DateTime, Local};
+    let dt = match DateTime::from_timestamp(unix_secs, 0) {
+        Some(d) => d.with_timezone(&Local),
+        None => return format_unix_timestamp(unix_secs),
+    };
+
+    match style.unwrap_or("f") {
+        "t" => dt.format("%H:%M").to_string(),
+        "T" => dt.format("%H:%M:%S").to_string(),
+        "d" => dt.format("%d/%m/%Y").to_string(),
+        "D" => dt.format("%d de %B de %Y").to_string(),
+        "F" => dt.format("%A, %d de %B de %Y %H:%M").to_string(),
+        "R" => {
+            let now = Local::now();
+            let diff = unix_secs - now.timestamp();
+            if diff > 0 {
+                if diff < 60 {
+                    "em instantes".to_string()
+                } else if diff < 3600 {
+                    format!("em {} min", diff / 60)
+                } else if diff < 86400 {
+                    format!("em {} h", diff / 3600)
+                } else {
+                    format!("em {} d", diff / 86400)
+                }
+            } else {
+                let past = -diff;
+                if past < 60 {
+                    "há instantes".to_string()
+                } else if past < 3600 {
+                    format!("há {} min", past / 60)
+                } else if past < 86400 {
+                    format!("há {} h", past / 3600)
+                } else {
+                    format!("há {} d", past / 86400)
+                }
+            }
+        }
+        _ => dt.format("%d/%m/%Y %H:%M").to_string(),
+    }
 }
 
 /// Formats a Unix timestamp (seconds since epoch) into a human-readable string.
@@ -482,10 +531,31 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
     for raw_line in cleaned.split('\n') {
         let trimmed_line = raw_line.trim_start();
         if trimmed_line.is_empty() {
+            lines.push(MessageLineData { blocks: vec![] });
             continue;
         }
+
+        let (prefix, trimmed_content) = if let Some(rest) = trimmed_line.strip_prefix("### ") {
+            ("▪ ", rest)
+        } else if let Some(rest) = trimmed_line.strip_prefix("## ") {
+            ("▌ ", rest)
+        } else if let Some(rest) = trimmed_line.strip_prefix("# ") {
+            ("▌ ", rest)
+        } else if let Some(rest) = trimmed_line.strip_prefix(">>> ") {
+            ("│ ", rest)
+        } else if let Some(rest) = trimmed_line.strip_prefix("> ") {
+            ("│ ", rest)
+        } else if let Some(rest) = trimmed_line.strip_prefix("-# ") {
+            ("", rest)
+        } else if let Some(rest) = trimmed_line.strip_prefix("- ").or_else(|| trimmed_line.strip_prefix("* ")) {
+            ("• ", rest)
+        } else {
+            ("", trimmed_line)
+        };
+
         let mut line_blocks = Vec::new();
-        let mut rem = trimmed_line;
+        let mut rem = trimmed_content;
+        let mut is_first_block = true;
 
         while !rem.is_empty() {
             let next_bracket = rem.find('[');
@@ -517,8 +587,13 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
             if candidates.is_empty() {
                 let parsed = parse_discord_markdown(rem);
                 if !parsed.is_empty() {
+                    let text = if is_first_block && !prefix.is_empty() {
+                        format!("{}{}", prefix, parsed)
+                    } else {
+                        parsed
+                    };
                     line_blocks.push(MessageBlockData {
-                        text: parsed,
+                        text,
                         is_link: false,
                         is_command: false,
                         is_emoji: false,
@@ -535,7 +610,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
 
             match first_type {
                 "bracket" => {
-                    let before = &rem[..first_idx];
+                    let mut before = &rem[..first_idx];
                     let after_bracket = &rem[first_idx + 1..];
                     if let Some(bracket_end) = after_bracket.find(']') {
                         let label = &after_bracket[..bracket_end];
@@ -544,9 +619,22 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             if let Some(paren_end) = after_label.find(')') {
                                 let url = &after_label[1..paren_end];
                                 if url.starts_with("http") {
+                                    let mut next_rem = &after_label[paren_end + 1..];
+                                    let is_bold_wrapped = before.ends_with("**") && next_rem.starts_with("**");
+                                    if is_bold_wrapped {
+                                        before = &before[..before.len() - 2];
+                                        next_rem = &next_rem[2..];
+                                    }
+
                                     if !before.is_empty() {
+                                        let parsed_before = parse_discord_markdown(before);
+                                        let text = if is_first_block && !prefix.is_empty() {
+                                            format!("{}{}", prefix, parsed_before)
+                                        } else {
+                                            parsed_before
+                                        };
                                         line_blocks.push(MessageBlockData {
-                                            text: parse_discord_markdown(before),
+                                            text,
                                             is_link: false,
                                             is_command: false,
                                             is_emoji: false,
@@ -554,8 +642,19 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             url: String::new(),
                                             command_name: String::new(),
                                         });
+                                        is_first_block = false;
                                     }
-                                    let display_label = if label.is_empty() { url.to_string() } else { parse_discord_markdown(label) };
+                                    let display_label = if label.is_empty() {
+                                        url.to_string()
+                                    } else {
+                                        let l = parse_discord_markdown(label);
+                                        if is_first_block && !prefix.is_empty() {
+                                            format!("{}{}", prefix, l)
+                                        } else {
+                                            l
+                                        }
+                                    };
+                                    is_first_block = false;
                                     line_blocks.push(MessageBlockData {
                                         text: display_label.clone(),
                                         is_link: true,
@@ -571,15 +670,22 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             url: url.to_string(),
                                         });
                                     }
-                                    rem = &after_label[paren_end + 1..];
+                                    rem = next_rem;
                                     continue;
                                 }
                             }
                         }
                     }
                     let slice_len = first_idx + 1;
+                    let parsed = parse_discord_markdown(&rem[..slice_len]);
+                    let text = if is_first_block && !prefix.is_empty() {
+                        format!("{}{}", prefix, parsed)
+                    } else {
+                        parsed
+                    };
+                    is_first_block = false;
                     line_blocks.push(MessageBlockData {
-                        text: parse_discord_markdown(&rem[..slice_len]),
+                        text,
                         is_link: false,
                         is_command: false,
                         is_emoji: false,
@@ -1003,11 +1109,51 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             }
             if !cleaned_text.trim().is_empty() {
                 let parsed_lines = parse_text_into_lines(&cleaned_text, &mut links);
-                if parsed_lines.iter().any(|l| l.blocks.iter().any(|b| b.is_link || b.is_command || b.is_emoji)) {
-                    content_lines = parsed_lines;
-                }
+                content_lines = parsed_lines;
                 let cleaned = extract_and_clean_links(&cleaned_text, &mut links);
                 content_parts.push(parse_discord_markdown(&cleaned));
+            }
+        }
+    }
+
+    // Poll handling (m["poll"])
+    if let Some(poll) = m.get("poll").and_then(|p| p.as_object()) {
+        let question = poll.get("question")
+            .and_then(|q| q.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("Enquete");
+
+        let mut poll_lines = Vec::new();
+        poll_lines.push(format!("📊 **{}**", question));
+
+        if let Some(answers) = poll.get("answers").and_then(|a| a.as_array()) {
+            for (idx, ans) in answers.iter().enumerate() {
+                let text = ans.get("poll_media")
+                    .and_then(|pm| pm.get("text"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+                let emoji = ans.get("poll_media")
+                    .and_then(|pm| pm.get("emoji"))
+                    .and_then(|e| e.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                if !emoji.is_empty() {
+                    poll_lines.push(format!("{}. {} {}", idx + 1, emoji, text));
+                } else {
+                    poll_lines.push(format!("{}. {}", idx + 1, text));
+                }
+            }
+        }
+        let poll_str = poll_lines.join("\n");
+        content_lines.extend(parse_text_into_lines(&poll_str, &mut links));
+        content_parts.push(poll_str);
+    }
+
+    // Sticker handling (m["sticker_items"])
+    if let Some(stickers) = m.get("sticker_items").and_then(|s| s.as_array()) {
+        for sticker in stickers {
+            if let Some(name) = sticker.get("name").and_then(|n| n.as_str()) {
+                content_parts.push(format!("🏷️ [Figurinha: {}]", name));
             }
         }
     }
@@ -1077,8 +1223,20 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             // Embed fields (e.g. Duration, Artist, Track Number)
             if let Some(fields) = embed["fields"].as_array() {
                 for field in fields {
-                    let name = field["name"].as_str().unwrap_or("").trim();
-                    let val  = field["value"].as_str().unwrap_or("").trim();
+                    let name_str = match field.get("name") {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(val) => val.to_string(),
+                        None => String::new(),
+                    };
+                    let name = name_str.trim();
+
+                    let val_str = match field.get("value") {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(val) => val.to_string(),
+                        None => String::new(),
+                    };
+                    let val = val_str.trim();
+
                     if !name.is_empty() && !val.is_empty() {
                         extract_commands_from_text(name, &mut commands);
                         extract_commands_from_text(val, &mut commands);
@@ -1112,6 +1270,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                         label: "Ver Imagem do Embed".to_string(),
                         url: img_url.to_string(),
                     });
+                    if ep.is_empty() && embed.get("title").is_none() && embed.get("description").is_none() {
+                        ep.push(format!("🖼️ [Imagem: {}]", img_url));
+                    }
                 }
             }
 
@@ -1122,6 +1283,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                         label: "Ver Miniatura do Embed".to_string(),
                         url: thumb_url.to_string(),
                     });
+                    if ep.is_empty() && embed.get("title").is_none() && embed.get("description").is_none() && embed.get("image").is_none() {
+                        ep.push(format!("🖼️ [Miniatura: {}]", thumb_url));
+                    }
                 }
             }
 
@@ -1291,19 +1455,20 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     }
 
     // Build content string
-    let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() && attachments_list.is_empty() {
+    let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() && attachments_list.is_empty() && embed_lines.is_empty() && links.is_empty() {
         match msg_type {
+            0 => String::new(),
             1 => "[Membro adicionado ao grupo]".to_string(),
             2 => "[Membro removido do grupo]".to_string(),
             3 => "[Chamada]".to_string(),
             4 => "[Nome do canal alterado]".to_string(),
-            5 => "[Icone do canal alterado]".to_string(),
+            5 => "[Ícone do canal alterado]".to_string(),
             6 => "[Mensagem Fixada]".to_string(),
             7 => "[Novo membro entrou no servidor!]".to_string(),
             8 => "[Servidor Impulsionado!]".to_string(),
-            9 => "[Servidor alcancou nivel 1 de impulso!]".to_string(),
-            10 => "[Servidor alcancou nivel 2 de impulso!]".to_string(),
-            11 => "[Servidor alcancou nivel 3 de impulso!]".to_string(),
+            9 => "[Servidor alcançou nível 1 de impulso!]".to_string(),
+            10 => "[Servidor alcançou nível 2 de impulso!]".to_string(),
+            11 => "[Servidor alcançou nível 3 de impulso!]".to_string(),
             12 => "[Canal seguido adicionado]".to_string(),
             14 => "[Servidor desqualificado da descoberta]".to_string(),
             15 => "[Servidor requalificado na descoberta]".to_string(),
@@ -1312,9 +1477,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             21 => "[Mensagem inicial de thread]".to_string(),
             22 => "[Lembrete de convite]".to_string(),
             23 => String::new(),
-            24 => "[Acao do AutoMod]".to_string(),
+            24 => "[Ação do AutoMod]".to_string(),
             25 => "[Compra de assinatura de cargo]".to_string(),
-            _ => "[Conteudo especial]".to_string(),
+            _ => String::new(),
         }
     } else {
         content_parts.join("\n")
@@ -1335,6 +1500,90 @@ pub fn format_discord_message(m: &Value) -> String {
         embed
     } else {
         format!("{}\n{}", content, embed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_strikethrough_combining() {
+        let input = "~~hello~~";
+        let output = apply_inline_markdown(input);
+        assert!(output.contains('\u{0336}'));
+    }
+
+    #[test]
+    fn test_discord_timestamp_formatting() {
+        let input = "<t:1700000000:d>";
+        let output = apply_inline_markdown(input);
+        assert!(!output.contains("<t:"));
+        assert!(output.contains('/'));
+    }
+
+    #[test]
+    fn test_bold_wrapped_link() {
+        let mut links = Vec::new();
+        let input = "Confira **[Steam](https://store.steampowered.com)** agora!";
+        let lines = parse_text_into_lines(input, &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://store.steampowered.com");
+        let first_line = &lines[0];
+        let link_block = first_line.blocks.iter().find(|b| b.is_link).unwrap();
+        assert_eq!(link_block.text, "Steam");
+        assert_eq!(link_block.url, "https://store.steampowered.com");
+    }
+
+    #[test]
+    fn test_empty_line_preservation() {
+        let mut links = Vec::new();
+        let input = "Primeira linha\n\nSegunda linha";
+        let lines = parse_text_into_lines(input, &mut links);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].blocks.is_empty());
+    }
+
+    #[test]
+    fn test_no_conteudo_especial_fallback() {
+        let msg = json!({
+            "id": "123",
+            "type": 0,
+            "content": "",
+            "embeds": [{
+                "title": "Jogo Grátis",
+                "fields": [
+                    { "name": "Preço", "value": 0 }
+                ]
+            }]
+        });
+        let (content, _, _, embed_content, embed_lines, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(&msg);
+        assert_ne!(content, "[Conteudo especial]");
+        assert!(embed_content.contains("Jogo Grátis"));
+        assert!(embed_content.contains("Preço: 0"));
+        assert!(!embed_lines.is_empty());
+    }
+
+    #[test]
+    fn test_poll_parsing() {
+        let msg = json!({
+            "id": "456",
+            "type": 0,
+            "content": "",
+            "poll": {
+                "question": { "text": "Qual o melhor?" },
+                "answers": [
+                    { "answer_id": 1, "poll_media": { "text": "Opção A" } },
+                    { "answer_id": 2, "poll_media": { "text": "Opção B" } }
+                ]
+            }
+        });
+        let (content, _, content_lines, _, _, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(&msg);
+        assert!(content.contains("Qual o melhor?"));
+        assert!(content.contains("Opção A"));
+        assert!(!content_lines.is_empty());
+        assert_ne!(content, "[Conteudo especial]");
     }
 }
 
