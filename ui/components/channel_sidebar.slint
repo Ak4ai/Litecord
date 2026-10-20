@@ -51,6 +51,7 @@ export component ChannelSidebar inherits Rectangle {
     callback toggle_deafen();
     callback open_settings();
     callback reorder_channel(int, int);
+    pure callback channel_drop_row(int, length) -> int;
     in-out property <int> dragging_channel_idx: -1;
     in-out property <int> drop_target_channel_idx: -1;
 
@@ -331,14 +332,16 @@ export component ChannelSidebar inherits Rectangle {
                             }
                             moved => {
                                 if (!channel.is_category && !channel.is_voice_member) {
+                                    // The pressed row keeps the pointer while dragged: the target
+                                    // comes from how far it moved (computed where row heights are known).
                                     if (self.pressed) {
                                         let diff_y = self.mouse-y - self.pressed-y;
-                                        if (diff_y > 8px || diff_y < -8px) {
+                                        if (root.dragging_channel_idx < 0 && (diff_y > 8px || diff_y < -8px)) {
                                             root.dragging_channel_idx = idx;
                                         }
-                                    }
-                                    if (root.dragging_channel_idx >= 0 && self.has-hover) {
-                                        root.drop_target_channel_idx = idx;
+                                        if (root.dragging_channel_idx == idx) {
+                                            root.drop_target_channel_idx = root.channel_drop_row(idx, diff_y);
+                                        }
                                     }
                                 }
                             }

@@ -3726,6 +3726,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_drop_row = app_weak.clone();
+    app.on_channel_drop_row(move |from, dy| {
+        let Some(ui) = app_weak_drop_row.upgrade() else { return from };
+        let rows: Vec<ChannelItem> = ui.get_channels().iter().collect();
+        crate::ui::helpers::channel_drop_row(&rows, from.max(0) as usize, dy) as i32
+    });
+
     // Reorder Channel Callback
     let app_weak_reorder_c = app_weak.clone();
     let guilds_map_reorder_c = Arc::clone(&guilds_map);
@@ -3735,9 +3742,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let to = to_idx as usize;
         let gid = active_guild_reorder_c.lock().unwrap().clone();
         if gid.is_empty() || gid == "@me" { return; }
+        // The indices are rows of the sidebar, which leaves out the channels of collapsed
+        // categories: find the channels by id, not by position.
+        let Some(ui) = app_weak_reorder_c.upgrade() else { return };
+        let rows = ui.get_channels();
+        let (Some(from_row), Some(to_row)) = (rows.row_data(from), rows.row_data(to)) else { return };
 
         if let Ok(mut map) = guilds_map_reorder_c.lock() {
             if let Some(g_data) = map.get_mut(&gid) {
+                let from = g_data.channels.iter().position(|c| c.id == from_row.id.as_str()).unwrap_or(usize::MAX);
+                let to = g_data.channels.iter().position(|c| c.id == to_row.id.as_str()).unwrap_or(usize::MAX);
                 if from < g_data.channels.len() && to < g_data.channels.len() && from != to {
                     let item = g_data.channels.remove(from);
                     g_data.channels.insert(to, item);

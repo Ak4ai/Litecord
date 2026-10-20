@@ -930,6 +930,32 @@ pub fn trim_memory_if_linux() {
 pub fn trim_memory_if_linux() {}
 
 
+/// The sidebar row a row dragged from `from` by `dy` logical pixels lands on: the one under
+/// the dragged row's centre. Heights as drawn in channel_sidebar.slint (4px apart).
+pub fn channel_drop_row(rows: &[ChannelItem], from: usize, dy: f32) -> usize {
+    const SPACING: f32 = 4.0;
+    let height = |r: &ChannelItem| {
+        if r.is_category {
+            if r.has_separator { 36.0 } else { 26.0 }
+        } else if r.is_voice_member {
+            26.0
+        } else {
+            34.0
+        }
+    };
+    if from >= rows.len() {
+        return from;
+    }
+    let mut top = 0.0;
+    let mut tops = Vec::with_capacity(rows.len());
+    for r in rows {
+        tops.push(top);
+        top += height(r) + SPACING;
+    }
+    let centre = tops[from] + height(&rows[from]) / 2.0 + dy;
+    tops.iter().rposition(|&t| t <= centre).unwrap_or(0)
+}
+
 pub fn build_ui_channels(
     channels_data: &[ChannelData],
     collapsed_cats: &std::collections::HashSet<String>,
@@ -1118,6 +1144,19 @@ pub fn set_linux_window_keep_above(is_pinned: bool) {
 #[cfg(test)]
 mod hidden_activity_tests {
     use super::*;
+
+    #[test]
+    fn a_dragged_channel_lands_on_the_row_under_its_centre() {
+        let row = |cat: bool, member: bool| ChannelItem { is_category: cat, is_voice_member: member, ..Default::default() };
+        // category 26 | text 34 | text 34 | voice 34 | member 26 | text 34   (4px apart)
+        let rows = [row(true, false), row(false, false), row(false, false), row(false, false), row(false, true), row(false, false)];
+        assert_eq!(channel_drop_row(&rows, 1, 0.0), 1);
+        assert_eq!(channel_drop_row(&rows, 1, 25.0), 2);
+        assert_eq!(channel_drop_row(&rows, 1, 60.0), 3);
+        assert_eq!(channel_drop_row(&rows, 5, -70.0), 3);
+        assert_eq!(channel_drop_row(&rows, 1, -500.0), 0);
+        assert_eq!(channel_drop_row(&rows, 1, 5000.0), 5);
+    }
 
     #[test]
     fn hidden_activity_keeps_one_entry_per_channel_in_last_activity_order() {

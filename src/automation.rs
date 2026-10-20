@@ -13,6 +13,7 @@
 //! {"cmd":"click","x":120,"y":300}            logical pixels, see "size"
 //! {"cmd":"move","x":120,"y":300}
 //! {"cmd":"scroll","x":400,"y":300,"dy":-120}
+//! {"cmd":"drag","x":30,"y":100,"to_x":30,"to_y":220}  press, move in steps, release
 //! {"cmd":"type","text":"hello"}
 //! {"cmd":"key","key":"Return"}               Return, Escape, Tab, Backspace, arrows...
 //! {"cmd":"set","prop":"show_settings_modal","value":true}
@@ -164,6 +165,24 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
                 window.dispatch_event(WindowEvent::PointerPressed { position, button });
                 window.dispatch_event(WindowEvent::PointerReleased { position, button });
             }
+            Ok(json!({ "ok": true }))
+        }
+        "drag" => {
+            // Press at (x, y), move to (to_x, to_y) in steps, release there.
+            let start = position_of(cmd)?;
+            let end = LogicalPosition::new(
+                cmd["to_x"].as_f64().ok_or("missing \"to_x\"")? as f32,
+                cmd["to_y"].as_f64().ok_or("missing \"to_y\"")? as f32,
+            );
+            let button = PointerEventButton::Left;
+            window.dispatch_event(WindowEvent::PointerMoved { position: start });
+            window.dispatch_event(WindowEvent::PointerPressed { position: start, button });
+            for i in 1..=10 {
+                let k = i as f32 / 10.0;
+                let position = LogicalPosition::new(start.x + (end.x - start.x) * k, start.y + (end.y - start.y) * k);
+                window.dispatch_event(WindowEvent::PointerMoved { position });
+            }
+            window.dispatch_event(WindowEvent::PointerReleased { position: end, button });
             Ok(json!({ "ok": true }))
         }
         "scroll" => {

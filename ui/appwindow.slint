@@ -141,6 +141,8 @@ export component AppWindow inherits Window {
     callback check_for_updates();
     callback reorder_guild(int, int);
     callback reorder_channel(int, int);
+    // Row a channel dragged from row `from` by `dy` would land on (rows differ in height).
+    pure callback channel_drop_row(int, length) -> int;
     in-out property <int> dragging_guild_idx: -1;
     in-out property <int> drop_target_guild_idx: -1;
     callback load_older_messages();
@@ -1156,6 +1158,8 @@ export component AppWindow inherits Window {
                         vertical-stretch: 1;
 
                         Flickable {
+                            // Scrolled by the wheel: dragging is for reordering the servers.
+                            interactive: false;
                             VerticalLayout {
                                 padding: 0px;
                                 spacing: 10px;
@@ -1233,15 +1237,17 @@ export component AppWindow inherits Window {
                                                         root.drop_target_guild_idx = -1;
                                                     }
                                                 }
+                                                // The pressed icon keeps the pointer while it is dragged (no other icon
+                                                // sees it), so the target comes from how far it moved: 48px icons, 10px apart.
                                                 moved => {
                                                     if (self.pressed) {
                                                         let diff_y = self.mouse-y - self.pressed-y;
-                                                        if (diff_y > 10px || diff_y < -10px) {
+                                                        if (root.dragging_guild_idx < 0 && (diff_y > 10px || diff_y < -10px)) {
                                                             root.dragging_guild_idx = idx;
                                                         }
-                                                    }
-                                                    if (root.dragging_guild_idx >= 0 && self.has-hover) {
-                                                        root.drop_target_guild_idx = idx;
+                                                        if (root.dragging_guild_idx == idx) {
+                                                            root.drop_target_guild_idx = max(0, min(root.guilds.length - 1, idx + round(diff_y / 58px)));
+                                                        }
                                                     }
                                                 }
                                                 clicked => {
@@ -1288,6 +1294,7 @@ export component AppWindow inherits Window {
                 select_channel(id) => { root.select_channel(id); }
                 toggle_category(id) => { root.toggle_category(id); }
                 reorder_channel(from, to) => { root.reorder_channel(from, to); }
+                channel_drop_row(from, dy) => { return root.channel_drop_row(from, dy); }
                 leave_voice => { root.leave_voice(); }
                 toggle_mute => { root.toggle_mute(); }
                 toggle_deafen => { root.toggle_deafen(); }
