@@ -1109,7 +1109,7 @@ impl ScreenCaptureManager {
             frame_data: Vec<u8>,
         }
 
-        let (tx_decode, rx_decode) = std::sync::mpsc::sync_channel::<QueuedVideoFrame>(120);
+        let (tx_decode, rx_decode) = std::sync::mpsc::sync_channel::<QueuedVideoFrame>(12);
 
         let is_running_decoder = Arc::clone(&self.is_receiver_running);
         let channel_id_decoder = Arc::clone(&self.channel_id);
@@ -1121,7 +1121,7 @@ impl ScreenCaptureManager {
             .name("video-decoder-worker".to_string())
             .spawn(move || {
                 crate::cpu_profiler::set_current_thread_name("video-decoder-worker");
-                info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada com buffer elástico de 120 quadros!");
+                info!("🎬 [VIDEO DECODER WORKER] Thread dedicada de decodificação H.264 iniciada com buffer otimizado de 12 quadros!");
                 let mut h264_decoders: HashMap<u64, openh264::decoder::Decoder> = HashMap::new();
                 let mut last_pli_req: HashMap<u64, Instant> = HashMap::new();
                 let mut rx_frame_count: HashMap<u64, u64> = HashMap::new();
@@ -1798,7 +1798,7 @@ impl ScreenCaptureManager {
                                                     if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx_decode.try_send(q_item) {
                                                         queue_full_dropped += 1;
                                                         if queue_full_last.elapsed() >= Duration::from_secs(1) {
-                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia (>120 quadros): {} quadro(s) descartado(s), solicitando Keyframe para ressincronização", queue_full_dropped);
+                                                            log::warn!("⚠️ [JITTER BUFFER] Fila de decodificação cheia (>12 quadros): {} quadro(s) descartado(s), solicitando Keyframe para ressincronização", queue_full_dropped);
                                                             queue_full_dropped = 0;
                                                             queue_full_last = Instant::now();
                                                             request_intra_keyframe();

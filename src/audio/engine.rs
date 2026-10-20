@@ -105,7 +105,15 @@ pub fn start_mic_capture(
 
     info!("Capturando microfone: {}Hz, {} canal(is), formato={:?}", sample_rate, channels, config.sample_format());
 
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let target_buffer_frames = (sample_rate * 20 / 1000).max(128);
+    let buffer_size = match config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => {
+            cpal::BufferSize::Fixed(target_buffer_frames.clamp(*min, *max))
+        }
+        cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Fixed(target_buffer_frames),
+    };
+    let mut stream_config: cpal::StreamConfig = config.clone().into();
+    stream_config.buffer_size = buffer_size;
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {

@@ -12,9 +12,9 @@ use crate::{AppWindow, ChatMessage};
 const AVATAR_SIZE: u32 = 40;
 const AVATAR_BYTES: usize = (AVATAR_SIZE * AVATAR_SIZE * 4) as usize;
 const MAX_DOWNLOAD_BYTES: usize = 512 * 1024;
-// Decoded thumbnails use about 2.4 MiB in RAM and 25 MiB on disk at these limits.
+// Decoded thumbnails use about 800 KiB in RAM and 25 MiB on disk at these limits.
 // Messages, voice rows and the DM list share this one cache.
-const MAX_MEMORY_AVATARS: usize = 384;
+const MAX_MEMORY_AVATARS: usize = 128;
 const MAX_DISK_AVATARS: usize = 4096;
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 // Sidebar rows (DM list, voice members) are Send-only data, so their thumbnails
