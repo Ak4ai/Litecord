@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A interface é desenhada pela CPU por padrão.** Sem contexto de GPU, o driver de vídeo não fica com threads acordando ao lado do jogo e a memória privada cai pela metade. A renderização pela GPU continua disponível em Configurações → Vídeo e Interface (vale ao reiniciar).
 - Deixaram de acordar periodicamente: atalhos globais (liam o teclado a cada 20 ms; agora esperam a tecla), ícone da bandeja (120 ms) e sua dica (500 ms), barra do popout (300 ms), monitor de hardware escondido, recepção P2P, decodificador e sinalização fora de chamada, governador do timer, faxina de memória a cada 60 s.
 - Com a janela escondida, mensagens, contadores de voz e ordem das DMs só são anotados; ao restaurar, tudo é aplicado de uma vez e o canal aberto é recarregado (antes isso só acontecia durante uma chamada).
+- A conexão com o Discord lê só o tipo de cada evento e descarta sem interpretar os que o Litecord não usa (presenças, digitação, reações de outros servidores...).
 - Resultado (Windows 11, fora de chamada): na bandeja, de 338 para **0,9 acordadas por segundo** e 0,00% de CPU; janela aberta em 0,08% de CPU; ~10 MB de RAM na bandeja e 16–25 MB com a janela aberta.
 
 ### 🎙️ Voz e chamadas
@@ -38,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Depois de sair de uma chamada, a sinalização voltava a entrar na sala antiga e o filtro de privacidade aceitava pacotes dela.
 - A sinalização acorda por evento em vez de checar a cada 500 ms, e o keepalive passou de 15 s para 40 s.
 - Avisos de quadro descartado viraram um resumo por segundo.
+- **Sem ninguém assistindo e com a pré-visualização escondida, a captura da tela para por completo** (a sessão do Windows Graphics Capture é fechada e a duplicação DXGI deixa de pedir quadros): quem transmite fica em 1,7–2,2% de um núcleo com o Litecord na bandeja. O codificador é aberto assim que a captura começa, e a primeira imagem chega 0,24–0,54 s depois de alguém clicar em Assistir.
+- **O áudio da transmissão vai em Opus** (64 kbit/s) em vez de PCM sem compressão (768 kbit/s).
+- **Só quem transmite pode encerrar a própria transmissão.** O aviso de fim agora leva uma prova feita com a chave da transmissão; antes, qualquer pessoa que soubesse o ID do canal e o de um usuário podia derrubar a transmissão dele para todos com um único pacote. Um anúncio de presença dizendo que alguém parou, ou um aviso do servidor de sinalização de que ele saiu, também são ignorados enquanto o vídeo dele continua chegando com a chave certa.
+- Navegadores assistindo pela web ouviam o áudio da transmissão com o volume errado e distorcido: o codificador Opus mono da biblioteca usada está quebrado. O áudio passa a ser codificado em estéreo (com os dois canais iguais).
 
 ### 🩺 Diagnóstico de rede
 - Configurações → Rede & Proxy ganhou um **diagnóstico de rede**: testa se a transmissão com alguém de outra rede consegue conectar direto (tipo de NAT pelo STUN de três provedores, UDP bloqueado, servidor de sinalização) e copia um relatório para colar numa issue. O relatório esconde os dois últimos números do IP público.
@@ -49,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - As cores das transmissões feitas com NVENC estavam declaradas como BT.709 de faixa completa, mas o Litecord as converte em BT.601 de faixa limitada; quem confia na declaração (navegadores assistindo pela web, o decodificador da GPU) via os pretos acinzentados. A declaração foi corrigida, e o receptor trata as transmissões de versões antigas.
 - **Transmitir com o codificador do Media Foundation** (escolhido à mão em Configurações → Vídeo) não funcionava: ele gravava um arquivo MP4 e mandava os bytes novos, e o cabeçalho com os parâmetros do vídeo só existe quando o arquivo termina. Agora o codificador da placa (Intel Quick Sync, NVIDIA ou AMD) é usado diretamente, com quadro-chave sob pedido.
 - A etiqueta de qualidade voltou a mostrar a resolução da transmissão (mostrava o tamanho em que ela era desenhada).
+- **Esconder e voltar a assistir não acumula mais memória.** As camadas de vídeo eram criadas de novo a cada vez e deixavam 30–50 MB para trás no driver: em 10 ciclos o receptor ia de 154 para 686 MB. Agora elas ficam com a janela e são reaproveitadas, e o dispositivo da GPU, quando liberado, solta de verdade o que ainda estava preso a ele. Em 20 ciclos a memória oscila entre 180 e 350 MB sem crescer; abrir e fechar o popout também deixou de acumular (~10 MB por vez antes).
+- **Menos memória em geral**: o alocador passa a reservar memória só quando ela é usada. Com uma transmissão 1080p60, quem assiste usa 164–190 MB em vez de 228–247 MB e quem transmite 271 MB em vez de 310 MB, com a mesma CPU; fora de chamada o app começa com 40 MB em vez de 55 MB.
 - A fila de decodificação caiu de 120 para 30 quadros (0,5 s): quando o receptor atrasa, a imagem não fica mais até 2 s atrás da transmissão. Engasgos de até meio segundo passam sem descartar nada.
 - Quando quadros são descartados, o pedido de quadro-chave agora vai para **quem transmite** (ia para o próprio codificador), e o receptor espera esse quadro em vez de decodificar imagens corrompidas.
 

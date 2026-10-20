@@ -23,6 +23,12 @@ unsafe impl Sync for SharedDevice {}
 
 impl Drop for SharedDevice {
     fn drop(&mut self) {
+        // The context holds what was bound to it and what waits to be destroyed, and with
+        // them the device: without this the device outlived us with ~25 objects in it.
+        unsafe {
+            self.context.ClearState();
+            self.context.Flush();
+        }
         log::info!("🎞️ [GPU VIDEO] Dispositivo da GPU liberado (ninguém assiste pela GPU)");
     }
 }

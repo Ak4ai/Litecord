@@ -130,6 +130,9 @@ unsafe fn draw(o: &mut VideoOutput, frame: &Frame, device: &SharedDevice) -> Res
     }
     let key = (frame.texture.as_raw() as usize, frame.index);
     if !o.in_views.contains_key(&key) {
+        // A new decoder (the stream was watched again) brings new textures: the views of
+        // the old ones would keep its whole picture array (~50 MB at 1080p) alive.
+        o.in_views.retain(|(texture, _), _| *texture == key.0);
         let mut idesc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC { FourCC: 0, ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D, ..Default::default() };
         idesc.Anonymous.Texture2D = D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: frame.index };
         let mut v = None;
@@ -213,23 +216,32 @@ impl WindowLayers {
             State::On => self.state.set(State::Stopping),
             State::Starting => {
                 self.state.set(State::Off);
-                self.live.borrow_mut().take();
+                self.park();
             }
             _ => {}
         }
     }
 
     /// Like `stop`, for a window that is not drawn any more (hidden, minimized): the layers
-    /// and their GPU resources go now instead of with the next frame.
+    /// come off now instead of with the next frame.
     pub fn stop_now(&self) {
         self.stop();
-        if let Some(l) = self.live.borrow_mut().take() {
+        self.park();
+        self.state.set(State::Off);
+    }
+
+    /// Takes the layers off the window but keeps them for the next stream shown here.
+    /// Creating them again every time a stream was watched (composition device, swap
+    /// chain, video processor) left about 30-50 MB behind each time, inside the driver.
+    /// The views of the decoder's pictures go now, so its textures can be freed.
+    fn park(&self) {
+        if let Some(l) = self.live.borrow().as_ref() {
             unsafe {
                 let _ = l.target.SetRoot(None);
                 let _ = l.dcomp.Commit();
             }
+            l.output.lock().unwrap_or_else(|e| e.into_inner()).in_views.clear();
         }
-        self.state.set(State::Off);
     }
 
     /// Whether this window can use layers (they did not fail to start here).
@@ -336,12 +348,7 @@ impl i_slint_backend_winit::LayerSink for WindowLayers {
         }
         if state == State::Stopping {
             // This frame was drawn without the hole: GDI shows it all, the layers can go.
-            if let Some(l) = self.live.borrow_mut().take() {
-                unsafe {
-                    let _ = l.target.SetRoot(None);
-                    let _ = l.dcomp.Commit();
-                }
-            }
+            self.park();
             self.state.set(State::Off);
             return;
         }

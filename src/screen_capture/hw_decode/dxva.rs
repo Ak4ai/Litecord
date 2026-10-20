@@ -107,6 +107,16 @@ pub struct DxvaDecoder {
     staging: Option<(ID3D11Texture2D, u32, u32)>,
 }
 
+impl Drop for DxvaDecoder {
+    fn drop(&mut self) {
+        // D3D11 frees released objects with the context's next flush: do it now, or the
+        // decoder's pictures stay in memory until something else draws.
+        self.session = None;
+        self.staging = None;
+        unsafe { self.context.Flush() };
+    }
+}
+
 // The D3D11 objects are used from the decoder thread only.
 unsafe impl Send for DxvaDecoder {}
 
