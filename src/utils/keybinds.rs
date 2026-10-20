@@ -99,6 +99,11 @@ pub fn format_combo_display(ctrl: bool, shift: bool, alt: bool, key_name: &str) 
 pub fn name_to_vkey(name: &str) -> Option<i32> {
     let upper = name.to_uppercase();
     match upper.as_str() {
+        // Mouse buttons (the left one is never a shortcut: every click would fire it).
+        "MOUSE2" | "MOUSE 2" | "M2" => Some(0x02),
+        "MOUSE3" | "MOUSE 3" | "M3" | "MIDDLECLICK" => Some(0x04),
+        "MOUSE4" | "MOUSE 4" | "M4" => Some(0x05),
+        "MOUSE5" | "MOUSE 5" | "M5" => Some(0x06),
         "A" => Some(0x41), "B" => Some(0x42), "C" => Some(0x43), "D" => Some(0x44),
         "E" => Some(0x45), "F" => Some(0x46), "G" => Some(0x47), "H" => Some(0x48),
         "I" => Some(0x49), "J" => Some(0x4A), "K" => Some(0x4B), "L" => Some(0x4C),
@@ -159,6 +164,10 @@ pub fn name_to_vkey(name: &str) -> Option<i32> {
 
 pub fn vkey_to_name(vkey: i32) -> &'static str {
     match vkey {
+        0x02 => "Mouse 2",
+        0x04 => "Mouse 3",
+        0x05 => "Mouse 4",
+        0x06 => "Mouse 5",
         0x41 => "A", 0x42 => "B", 0x43 => "C", 0x44 => "D",
         0x45 => "E", 0x46 => "F", 0x47 => "G", 0x48 => "H",
         0x49 => "I", 0x4A => "J", 0x4B => "K", 0x4C => "L",
@@ -219,6 +228,19 @@ pub fn vkey_to_name(vkey: i32) -> &'static str {
 
 /// 0 = None, 1 = Recording Mute, 2 = Recording Deafen
 pub static RECORDING_TARGET: AtomicU8 = AtomicU8::new(0);
+
+/// Virtual keys of the mouse buttons a shortcut can use (right, middle, back, forward).
+pub const MOUSE_BUTTON_VKEYS: [i32; 4] = [0x02, 0x04, 0x05, 0x06];
+
+/// Whether a shortcut uses a mouse button. Raw input has no "buttons only" mode (it would
+/// wake us on every mouse move, up to 1000 times a second while gaming), so the buttons are
+/// read every 30 ms instead, and only while this is true or a shortcut is being recorded.
+pub fn uses_mouse_button(cfg: &KeybindsConfig) -> bool {
+    [&cfg.mute_shortcut, &cfg.deafen_shortcut]
+        .iter()
+        .filter_map(|s| KeyCombo::parse(s))
+        .any(|c| MOUSE_BUTTON_VKEYS.contains(&c.vkey))
+}
 
 pub struct KeybindManager {
     config: Arc<Mutex<KeybindsConfig>>,
@@ -284,17 +306,46 @@ impl KeybindManager {
                         return;
                     }
                     let mut msg: windows_sys::Win32::UI::WindowsAndMessaging::MSG = unsafe { std::mem::zeroed() };
+                    let mut mouse_down = [false; MOUSE_BUTTON_VKEYS.len()];
 
-                    while is_running.load(Ordering::Relaxed)
-                        && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0
-                    {
-                        let event = if msg.message == windows_sys::Win32::UI::WindowsAndMessaging::WM_INPUT {
-                            unsafe { read_raw_key(msg.lParam) }
-                        } else {
-                            None
+                    while is_running.load(Ordering::Relaxed) {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            DispatchMessageW, GetMessageW, MsgWaitForMultipleObjects, PeekMessageW, PM_REMOVE, QS_ALLINPUT, WM_INPUT, WM_QUIT,
                         };
-                        // DefWindowProc must see WM_INPUT to release the input data.
-                        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DispatchMessageW(&msg); }
+                        let watch_mouse = RECORDING_TARGET.load(Ordering::Relaxed) != 0
+                            || uses_mouse_button(&config_arc.lock().unwrap_or_else(|e| e.into_inner()));
+                        let got_message = if watch_mouse {
+                            unsafe {
+                                MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 30, QS_ALLINPUT);
+                                PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0
+                            }
+                        } else {
+                            if unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } <= 0 {
+                                break;
+                            }
+                            true
+                        };
+                        let event = if got_message {
+                            if msg.message == WM_QUIT {
+                                break;
+                            }
+                            let key = if msg.message == WM_INPUT { unsafe { read_raw_key(msg.lParam) } } else { None };
+                            // DefWindowProc must see WM_INPUT to release the input data.
+                            unsafe { DispatchMessageW(&msg) };
+                            key
+                        } else {
+                            // No key: a mouse button that went down or up since the last look.
+                            MOUSE_BUTTON_VKEYS.iter().zip(mouse_down.iter_mut()).find_map(|(&vk, was)| {
+                                let now = key_now(vk);
+                                (now != *was).then(|| {
+                                    *was = now;
+                                    (vk, now)
+                                })
+                            })
+                        };
+                        if !watch_mouse {
+                            mouse_down = [false; MOUSE_BUTTON_VKEYS.len()];
+                        }
                         let Some((event_vk, event_down)) = event else { continue };
 
                         // The async key state may not include the key that woke us yet, so
@@ -326,6 +377,8 @@ impl KeybindManager {
                                 0x20, 0x09, 0x1B, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22,
                                 0x26, 0x28, 0x25, 0x27, 0x14, 0x13, 0x91,
                                 0xC0, 0xBD, 0xBB, 0xDB, 0xDD, 0xBA, 0xDE, 0xBC, 0xBE, 0xBF, 0xDC,
+                                // Mouse buttons (not the left one)
+                                0x02, 0x04, 0x05, 0x06,
                             ];
 
                             for &vk in candidate_vkeys {
@@ -836,5 +889,26 @@ unsafe fn discard_pending_raw_input() {
     let mut msg: MSG = std::mem::zeroed();
     while PeekMessageW(&mut msg, std::ptr::null_mut(), WM_INPUT, WM_INPUT, PM_REMOVE) != 0 {
         DispatchMessageW(&msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_buttons_parse_and_only_their_shortcuts_need_watching() {
+        assert_eq!(name_to_vkey("Mouse 4"), Some(0x05));
+        assert_eq!(name_to_vkey("mouse5"), Some(0x06));
+        assert_eq!(name_to_vkey("Mouse 1"), None);
+        assert_eq!(vkey_to_name(0x04), "Mouse 3");
+        let combo = KeyCombo::parse("Ctrl+Mouse 4").unwrap();
+        assert!(combo.ctrl && !combo.shift && !combo.alt);
+        assert_eq!(combo.vkey, 0x05);
+
+        let keys = KeybindsConfig::default();
+        assert!(!uses_mouse_button(&keys));
+        let mouse = KeybindsConfig { mute_shortcut: "Mouse 5".into(), ..KeybindsConfig::default() };
+        assert!(uses_mouse_button(&mouse));
     }
 }
