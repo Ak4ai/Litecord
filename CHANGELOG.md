@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quando quadros são descartados, o pedido de quadro-chave agora vai para **quem transmite** (ia para o próprio codificador), e o receptor espera esse quadro em vez de decodificar imagens corrompidas.
 
 ### 💬 Interface
+- **Servidores na mesma ordem e pastas do Discord**, e servidores e canais podem ser reordenados arrastando (a ordem fica salva neste computador). Contribuição de @stickyfran (#39).
+- **Barra do usuário como a do Discord**: avatar com indicador de status, nome de exibição e @usuário. Contribuição de @stickyfran (#40).
+- **Mensagens de bots, enquetes e markdown**: mensagens só com embeds, imagens ou links deixaram de aparecer como "[Conteudo especial]"; enquetes mostram a pergunta e as opções; títulos, citações, listas, texto riscado e links em negrito são exibidos; datas do Discord (`<t:...>`) seguem o fuso local e o idioma do app. Contribuição de @stickyfran (#37).
 - Avatares e ícones de servidor são arredondados na imagem carregada, corrigindo o recorte quadrado do renderizador por software.
 - Canais de servidor não pulam mais para o topo da lista a cada mensagem (só DMs são ordenadas por atividade).
 - Atualizar contadores de voz não desfaz mais a ordem das DMs nem apaga as não lidas.
