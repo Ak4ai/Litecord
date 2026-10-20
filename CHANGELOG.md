@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resultado (Windows 11, fora de chamada): na bandeja, de 338 para **0,9 acordadas por segundo** e 0,00% de CPU; janela aberta em 0,08% de CPU; ~10 MB de RAM na bandeja e 16–25 MB com a janela aberta.
 
 ### 🎙️ Voz e chamadas
+- **Falas baixas preservadas no receptor**: removido o corte que zerava sussurros e finais de palavra, junto do cálculo de espectro e do log por pacote. O indicador de fala continua com seu cálculo separado. Contribuição de @stickyfran (#36).
+- **Menos áudio antigo acumulado**: a fila por participante passa a ter limite de 600 ms, incluindo quadros de recuperação de perdas, mantendo o pré-buffer de 40 ms. As filas de voz e microfone são limpas ao sair da chamada. Contribuição de @stickyfran (#36), adaptada para preservar o áudio após engasgos de reprodução.
+- **Buffers de voz no Linux**: período nominal de 20 ms, alinhado a 64 frames e aos limites do dispositivo, com sondagem e fallback para o padrão do driver quando recusado. A configuração de buffers do Windows permanece igual. Contribuição de @stickyfran (#36).
 - **Chamadas não caem mais quando o Discord pede reconexão.** O Litecord reconectava abrindo uma sessão nova, e cerca de 1m45s depois o Discord tirava a conta da chamada (e encerrava a transmissão) porque a sessão que tinha entrado nela havia sumido. Isso acontece sozinho em chamadas longas, sem nenhuma falha de rede. Agora a sessão é retomada: num teste derrubando a conexão dos dois lados no meio de uma transmissão, ela voltou em 2 s e ninguém saiu da chamada.
 - **Envio de voz no ritmo do microfone** em vez de um timer de 20 ms: o timer de 1 ms do Windows não é mais usado durante chamadas. No teste de ponta a ponta, o maior intervalo entre pacotes de fala caiu de 131 ms para 22 ms.
 - **Microfone fechado ao sair da chamada**: ele continuava capturando até fechar o app, com o indicador de microfone do Windows ligado.
