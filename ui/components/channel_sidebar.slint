@@ -45,6 +45,9 @@ export component ChannelSidebar inherits Rectangle {
     callback toggle_mute();
     callback toggle_deafen();
     callback open_settings();
+    callback reorder_channel(int, int);
+    in-out property <int> dragging_channel_idx: -1;
+    in-out property <int> drop_target_channel_idx: -1;
 
     width: 230px;
     background: AppTheme.surface-sidebar;
@@ -83,15 +86,27 @@ export component ChannelSidebar inherits Rectangle {
                     spacing: 4px;
                     alignment: start;
 
-                    for channel in root.channels: Rectangle {
-                        height: channel.is_category ? (channel.has_separator ? 36px : 26px) : (channel.is_voice_member ? 26px : 34px);
-                        background: channel.is_category
-                            ? transparent
-                            : (channel.id == root.active_channel_id
-                                ? AppTheme.interactive-selected
-                                : (touch_area.has_hover ? AppTheme.interactive-hover : transparent));
-                        border-radius: 4px;
-                        animate background { duration: 120ms; }
+                    for channel[idx] in root.channels: VerticalLayout {
+                        spacing: 0px;
+
+                        // Drop indicator line above channel
+                        if root.drop_target_channel_idx == idx && root.dragging_channel_idx >= 0 && root.dragging_channel_idx != idx && !channel.is_category: Rectangle {
+                            height: 2px;
+                            width: 100%;
+                            background: #5865F2;
+                            border-radius: 1px;
+                        }
+
+                        Rectangle {
+                            height: channel.is_category ? (channel.has_separator ? 36px : 26px) : (channel.is_voice_member ? 26px : 34px);
+                            background: channel.is_category
+                                ? transparent
+                                : (channel.id == root.active_channel_id
+                                    ? AppTheme.interactive-selected
+                                    : (touch_area.has_hover ? AppTheme.interactive-hover : transparent));
+                            border-radius: 4px;
+                            opacity: (root.dragging_channel_idx == idx) ? 0.4 : 1.0;
+                            animate background, opacity { duration: 120ms; }
 
                         // Category rendering
                         if channel.is_category : VerticalLayout {
@@ -300,12 +315,36 @@ export component ChannelSidebar inherits Rectangle {
 
                         touch_area := TouchArea {
                             mouse-cursor: pointer;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                                    if (root.dragging_channel_idx >= 0 && root.drop_target_channel_idx >= 0 && root.dragging_channel_idx != root.drop_target_channel_idx) {
+                                        root.reorder_channel(root.dragging_channel_idx, root.drop_target_channel_idx);
+                                    }
+                                    root.dragging_channel_idx = -1;
+                                    root.drop_target_channel_idx = -1;
+                                }
+                            }
+                            moved => {
+                                if (!channel.is_category && !channel.is_voice_member) {
+                                    if (self.pressed) {
+                                        let diff_y = self.mouse-y - self.pressed-y;
+                                        if (diff_y > 8px || diff_y < -8px) {
+                                            root.dragging_channel_idx = idx;
+                                        }
+                                    }
+                                    if (root.dragging_channel_idx >= 0 && self.has-hover) {
+                                        root.drop_target_channel_idx = idx;
+                                    }
+                                }
+                            }
                             clicked => {
-                                if channel.is_category {
-                                    root.toggle_category(channel.id);
-                                } else {
-                                    root.active_channel_id = channel.is_voice_member ? channel.parent_channel_id : channel.id;
-                                    root.select_channel(channel.is_voice_member ? channel.parent_channel_id : channel.id);
+                                if (root.dragging_channel_idx < 0) {
+                                    if channel.is_category {
+                                        root.toggle_category(channel.id);
+                                    } else {
+                                        root.active_channel_id = channel.is_voice_member ? channel.parent_channel_id : channel.id;
+                                        root.select_channel(channel.is_voice_member ? channel.parent_channel_id : channel.id);
+                                    }
                                 }
                             }
                         }
@@ -313,6 +352,7 @@ export component ChannelSidebar inherits Rectangle {
                 }
             }
         }
+    }
 
         // Active Voice Channel Banner
         if root.is_in_voice: Rectangle {
