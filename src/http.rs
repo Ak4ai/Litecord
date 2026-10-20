@@ -263,6 +263,17 @@ impl DiscordHttpClient {
         }
     }
 
+    /// A scheduled event of a server the user is in, with its interested count.
+    pub async fn get_scheduled_event(&self, guild_id: &str, event_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{guild_id}/scheduled-events/{event_id}?with_user_count=true");
+        let resp = self.client.get(&url).send().await.map_err(|e| format!("Erro HTTP: {:?}", e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("Status HTTP {}", status));
+        }
+        resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON: {:?}", e))
+    }
+
     pub async fn get_user_profile(&self, user_id: &str) -> Result<serde_json::Value, String> {
         let url = format!("https://discord.com/api/v10/users/{}", user_id);
         match self.client.get(&url).send().await {

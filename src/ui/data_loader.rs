@@ -955,6 +955,7 @@ pub async fn try_login_with_candidates(
         let http = DiscordHttpClient::new(token_str.clone());
         match http.get_current_user().await {
             Ok(user_info) => {
+                crate::ui::invite_cards::set_session_client(http.clone());
                 let username = user_info["username"].as_str().unwrap_or("User");
                 let user_id = user_info["id"].as_str().unwrap_or("");
                 let global_name = user_info["global_name"].as_str().unwrap_or(username);

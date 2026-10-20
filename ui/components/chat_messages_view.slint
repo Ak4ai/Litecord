@@ -16,6 +16,12 @@ export struct InviteCard {
     counts: string,
     has_icon: bool,
     icon_img: image,
+    // Scheduled event cards (discord.com/events/… links) reuse the struct.
+    is_event: bool,
+    event_when: string,
+    event_live: bool,
+    has_cover: bool,
+    cover_img: image,
 }
 
 export struct MessageBlock {
@@ -924,7 +930,77 @@ export component ChatMessagesView inherits Rectangle {
 
                         for invite in msg.invites: HorizontalLayout {
                             alignment: start;
-                            Rectangle {
+                            // Scheduled event: cover, when it starts, title, description.
+                            if invite.is_event: Rectangle {
+                                width: 400px;
+                                background: AppTheme.surface-elevated;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                clip: true;
+                                VerticalLayout {
+                                    if invite.has_cover: Image {
+                                        width: 400px;
+                                        height: 160px;
+                                        source: invite.cover_img;
+                                        image-fit: cover;
+                                    }
+                                    VerticalLayout {
+                                        padding: 12px;
+                                        spacing: 4px;
+                                        Text {
+                                            text: invite.loaded ? invite.event_when : Tr.invite_loading;
+                                            color: invite.event_live ? #16a34a : AppTheme.accent;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                        }
+                                        if invite.loaded: Text {
+                                            text: invite.guild_name;
+                                            color: AppTheme.text-strong;
+                                            font-family: ChatTypography.family;
+                                            font-size: 16px;
+                                            font-weight: 700;
+                                            wrap: word-wrap;
+                                        }
+                                        if invite.description != "": Text {
+                                            text: invite.description;
+                                            color: AppTheme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                            max-height: 48px;
+                                            overflow: elide;
+                                        }
+                                        HorizontalLayout {
+                                            padding-top: 6px;
+                                            spacing: 8px;
+                                            Text {
+                                                text: invite.counts;
+                                                color: AppTheme.text-muted;
+                                                font-size: 12px;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                            Rectangle {
+                                                width: 104px;
+                                                height: 32px;
+                                                border-radius: 4px;
+                                                background: event_ta.has-hover ? #15803d : #16a34a;
+                                                Text {
+                                                    text: Tr.event_view;
+                                                    color: AppTheme.text-on-accent;
+                                                    font-size: 13px;
+                                                    font-weight: 600;
+                                                }
+                                                event_ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.open_link(invite.url); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !invite.is_event: Rectangle {
                                 width: 400px;
                                 background: AppTheme.surface-elevated;
                                 border-radius: 8px;

@@ -26,6 +26,48 @@ struct InviteInfo {
     members: Option<u64>,
     /// Square RGBA icon at its downloaded size; shaped per window scale when shown.
     icon: Option<(Vec<u8>, u32)>,
+    event: Option<EventInfo>,
+}
+
+/// A scheduled event (`discord.com/events/<guild>/<event>`). Its card shows the
+/// event's name in `guild_name` and its description in `description`.
+#[derive(Clone)]
+struct EventInfo {
+    starts_at: Option<chrono::DateTime<chrono::Local>>,
+    live: bool,
+    interested: Option<u64>,
+    /// RGBA cover at 400 logical px wide (2.5:1), already sized for the window.
+    cover: Option<(Vec<u8>, u32, u32)>,
+}
+
+const EVENT_KEY_PREFIX: &str = "event:";
+const EVENT_COVER_LOGICAL: (f32, f32) = (400.0, 160.0);
+
+/// Event lookups need the user's session (only members see a server's events).
+static SESSION_CLIENT: OnceLock<Mutex<Option<crate::http::DiscordHttpClient>>> = OnceLock::new();
+
+pub fn set_session_client(client: crate::http::DiscordHttpClient) {
+    *SESSION_CLIENT.get_or_init(Default::default).lock().unwrap() = Some(client);
+}
+
+/// Event links in the order they appear, as cache keys `event:<guild>:<event>`.
+pub fn event_keys(text: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for host in ["discord.com/events/", "discordapp.com/events/"] {
+        let mut rest = text;
+        while let Some(at) = rest.find(host) {
+            let after = &rest[at + host.len()..];
+            let mut ids = after.split(|c: char| !c.is_ascii_digit());
+            if let (Some(guild), Some(event)) = (ids.next(), ids.next()) {
+                let key = format!("{EVENT_KEY_PREFIX}{guild}:{event}");
+                if !guild.is_empty() && !event.is_empty() && !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+            rest = after;
+        }
+    }
+    keys
 }
 
 #[derive(Clone)]
@@ -72,7 +114,9 @@ pub fn hydrate(messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {
             text.push(' ');
             text.push_str(&link.url);
         }
-        let codes = invite_codes(&text);
+        let mut codes = invite_codes(&text);
+        codes.extend(event_keys(&text));
+        codes.truncate(MAX_CARDS_PER_MESSAGE);
         if codes.is_empty() {
             continue;
         }
@@ -101,7 +145,10 @@ pub fn hydrate(messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {
 }
 
 fn invite_url(code: &str) -> String {
-    format!("https://discord.gg/{code}")
+    match code.strip_prefix(EVENT_KEY_PREFIX).and_then(|ids| ids.split_once(':')) {
+        Some((guild, event)) => format!("https://discord.com/events/{guild}/{event}"),
+        None => format!("https://discord.gg/{code}"),
+    }
 }
 
 fn loading_card(code: &str) -> InviteCard {
@@ -109,11 +156,56 @@ fn loading_card(code: &str) -> InviteCard {
         code: code.into(),
         url: invite_url(code).into(),
         loaded: false,
+        is_event: code.starts_with(EVENT_KEY_PREFIX),
+        ..Default::default()
+    }
+}
+
+fn event_card(code: &str, info: &InviteInfo, event: &EventInfo, scale: f32) -> InviteCard {
+    let t = crate::utils::i18n_ui::ui_text();
+    let lang = crate::utils::i18n_ui::current_language();
+    let event_when = if event.live {
+        t.event_live.to_string()
+    } else {
+        event.starts_at.map(|at| at.format("%d/%m/%Y %H:%M").to_string()).unwrap_or_default()
+    };
+    let cover = event.cover.as_ref().map(|(rgba, w, h)| {
+        let target_w = (EVENT_COVER_LOGICAL.0 * scale.clamp(1.0, 4.0)).round() as u32;
+        let target_h = (EVENT_COVER_LOGICAL.1 * scale.clamp(1.0, 4.0)).round() as u32;
+        let img = image::RgbaImage::from_raw(*w, *h, rgba.clone()).unwrap_or_default();
+        let sized = if *w > target_w {
+            image::imageops::resize(&img, target_w, target_h, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+        let (sw, sh) = sized.dimensions();
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(sized.as_raw(), sw, sh);
+        slint::Image::from_rgba8(buffer)
+    });
+    InviteCard {
+        code: code.into(),
+        url: invite_url(code).into(),
+        loaded: true,
+        is_event: true,
+        guild_name: info.guild_name.clone().into(),
+        description: info.description.clone().into(),
+        counts: event
+            .interested
+            .map(|n| t.event_interested.replace("{}", &group_digits(n, lang)))
+            .unwrap_or_default()
+            .into(),
+        event_when: event_when.into(),
+        event_live: event.live,
+        has_cover: cover.is_some(),
+        cover_img: cover.unwrap_or_default(),
         ..Default::default()
     }
 }
 
 fn ready_card(code: &str, info: &InviteInfo, scale: f32) -> InviteCard {
+    if let Some(event) = &info.event {
+        return event_card(code, info, event, scale);
+    }
     let lang = crate::utils::i18n_ui::current_language();
     let t = crate::utils::i18n_ui::ui_text();
     let mut counts = Vec::new();
@@ -133,6 +225,7 @@ fn ready_card(code: &str, info: &InviteInfo, scale: f32) -> InviteCard {
         counts: counts.join(" · ").into(),
         has_icon: icon.is_some(),
         icon_img: icon.unwrap_or_default(),
+        ..Default::default()
     }
 }
 
@@ -196,6 +289,56 @@ fn fetch(code: String, app: slint::Weak<AppWindow>) {
 }
 
 async fn fetch_info(code: &str) -> Option<InviteInfo> {
+    if let Some((guild_id, event_id)) = code.strip_prefix(EVENT_KEY_PREFIX).and_then(|ids| ids.split_once(':')) {
+        return fetch_event(guild_id, event_id).await;
+    }
+    fetch_invite(code).await
+}
+
+async fn fetch_event(guild_id: &str, event_id: &str) -> Option<InviteInfo> {
+    let client = SESSION_CLIENT.get()?.lock().ok()?.clone()?;
+    let json = client.get_scheduled_event(guild_id, event_id).await.ok()?;
+    let starts_at = json["scheduled_start_time"]
+        .as_str()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|at| at.with_timezone(&chrono::Local));
+    // Status 2 = active.
+    let live = json["status"].as_u64() == Some(2);
+    let cover = match json["image"].as_str() {
+        Some(hash) if hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+            download_cover(&format!("https://cdn.discordapp.com/guild-events/{event_id}/{hash}.png?size=1024")).await
+        }
+        _ => None,
+    };
+    Some(InviteInfo {
+        guild_name: json["name"].as_str().unwrap_or_default().to_string(),
+        description: json["description"].as_str().unwrap_or_default().to_string(),
+        online: None,
+        members: None,
+        icon: None,
+        event: Some(EventInfo { starts_at, live, interested: json["user_count"].as_u64(), cover }),
+    })
+}
+
+/// Cover cropped to the card's 2.5:1 frame at up to 1000 px wide.
+async fn download_cover(url: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let bytes = http_client().get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || {
+        let img = image::load_from_memory(&bytes).ok()?;
+        let w = img.width().min(1000);
+        let h = (w as f32 / 2.5).round() as u32;
+        let cropped = img.resize_to_fill(w, h, image::imageops::FilterType::Lanczos3).to_rgba8();
+        Some((cropped.into_raw(), w, h))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn fetch_invite(code: &str) -> Option<InviteInfo> {
     // Invite lookups need no token; the user's session is not sent for them.
     let url = format!("https://discord.com/api/v10/invites/{code}?with_counts=true");
     let json: serde_json::Value = http_client().get(&url).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
@@ -213,6 +356,7 @@ async fn fetch_info(code: &str) -> Option<InviteInfo> {
         online: json["approximate_presence_count"].as_u64(),
         members: json["approximate_member_count"].as_u64(),
         icon,
+        event: None,
     })
 }
 
@@ -257,6 +401,18 @@ mod tests {
         let text = "Join https://discord.gg/discord-developers or discord.com/invite/AbC12 \
                     and again https://discord.gg/discord-developers, plus discordapp.com/invite/x";
         assert_eq!(invite_codes(text), vec!["discord-developers", "AbC12"]);
+    }
+
+    #[test]
+    fn finds_event_links_as_cache_keys() {
+        let text = "RSVP: https://discord.com/events/613425648685547541/1425901390633250877 \
+                    again https://discord.com/events/613425648685547541/1425901390633250877";
+        assert_eq!(event_keys(text), vec!["event:613425648685547541:1425901390633250877"]);
+        assert_eq!(
+            invite_url("event:1:2"),
+            "https://discord.com/events/1/2"
+        );
+        assert!(event_keys("https://discord.com/events/").is_empty());
     }
 
     #[test]
