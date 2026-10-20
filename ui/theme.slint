@@ -5,13 +5,25 @@ export enum ThemeMode {
     light,
 }
 
-// Chat typography is separate from the denser navigation and settings UI.
-export global ChatTypography {
+// One family (Inter, bundled) and one whole-pixel scale for the whole UI.
+// Fractional sizes and sub-11px text render blurry with the FemtoVG renderer.
+export global TypeScale {
     out property <string> family: "Inter";
-    out property <length> body-size: 15.5px;
-    out property <length> author-size: 14px;
-    out property <length> preview-size: 11.5px;
-    out property <length> embed-size: 13.5px;
+    out property <length> micro: 11px;     // badges, all-caps section labels
+    out property <length> caption: 12px;   // metadata, hints, timestamps
+    out property <length> small: 13px;     // secondary UI text
+    out property <length> body: 14px;      // default UI text
+    out property <length> title: 16px;     // panel and dialog titles
+    out property <length> heading: 20px;   // page headings
+}
+
+// Chat reads a step larger than the denser navigation and settings UI.
+export global ChatTypography {
+    out property <string> family: TypeScale.family;
+    out property <length> body-size: 15px;
+    out property <length> author-size: 15px;
+    out property <length> preview-size: TypeScale.caption;
+    out property <length> embed-size: TypeScale.body;
 }
 
 export global AppTheme {
