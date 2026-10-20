@@ -172,8 +172,12 @@ pub fn process_signaling_json(
                 mark_stream_started(pkt_uid);
             }
 
-            // Se o peer parou de transmitir tela, fecha imediatamente (<50ms) sem esperar timeout de pacotes UDP
-            if !is_streaming && was_streaming {
+            // Se o peer parou de transmitir tela, fecha imediatamente (<50ms) sem esperar timeout de pacotes UDP.
+            // Anyone who knows the channel can send this presence under any id: while
+            // authentic video still comes from that user, it does not end the stream.
+            if !is_streaming && was_streaming && super::watch::video_recently_from(pkt_uid) {
+                warn!("📡 [SIGNALING PRESENÇA] UID={} disse que parou, mas o vídeo dele continua chegando: ignorado.", pkt_uid);
+            } else if !is_streaming && was_streaming {
                 trigger_stream_stopped(pkt_uid);
             }
 

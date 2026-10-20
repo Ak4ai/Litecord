@@ -1,14 +1,17 @@
 # Only the sender ends its stream: while the receiver watches, a forged OP_STOP (no proof
 # made with the stream key) must not take the picture away; when the sender really stops,
-# the receiver must close the stream within a second.
+# the receiver must close the stream within a second. With -SignalingUrl (a local
+# `wrangler dev`, never the real worker) it also joins the signaling room under the
+# sender's id, says the sender stopped and leaves; that must not end the stream either.
 #
 #   powershell -File scripts\perf\stream_stop_auth.ps1 -Sender "<account>" -Receiver "<account>" `
-#       -Server "<server name>" -Channel "<voice channel>"
+#       -Server "<server name>" -Channel "<voice channel>" [-SignalingUrl ws://127.0.0.1:8787]
 param(
     [Parameter(Mandatory)] [string]$Sender,
     [Parameter(Mandatory)] [string]$Receiver,
     [Parameter(Mandatory)] [string]$Server,
     [Parameter(Mandatory)] [string]$Channel,
+    [string]$SignalingUrl = "",
     [string]$Exe = "",
     [string]$OutDir = ""
 )
@@ -17,8 +20,10 @@ $ErrorActionPreference = "Stop"
 if (-not $Exe) { $Exe = Join-Path $RepoRoot "target\release\litecord.exe" }
 if (-not $OutDir) { $OutDir = Join-Path $env:TEMP ("litecord-stopauth-" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-$senderProc = Start-Litecord $Exe (Join-Path $OutDir "sender") 47131 @{ LITECORD_TEST_ACCOUNT = $Sender; LITECORD_TEST_MUTE_OUTPUT = "1" }
-$receiverProc = Start-Litecord $Exe (Join-Path $OutDir "receiver") 47132 @{ LITECORD_TEST_ACCOUNT = $Receiver; LITECORD_TEST_MUTE_OUTPUT = "1" }
+$extra = @{}
+if ($SignalingUrl) { $extra.LITECORD_SIGNALING_URL = $SignalingUrl }
+$senderProc = Start-Litecord $Exe (Join-Path $OutDir "sender") 47131 (@{ LITECORD_TEST_ACCOUNT = $Sender; LITECORD_TEST_MUTE_OUTPUT = "1" } + $extra)
+$receiverProc = Start-Litecord $Exe (Join-Path $OutDir "receiver") 47132 (@{ LITECORD_TEST_ACCOUNT = $Receiver; LITECORD_TEST_MUTE_OUTPUT = "1" } + $extra)
 function State { Send-Litecord 47132 '{"cmd":"state"}' }
 $failures = @()
 try {
@@ -47,6 +52,14 @@ try {
     $active = (State).stream.has_active_stream
     "after the forged stop: $n pictures in 3 s, stream active: $active"
     if ($n -lt 120 -or -not $active) { $failures += "a forged OP_STOP ended the stream ($n pictures, active $active)" }
+
+    if ($SignalingUrl) {
+        node (Join-Path $PSScriptRoot "forge_presence.cjs") $SignalingUrl "$cid" "$($a.user_id)"
+        $f0 = (State).stream.frames_shown; Start-Sleep -Seconds 3; $n = (State).stream.frames_shown - $f0
+        $active = (State).stream.has_active_stream
+        "after the forged presence and leave: $n pictures in 3 s, stream active: $active"
+        if ($n -lt 120 -or -not $active) { $failures += "a forged presence or leave ended the stream ($n pictures, active $active)" }
+    }
 
     Send-Litecord 47131 '{"cmd":"stop_screen_share"}' | Out-Null
     $t0 = Get-Date; $closed = -1
