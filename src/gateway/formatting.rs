@@ -600,7 +600,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         let after_label = &after_bracket[bracket_end + 1..];
                         if after_label.starts_with('(') {
                             if let Some(paren_end) = after_label.find(')') {
-                                let url = &after_label[1..paren_end];
+                                // `[label](<url>)` is Discord's link without an embed preview.
+                                let url = after_label[1..paren_end].trim().trim_start_matches('<').trim_end_matches('>');
                                 if url.starts_with("http") {
                                     let mut next_rem = &after_label[paren_end + 1..];
                                     let is_bold_wrapped = before.ends_with("**") && next_rem.starts_with("**");
@@ -853,11 +854,42 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         }
 
         if !line_blocks.is_empty() {
-            lines.push(MessageLineData { blocks: line_blocks });
+            push_line_split_long_text(line_blocks, &mut lines);
         }
     }
 
     lines
+}
+
+/// Slint has no inline text flow: a mixed line is a HorizontalLayout, and a long
+/// word-wrapped Text squeezed between links collapses to one letter per row.
+/// Long text blocks of a mixed line therefore get a row of their own, where they
+/// wrap at full width; short text stays inline with its links and emojis.
+fn push_line_split_long_text(blocks: Vec<MessageBlockData>, lines: &mut Vec<MessageLineData>) {
+    const INLINE_TEXT_MAX_CHARS: usize = 40;
+
+    if blocks.len() <= 1 {
+        lines.push(MessageLineData { blocks });
+        return;
+    }
+
+    let mut row: Vec<MessageBlockData> = Vec::new();
+    for block in blocks {
+        let is_plain_text = !block.is_link && !block.is_command && !block.is_emoji;
+        if is_plain_text && block.text.chars().count() > INLINE_TEXT_MAX_CHARS {
+            if !row.is_empty() {
+                lines.push(MessageLineData { blocks: std::mem::take(&mut row) });
+            }
+            let mut block = block;
+            block.text = block.text.trim().to_string();
+            lines.push(MessageLineData { blocks: vec![block] });
+        } else {
+            row.push(block);
+        }
+    }
+    if !row.is_empty() {
+        lines.push(MessageLineData { blocks: row });
+    }
 }
 
 pub fn format_decimal_color(color_val: &Value) -> String {
@@ -1580,5 +1612,38 @@ mod tests {
         assert_eq!(format_discord_timestamp(now + 3 * 3600 + 30, Some("R")), t.time_in.replace("{}", "3 h"));
         assert_eq!(format_discord_timestamp(now - 10, Some("R")), t.time_just_now);
     }
-}
 
+
+    #[test]
+    fn angle_bracket_links_become_clickable_links() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("• [Watch the talk](<https://youtu.be/abc>)", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://youtu.be/abc");
+        let blocks = &lines[0].blocks;
+        assert!(blocks.iter().any(|b| b.is_link && b.text == "Watch the talk"));
+        assert!(blocks.iter().all(|b| !b.text.contains("](<") && !b.text.contains(">)")));
+    }
+
+    #[test]
+    fn long_text_between_links_gets_its_own_row() {
+        let mut links = Vec::new();
+        let input = "[Godotfest](<https://godotfest.com>) talking about how to build a community on Discord and evolve it. [Grab a ticket here](<https://tickets.godotfest.com>) to get a discount!";
+        let lines = parse_text_into_lines(input, &mut links);
+        assert_eq!(links.len(), 2);
+        for line in &lines {
+            if line.blocks.len() > 1 {
+                assert!(line.blocks.iter().all(|b| b.is_link || b.text.chars().count() <= 40));
+            }
+        }
+        assert!(lines.iter().any(|l| l.blocks.len() == 1 && l.blocks[0].text.starts_with("talking about")));
+    }
+
+    #[test]
+    fn short_text_stays_inline_with_its_link() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("When: soon | [RSVP now](https://example.com)", &mut links);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].blocks.len(), 2);
+    }
+}
