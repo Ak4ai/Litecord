@@ -17,6 +17,7 @@ pub mod image_shape;
 pub mod network_settings;
 pub mod hardware_monitor;
 pub mod client_identity;
+pub mod window_state;
 #[cfg(feature = "automation")]
 pub mod test_hooks;
 
@@ -33,4 +34,5 @@ pub use video_settings::*;
 pub use gpu_encoder::*;
 pub use network_settings::*;
 pub use hardware_monitor::*;
+pub use window_state::*;
 
