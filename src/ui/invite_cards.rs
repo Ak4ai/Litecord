@@ -41,6 +41,11 @@ struct EventInfo {
 }
 
 const EVENT_KEY_PREFIX: &str = "event:";
+const INVITE_EVENT_QUERY: &str = "?event=";
+
+fn is_event_key(key: &str) -> bool {
+    key.starts_with(EVENT_KEY_PREFIX) || key.contains(INVITE_EVENT_QUERY)
+}
 const EVENT_COVER_LOGICAL: (f32, f32) = (400.0, 160.0);
 
 /// Event lookups need the user's session (only members see a server's events).
@@ -93,8 +98,15 @@ pub fn invite_codes(text: &str) -> Vec<String> {
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
                 .collect();
-            if (2..=32).contains(&code.len()) && !codes.contains(&code) {
-                codes.push(code);
+            // `discord.gg/<code>?event=<id>` invites to one of the server's events,
+            // and is shown as that event's card.
+            let event: String = after[code.len()..]
+                .strip_prefix(INVITE_EVENT_QUERY)
+                .map(|ids| ids.chars().take_while(|c| c.is_ascii_digit()).collect())
+                .unwrap_or_default();
+            let key = if event.is_empty() { code.clone() } else { format!("{code}{INVITE_EVENT_QUERY}{event}") };
+            if (2..=32).contains(&code.len()) && !codes.contains(&key) {
+                codes.push(key);
             }
             rest = after;
         }
@@ -156,7 +168,7 @@ fn loading_card(code: &str) -> InviteCard {
         code: code.into(),
         url: invite_url(code).into(),
         loaded: false,
-        is_event: code.starts_with(EVENT_KEY_PREFIX),
+        is_event: is_event_key(code),
         ..Default::default()
     }
 }
@@ -298,6 +310,12 @@ async fn fetch_info(code: &str) -> Option<InviteInfo> {
 async fn fetch_event(guild_id: &str, event_id: &str) -> Option<InviteInfo> {
     let client = SESSION_CLIENT.get()?.lock().ok()?.clone()?;
     let json = client.get_scheduled_event(guild_id, event_id).await.ok()?;
+    event_from_json(&json, event_id).await
+}
+
+/// Card data of a scheduled event object, from the events API or an invite.
+async fn event_from_json(json: &serde_json::Value, event_id: &str) -> Option<InviteInfo> {
+    json.get("name")?;
     let starts_at = json["scheduled_start_time"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -338,10 +356,23 @@ async fn download_cover(url: &str) -> Option<(Vec<u8>, u32, u32)> {
     .flatten()
 }
 
-async fn fetch_invite(code: &str) -> Option<InviteInfo> {
+async fn fetch_invite(key: &str) -> Option<InviteInfo> {
+    let (code, event_id) = match key.split_once(INVITE_EVENT_QUERY) {
+        Some((code, event)) => (code, Some(event)),
+        None => (key, None),
+    };
     // Invite lookups need no token; the user's session is not sent for them.
-    let url = format!("https://discord.com/api/v10/invites/{code}?with_counts=true");
+    let mut url = format!("https://discord.com/api/v10/invites/{code}?with_counts=true");
+    if let Some(event) = event_id {
+        url.push_str(&format!("&guild_scheduled_event_id={event}"));
+    }
     let json: serde_json::Value = http_client().get(&url).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
+    // An event that has ended is no longer returned: the plain invite card is shown.
+    if let (Some(event_id), Some(event)) = (event_id, json.get("guild_scheduled_event")) {
+        if let Some(info) = event_from_json(event, event_id).await {
+            return Some(info);
+        }
+    }
     let guild = json.get("guild")?;
     let guild_id = guild["id"].as_str()?;
     let icon = match guild["icon"].as_str() {
@@ -413,6 +444,15 @@ mod tests {
             "https://discord.com/events/1/2"
         );
         assert!(event_keys("https://discord.com/events/").is_empty());
+    }
+
+    #[test]
+    fn invites_to_an_event_keep_the_event_in_their_key() {
+        let text = "@cargo https://discord.gg/seafight-269116793526812673?event=1560218812681289748";
+        let keys = invite_codes(text);
+        assert_eq!(keys, vec!["seafight-269116793526812673?event=1560218812681289748"]);
+        assert!(is_event_key(&keys[0]));
+        assert_eq!(invite_url(&keys[0]), "https://discord.gg/seafight-269116793526812673?event=1560218812681289748");
     }
 
     #[test]
