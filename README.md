@@ -28,7 +28,9 @@
 ## 🎮 Why Gamers Choose Litecord
 
 - 🏆 **Zero In-Game FPS Drops & Micro-Stutters**: Reclaims CPU threads eaten by Chromium/Electron, improving 1% low framerates in competitive titles (*CS2, Valorant, Warzone, Apex Legends, Fortnite, League of Legends*).
-- 📺 **Full HD 1080p 60 FPS Screen Sharing**: Direct hardware framebuffer capture (DXGI / Direct3D11) with WASAPI loopback audio and sub-20ms glass-to-glass latency.
+- 📺 **Full HD 1080p 60 FPS Screen Sharing on the GPU**: The captured screen never leaves the GPU: it is scaled, converted and encoded there (NVENC, Quick Sync or AMF), and the viewer's GPU decodes it and draws it straight to the window. Sending 1080p60 costs ~13% of one CPU core and watching ~8%.
+- 👀 **Watch on Demand**: A new stream shows up as LIVE with a **Watch** button, like on Discord. Nothing is sent to anyone who is not watching, and with no viewers the sender does not encode at all.
+- 🌍 **Share to a Browser**: Send your stream to up to three friends who do not have Litecord, through a link they open in Chrome, Edge or Firefox, with no login.
 - 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 (`[ - ] P:2 [ + ]`) so critical tactical callouts automatically duck background chatter and music bots during clutch moments.
 - 🪟 **Detached Video & Stream Popouts (PiP)**: Pop out live screen shares and video streams into a dedicated floating Picture-in-Picture window down to 180px with an always-on-top pin, responsive controls hierarchy, and click-through ghost mode.
 - 🌐 **Native Proxy Support & Censorship Bypass**: Built-in routing for HTTP/HTTPS proxies, SOCKS5 (Tor, Shadowsocks, V2Ray), and OS System Proxy, featuring real-time ping/latency diagnostics and proactive offline detection.
@@ -40,7 +42,10 @@
 - 🖥️ **CPU-Rendered Interface by Default**: The UI is drawn on the CPU, so no GPU context or graphics driver threads sit next to your game, and in the tray the app wakes up less than once per second. GPU rendering is one switch away in Settings → Video & Interface.
 - 📊 **Real-Time Hardware Performance HUD**: Shows process-specific CPU usage, physical RAM in MB, and GPU load right in the titlebar HUD, with live Windows Taskbar updates (`Litecord - x%/ymb`) and System Tray tooltips.
 - 🔊 **Dynamic Audio Output Switching**: Switch output audio devices (headphones/speakers) mid-call on the fly with automatic playback thread re-binding, without leaving the voice room or restarting the application.
-- 🎯 **Multi-Codec GPU Acceleration**: Choose your preferred video encoder in Settings (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware, or Cisco OpenH264 SIMD).
+- 🎯 **GPU Selection & Hardware Encoding**: Automatic mode uses the GPU that drives the captured screen (on a laptop the dedicated GPU stays free for the game), or pick Intel, NVIDIA, AMD or CPU (OpenH264) in Settings, which also shows the GPU and method really in use.
+- 🖱️ **Mouse Buttons as Shortcuts**: Mute and deafen with the side, middle or right mouse button. With keyboard shortcuts only, the shortcut listener sleeps until a key is pressed.
+- 🗂️ **Your Discord Server Order**: Servers appear in the same order and folders as on Discord, and servers and channels can be reordered by dragging.
+- 🩺 **Network Diagnostic**: Checks whether a stream with someone on another network can connect directly (NAT type, blocked UDP, signaling) and copies a report you can paste into an issue.
 - 🎙️ **Opus PLC (Packet Loss Concealment)**: Prevents robotic voice stuttering and audio crackles even under 100% CPU/GPU load.
 - 💬 **Direct Messages (DMs) & 1-Click Voice Calls**: Access private conversations and group DMs directly from the dedicated chat bubble icon. Start private voice calls with ringing audio, answer/reject incoming call cards, and real-time unread count badges.
 - 🎨 **Light & Dark Themes with Persistent Preference**: Enjoy a clean, optional native Light Theme for daytime reading alongside the default Dark Theme, with centralized semantic tokens in Slint (`AppTheme`).
@@ -58,42 +63,39 @@
 | :--- | :--- | :--- | :--- |
 | **Idle CPU Usage** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x lighter CPU footprint** |
 | **Active Voice CPU** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero Game Stuttering** |
-| **1080p 60 FPS Stream CPU** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Butter-Smooth Game Play** |
+| **1080p 60 FPS Stream CPU** | 8.0% - 16.0% | **~0.5% - 0.9%** | 🎮 **Butter-Smooth Game Play** |
 | **RAM Usage (DeepSleep Tray)** | 350 MB - 750 MB | **~10 MB** | 🌙 **98% lighter background footprint** |
 | **RAM Usage (Active Window)** | 500 MB - 900 MB | **~16 MB - 25 MB** | 💾 **Saves up to 880 MB RAM** |
 | **Startup Time** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Instant Match Launch** |
 | **Binary Size** | ~180 MB | **~8 MB Standalone** | 📦 **Pure Native Machine Code** |
 
+<sub>CPU percentages above are of the whole CPU, as Task Manager shows them. Measured on an i5-13450HX (16 threads) with v1.3.0: sending a 1080p60 stream costs ~13% of one core (~0.8% of the CPU) and watching one ~8% of one core (~0.5%), over a 5-hour session with no dropped frames. Details and scripts in <a href="scripts/perf/README.md">scripts/perf</a>.</sub>
+
 ---
 
 ## 📺 Full HD 1080p 60 FPS Video & Audio Pipeline
 
-Litecord features an ultra-optimized native video streaming and screen capture engine built in Rust (`src/screen_capture.rs`):
+Litecord streams with its own native engine (`src/screen_capture/`). On Windows the picture stays on the GPU from capture to display:
 
 ```text
-  [ Game / Desktop Framebuffer ]
+  [ Screen ] ──(DXGI Desktop Duplication / Windows Graphics Capture)──► GPU texture
+                │                                          [ WASAPI loopback audio ]
+                ▼ (Video Processor: scale + BT.709 colour conversion on the GPU)   │
+  [ Hardware encoder: NVENC / Quick Sync / AMF ]  (CPU fallback: OpenH264)        ▼ Opus
+                │                                                                  │
+                ▼  AES-256-GCM with a key drawn for each stream, given only to viewers (X25519)
+  [ UDP peer-to-peer, 1350-byte packets + XOR FEC ]  ── only to those who pressed Watch
                 │
-                ▼ (DXGI Desktop Duplication / D3D11 Zero-Copy)
-  [ Hardware Frame Capture @ 60 FPS ] ──► [ WASAPI In-Game Audio Loopback ]
-                │                                    │
-                ▼ (OpenH264 / TurboJPEG SIMD)        ▼ (48kHz Stereo PCM)
-  [ AES-256-GCM Hardware E2EE Encryption ] ◄────────┘
-                │
-                ▼ (Low-Latency Packetizer - 1350B MTU + XOR FEC Parity)
-  [ Direct UDP / LTPV Protocol - Sub-20ms Latency ]
-                │
-                ▼ (E2EE Decryption + Jitter Buffer Reassembly)
-  [ Double-Buffered SharedPixelBuffer<Rgba8Pixel> ]
-                │
-                ▼
-  [ Slint Native Viewport / Detached PiP Popout Window ]
+                ▼ (decrypt, reassemble, keyframe on demand)
+  [ GPU decoder (D3D11 video) ] ──► [ Windows composition layer under the Slint UI ]
+                                     (main window or Picture-in-Picture popout)
 ```
 
 ### 🚀 Key Engineering Pillars:
-1. **Direct GPU Framebuffer Capture (Zero-Copy DXGI / D3D11)**:
-   - Directly grabs raw frames from the desktop compositor without CPU blitting, allowing constant 60 FPS capture at 1080p / 1440p / 4K with < 1% CPU overhead.
-2. **End-to-End Encrypted (AES-256-GCM E2EE)**:
-   - Every single video frame and audio packet is encrypted with **AES-256-GCM** using session keys derived from the voice room ID and cryptographic salts. Sniffers on local Wi-Fi / LAN only see randomized encrypted noise.
+1. **Zero-Copy GPU Pipeline (Windows)**:
+   - Capture, scaling, colour conversion, encoding, decoding and display all happen on the GPU; the CPU never touches the pixels. When the GPU cannot do a step, Litecord falls back to the CPU path by itself.
+2. **End-to-End Encrypted, per Stream (AES-256-GCM)**:
+   - Each stream draws a random key, which is handed only to viewers who asked to watch and are in the voice channel, encrypted for each of them with X25519. Video and audio frames are encrypted with **AES-256-GCM**; only the sender can end its stream.
 3. **Hardware-Accelerated AES-NI Performance**:
    - Sub-microsecond CPU execution via native silicon **`AES-NI`** vector instructions (< 0.02% CPU impact).
 4. **WASAPI In-Game Audio Loopback**:
@@ -178,9 +180,9 @@ Security, privacy, and account integrity are core engineering pillars of Litecor
 
 | Security Domain | Implementation & Technology | Protection Level |
 | :--- | :--- | :--- |
-| **P2P Video & Screen Sharing** | **AES-256-GCM (Derived with `voice_secret_key`)** | 🛡️ **Military-Grade E2EE**. Unreadable to network sniffers or outside users. |
-| **Loopback System Audio** | **AES-256-GCM Encrypted PCM Frames** | 🛡️ **Military-Grade E2EE**. Game sound & mic are confidential. |
-| **Anonymous P2P Signaling** | **Authenticated SHA-256 Hashed MQTT Topics** | 🛡️ **Zero IP/Identity Leakage**. External observers cannot identify rooms. |
+| **P2P Video & Screen Sharing** | **AES-256-GCM, random key per stream, delivered to each viewer with X25519** | 🛡️ **End-to-end encrypted**. Only viewers who asked to watch can decrypt it. |
+| **Stream Audio** | **Opus frames, AES-256-GCM with the stream key** | 🛡️ **End-to-end encrypted**, like the video. |
+| **P2P Signaling** | **Litecord's own Cloudflare Worker, one room per voice channel** | ⚠️ **Carries no media.** Presence is encrypted with a key derived from the channel ID, so whoever knows that ID can read the addresses announced in the room (see [WATCH_ON_DEMAND.md](docs/WATCH_ON_DEMAND.md)). |
 | **Discord Voice Gateway** | **Official DAVE Protocol (MLS RFC 9420) + Opus PLC** | 🛡️ **Discord Certified E2EE Voice**. Direct SFU connection. |
 | **Token Storage at Rest (Linux)** | **AES-256-GCM Hardware-Bound (`~/.config/litecord/`)** | 🛡️ **Machine/User Bound (0700/0600)**. Key tied to `/etc/machine-id` + UID. |
 | **Token Storage at Rest (Windows)** | **Windows DPAPI (`CryptProtectData`)** | 🛡️ **OS Vault Protected**. Bound to local Windows user session. |
@@ -190,8 +192,9 @@ Security, privacy, and account integrity are core engineering pillars of Litecor
 | **Application Updater** | **Strict GitHub Origin Domain Verification (TLS/HTTPS)** | 🛡️ **Spoofing & Man-in-the-Middle Protected**. |
 
 ### 🌐 2. Zero-Trust & Direct Connections Only (No Intermediaries)
-- Litecord communicates **strictly and directly** with official Discord endpoints (`discord.com/api`, `gateway.discord.gg`, and Discord Voice SFUs).
-- **No proxy servers, no third-party tracking relays, and no telemetry backends**.
+- Litecord talks directly to official Discord endpoints (`discord.com/api`, `gateway.discord.gg`, and Discord Voice SFUs).
+- The only other server is Litecord's own signaling worker on Cloudflare, which introduces peers for screen sharing and serves the page for browser viewers. **No video or audio goes through it**: streams travel directly between the people in the call.
+- **No third-party tracking relays and no telemetry backends**.
 - **100% Open Source & Auditable (MIT License)**: Every line of Rust code is public and verifiable by the community.
 
 ### ⚠️ 3. Discord Terms of Service (ToS) & Account Safety
@@ -207,10 +210,10 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (Beta 1.2.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (Beta 1.2.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux AppImage (Beta 1.2.0 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
-| **🐧 Linux Standalone (Beta 1.2.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (Beta 1.3.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (Beta 1.3.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux AppImage (Beta 1.3.0 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
+| **🐧 Linux Standalone (Beta 1.3.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ### 🚀 Running the AppImage on Linux
 ```bash
@@ -314,6 +317,9 @@ Litecord is built to be a **simple, clean, and ultra-lightweight interface for g
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Project Creator & Lead Maintainer (Core architecture, Slint UI, Audio Pipeline, Ducking Engine, Security) | **100% (Core)** |
 | [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering, Slint UI modularization, grouped chat messages with day separators & persistent avatars) | **PR #22, #23, #26** |
+| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Community Contributor (Rich bot messages, polls & markdown, Discord server order with drag-and-drop reordering, Discord-style user bar, faster server switching, quiet speech preservation & Linux voice buffers) | **PR #36, #37, #38, #39, #40** |
+| [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Community Contributor (Mouse buttons as mute/deafen shortcuts) | **PR #31** |
+| **Bug hunters & testers** | [@SabinoRotondi](https://github.com/SabinoRotondi) (frame-time stability that drove the 1.3.0 lightness work, mute hotkey), [@linuxmobile](https://github.com/linuxmobile) (client identity audit), [@3941](https://github.com/3941) (Nobara/Fedora install & AppImage), [@SirWalkerCZ](https://github.com/SirWalkerCZ) (localization), [@begadmoh1](https://github.com/begadmoh1) (DMs, profile pictures), [@kazam0180](https://github.com/kazam0180) (AnyLinux AppImage), [@mirkohubtv](https://github.com/mirkohubtv) (proxy support), [@ProbablyM-S](https://github.com/ProbablyM-S) (Linux build) | **Issues #1, #19–#21, #24, #25, #27–#30** |
 | *Your Name Here* | *Submit a Pull Request to be credited here!* | *%* |
 
 ---

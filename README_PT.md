@@ -28,7 +28,9 @@
 ## 🎮 Por que Gamers usam o Litecord
 
 - 🏆 **Zero Quedas de FPS e Sem Micro-Gaguejos**: Libera os núcleos da CPU antes devorados pelo Chromium/Electron, elevando o 1% low FPS em jogos competitivos (*CS2, Valorant, Warzone, Apex Legends, Fortnite, League of Legends*).
-- 📺 **Transmissão Full HD 1080p 60 FPS**: Captura direta de hardware (DXGI / Direct3D11) com áudio in-game por loopback WASAPI e latência sub-20ms.
+- 📺 **Transmissão Full HD 1080p 60 FPS pela GPU**: A tela capturada não sai da GPU: ela é redimensionada, convertida e codificada lá (NVENC, Quick Sync ou AMF), e a GPU de quem assiste decodifica e desenha direto na janela. Transmitir 1080p60 custa ~13% de um núcleo da CPU e assistir ~8%.
+- 👀 **Assistir sob Demanda**: Uma transmissão nova aparece como AO VIVO com o botão **Assistir**, como no Discord. Nada é enviado a quem não está assistindo, e sem espectadores quem transmite nem codifica.
+- 🌍 **Compartilhar num Navegador**: Mande a sua transmissão para até três amigos que não têm o Litecord, por um link que abre no Chrome, Edge ou Firefox, sem login.
 - 👑 **Prioridade de Fala e Ducking para Capitães/IGL**: Defina prioridades (`[ - ] P:2 [ + ]`) para que chamadas táticas em momentos clutch atenuem automaticamente o áudio de bots de música e conversa de fundo.
 - 🪟 **Janela Flutuante Desanexada (PiP)**: Desanexe transmissões em uma janela flutuante com pin para fixar no topo, controles responsivos e modo fantasma clique-através.
 - 🌐 **Suporte Nativo a Proxy & Bypass de Censura**: Roteamento integrado por Proxy HTTP/HTTPS, SOCKS5 (Tor, Shadowsocks, V2Ray) e Proxy do Sistema, com teste de ping/latência e diagnóstico inteligente de falhas.
@@ -38,7 +40,10 @@
 - 🖥️ **Interface desenhada pela CPU por padrão**: a interface é desenhada pela CPU, então nenhum contexto de GPU nem threads do driver de vídeo ficam ao lado do seu jogo, e na bandeja o app acorda menos de uma vez por segundo. A renderização pela GPU fica a um clique em Configurações → Vídeo e Interface.
 - 📊 **Monitor de Hardware em Tempo Real**: Mostra o uso de CPU do app, RAM física em MB e GPU no HUD da barra superior, com atualização ao vivo na Barra de Tarefas do Windows (`Litecord - x%/ymb`) e tooltip na bandeja.
 - 🔊 **Troca Dinâmica de Dispositivo de Saída**: Alterne entre fones de ouvido e caixas de som no meio de chamadas ativas instantaneamente, sem sair da sala de voz nem reiniciar a aplicação.
-- 🎯 **Aceleração Multi-Codec por GPU**: Escolha seu codificador de vídeo preferido nas Configurações (NVIDIA NVENC, AMD AMF Zero-Copy, Windows Media Foundation, FFmpeg Hardware ou OpenH264 SIMD).
+- 🎯 **Escolha da GPU e Codificação por Hardware**: O modo automático usa a GPU ligada à tela capturada (no notebook, a dedicada fica livre para o jogo), ou escolha Intel, NVIDIA, AMD ou CPU (OpenH264) nas Configurações, que também mostram a placa e o método realmente usados.
+- 🖱️ **Botões do Mouse como Atalho**: Mute e ensurdeça com o botão lateral, do meio ou direito do mouse. Só com atalhos de teclado, a escuta de atalhos dorme até uma tecla ser apertada.
+- 🗂️ **A Ordem dos Seus Servidores no Discord**: Servidores na mesma ordem e pastas do Discord, e servidores e canais podem ser reordenados arrastando.
+- 🩺 **Diagnóstico de Rede**: Testa se uma transmissão com alguém de outra rede consegue conectar direto (tipo de NAT, UDP bloqueado, sinalização) e copia um relatório para colar numa issue.
 - 💬 **Mensagens Diretas (DMs) & Chamadas de Voz em 1 Clique**: Acesse suas conversas privadas e grupos de DM diretamente pelo novo ícone de balão de chat. Inicie chamadas de voz privadas com feedback sonoro de toques, card visual de chamada recebida (Atender/Recusar) e badges de mensagens não lidas sincronizadas em tempo real.
 - 🎨 **Tema Claro e Escuro com Preferência Persistente**: Novo tema claro opcional para leitura confortável em ambientes claros, com tokens de cores semânticos no Slint (`AppTheme`).
 - 👥 **Visualização de Participantes em Salas de Voz**: Veja quem está dentro de cada canal de voz antes de entrar, com avatares de iniciais, conexão em 1 clique e detecção de presença.
@@ -55,22 +60,24 @@
 | :--- | :--- | :--- | :--- |
 | **Uso de CPU em Espera** | 1.5% - 4.5% | **0.00% - 0.02% (DeepSleep: 0.0%)** | 🚀 **150x mais leve em CPU** |
 | **CPU em Canal de Voz** | 4.0% - 8.0% | **~0.1% - 0.3%** | ⚡ **Zero travamentos no jogo** |
-| **CPU em Stream 1080p 60 FPS** | 8.0% - 16.0% | **~0.8% - 1.4%** | 🎮 **Gameplay 100% fluida** |
+| **CPU em Stream 1080p 60 FPS** | 8.0% - 16.0% | **~0.5% - 0.9%** | 🎮 **Gameplay 100% fluida** |
 | **Uso de RAM (Bandeja/DeepSleep)** | 350 MB - 750 MB | **~10 MB** | 🌙 **98% mais leve em segundo plano** |
 | **Uso de RAM (Janela Aberta)** | 500 MB - 900 MB | **~16 MB - 25 MB** | 💾 **Economiza até 880 MB de RAM** |
 | **Tempo de Inicialização** | 4.5s - 9.0s | **< 150 ms** | ⏱️ **Abertura instantânea** |
 | **Tamanho do Executável** | ~180 MB | **~8 MB Standalone** | 📦 **Código de máquina nativo puro** |
+
+<sub>Os percentuais de CPU acima são da CPU inteira, como o Gerenciador de Tarefas mostra. Medido num i5-13450HX (16 threads) com a v1.3.0: transmitir 1080p60 custa ~13% de um núcleo (~0,8% da CPU) e assistir ~8% de um núcleo (~0,5%), numa sessão de 5 horas sem quadros descartados. Detalhes e scripts em <a href="scripts/perf/README.md">scripts/perf</a>.</sub>
 
 ---
 
 ## 📦 Downloads & Instalação
 
 ### 🪟 Windows (10 / 11 x64)
-- **Instalador Oficial (Beta 1.2.0)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
-- **Versão Portátil (Beta 1.2.0)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
+- **Instalador Oficial (Beta 1.3.0)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
+- **Versão Portátil (Beta 1.3.0)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
 
 ### 🐧 Linux
-- **AppImage Universal AnyLinux (Recomendado - Beta 1.2.0)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
+- **AppImage Universal AnyLinux (Recomendado - Beta 1.3.0)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
 - **Instalação Rápida em 1 Comando**:
 ```bash
 curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
@@ -127,6 +134,9 @@ Litecord/
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Criador & Mantenedor Líder (Arquitetura central, UI Slint, Áudio, Ducking, Segurança, DMs) | **100% (Core)** |
 | [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Contribuidor da Comunidade (Sistema de tema claro, lista de participantes em canais de voz, filtro de permissões, modularização Slint, mensagens agrupadas com separadores de dia e avatares persistentes) | **PR #22, #23, #26** |
+| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Contribuidor da Comunidade (Mensagens de bots, enquetes e markdown, ordem dos servidores do Discord com reordenação por arraste, barra do usuário no estilo do Discord, troca de servidor mais rápida, preservação de falas baixas e buffers de voz no Linux) | **PR #36, #37, #38, #39, #40** |
+| [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Contribuidor da Comunidade (Botões do mouse como atalho de mutar/ensurdecer) | **PR #31** |
+| **Caçadores de bugs e testadores** | [@SabinoRotondi](https://github.com/SabinoRotondi) (estabilidade de FPS que motivou o trabalho de leveza da 1.3.0, atalho de mutar), [@linuxmobile](https://github.com/linuxmobile) (auditoria da identidade do cliente), [@3941](https://github.com/3941) (instalação no Nobara/Fedora e AppImage), [@SirWalkerCZ](https://github.com/SirWalkerCZ) (traduções), [@begadmoh1](https://github.com/begadmoh1) (DMs, fotos de perfil), [@kazam0180](https://github.com/kazam0180) (AppImage AnyLinux), [@mirkohubtv](https://github.com/mirkohubtv) (suporte a proxy), [@ProbablyM-S](https://github.com/ProbablyM-S) (build no Linux) | **Issues #1, #19–#21, #24, #25, #27–#30** |
 | *Seu Nome Aqui* | *Envie um Pull Request para ser creditado aqui!* | *%* |
 
 ---

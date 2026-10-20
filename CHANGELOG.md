@@ -5,9 +5,13 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.2.1-beta] - não publicada — Leveza para quem joga (#27)
+## [v1.3.0-beta] - 2026-10-20 — Leveza para quem joga (#27)
 
 > **Atualização obrigatória.** As transmissões passam a ser enviadas só para quem pede para assistir, com uma chave sorteada a cada transmissão (protocolo 3). Versões anteriores não conseguem assistir nem ser assistidas por esta, então o servidor de sinalização passa a pedir a atualização.
+
+**Em resumo:** parado na bandeja o Litecord acorda menos de uma vez por segundo; transmitir 1080p60 custa ~13% de um núcleo (era 45–49%) e assistir ~8% (era 68%), com a imagem indo da tela à GPU e da GPU à tela sem passar pela CPU; nada é enviado nem decodificado quando ninguém está vendo; cada transmissão tem a sua chave, e só quem transmite pode encerrá-la. Em uma sessão de 5 horas transmitindo e assistindo 1080p60, a CPU ficou estável e nenhum quadro foi descartado.
+
+**In English:** this is a required update (screen sharing protocol 3). In the tray Litecord wakes up less than once a second; sending 1080p60 costs ~13% of one CPU core (was 45–49%) and watching ~8% (was 68%), because frames go from the screen to the GPU encoder and from the GPU decoder to the screen without touching the CPU. Nothing is sent or decoded while nobody is watching; every stream has its own key, and only the sender can end it. Also new: watch on demand, sharing a stream to browsers, GPU selection, a network diagnostic, servers in your Discord order with drag-and-drop, mouse buttons as mute/deafen shortcuts, richer bot messages and polls, and calls that survive Discord's reconnect requests. Thanks to @stickyfran and @PedroZamecki for their contributions.
 
 ### ⚡ Parado de verdade na bandeja
 - **Laço infinito da interface com a janela escondida**: qualquer animação que começasse com o app na bandeja (alguém entrando num canal de voz, um contador de não lidas mudando) fazia o Slint pedir quadros para sempre, ~130 vezes por segundo, até a janela ser reaberta. A causa está no backend winit do Slint (também na 1.18.1); o Litecord passa a usar uma cópia local da versão 1.17.1 com a correção (`vendor/`).
@@ -75,7 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A borda do card da transmissão fica por cima do vídeo: antes a imagem cobria a borda onde encostava, e os cantos do vídeo saíam da borda arredondada.
 
 ### 🐧 Linux
-- Atalhos globais esperam eventos do teclado (`poll` no evdev) em vez de ler as teclas a cada 20 ms. Ainda não testado num Linux real.
+- Atalhos globais esperam eventos do teclado (`poll` no evdev) em vez de ler as teclas a cada 20 ms.
+- Buffers de voz de 20 ms negociados com o dispositivo (ver Voz e chamadas). Contribuição de @stickyfran (#36).
+- Estas mudanças compilam e passam no CI, mas ainda não foram testadas num Linux real: relatos são bem-vindos.
 
 ### 🧪 Como esta versão foi testada
 - **Ferramentas novas** (`scripts/perf/`, só em builds de teste): contagem de acordadas por thread, custo parado e em chamada, e testes de ponta a ponta que rodam duas contas lado a lado no mesmo PC.
@@ -84,9 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Receptor lento**: engasgos simulados de 300 ms passam sem descarte; de 800 ms, um único pedido de quadro-chave e volta a 60 FPS no segundo seguinte.
 - **Transmissão**: abre na hora no outro cliente, 1080p a 60 FPS. CPU do receptor contada em ciclos (a contagem de tempo do Windows deixa de fora threads que acordam por pouco tempo, como uma de 60 FPS): 68% de um núcleo antes, 46% com a conversão no tamanho exibido, 34% decodificando pela GPU e copiando de volta, **8% com as camadas**; em tela cheia, 103–110% pela CPU contra 8%. Na bandeja ou minimizado, 2–3%.
 - **Decodificador da GPU**: comparado quadro a quadro com o OpenH264 e o ffmpeg em placas Intel e NVIDIA, com vídeos de x264 (vários perfis, quadros B, várias referências e fatias), NVENC, Quick Sync, Media Foundation e OpenH264 configurado como no app: todos idênticos. Ao perder pacotes, para de mostrar imagens até o próximo quadro-chave, sem mostrar imagem corrompida.
-- Enquanto alguém assiste pela GPU, o receptor usa cerca de 80 MB a mais de memória; o driver de vídeo guarda parte dela depois (medido isolado: até ~100 MB comprometidos, fora da memória em uso).
-- 70 testes unitários (incluindo a contagem de quadros de referência do H.264 com vídeos sintéticos e a negociação da transmissão pela web) e 6 testes do worker. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
-- Medido só neste PC (Intel e NVIDIA); falta AMD.
+- **Sessão longa**: 5 horas transmitindo e assistindo 1080p60, com 60 idas à bandeja e aberturas do popout: quem assiste ficou em 8–9% de um núcleo e quem transmite em 12–13% do começo ao fim, 60 FPS e nenhum quadro descartado em todas as medições; a memória de quem transmite ficou parada (268–273 MB) e a de quem assiste oscilou entre 171 e 198 MB.
+- **Memória**: esconder e voltar a assistir, abrir e fechar o popout e ir à bandeja, 15 vezes cada, sem crescimento (`watch_memory.ps1`); ao esconder a transmissão a memória volta de 174 para 66 MB. A camada de depuração do Direct3D confirma que nada do dispositivo de vídeo fica vivo depois.
+- **Segurança**: pacotes de fim de transmissão forjados, presença forjada e saída forjada na sinalização (num servidor de sinalização local) enquanto a transmissão é assistida: a imagem continua; o fim verdadeiro fecha em 0,01 s (`stream_stop_auth.ps1`).
+- **Cores**: da tela ao receptor, diferença máxima de 1 nível em 255.
+- 105 testes unitários (incluindo a contagem de quadros de referência do H.264 com vídeos sintéticos, a negociação da transmissão pela web, o descarte da fila de voz e o arraste de canais) e 6 testes do worker. A correção da animação de rolagem no core do Slint tem teste no próprio crate; a do laço com a janela escondida foi verificada medindo o app (132 → 0 acordadas/s).
+
+### ⚠️ Limitações conhecidas
+- Medido só num notebook com Intel e NVIDIA: o codificador e o decodificador da AMD pela GPU não foram testados numa placa AMD real (sem GPU compatível, o Litecord usa a CPU, como antes).
+- Transmissões entre redes diferentes dependem de a conexão direta passar pelo NAT dos dois lados; não há servidor de retransmissão (TURN). O diagnóstico de rede ajuda a ver por quê, se não conectar.
+- Compartilhar na web: até três espectadores, e redes muito restritivas podem não conectar.
 
 ## [v1.2.0-beta] - 2026-10-12 — Nova sinalização P2P, chat agrupado, fotos de perfil & instalação Linux corrigida
 
