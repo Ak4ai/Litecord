@@ -494,6 +494,66 @@ pub fn refresh_stream_capture_status(ui: &AppWindow) {
     ui.set_stream_capture_status(value.into());
 }
 
+pub fn populate_voice_processing_settings(ui: &AppWindow) {
+    let ns = video_settings::get_noise_suppression();
+    let aec = video_settings::get_echo_cancellation();
+    let agc = video_settings::get_automatic_gain_control();
+
+    ui.set_echo_cancellation(aec);
+    ui.set_automatic_gain_control(agc);
+
+    let lang = i18n::load_persisted_language_config();
+    let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
+        i18n::Language::English => (
+            "Advanced Suppression",
+            "Deep neural network background noise removal and transient filtering.",
+            "Standard (RNNoise)",
+            "Classic recurrent neural network noise reduction.",
+            "Disabled (Default)",
+            "No noise suppression applied to microphone."
+        ),
+        i18n::Language::Spanish => (
+            "Supresión avanzada",
+            "Supresión por red neuronal profunda y filtrado de transientes.",
+            "Estándar (RNNoise)",
+            "Reducción de ruido clásica basada en red neuronal recurrente.",
+            "Desactivado (Predeterminado)",
+            "Sin procesamiento de supresión de ruido en el micrófono."
+        ),
+        _ => (
+            "Supressão Avançada",
+            "Supressão por rede neural profunda e filtragem de transientes.",
+            "Padrão (RNNoise)",
+            "Redução de ruído clássica baseada em rede neural recorrente.",
+            "Desativado (Padrão)",
+            "Sem processamento de supressão de ruído no microfone."
+        ),
+    };
+
+    let ns_items = vec![
+        SettingOptionItem {
+            id: "advanced".into(),
+            name: adv_name.into(),
+            desc: adv_desc.into(),
+            is_selected: ns == "advanced" || ns == "krisp",
+        },
+        SettingOptionItem {
+            id: "standard".into(),
+            name: std_name.into(),
+            desc: std_desc.into(),
+            is_selected: ns == "standard",
+        },
+        SettingOptionItem {
+            id: "none".into(),
+            name: off_name.into(),
+            desc: off_desc.into(),
+            is_selected: ns == "none" || ns.is_empty(),
+        },
+    ];
+
+    ui.set_noise_suppression_options(std::rc::Rc::new(slint::VecModel::from(ns_items)).into());
+}
+
 pub fn populate_network_proxy_settings(ui: &AppWindow) {
     let settings = crate::utils::get_network_settings();
     ui.set_selected_proxy_mode(settings.proxy_mode.clone().into());

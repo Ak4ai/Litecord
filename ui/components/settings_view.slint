@@ -59,6 +59,9 @@ export component SettingsView inherits Rectangle {
     in property <string> tr_keybind_deafen_title;
     in property <string> tr_keybind_deafen_desc;
     in property <string> keybind_deafen_str;
+    in property <[SettingOptionItem]> noise_suppression_options;
+    in property <bool> echo_cancellation: false;
+    in property <bool> automatic_gain_control: false;
     in property <[SettingOptionItem]> video_encoder_options;
     in property <bool> gpu_selection_available;
     in property <string> stream_capture_status;
@@ -92,6 +95,9 @@ export component SettingsView inherits Rectangle {
     callback set_mic_volume(float);
     callback set_vad_threshold(float);
     callback toggle_test_mic();
+    callback select_noise_suppression(string);
+    callback toggle_echo_cancellation();
+    callback toggle_automatic_gain_control();
     callback change_language(string);
     callback start_recording_keybind(int);
     callback reset_keybind(int);
@@ -1318,6 +1324,292 @@ export component SettingsView inherits Rectangle {
 
                                             Text {
                                                 text: Tr.loopback_test_desc;
+                                                color: AppTheme.text-muted;
+                                                font-size: 11px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+
+                                    // Horizontal Row Separator
+                                    Rectangle { height: 1px; background: AppTheme.surface-divider-strong; }
+
+                                    // --- ROW: VOICE PROCESSING (NOISE SUPPRESSION, AEC, AGC) + GUIDE ---
+                                    HorizontalLayout {
+                                        spacing: 0px;
+
+                                        // Option Block (Left - Col 2)
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            padding-right: 16px;
+                                            spacing: 10px;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../../assets/microphone.svg");
+                                                        width: 14px;
+                                                        height: 14px;
+                                                        colorize: AppTheme.accent;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: Tr.voice_processing;
+                                                    color: AppTheme.text-secondary;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+
+                                            // Sub-section 1: Noise Suppression Selection (Krisp / Standard / None)
+                                            VerticalLayout {
+                                                spacing: 4px;
+
+                                                Text {
+                                                    text: Tr.noise_suppression;
+                                                    color: AppTheme.text-primary;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                }
+
+                                                Text {
+                                                    text: Tr.noise_suppression_desc;
+                                                    color: AppTheme.text-muted;
+                                                    font-size: 10.5px;
+                                                    wrap: word-wrap;
+                                                }
+
+                                                Rectangle {
+                                                    background: AppTheme.surface-input;
+                                                    border-radius: 8px;
+                                                    border-width: 1px;
+                                                    border-color: AppTheme.border-subtle;
+
+                                                    VerticalLayout {
+                                                        padding-top: 6px;
+                                                        padding-bottom: 6px;
+                                                        padding-left: 6px;
+                                                        padding-right: 6px;
+                                                        spacing: 4px;
+
+                                                        for opt in root.noise_suppression_options: Rectangle {
+                                                            height: 40px;
+                                                            background: opt.is_selected ? AppTheme.interactive-hover : (opt_ns_ta.has-hover ? AppTheme.surface-sidebar : transparent);
+                                                            border-radius: 6px;
+                                                            animate background { duration: 120ms; }
+
+                                                            HorizontalLayout {
+                                                                padding-left: 10px;
+                                                                padding-right: 12px;
+                                                                spacing: 10px;
+
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    Image {
+                                                                        source: opt.is_selected ? @image-url("../../assets/radio-selected.svg") : @image-url("../../assets/radio-unselected.svg");
+                                                                        width: 16px;
+                                                                        height: 16px;
+                                                                        image-fit: contain;
+                                                                    }
+                                                                }
+
+                                                                VerticalLayout {
+                                                                    alignment: center;
+                                                                    spacing: 2px;
+
+                                                                    Text {
+                                                                        text: opt.name;
+                                                                        color: opt.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
+                                                                        font-size: 12px;
+                                                                        font-weight: opt.is_selected ? 700 : 500;
+                                                                    }
+
+                                                                    Text {
+                                                                        text: opt.desc;
+                                                                        color: opt.is_selected ? AppTheme.text-muted : AppTheme.text-subtle;
+                                                                        font-size: 10px;
+                                                                    }
+                                                                }
+
+                                                                Rectangle { horizontal-stretch: 1; }
+                                                            }
+
+                                                            opt_ns_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.select_noise_suppression(opt.id); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Sub-section 2: Echo Cancellation (AEC)
+                                            Rectangle {
+                                                background: AppTheme.surface-input;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: AppTheme.border-subtle;
+
+                                                HorizontalLayout {
+                                                    padding-top: 10px;
+                                                    padding-bottom: 10px;
+                                                    padding-left: 12px;
+                                                    padding-right: 12px;
+                                                    spacing: 12px;
+
+                                                    VerticalLayout {
+                                                        horizontal-stretch: 1;
+                                                        spacing: 2px;
+                                                        alignment: center;
+
+                                                        Text {
+                                                            text: Tr.echo_cancellation;
+                                                            color: AppTheme.text-strong;
+                                                            font-size: 12px;
+                                                            font-weight: 600;
+                                                        }
+
+                                                        Text {
+                                                            text: Tr.echo_cancellation_desc;
+                                                            color: AppTheme.text-muted;
+                                                            font-size: 10.5px;
+                                                            wrap: word-wrap;
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            width: 42px;
+                                                            height: 24px;
+                                                            border-radius: 12px;
+                                                            background: root.echo_cancellation ? AppTheme.accent : AppTheme.surface-control;
+                                                            animate background { duration: 150ms; }
+
+                                                            Rectangle {
+                                                                x: root.echo_cancellation ? 20px : 2px;
+                                                                y: 2px;
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: AppTheme.solid-white;
+                                                                animate x { duration: 150ms; easing: ease-out; }
+                                                            }
+
+                                                            aec_sw_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.toggle_echo_cancellation(); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Sub-section 3: Automatic Gain Control (AGC)
+                                            Rectangle {
+                                                background: AppTheme.surface-input;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: AppTheme.border-subtle;
+
+                                                HorizontalLayout {
+                                                    padding-top: 10px;
+                                                    padding-bottom: 10px;
+                                                    padding-left: 12px;
+                                                    padding-right: 12px;
+                                                    spacing: 12px;
+
+                                                    VerticalLayout {
+                                                        horizontal-stretch: 1;
+                                                        spacing: 2px;
+                                                        alignment: center;
+
+                                                        Text {
+                                                            text: Tr.auto_gain_control;
+                                                            color: AppTheme.text-strong;
+                                                            font-size: 12px;
+                                                            font-weight: 600;
+                                                        }
+
+                                                        Text {
+                                                            text: Tr.auto_gain_control_desc;
+                                                            color: AppTheme.text-muted;
+                                                            font-size: 10.5px;
+                                                            wrap: word-wrap;
+                                                        }
+                                                    }
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            width: 42px;
+                                                            height: 24px;
+                                                            border-radius: 12px;
+                                                            background: root.automatic_gain_control ? AppTheme.accent : AppTheme.surface-control;
+                                                            animate background { duration: 150ms; }
+
+                                                            Rectangle {
+                                                                x: root.automatic_gain_control ? 20px : 2px;
+                                                                y: 2px;
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: AppTheme.solid-white;
+                                                                animate x { duration: 150ms; easing: ease-out; }
+                                                            }
+
+                                                            agc_sw_ta := TouchArea {
+                                                                mouse-cursor: pointer;
+                                                                clicked => { root.toggle_automatic_gain_control(); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Vertical Separator Line between Col 2 and Col 3
+                                        Rectangle {
+                                            width: 1px;
+                                            background: AppTheme.border-subtle;
+                                        }
+
+                                        // Guide Block (Right - Col 3)
+                                        VerticalLayout {
+                                            width: 290px;
+                                            padding-left: 16px;
+                                            padding-top: 2px;
+                                            spacing: 6px;
+
+                                            HorizontalLayout {
+                                                spacing: 6px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Image {
+                                                        source: @image-url("../../assets/lightning.svg");
+                                                        width: 14px;
+                                                        height: 14px;
+                                                        colorize: AppTheme.accent;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "Processamento de Voz & DSP";
+                                                    color: AppTheme.accent;
+                                                    font-size: 12px;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                            }
+
+                                            Text {
+                                                text: "Processamento opcional em ciclos de 20ms: supressão neural avançada, cancelamento de eco acústico (AEC) e controle de ganho (AGC). Fica desativado por padrão para economizar ciclos de CPU.";
                                                 color: AppTheme.text-muted;
                                                 font-size: 11px;
                                                 wrap: word-wrap;
