@@ -205,6 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let refresh_main = refresh_gpu_video.clone();
         let main_had_area = std::cell::Cell::new(true);
+        let app_weak_win_events = app_weak.clone();
         app.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
                 if has && !main_had_area.replace(has) {
@@ -213,6 +214,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_capture::set_main_window_has_area(has);
                 refresh_main();
             }
+
+            match ev {
+                winit::event::WindowEvent::Resized(physical_size) => {
+                    let is_max = window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized());
+                    if let Some(ui) = app_weak_win_events.upgrade() {
+                        if ui.get_is_maximized() != is_max {
+                            ui.set_is_maximized(is_max);
+                        }
+                    }
+                    if !is_max && physical_size.width > 0 && physical_size.height > 0 {
+                        let scale = window.scale_factor() as f64;
+                        let logical_w = (physical_size.width as f64 / scale).round() as u32;
+                        let logical_h = (physical_size.height as f64 / scale).round() as u32;
+                        let pos = window.with_winit_window(|w| {
+                            w.outer_position().ok().map(|p| {
+                                let lp = p.to_logical::<f64>(scale);
+                                (lp.x.round() as i32, lp.y.round() as i32)
+                            })
+                        }).flatten();
+                        let (px, py) = match pos {
+                            Some((x, y)) => (Some(x), Some(y)),
+                            None => (None, None),
+                        };
+                        crate::utils::window_state::update_window_geometry(px, py, Some(logical_w), Some(logical_h), false);
+                    } else if is_max {
+                        crate::utils::window_state::update_window_geometry(None, None, None, None, true);
+                    }
+                }
+                winit::event::WindowEvent::Moved(physical_pos) => {
+                    let is_max = window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized());
+                    if !is_max {
+                        let scale = window.scale_factor() as f64;
+                        let logical_pos = physical_pos.to_logical::<f64>(scale);
+                        crate::utils::window_state::update_window_geometry(
+                            Some(logical_pos.x.round() as i32),
+                            Some(logical_pos.y.round() as i32),
+                            None,
+                            None,
+                            false,
+                        );
+                    }
+                }
+                _ => {}
+            }
+
             EventResult::Propagate
         });
         let (aw, pw) = (app_weak.clone(), popout_weak.clone());
@@ -255,8 +301,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_init.upgrade() {
             ui.window().with_winit_window(|winit_win| {
                 info!("🖥️ [EVENT LOOP] Configurando janela Winit no evento inicial...");
-                let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(980.0, 620.0));
-                winit_win.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
+                let saved_state = crate::utils::window_state::load_window_state();
+                let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(
+                    saved_state.width as f64,
+                    saved_state.height as f64,
+                ));
+                if let (Some(x), Some(y)) = (saved_state.x, saved_state.y) {
+                    winit_win.set_outer_position(winit::dpi::LogicalPosition::new(x as f64, y as f64));
+                }
+                if saved_state.is_maximized {
+                    winit_win.set_maximized(true);
+                    ui.set_is_maximized(true);
+                }
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 winit_win.focus_window();
@@ -4363,8 +4419,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let sm_for_close = Arc::clone(&screen_manager);
+    let app_weak_close = app_weak.clone();
     app.on_close_window(move || {
         info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        if let Some(ui) = app_weak_close.upgrade() {
+            let _ = ui.window().with_winit_window(|winit_win| {
+                let is_max = winit_win.is_maximized();
+                let scale = winit_win.scale_factor();
+                let size = winit_win.inner_size().to_logical::<f64>(scale);
+                let pos = winit_win.outer_position().ok().map(|p| p.to_logical::<f64>(scale));
+                let (px, py) = match pos {
+                    Some(p) => (Some(p.x.round() as i32), Some(p.y.round() as i32)),
+                    None => (None, None),
+                };
+                crate::utils::window_state::update_window_geometry(
+                    px,
+                    py,
+                    Some(size.width.round() as u32),
+                    Some(size.height.round() as u32),
+                    is_max,
+                );
+            });
+        }
         sm_for_close.stop();
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();

@@ -3494,8 +3494,9 @@ export component AppWindow inherits Window {
     }
 
     // Window Drag Resize Borders & Corner Handles (on PointerEventKind.down for 0-latency instant resize)
+    // Disabled when window is maximized so all titlebar buttons and edge pixels reach window controls
     // Left edge
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 12px;
         width: 7px;
@@ -3507,12 +3508,12 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // Right edge
-    if root.drag_area_enabled: TouchArea {
+    // Right edge (starts below titlebar at y: 32px so titlebar close button is never obstructed)
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 7px;
-        y: 12px;
+        y: 32px;
         width: 7px;
-        height: parent.height - 24px;
+        height: parent.height - 44px;
         mouse-cursor: ew-resize;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
@@ -3520,11 +3521,11 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // Top edge
-    if root.drag_area_enabled: TouchArea {
+    // Top edge (stops before window control buttons on the top right)
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 12px;
         y: 0px;
-        width: parent.width - 24px;
+        width: parent.width - (root.show_hardware_monitor ? 390px : 176px) - 12px;
         height: 7px;
         mouse-cursor: ns-resize;
         pointer-event(event) => {
@@ -3534,7 +3535,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom edge
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 12px;
         y: parent.height - 7px;
         width: parent.width - 24px;
@@ -3547,7 +3548,7 @@ export component AppWindow inherits Window {
         }
     }
     // Top-Left Corner
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 0px;
         width: 12px;
@@ -3559,21 +3560,8 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // Top-Right Corner
-    if root.drag_area_enabled: TouchArea {
-        x: parent.width - 12px;
-        y: 0px;
-        width: 12px;
-        height: 12px;
-        mouse-cursor: nesw-resize;
-        pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                root.drag_resize("top-right");
-            }
-        }
-    }
     // Bottom-Left Corner
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: parent.height - 12px;
         width: 12px;
@@ -3586,7 +3574,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom-Right Corner
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 12px;
         y: parent.height - 12px;
         width: 12px;
