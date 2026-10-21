@@ -53,6 +53,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 slint::include_modules!();
 
+static WINDOW_PERSISTENCE_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     commit_heap_pages_on_demand();
@@ -112,15 +114,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("SLINT_BACKEND").is_none() && !video_settings::get_use_gpu_renderer() {
         std::env::set_var("SLINT_BACKEND", "winit-software");
     }
-    info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
-        std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
+
+    let saved_window_state = crate::utils::window_state::load_window_state();
+    info!("🖥️ Estado de janela restaurado: {:?}", saved_window_state);
+
+    let configure_window = |ui: &AppWindow| {
+        ui.window().set_size(slint::LogicalSize::new(
+            saved_window_state.width as f32,
+            saved_window_state.height as f32,
+        ));
+        if let (Some(x), Some(y)) = (saved_window_state.x, saved_window_state.y) {
+            ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+        }
+        if saved_window_state.is_maximized {
+            ui.window().set_maximized(true);
+            ui.set_is_maximized(true);
+        }
+    };
+
     let app = match AppWindow::new() {
         Ok(app) => {
+            configure_window(&app);
             info!("🖥️ Exibindo janela principal (app.show())...");
             if let Err(e) = app.show() {
                 log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
                 std::env::set_var("SLINT_BACKEND", "software");
                 let sw_app = AppWindow::new()?;
+                configure_window(&sw_app);
                 sw_app.show()?;
                 info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
                 sw_app
@@ -133,6 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
             std::env::set_var("SLINT_BACKEND", "software");
             let sw_app = AppWindow::new()?;
+            configure_window(&sw_app);
             sw_app.show()?;
             info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
             sw_app
@@ -205,6 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let refresh_main = refresh_gpu_video.clone();
         let main_had_area = std::cell::Cell::new(true);
+        let app_weak_win_events = app_weak.clone();
         app.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
                 if has && !main_had_area.replace(has) {
@@ -213,6 +235,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_capture::set_main_window_has_area(has);
                 refresh_main();
             }
+
+            match ev {
+                winit::event::WindowEvent::Resized(physical_size) => {
+                    let is_max = window.with_winit_window(|w| {
+                        let max = w.is_maximized();
+                        if max {
+                            return true;
+                        }
+                        if let Some(m) = w.current_monitor() {
+                            let ms = m.size();
+                            // In KDE Plasma / Wayland, a maximized window spans full monitor width and height (minus panel margin)
+                            if (physical_size.width as i64 - ms.width as i64).abs() <= 4
+                                && (physical_size.height as i64 - ms.height as i64).abs() <= 120 {
+                                return true;
+                            }
+                        }
+                        false
+                    }).unwrap_or_else(|| window.is_maximized())
+                        || app_weak_win_events.upgrade().map(|u| u.get_is_maximized()).unwrap_or(false);
+                    if let Some(ui) = app_weak_win_events.upgrade() {
+                        if ui.get_is_maximized() != is_max {
+                            ui.set_is_maximized(is_max);
+                        }
+                    }
+                    if !WINDOW_PERSISTENCE_READY.load(std::sync::atomic::Ordering::Relaxed) {
+                        return EventResult::Propagate;
+                    }
+                    if !is_max && physical_size.width > 0 && physical_size.height > 0 {
+                        let scale = window.scale_factor() as f64;
+                        let logical_w = (physical_size.width as f64 / scale).round() as u32;
+                        let logical_h = (physical_size.height as f64 / scale).round() as u32;
+                        let pos = window.with_winit_window(|w| {
+                            w.outer_position().ok().map(|p| {
+                                let lp = p.to_logical::<f64>(scale);
+                                (lp.x.round() as i32, lp.y.round() as i32)
+                            })
+                        }).flatten();
+                        let (px, py) = match pos {
+                            Some((x, y)) => (Some(x), Some(y)),
+                            None => (None, None),
+                        };
+                        crate::utils::window_state::update_window_geometry(px, py, Some(logical_w), Some(logical_h), false);
+                    } else if is_max {
+                        crate::utils::window_state::update_window_geometry(None, None, None, None, true);
+                    }
+                }
+                winit::event::WindowEvent::Moved(physical_pos) => {
+                    if !WINDOW_PERSISTENCE_READY.load(std::sync::atomic::Ordering::Relaxed) {
+                        return EventResult::Propagate;
+                    }
+                    let is_max = window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized())
+                        || app_weak_win_events.upgrade().map(|u| u.get_is_maximized()).unwrap_or(false);
+                    if !is_max {
+                        let scale = window.scale_factor() as f64;
+                        let logical_pos = physical_pos.to_logical::<f64>(scale);
+                        crate::utils::window_state::update_window_geometry(
+                            Some(logical_pos.x.round() as i32),
+                            Some(logical_pos.y.round() as i32),
+                            None,
+                            None,
+                            false,
+                        );
+                    }
+                }
+                _ => {}
+            }
+
             EventResult::Propagate
         });
         let (aw, pw) = (app_weak.clone(), popout_weak.clone());
@@ -255,12 +344,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_init.upgrade() {
             ui.window().with_winit_window(|winit_win| {
                 info!("🖥️ [EVENT LOOP] Configurando janela Winit no evento inicial...");
-                let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(980.0, 620.0));
-                winit_win.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
+                let saved_state = crate::utils::window_state::load_window_state();
+                let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(
+                    saved_state.width as f64,
+                    saved_state.height as f64,
+                ));
+                if let (Some(x), Some(y)) = (saved_state.x, saved_state.y) {
+                    winit_win.set_outer_position(winit::dpi::LogicalPosition::new(x as f64, y as f64));
+                }
+                if saved_state.is_maximized {
+                    winit_win.set_maximized(true);
+                    ui.set_is_maximized(true);
+                }
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 winit_win.focus_window();
                 winit_win.request_redraw();
+
+                slint::Timer::single_shot(std::time::Duration::from_millis(600), move || {
+                    WINDOW_PERSISTENCE_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    info!("🖥️ Persistência de geometria de janela ativada.");
+                });
                 if let Some(pop_win) = popout_weak_init.upgrade() {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
@@ -4355,16 +4459,101 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            let is_max = app_instance.window().is_maximized();
+            let is_max = app_instance.window().with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| app_instance.window().is_maximized()) || app_instance.get_is_maximized();
             let next = !is_max;
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);
+            crate::utils::window_state::update_window_geometry(None, None, None, None, next);
         }
     });
 
+    let app_weak_close_req = app_weak.clone();
+    app.window().on_close_requested(move || {
+        if let Some(ui) = app_weak_close_req.upgrade() {
+            let is_max = ui.window().with_winit_window(|w| {
+                let max = w.is_maximized();
+                if max {
+                    return true;
+                }
+                if let Some(m) = w.current_monitor() {
+                    let ms = m.size();
+                    let ps = w.inner_size();
+                    if (ps.width as i64 - ms.width as i64).abs() <= 4
+                        && (ps.height as i64 - ms.height as i64).abs() <= 120 {
+                        return true;
+                    }
+                }
+                false
+            }).unwrap_or_else(|| ui.window().is_maximized()) || ui.get_is_maximized();
+
+            if is_max {
+                // Strictly preserve the unmaximized floating width/height in persistent storage
+                crate::utils::window_state::update_window_geometry(None, None, None, None, true);
+            } else {
+                let scale = ui.window().scale_factor() as f64;
+                let size = ui.window().size().to_logical(scale as f32);
+                let pos = ui.window().with_winit_window(|w| {
+                    w.outer_position().ok().map(|p| p.to_logical::<f64>(scale))
+                }).flatten();
+                let (px, py) = match pos {
+                    Some(p) => (Some(p.x.round() as i32), Some(p.y.round() as i32)),
+                    None => (None, None),
+                };
+                crate::utils::window_state::update_window_geometry(
+                    px,
+                    py,
+                    Some(size.width.round() as u32),
+                    Some(size.height.round() as u32),
+                    false,
+                );
+            }
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+
     let sm_for_close = Arc::clone(&screen_manager);
+    let app_weak_close = app_weak.clone();
     app.on_close_window(move || {
         info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        if let Some(ui) = app_weak_close.upgrade() {
+            let is_max = ui.window().with_winit_window(|w| {
+                let max = w.is_maximized();
+                if max {
+                    return true;
+                }
+                if let Some(m) = w.current_monitor() {
+                    let ms = m.size();
+                    let ps = w.inner_size();
+                    if (ps.width as i64 - ms.width as i64).abs() <= 4
+                        && (ps.height as i64 - ms.height as i64).abs() <= 120 {
+                        return true;
+                    }
+                }
+                false
+            }).unwrap_or_else(|| ui.window().is_maximized()) || ui.get_is_maximized();
+
+            if is_max {
+                // Strictly preserve the unmaximized floating width/height in persistent storage
+                crate::utils::window_state::update_window_geometry(None, None, None, None, true);
+            } else {
+                let scale = ui.window().scale_factor() as f64;
+                let size = ui.window().size().to_logical(scale as f32);
+                let pos = ui.window().with_winit_window(|w| {
+                    w.outer_position().ok().map(|p| p.to_logical::<f64>(scale))
+                }).flatten();
+                let (px, py) = match pos {
+                    Some(p) => (Some(p.x.round() as i32), Some(p.y.round() as i32)),
+                    None => (None, None),
+                };
+                crate::utils::window_state::update_window_geometry(
+                    px,
+                    py,
+                    Some(size.width.round() as u32),
+                    Some(size.height.round() as u32),
+                    false,
+                );
+            }
+        }
         sm_for_close.stop();
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
