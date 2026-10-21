@@ -198,6 +198,7 @@ impl EmojiCache {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = app_weak.upgrade() {
                                         if let Some(img) = cache_arc_ui.get(&id_clone) {
+                                            crate::ui::helpers::refresh_channel_emoji(&ui, &id_clone, &img);
                                             let current_msgs: Vec<crate::ChatMessage> = ui.get_messages().iter().collect();
                                             let mut any_changed = false;
                                             let mut updated_msgs = Vec::with_capacity(current_msgs.len());
