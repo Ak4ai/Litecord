@@ -1,5 +1,5 @@
 import { Button, ScrollView, Slider } from "std-widgets.slint";
-import { AppTheme } from "../theme.slint";
+import { AppTheme , TypeScale } from "../theme.slint";
 import { IconButton } from "icon_button.slint";
 import { Tr } from "tr.slint";
 
@@ -163,7 +163,7 @@ export component SettingsView inherits Rectangle {
                     Text {
                         text: root.tr_settings_title;
                         color: AppTheme.text-strong;
-                        font-size: 15px;
+                        font-size: TypeScale.title;
                         font-weight: 700;
                         vertical-alignment: center;
                     }
@@ -173,7 +173,7 @@ export component SettingsView inherits Rectangle {
                     Text {
                         text: "Litecord " + root.app_version;
                         color: AppTheme.text-subtle;
-                        font-size: 12px;
+                        font-size: TypeScale.small;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
@@ -226,7 +226,7 @@ export component SettingsView inherits Rectangle {
                             Text {
                                 text: Tr.settings_header;
                                 color: AppTheme.text-subtle;
-                                font-size: 11px;
+                                font-size: TypeScale.caption;
                                 font-weight: 700;
                                 letter-spacing: 0.5px;
                                 vertical-alignment: center;
@@ -267,7 +267,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_voice;
                                     color: root.settings_active_tab == 0 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 0 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -315,7 +315,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_language;
                                     color: root.settings_active_tab == 1 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 1 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -363,7 +363,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_keybinds;
                                     color: root.settings_active_tab == 2 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 2 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -411,7 +411,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_video_interface;
                                     color: root.settings_active_tab == 5 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 5 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -459,7 +459,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_security;
                                     color: root.settings_active_tab == 3 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 3 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -507,7 +507,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_network_proxy;
                                     color: root.settings_active_tab == 6 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 6 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -555,7 +555,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: root.tr_settings_tab_updates;
                                     color: root.settings_active_tab == 4 ? AppTheme.text-strong : AppTheme.text-primary;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: root.settings_active_tab == 4 ? 700 : 500;
                                     vertical-alignment: center;
                                 }
@@ -594,7 +594,7 @@ export component SettingsView inherits Rectangle {
                                 Text {
                                     text: "Native Rust GUI";
                                     color: AppTheme.text-muted;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
@@ -657,7 +657,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_settings_output_device;
                                                     color: AppTheme.text-secondary;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -703,7 +703,7 @@ export component SettingsView inherits Rectangle {
                                                                 Text {
                                                                     text: dev.name;
                                                                     color: dev.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
-                                                                    font-size: 12px;
+                                                                    font-size: TypeScale.small;
                                                                     font-weight: dev.is_selected ? 700 : 500;
                                                                     overflow: elide;
                                                                 }
@@ -749,7 +749,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.output_device;
                                                     color: AppTheme.accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -759,7 +759,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.output_hint;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -793,7 +793,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_settings_input_device;
                                                     color: AppTheme.text-secondary;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -839,7 +839,7 @@ export component SettingsView inherits Rectangle {
                                                                 Text {
                                                                     text: dev.name;
                                                                     color: dev.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
-                                                                    font-size: 12px;
+                                                                    font-size: TypeScale.small;
                                                                     font-weight: dev.is_selected ? 700 : 500;
                                                                     overflow: elide;
                                                                 }
@@ -885,7 +885,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.input_device;
                                                     color: AppTheme.accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -895,7 +895,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.input_hint;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -929,7 +929,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.input_volume_title;
                                                     color: AppTheme.text-secondary;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -949,7 +949,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: Math.round(root.mic_volume * 100) + "%";
                                                                 color: AppTheme.text-on-accent;
-                                                                font-size: 11px;
+                                                                font-size: TypeScale.caption;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
                                                                 horizontal-alignment: center;
@@ -965,7 +965,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: "0%";
                                                     color: AppTheme.text-subtle;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                 }
@@ -984,7 +984,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: "200%";
                                                     color: AppTheme.text-subtle;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                 }
@@ -1019,7 +1019,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.mic_gain;
                                                     color: AppTheme.accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1029,7 +1029,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.mic_gain_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1063,7 +1063,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_settings_threshold;
                                                     color: AppTheme.text-secondary;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1083,7 +1083,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: Math.round(root.vad_threshold * 100) + "%";
                                                                 color: AppTheme.text-on-accent;
-                                                                font-size: 11px;
+                                                                font-size: TypeScale.caption;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
                                                                 horizontal-alignment: center;
@@ -1099,7 +1099,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: "0%";
                                                     color: AppTheme.text-subtle;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                 }
@@ -1118,7 +1118,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: "100%";
                                                     color: AppTheme.text-subtle;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                 }
@@ -1153,7 +1153,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.sensitivity;
                                                     color: AppTheme.success;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1163,7 +1163,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.sensitivity_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1197,7 +1197,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_settings_mic_level;
                                                     color: AppTheme.text-secondary;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1221,7 +1221,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: root.mic_level >= root.vad_threshold ? Tr.mic_state_active : Tr.mic_state_silent;
                                                                 color: root.mic_level >= root.vad_threshold ? AppTheme.success : AppTheme.text-muted;
-                                                                font-size: 10px;
+                                                                font-size: TypeScale.micro;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
                                                                 horizontal-alignment: center;
@@ -1234,7 +1234,7 @@ export component SettingsView inherits Rectangle {
                                                         horizontal-alignment: right;
                                                         text: Math.round(root.mic_level * 100) + "%";
                                                         color: root.mic_level >= root.vad_threshold ? AppTheme.success : AppTheme.text-muted;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -1309,7 +1309,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.loopback_test;
                                                     color: AppTheme.warning;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1319,7 +1319,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.loopback_test_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1353,7 +1353,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.ducking;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1361,7 +1361,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.ducking_active;
                                                     color: AppTheme.success;
-                                                    font-size: 10px;
+                                                    font-size: TypeScale.micro;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1370,7 +1370,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.ducking_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1403,7 +1403,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.competitive_edge;
                                                     color: AppTheme.accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1413,7 +1413,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.competitive_edge_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1453,7 +1453,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.select_language;
                                                     color: AppTheme.text-secondary;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1496,7 +1496,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: lang.name;
                                                                 color: lang.is_selected ? AppTheme.accent : AppTheme.text-primary;
-                                                                font-size: 13px;
+                                                                font-size: TypeScale.body;
                                                                 font-weight: lang.is_selected ? 700 : 500;
                                                                 vertical-alignment: center;
                                                             }
@@ -1506,7 +1506,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: lang.native_name;
                                                                 color: AppTheme.text-subtle;
-                                                                font-size: 12px;
+                                                                font-size: TypeScale.small;
                                                                 vertical-alignment: center;
                                                             }
                                                         }
@@ -1550,7 +1550,7 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.instant_switch;
                                                         color: AppTheme.accent;
-                                                        font-size: 12px;
+                                                        font-size: TypeScale.small;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -1559,7 +1559,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.instant_switch_desc;
                                                     color: AppTheme.text-muted;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     wrap: word-wrap;
                                                 }
                                             }
@@ -1584,7 +1584,7 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.auto_detect;
                                                         color: AppTheme.success;
-                                                        font-size: 12px;
+                                                        font-size: TypeScale.small;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -1593,7 +1593,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.auto_detect_desc;
                                                     color: AppTheme.text-muted;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     wrap: word-wrap;
                                                 }
                                             }
@@ -1635,7 +1635,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_keybind_mute_title;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1645,7 +1645,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: root.tr_keybind_mute_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
 
@@ -1670,7 +1670,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.recording_keybind_for == 1 ? root.tr_keybind_recording_prompt : (root.keybind_mute_str != "" ? root.keybind_mute_str : Tr.keybind_none);
                                                             color: root.recording_keybind_for == 1 ? AppTheme.warning : (root.keybind_mute_str != "" ? AppTheme.text-strong : AppTheme.text-subtle);
-                                                            font-size: 12px;
+                                                            font-size: TypeScale.small;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
@@ -1689,7 +1689,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.recording_keybind_for == 1 ? Tr.recording : root.tr_keybind_btn_record;
                                                             color: root.recording_keybind_for == 1 ? AppTheme.text-on-warning : AppTheme.text-on-accent;
-                                                            font-size: 12px;
+                                                            font-size: TypeScale.small;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
@@ -1719,7 +1719,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.tr_keybind_btn_clear;
                                                             color: AppTheme.text-primary;
-                                                            font-size: 12px;
+                                                            font-size: TypeScale.small;
                                                             font-weight: 600;
                                                             vertical-alignment: center;
                                                         }
@@ -1761,7 +1761,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_keybind_guide_title;
                                                     color: AppTheme.accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1771,7 +1771,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: root.tr_keybind_guide_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1805,7 +1805,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: root.tr_keybind_deafen_title;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1815,7 +1815,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: root.tr_keybind_deafen_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
 
@@ -1840,7 +1840,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.recording_keybind_for == 2 ? root.tr_keybind_recording_prompt : (root.keybind_deafen_str != "" ? root.keybind_deafen_str : Tr.keybind_none);
                                                             color: root.recording_keybind_for == 2 ? AppTheme.warning : (root.keybind_deafen_str != "" ? AppTheme.text-strong : AppTheme.text-subtle);
-                                                            font-size: 12px;
+                                                            font-size: TypeScale.small;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
@@ -1859,7 +1859,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.recording_keybind_for == 2 ? Tr.recording : root.tr_keybind_btn_record;
                                                             color: root.recording_keybind_for == 2 ? AppTheme.text-on-warning : AppTheme.text-on-accent;
-                                                            font-size: 12px;
+                                                            font-size: TypeScale.small;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
@@ -1889,7 +1889,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.tr_keybind_btn_clear;
                                                             color: AppTheme.text-primary;
-                                                            font-size: 12px;
+                                                            font-size: TypeScale.small;
                                                             font-weight: 600;
                                                             vertical-alignment: center;
                                                         }
@@ -1931,7 +1931,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.keys_tip;
                                                     color: AppTheme.success;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -1941,7 +1941,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.keys_tip_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -1976,7 +1976,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.encoder_title;
                                                 color: AppTheme.text-secondary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -1986,7 +1986,7 @@ export component SettingsView inherits Rectangle {
                                         Text {
                                             text: Tr.encoder_desc;
                                             color: AppTheme.text-muted;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                             wrap: word-wrap;
                                         }
 
@@ -2032,7 +2032,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: opt.name;
                                                                 color: opt.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
-                                                                font-size: 12px;
+                                                                font-size: TypeScale.small;
                                                                 font-weight: opt.is_selected ? 700 : 500;
                                                                 wrap: word-wrap;
                                                             }
@@ -2040,7 +2040,7 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: opt.desc;
                                                                 color: opt.is_selected ? AppTheme.text-muted : AppTheme.text-subtle;
-                                                                font-size: 10px;
+                                                                font-size: TypeScale.micro;
                                                                 wrap: word-wrap;
                                                             }
                                                         }
@@ -2058,13 +2058,13 @@ export component SettingsView inherits Rectangle {
                                         if root.gpu_selection_available: Text {
                                             text: Tr.gpu_next_stream;
                                             color: AppTheme.text-muted;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                             wrap: word-wrap;
                                         }
                                         if root.stream_capture_status != "": Text {
                                             text: root.stream_capture_status;
                                             color: AppTheme.text-secondary;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                             wrap: word-wrap;
                                         }
 
@@ -2084,7 +2084,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.appearance;
                                                 color: AppTheme.text-secondary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -2110,14 +2110,14 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.light_theme;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
                                                         text: Tr.light_theme_desc;
                                                         color: AppTheme.text-muted;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         wrap: word-wrap;
                                                     }
                                                 }
@@ -2170,7 +2170,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.capture_method;
                                                 color: AppTheme.text-secondary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -2180,7 +2180,7 @@ export component SettingsView inherits Rectangle {
                                         Text {
                                             text: root.gpu_selection_available ? Tr.gpu_gdi_help : Tr.capture_method_desc;
                                             color: AppTheme.text-muted;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                             wrap: word-wrap;
                                         }
 
@@ -2225,14 +2225,14 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: opt.name;
                                                                 color: opt.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
-                                                                font-size: 12px;
+                                                                font-size: TypeScale.small;
                                                                 font-weight: opt.is_selected ? 700 : 500;
                                                             }
 
                                                             Text {
                                                                 text: opt.desc;
                                                                 color: opt.is_selected ? AppTheme.text-muted : AppTheme.text-subtle;
-                                                                font-size: 10px;
+                                                                font-size: TypeScale.micro;
                                                             }
                                                         }
 
@@ -2267,7 +2267,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.loopback_audio_title;
                                                 color: AppTheme.text-secondary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -2277,7 +2277,7 @@ export component SettingsView inherits Rectangle {
                                         Text {
                                             text: Tr.loopback_audio_desc;
                                             color: AppTheme.text-muted;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                         }
 
                                         Rectangle {
@@ -2321,14 +2321,14 @@ export component SettingsView inherits Rectangle {
                                                             Text {
                                                                 text: opt.name;
                                                                 color: opt.is_selected ? AppTheme.text-strong : AppTheme.text-primary;
-                                                                font-size: 12px;
+                                                                font-size: TypeScale.small;
                                                                 font-weight: opt.is_selected ? 700 : 500;
                                                             }
 
                                                             Text {
                                                                 text: opt.desc;
                                                                 color: opt.is_selected ? AppTheme.text-muted : AppTheme.text-subtle;
-                                                                font-size: 10px;
+                                                                font-size: TypeScale.micro;
                                                             }
                                                         }
 
@@ -2363,7 +2363,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.stream_ui_title;
                                                 color: AppTheme.text-secondary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -2388,14 +2388,14 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.economy_notice;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
                                                         text: Tr.economy_notice_desc;
                                                         color: AppTheme.text-muted;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         wrap: word-wrap;
                                                     }
                                                 }
@@ -2447,14 +2447,14 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.perf_monitor;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
                                                         text: Tr.perf_monitor_desc;
                                                         color: AppTheme.text-muted;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         wrap: word-wrap;
                                                     }
                                                 }
@@ -2504,14 +2504,14 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.gpu_render;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                     }
 
                                                     Text {
                                                         text: Tr.gpu_render_desc;
                                                         color: AppTheme.text-muted;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         wrap: word-wrap;
                                                     }
                                                 }
@@ -2580,7 +2580,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.e2ee_title;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2588,7 +2588,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.aes_active;
                                                     color: AppTheme.success;
-                                                    font-size: 10px;
+                                                    font-size: TypeScale.micro;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2596,7 +2596,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.e2ee_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -2629,7 +2629,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.lan_protect;
                                                     color: AppTheme.success;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2638,7 +2638,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.lan_protect_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -2672,7 +2672,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.vault_title;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2680,7 +2680,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.protected;
                                                     color: AppTheme.accent;
-                                                    font-size: 10px;
+                                                    font-size: TypeScale.micro;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2688,7 +2688,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.vault_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -2721,7 +2721,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.stealer_immunity;
                                                     color: AppTheme.accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2730,7 +2730,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.stealer_immunity_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -2764,7 +2764,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.dave_title;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2772,7 +2772,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: "MLS RFC 9420";
                                                     color: AppTheme.success;
-                                                    font-size: 10px;
+                                                    font-size: TypeScale.micro;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2780,7 +2780,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.dave_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -2813,7 +2813,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.zero_intermediaries;
                                                     color: AppTheme.success;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2822,7 +2822,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.zero_intermediaries_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -2867,7 +2867,7 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.proxy_mode;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -2915,7 +2915,7 @@ export component SettingsView inherits Rectangle {
                                                                     Text {
                                                                         text: opt.name;
                                                                         color: (opt.id == root.selected_proxy_mode) ? AppTheme.text-strong : AppTheme.text-primary;
-                                                                        font-size: 11px;
+                                                                        font-size: TypeScale.caption;
                                                                         font-weight: (opt.id == root.selected_proxy_mode) ? 700 : 500;
                                                                         overflow: elide;
                                                                     }
@@ -2923,7 +2923,7 @@ export component SettingsView inherits Rectangle {
                                                                     Text {
                                                                         text: opt.desc;
                                                                         color: (opt.id == root.selected_proxy_mode) ? AppTheme.text-muted : AppTheme.text-subtle;
-                                                                        font-size: 10px;
+                                                                        font-size: TypeScale.micro;
                                                                         overflow: elide;
                                                                     }
                                                                 }
@@ -2960,7 +2960,7 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.proxy_address;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -2978,7 +2978,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: Tr.proxy_host;
                                                             color: AppTheme.text-muted;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                         }
                                                         Rectangle {
@@ -2994,7 +2994,7 @@ export component SettingsView inherits Rectangle {
                                                                 proxy_host_input_box := TextInput {
                                                                     text <=> root.proxy_host_input;
                                                                     color: AppTheme.text-strong;
-                                                                    font-size: 12px;
+                                                                    font-size: TypeScale.small;
                                                                     vertical-alignment: center;
                                                                     single-line: true;
                                                                 }
@@ -3009,7 +3009,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: Tr.proxy_port;
                                                             color: AppTheme.text-muted;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                         }
                                                         Rectangle {
@@ -3025,7 +3025,7 @@ export component SettingsView inherits Rectangle {
                                                                 proxy_port_input_box := TextInput {
                                                                     text <=> root.proxy_port_input;
                                                                     color: AppTheme.text-strong;
-                                                                    font-size: 12px;
+                                                                    font-size: TypeScale.small;
                                                                     vertical-alignment: center;
                                                                     single-line: true;
                                                                 }
@@ -3046,7 +3046,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: Tr.proxy_user;
                                                             color: AppTheme.text-muted;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                         }
                                                         Rectangle {
@@ -3062,7 +3062,7 @@ export component SettingsView inherits Rectangle {
                                                                 proxy_user_input_box := TextInput {
                                                                     text <=> root.proxy_username_input;
                                                                     color: AppTheme.text-strong;
-                                                                    font-size: 12px;
+                                                                    font-size: TypeScale.small;
                                                                     vertical-alignment: center;
                                                                     single-line: true;
                                                                 }
@@ -3078,7 +3078,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: Tr.proxy_pass;
                                                             color: AppTheme.text-muted;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                         }
                                                         Rectangle {
@@ -3094,7 +3094,7 @@ export component SettingsView inherits Rectangle {
                                                                 proxy_pass_input_box := TextInput {
                                                                     text <=> root.proxy_password_input;
                                                                     color: AppTheme.text-strong;
-                                                                    font-size: 12px;
+                                                                    font-size: TypeScale.small;
                                                                     vertical-alignment: center;
                                                                     single-line: true;
                                                                 }
@@ -3134,7 +3134,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.proxy_is_testing ? Tr.testing : Tr.test_proxy;
                                                             color: AppTheme.text-strong;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                             vertical-alignment: center;
                                                         }
@@ -3167,7 +3167,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: Tr.save_apply;
                                                             color: AppTheme.text-on-accent;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
@@ -3221,7 +3221,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.proxy_test_status_text;
                                                             color: root.proxy_test_is_success ? AppTheme.success : AppTheme.danger;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                             wrap: word-wrap;
                                                             horizontal-stretch: 1;
@@ -3263,7 +3263,7 @@ export component SettingsView inherits Rectangle {
                                                      Text {
                                                          text: Tr.bypass_blocks;
                                                          color: AppTheme.info;
-                                                         font-size: 11px;
+                                                         font-size: TypeScale.caption;
                                                          font-weight: 700;
                                                          wrap: word-wrap;
                                                          vertical-alignment: center;
@@ -3272,7 +3272,7 @@ export component SettingsView inherits Rectangle {
                                                  Text {
                                                      text: Tr.bypass_blocks_desc;
                                                      color: AppTheme.text-muted;
-                                                     font-size: 10px;
+                                                     font-size: TypeScale.micro;
                                                      wrap: word-wrap;
                                                  }
                                              }
@@ -3295,7 +3295,7 @@ export component SettingsView inherits Rectangle {
                                                      Text {
                                                          text: "Tor & SOCKS5";
                                                          color: AppTheme.accent;
-                                                         font-size: 11px;
+                                                         font-size: TypeScale.caption;
                                                          font-weight: 700;
                                                          wrap: word-wrap;
                                                          vertical-alignment: center;
@@ -3304,7 +3304,7 @@ export component SettingsView inherits Rectangle {
                                                  Text {
                                                      text: Tr.tor_desc;
                                                      color: AppTheme.text-muted;
-                                                     font-size: 10px;
+                                                     font-size: TypeScale.micro;
                                                      wrap: word-wrap;
                                                  }
                                              }
@@ -3327,7 +3327,7 @@ export component SettingsView inherits Rectangle {
                                                      Text {
                                                          text: "Debugging & Burp";
                                                          color: AppTheme.warning;
-                                                         font-size: 11px;
+                                                         font-size: TypeScale.caption;
                                                          font-weight: 700;
                                                          wrap: word-wrap;
                                                          vertical-alignment: center;
@@ -3336,7 +3336,7 @@ export component SettingsView inherits Rectangle {
                                                  Text {
                                                      text: Tr.debug_desc;
                                                      color: AppTheme.text-muted;
-                                                     font-size: 10px;
+                                                     font-size: TypeScale.micro;
                                                      wrap: word-wrap;
                                                  }
                                              }
@@ -3359,7 +3359,7 @@ export component SettingsView inherits Rectangle {
                                                      Text {
                                                          text: Tr.gaming_perf;
                                                          color: AppTheme.success;
-                                                         font-size: 11px;
+                                                         font-size: TypeScale.caption;
                                                          font-weight: 700;
                                                          wrap: word-wrap;
                                                          vertical-alignment: center;
@@ -3368,7 +3368,7 @@ export component SettingsView inherits Rectangle {
                                                  Text {
                                                      text: Tr.gaming_perf_desc;
                                                      color: AppTheme.text-muted;
-                                                     font-size: 10px;
+                                                     font-size: TypeScale.micro;
                                                      wrap: word-wrap;
                                                  }
                                              }
@@ -3396,13 +3396,13 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: Tr.net_diag_title;
                                                         color: AppTheme.text-strong;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                     }
                                                     Text {
                                                         text: Tr.net_diag_desc;
                                                         color: AppTheme.text-muted;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         wrap: word-wrap;
                                                     }
                                                 }
@@ -3417,7 +3417,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.net_diag_running ? Tr.net_diag_running : Tr.net_diag_run;
                                                             color: root.net_diag_running ? AppTheme.text-muted : AppTheme.text-on-accent;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 700;
                                                             horizontal-alignment: center;
                                                             vertical-alignment: center;
@@ -3439,7 +3439,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     horizontal-stretch: 1;
                                                     wrap: word-wrap;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                     color: root.net_diag_verdict == 0 && root.net_diag_signaling_ok ? AppTheme.success : AppTheme.danger;
@@ -3459,7 +3459,7 @@ export component SettingsView inherits Rectangle {
                                                         Text {
                                                             text: root.net_diag_copied ? Tr.net_diag_copied : Tr.net_diag_copy;
                                                             color: AppTheme.text-strong;
-                                                            font-size: 11px;
+                                                            font-size: TypeScale.caption;
                                                             font-weight: 600;
                                                             horizontal-alignment: center;
                                                             vertical-alignment: center;
@@ -3504,7 +3504,7 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: "Litecord Client";
                                                         color: AppTheme.text-strong;
-                                                        font-size: 14px;
+                                                        font-size: TypeScale.title;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -3512,7 +3512,7 @@ export component SettingsView inherits Rectangle {
                                                     Text {
                                                         text: root.app_version;
                                                         color: AppTheme.accent;
-                                                        font-size: 12px;
+                                                        font-size: TypeScale.small;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -3523,7 +3523,7 @@ export component SettingsView inherits Rectangle {
                                                 if root.update_check_feedback != "": Text {
                                                     text: root.update_check_feedback;
                                                     color: AppTheme.success;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                 }
                                             }
 
@@ -3565,7 +3565,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.release_channel;
                                                     color: AppTheme.warning;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -3574,7 +3574,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.release_channel_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -3608,7 +3608,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.rust_perf;
                                                     color: AppTheme.text-strong;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -3617,7 +3617,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.rust_perf_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -3650,7 +3650,7 @@ export component SettingsView inherits Rectangle {
                                                 Text {
                                                     text: Tr.deepsleep;
                                                     color: AppTheme.success;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -3659,7 +3659,7 @@ export component SettingsView inherits Rectangle {
                                             Text {
                                                 text: Tr.deepsleep_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -3689,7 +3689,7 @@ export component SettingsView inherits Rectangle {
                     Text {
                         text: "Litecord • Ultra-Fast Native Discord Client";
                         color: AppTheme.text-subtle;
-                        font-size: 11px;
+                        font-size: TypeScale.caption;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
