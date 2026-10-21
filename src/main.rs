@@ -259,6 +259,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 winit_win.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
+                // A frameless window gets no drop shadow, so over another light window its
+                // edges disappeared. The shadow is drawn by the Windows compositor (DWM),
+                // outside the app's own rendering, so it costs no CPU, GPU or memory here.
+                #[cfg(target_os = "windows")]
+                {
+                    use winit::platform::windows::WindowExtWindows;
+                    winit_win.set_undecorated_shadow(true);
+                }
                 winit_win.focus_window();
                 winit_win.request_redraw();
                 if let Some(pop_win) = popout_weak_init.upgrade() {
