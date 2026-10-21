@@ -9,14 +9,10 @@ const GROUP_WINDOW_SECONDS: i64 = 5 * 60;
 /// Keep the Discord metadata on each independent message, including messages
 /// loaded from history and messages received through the gateway.
 pub fn apply_message_metadata(message: &mut ChatMessage, source: &Value) {
-    let author_id = if matches!(source["type"].as_i64().unwrap_or(0), 0 | 19) {
-        source["author"]["id"]
-            .as_str()
-            .or_else(|| source["webhook_id"].as_str())
-            .unwrap_or("")
-    } else {
-        ""
-    };
+    let author_id = source["author"]["id"]
+        .as_str()
+        .or_else(|| source["webhook_id"].as_str())
+        .unwrap_or("");
     let created_at = source["timestamp"].as_str().unwrap_or("");
     set_message_metadata(message, author_id, created_at);
     message.avatar_url = avatar_url_for_message(source).into();
