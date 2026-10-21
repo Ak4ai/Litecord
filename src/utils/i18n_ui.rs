@@ -265,6 +265,14 @@ ui_strings! {
     (time_ago, set_time_ago, "{} ago", "há {}", "hace {}", "vor {}", "il y a {}", "{} назад", "{}前"),
     (time_soon, set_time_soon, "in a moment", "em instantes", "en un momento", "gleich", "dans un instant", "сейчас", "まもなく"),
     (time_just_now, set_time_just_now, "just now", "há instantes", "hace un momento", "gerade eben", "à l'instant", "только что", "たった今"),
+    // Settings window (redesign).
+    (settings_group_calls, set_settings_group_calls, "CALLS", "CHAMADAS", "LLAMADAS", "ANRUFE", "APPELS", "ЗВОНКИ", "通話"),
+    (settings_group_app, set_settings_group_app, "APP", "APLICATIVO", "APLICACIÓN", "APP", "APPLICATION", "ПРИЛОЖЕНИЕ", "アプリ"),
+    (settings_tab_appearance, set_settings_tab_appearance, "Appearance and language", "Aparência e idioma", "Apariencia e idioma", "Darstellung und Sprache", "Apparence et langue", "Внешний вид и язык", "外観と言語"),
+    (settings_tab_about, set_settings_tab_about, "Privacy and about", "Privacidade e Sobre", "Privacidad y acerca de", "Datenschutz und Info", "Confidentialité et à propos", "Конфиденциальность и о программе", "プライバシーと情報"),
+    (settings_advanced, set_settings_advanced, "Advanced", "Avançado", "Avanzado", "Erweitert", "Avancé", "Дополнительно", "詳細設定"),
+    (settings_advanced_desc, set_settings_advanced_desc, "Change these only if the stream freezes or goes black. Automatic tries each option and falls back to the next one.", "Só mude se a transmissão travar ou ficar preta. O automático testa cada opção e passa para a seguinte se uma falhar.", "Cámbialo solo si la transmisión se congela o se queda en negro. Automático prueba cada opción y pasa a la siguiente si una falla.", "Nur ändern, wenn die Übertragung hängt oder schwarz bleibt. Automatisch probiert jede Option und wechselt bei einem Fehler zur nächsten.", "À changer seulement si le partage se fige ou reste noir. Automatique essaie chaque option et passe à la suivante en cas d’échec.", "Меняйте, только если трансляция зависает или остаётся чёрной. Автоматический режим пробует каждый вариант и переходит к следующему при ошибке.", "配信が止まる・真っ黒になる場合のみ変更してください。自動では各方式を試し、失敗すると次に切り替えます。"),
+    (settings_privacy_title, set_settings_privacy_title, "How your data is protected", "Como seus dados são protegidos", "Cómo se protegen tus datos", "Wie deine Daten geschützt werden", "Comment vos données sont protégées", "Как защищены ваши данные", "データの保護について"),
 }
 
 #[cfg(test)]
