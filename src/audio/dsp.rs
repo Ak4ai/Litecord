@@ -1,29 +1,135 @@
-use std::sync::{Arc, Mutex, OnceLock};
-use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use log::debug;
 
 pub const FRAME_SIZE_SAMPLES: usize = 960; // 20ms at 48kHz
 pub const DENOISE_CHUNK_SIZE: usize = 480;  // 10ms at 48kHz (nnnoiseless frame)
 
-/// Global speaker loopback queue for Acoustic Echo Cancellation (AEC)
-static AEC_SPEAKER_REF: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
+// 65536 samples at 48kHz = ~1.365 seconds of audio buffer (power of 2)
+const AEC_RING_BUFFER_CAPACITY: usize = 65536;
+const AEC_RING_BUFFER_MASK: usize = AEC_RING_BUFFER_CAPACITY - 1;
 
-pub fn get_aec_speaker_queue() -> Arc<Mutex<VecDeque<f32>>> {
-    AEC_SPEAKER_REF.get_or_init(|| Arc::new(Mutex::new(VecDeque::with_capacity(96000)))).clone()
+/// Cache-line aligned AtomicUsize to prevent false sharing between concurrent CPAL audio threads.
+/// On multi-core x86/ARM CPUs, separate cache lines ensure the capture thread (reader)
+/// and playback thread (writer) do not constantly invalidate each other's L1/L2 caches.
+#[repr(align(64))]
+pub struct CachePaddedAtomicUsize {
+    val: AtomicUsize,
 }
 
-/// Push played speaker audio samples so AEC knows what to cancel from the microphone
-pub fn push_speaker_reference(samples: &[f32]) {
-    if let Ok(mut q) = get_aec_speaker_queue().lock() {
-        if q.len() > 48000 {
-            // Keep at most ~1 second of playback history
-            let excess = q.len() - 24000;
-            q.drain(0..excess);
-        }
-        for &s in samples {
-            q.push_back(s.clamp(-1.0, 1.0));
+impl CachePaddedAtomicUsize {
+    pub const fn new(v: usize) -> Self {
+        Self {
+            val: AtomicUsize::new(v),
         }
     }
+    #[inline(always)]
+    pub fn load(&self, order: Ordering) -> usize {
+        self.val.load(order)
+    }
+    #[inline(always)]
+    pub fn store(&self, v: usize, order: Ordering) {
+        self.val.store(v, order);
+    }
+}
+
+/// Lock-free, zero-allocation SPSC (Single-Producer Single-Consumer) ring buffer for real-time audio.
+/// Guarantees that neither playback nor capture CPAL callbacks block on a mutex or trigger heap allocations.
+pub struct LockFreeAudioRingBuffer {
+    buffer: Box<[AtomicU32]>,
+    write_idx: CachePaddedAtomicUsize,
+    read_idx: CachePaddedAtomicUsize,
+}
+
+impl LockFreeAudioRingBuffer {
+    pub fn new() -> Self {
+        let mut v = Vec::with_capacity(AEC_RING_BUFFER_CAPACITY);
+        for _ in 0..AEC_RING_BUFFER_CAPACITY {
+            v.push(AtomicU32::new(0));
+        }
+        Self {
+            buffer: v.into_boxed_slice(),
+            write_idx: CachePaddedAtomicUsize::new(0),
+            read_idx: CachePaddedAtomicUsize::new(0),
+        }
+    }
+
+    /// Push audio reference samples from the speaker output callback (Producer).
+    /// Lock-free, wait-free, and allocation-free.
+    pub fn push_samples(&self, samples: &[f32]) {
+        let mut w = self.write_idx.load(Ordering::Relaxed);
+        let r = self.read_idx.load(Ordering::Acquire);
+
+        for &s in samples {
+            let clamped = s.clamp(-1.0, 1.0);
+            self.buffer[w & AEC_RING_BUFFER_MASK].store(clamped.to_bits(), Ordering::Relaxed);
+            w = w.wrapping_add(1);
+        }
+
+        // Drop oldest unread samples if writer has wrapped around further than capacity
+        let current_diff = w.wrapping_sub(r);
+        if current_diff > AEC_RING_BUFFER_CAPACITY {
+            let new_r = w.wrapping_sub(AEC_RING_BUFFER_CAPACITY);
+            self.read_idx.store(new_r, Ordering::Release);
+        }
+
+        self.write_idx.store(w, Ordering::Release);
+    }
+
+    /// Read audio reference samples in the microphone capture callback (Consumer).
+    /// Lock-free, wait-free, and allocation-free.
+    ///
+    /// Anti-Drift Protection: If the speaker output started before mic capture or if a system
+    /// hiccup caused playback samples to accumulate, clamping the read cursor to at most 60 ms
+    /// (2880 samples) ensures the AEC reference never lags behind the acoustic return.
+    pub fn pop_samples(&self, out: &mut [f32]) -> usize {
+        let w = self.write_idx.load(Ordering::Acquire);
+        let r = self.read_idx.load(Ordering::Relaxed);
+        let available = w.wrapping_sub(r);
+
+        // Anti-Drift Protection: If the speaker output started before mic capture or if a system
+        // hiccup caused playback samples to accumulate past 40ms (1920 samples),
+        // jump directly to the most recent block needed right now (out.len() samples).
+        // This leaves 0 residual samples after reading, preventing stationary queue delay.
+        const MAX_AEC_LAG_SAMPLES: usize = 1920; // 40ms trigger threshold
+        let (r, available) = if available > MAX_AEC_LAG_SAMPLES {
+            let target_keep = out.len().min(AEC_RING_BUFFER_CAPACITY);
+            let clamped_r = w.wrapping_sub(target_keep);
+            (clamped_r, target_keep)
+        } else {
+            (r, available)
+        };
+
+        let count = out.len().min(available);
+        let mut cur_r = r;
+
+        for i in 0..count {
+            let bits = self.buffer[cur_r & AEC_RING_BUFFER_MASK].load(Ordering::Relaxed);
+            out[i] = f32::from_bits(bits);
+            cur_r = cur_r.wrapping_add(1);
+        }
+
+        self.read_idx.store(cur_r, Ordering::Release);
+        count
+    }
+}
+
+static AEC_SPEAKER_REF: OnceLock<LockFreeAudioRingBuffer> = OnceLock::new();
+
+pub fn get_aec_speaker_ring() -> &'static LockFreeAudioRingBuffer {
+    AEC_SPEAKER_REF.get_or_init(LockFreeAudioRingBuffer::new)
+}
+
+/// Push played speaker audio samples so AEC knows what to cancel from the microphone.
+/// Fully lock-free, zero-allocation, safe for real-time CPAL audio callbacks.
+pub fn push_speaker_reference(samples: &[f32]) {
+    get_aec_speaker_ring().push_samples(samples);
+}
+
+/// Pop speaker reference samples into a pre-allocated stack buffer.
+/// Fully lock-free, zero-allocation, safe for real-time CPAL audio callbacks.
+pub fn pop_speaker_reference(out: &mut [f32]) -> usize {
+    get_aec_speaker_ring().pop_samples(out)
 }
 
 /// Fractional phase resampler that prevents micro-stutter and audio drift
@@ -77,10 +183,59 @@ impl PhaseResampler {
     }
 }
 
+/// 2nd-order Butterworth High-Pass Filter (80Hz cutoff at 48kHz)
+/// Eliminates microphone desk thumps, low rumble, and electrical hum without affecting vocal formants
+#[derive(Debug, Clone, Copy)]
+pub struct BiquadHpf {
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+}
+
+impl BiquadHpf {
+    pub fn new_80hz_48khz() -> Self {
+        // Precomputed Butterworth 2nd-order HPF @ 80Hz, fs=48000Hz (Q = 0.7071)
+        Self {
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+            b0: 0.985287,
+            b1: -1.970574,
+            b2: 0.985287,
+            a1: -1.970500,
+            a2: 0.970648,
+        }
+    }
+
+    #[inline(always)]
+    pub fn process_sample(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+
+    pub fn process_frame(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) {
+        for s in frame.iter_mut() {
+            *s = self.process_sample(*s);
+        }
+    }
+}
+
 /// Complete Voice Processing Pipeline:
-/// Acoustic Echo Cancellation (AEC) -> Noise Suppression (Krisp / Standard / None) -> AGC -> Soft Limiter
+/// High-Pass Filter (80Hz) -> Acoustic Echo Cancellation (AEC) -> Noise Suppression (RNNoise) -> AGC -> Soft Limiter
 pub struct VoiceProcessor {
     denoiser: Box<nnnoiseless::DenoiseState<'static>>,
+    hpf: BiquadHpf,
     // Echo cancellation adaptive filter coefficients
     aec_filter: [f32; 48],
     aec_delay_buffer: [f32; 1024],
@@ -95,12 +250,21 @@ pub struct VoiceProcessor {
 
 impl VoiceProcessor {
     pub fn new() -> Self {
+        let mut denoiser = nnnoiseless::DenoiseState::new();
+        // Pre-warm the recurrent GRU states of RNNoise with silent frames
+        let mut silence = [0.0f32; DENOISE_CHUNK_SIZE];
+        let mut dummy_out = [0.0f32; DENOISE_CHUNK_SIZE];
+        for _ in 0..5 {
+            denoiser.process_frame(&mut dummy_out, &mut silence);
+        }
+
         Self {
-            denoiser: nnnoiseless::DenoiseState::new(),
+            denoiser,
+            hpf: BiquadHpf::new_80hz_48khz(),
             aec_filter: [0.0; 48],
             aec_delay_buffer: [0.0; 1024],
             aec_delay_idx: 0,
-            agc_envelope: 0.02,
+            agc_envelope: 0.08, // Natural speech level starting envelope (prevents 6x initial surge)
             agc_current_gain: 1.0,
             transient_env: 0.0,
             noise_floor: 0.005,
@@ -111,16 +275,25 @@ impl VoiceProcessor {
     pub fn process_frame(
         &mut self,
         frame: &mut [f32; FRAME_SIZE_SAMPLES],
-        suppression_mode: &str, // "advanced", "standard", "none" (also accepts legacy "krisp")
+        suppression_mode: &str, // "advanced", "standard", "none" (accepts legacy "krisp")
         enable_aec: bool,
         enable_agc: bool,
     ) {
-        // 1. Acoustic Echo Cancellation (AEC)
+        // Fast-path bypass if all filters are turned off
+        let is_bypass = (suppression_mode == "none" || suppression_mode.is_empty()) && !enable_aec && !enable_agc;
+        if is_bypass {
+            return;
+        }
+
+        // 1. High-Pass Filter (80Hz Butterworth) to eliminate DC offsets and thumps
+        self.hpf.process_frame(frame);
+
+        // 2. Acoustic Echo Cancellation (AEC)
         if enable_aec {
             self.apply_aec(frame);
         }
 
-        // 2. Noise Suppression
+        // 3. Noise Suppression
         match suppression_mode {
             "advanced" | "krisp" => {
                 self.apply_advanced_suppression(frame);
@@ -133,33 +306,23 @@ impl VoiceProcessor {
             }
         }
 
-        // 3. Automatic Gain Control (AGC) & Soft Limiter
+        // 4. Automatic Gain Control (AGC) & Soft Limiter
         if enable_agc {
             self.apply_agc(frame);
         }
 
-        // 4. Hard safety clamp
+        // 5. Hard safety clamp
         for s in frame.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
         }
     }
 
-    /// Applies Acoustic Echo Cancellation using a Normalized LMS adaptive filter
+    /// Applies Acoustic Echo Cancellation using a Normalized LMS adaptive filter.
+    /// Operates completely lock-free and allocation-free on the CPAL capture thread.
     fn apply_aec(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) {
-        let speaker_samples: Vec<f32> = if let Ok(mut q) = get_aec_speaker_queue().lock() {
-            let count = frame.len().min(q.len());
-            let mut buf = Vec::with_capacity(count);
-            for _ in 0..count {
-                if let Some(s) = q.pop_front() {
-                    buf.push(s);
-                }
-            }
-            buf
-        } else {
-            Vec::new()
-        };
-
-        if speaker_samples.is_empty() {
+        let mut speaker_samples = [0.0f32; FRAME_SIZE_SAMPLES];
+        let count = pop_speaker_reference(&mut speaker_samples);
+        if count == 0 {
             return;
         }
 
@@ -167,12 +330,7 @@ impl VoiceProcessor {
         let num_taps = self.aec_filter.len();
 
         for i in 0..frame.len() {
-            let ref_sample = if i < speaker_samples.len() {
-                speaker_samples[i]
-            } else {
-                0.0
-            };
-
+            let ref_sample = speaker_samples[i];
             self.aec_delay_buffer[self.aec_delay_idx] = ref_sample;
 
             // Compute estimated echo
@@ -196,10 +354,9 @@ impl VoiceProcessor {
                     let delay_pos = (self.aec_delay_idx + self.aec_delay_buffer.len() - tap) % self.aec_delay_buffer.len();
                     self.aec_filter[tap] += norm * error * self.aec_delay_buffer[delay_pos];
                 }
+                // Apply residual echo reduction when speaker is actively playing
+                frame[i] = error;
             }
-
-            // Apply residual echo suppression
-            frame[i] = error;
 
             self.aec_delay_idx = (self.aec_delay_idx + 1) % self.aec_delay_buffer.len();
         }
@@ -218,12 +375,12 @@ impl VoiceProcessor {
         frame[DENOISE_CHUNK_SIZE..FRAME_SIZE_SAMPLES].copy_from_slice(&chunk_out);
     }
 
-    /// Applies advanced neural denoising with transient click suppression & spectral gate
+    /// Applies advanced neural denoising with transparent transient click suppression
     fn apply_advanced_suppression(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) {
         // Step 1: Run recurrent neural denoiser
         self.apply_standard_rnnoise(frame);
 
-        // Step 2: Advanced Transient Click & Tap Suppression (keyboards, mouse clicks)
+        // Step 2: Transient Click & Tap Suppression (keyboards, mouse clicks)
         let alpha_attack = 0.35f32;
         let alpha_decay = 0.008f32;
 
@@ -242,14 +399,9 @@ impl VoiceProcessor {
             // Transient detection: sudden high peak with fast decay that isn't sustained vocal energy
             let crest_ratio = self.transient_env / (self.noise_floor + 1e-4);
             if crest_ratio > 18.0 && abs_val > 0.12 {
-                // Smoothly compress transient click
+                // Smoothly compress transient click without waveshaping speech fundamentals
                 let suppression = 1.0 / (1.0 + (crest_ratio - 18.0) * 0.25);
                 *s *= suppression;
-            }
-
-            // Downward expander for very low level background noise (< -42 dBFS)
-            if abs_val < 0.008 {
-                *s *= (abs_val / 0.008).powf(1.6);
             }
         }
     }
@@ -277,13 +429,13 @@ impl VoiceProcessor {
         // Target speech level is ~ -16 dBFS (approx 0.16 RMS)
         let target_rms = 0.16f32;
         let desired_gain = if self.agc_envelope > 0.008 {
-            (target_rms / self.agc_envelope).clamp(0.5, 3.5)
+            (target_rms / self.agc_envelope).clamp(0.6, 2.5)
         } else {
             1.0
         };
 
         // Smooth gain transition
-        self.agc_current_gain = self.agc_current_gain * 0.96 + desired_gain * 0.04;
+        self.agc_current_gain = self.agc_current_gain * 0.97 + desired_gain * 0.03;
 
         // Apply gain with tanh-based soft-knee saturation
         for s in frame.iter_mut() {
