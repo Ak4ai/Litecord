@@ -12,6 +12,7 @@ fn bits(value: &Value) -> Result<u64, String> {
         .ok_or_else(|| "Invalid permission bitfield".to_string())
 }
 
+#[derive(Clone)]
 pub struct ChannelPermissions {
     guild_id: String,
     user_id: String,

@@ -528,6 +528,34 @@ impl GatewayClient {
                                     }
                                 }
                             }
+
+                            // Extract channels if present in READY payload (Zero-Network Server Switching)
+                            let gid = g["id"].as_str().unwrap_or("").to_string();
+                            let gname = g["name"].as_str().unwrap_or("Servidor").to_string();
+                            if !gid.is_empty() {
+                                if let Some(chans_arr) = g["channels"].as_array() {
+                                    let mut channels = Vec::new();
+                                    for ch in chans_arr {
+                                        let ch_id = ch["id"].as_str().unwrap_or("").to_string();
+                                        let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
+                                        let ch_type = ch["type"].as_u64().unwrap_or(0);
+                                        if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
+                                            channels.push(ChannelData {
+                                                id: ch_id,
+                                                name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
+                                                is_voice: ch_type == 2 || ch_type == 13,
+                                                is_category: ch_type == 4,
+                                                parent_id: ch["parent_id"].as_str().map(|s| s.to_string()),
+                                                position: ch["position"].as_i64().unwrap_or(0),
+                                            });
+                                        }
+                                    }
+                                    if !channels.is_empty() {
+                                        let guild = GuildData { id: gid.clone(), name: gname, channels };
+                                        let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
+                                    }
+                                }
+                            }
                         }
                     }
 

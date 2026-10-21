@@ -4685,8 +4685,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                GatewayEvent::GuildLoaded { .. } => {
-                    // Handled via HTTP REST instant fetching
+                GatewayEvent::GuildLoaded { guild } => {
+                    let gid = guild.id.clone();
+                    let has_channels = !guild.channels.is_empty();
+                    if let Ok(mut gmap) = guilds_map_inner.lock() {
+                        if let Some(existing) = gmap.get_mut(&gid) {
+                            if !guild.name.is_empty() && guild.name != "Servidor" {
+                                existing.name = guild.name.clone();
+                            }
+                            if has_channels {
+                                existing.channels = guild.channels.clone();
+                            }
+                        } else {
+                            gmap.insert(gid.clone(), guild.clone());
+                        }
+                    }
+                    if has_channels && *active_guild_inner.lock().unwrap() == gid {
+                        let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                        let ui_channels = build_ui_channels(&guild.channels, &cats_guard);
+                        let app_w = app_weak_inner.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w.upgrade() {
+                                crate::ui::helpers::update_channel_voice_rows(&ui, ui_channels);
+                            }
+                        });
+                    }
                 }
                 GatewayEvent::IncomingCall { channel_id, caller_name } => {
                     // Chamada de DM recebida — mostrar painel de notificação com nome do amigo

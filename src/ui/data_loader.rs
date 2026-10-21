@@ -437,12 +437,17 @@ pub async fn fetch_and_populate_channels(
         });
     }
 
+    let channels_differ = cached.len() != channels_data.len()
+        || cached.iter().zip(channels_data.iter()).any(|(a, b)| a.id != b.id || a.name != b.name || a.position != b.position);
+
     // Update channels in guilds_map
     if let Some(g_data) = guilds_map.lock().unwrap().get_mut(guild_id) {
         g_data.channels = channels_data.clone();
     }
 
-    show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
+    if channels_differ || cached.is_empty() {
+        show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
+    }
 
     // Members and bot commands are not needed to read the chat: they load in the background.
     {
@@ -527,6 +532,13 @@ async fn open_first_readable_channel(
         }
         let ch_id = text_ch.id.clone();
         *active_channel_id.lock().unwrap() = ch_id.clone();
+        let (app_w_pre, name_pre, ch_id_pre) = (app_weak.clone(), text_ch.name.clone(), ch_id.clone());
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = app_w_pre.upgrade() {
+                ui.set_active_channel_name(name_pre.trim_start_matches('#').trim().into());
+                ui.set_active_channel_id(ch_id_pre.into());
+            }
+        });
         let readable = load_messages_for_channel(http, app_weak.clone(), &ch_id).await;
         let current = active_channel_id.lock().unwrap().clone();
         if current != ch_id {
@@ -534,13 +546,6 @@ async fn open_first_readable_channel(
             return (!current.is_empty()).then_some(current);
         }
         if readable {
-            let (app_w, name) = (app_weak.clone(), text_ch.name.clone());
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = app_w.upgrade() {
-                    ui.set_active_channel_name(name.trim_start_matches('#').trim().into());
-                    ui.set_active_channel_id(ch_id.into());
-                }
-            });
             request_chat_scroll_to_bottom(app_weak.clone());
             return Some(current);
         }
@@ -549,8 +554,18 @@ async fn open_first_readable_channel(
     None
 }
 
+static PRELOADED_GUILDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+
 /// Names of the server's members and bots, for mentions and voice rows.
 async fn preload_guild_members(http: &DiscordHttpClient, guild_id: &str) {
+    let set = PRELOADED_GUILDS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    if let Ok(mut lock) = set.lock() {
+        if lock.contains(guild_id) {
+            return;
+        }
+        lock.insert(guild_id.to_string());
+    }
+
     if let Ok(members) = http.get_guild_members(guild_id).await {
         for m in members {
             let uid_str = m["user"]["id"].as_str().unwrap_or("");
@@ -575,6 +590,11 @@ async fn preload_guild_members(http: &DiscordHttpClient, guild_id: &str) {
             }
         }
         info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
