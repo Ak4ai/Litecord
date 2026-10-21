@@ -265,6 +265,14 @@ ui_strings! {
     (time_ago, set_time_ago, "{} ago", "há {}", "hace {}", "vor {}", "il y a {}", "{} назад", "{}前"),
     (time_soon, set_time_soon, "in a moment", "em instantes", "en un momento", "gleich", "dans un instant", "сейчас", "まもなく"),
     (time_just_now, set_time_just_now, "just now", "há instantes", "hace un momento", "gerade eben", "à l'instant", "только что", "たった今"),
+    // Server invite cards; {} is a number already grouped for the language.
+    (invite_join, set_invite_join, "Join", "Entrar", "Unirse", "Beitreten", "Rejoindre", "Вступить", "参加"),
+    (invite_loading, set_invite_loading, "Loading invite…", "Carregando convite…", "Cargando invitación…", "Einladung wird geladen…", "Chargement de l’invitation…", "Загрузка приглашения…", "招待を読み込み中…"),
+    (invite_online, set_invite_online, "{} online", "{} online", "{} en línea", "{} online", "{} en ligne", "{} в сети", "{}人がオンライン"),
+    (invite_members, set_invite_members, "{} members", "{} membros", "{} miembros", "{} Mitglieder", "{} membres", "{} участников", "{}人のメンバー"),
+    (event_view, set_event_view, "View event", "Ver evento", "Ver evento", "Event ansehen", "Voir l’événement", "Открыть событие", "イベントを見る"),
+    (event_live, set_event_live, "Happening now", "Acontecendo agora", "En curso", "Läuft gerade", "En cours", "Идёт сейчас", "開催中"),
+    (event_interested, set_event_interested, "{} interested", "{} interessados", "{} interesados", "{} interessiert", "{} intéressés", "{} заинтересованы", "{}人が興味あり"),
 }
 
 #[cfg(test)]

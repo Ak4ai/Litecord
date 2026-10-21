@@ -878,6 +878,7 @@ pub async fn load_messages_for_channel(
                     };
                     regroup_messages(&mut ui_msgs);
                     avatar_cache::get_avatar_cache().hydrate(&mut ui_msgs, &app_weak);
+                    crate::ui::invite_cards::hydrate(&mut ui_msgs, &app_weak);
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
 
@@ -952,6 +953,7 @@ pub async fn try_login_with_candidates(
         let http = DiscordHttpClient::new(token_str.clone());
         match http.get_current_user().await {
             Ok(user_info) => {
+                crate::ui::invite_cards::set_session_client(http.clone());
                 let username = user_info["username"].as_str().unwrap_or("User");
                 let user_id = user_info["id"].as_str().unwrap_or("");
                 let global_name = user_info["global_name"].as_str().unwrap_or(username);
