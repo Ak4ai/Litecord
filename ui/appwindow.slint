@@ -22,6 +22,28 @@ struct CommandSuggestion {
     is_required: bool,
 }
 
+export struct EmojiPickerItem {
+    code: string,
+    name: string,
+    category: string,
+    is_custom: bool,
+}
+
+export struct EmojiRow {
+    emojis: [EmojiPickerItem],
+}
+
+export struct SoundboardItem {
+    id: string,
+    name: string,
+    icon: string,
+    category: string,
+}
+
+export struct SoundboardRow {
+    sounds: [SoundboardItem],
+}
+
 struct GuildItem {
     id: string,
     name: string,
@@ -89,9 +111,26 @@ export component AppWindow inherits Window {
     // Public bridge for the backend/settings layer. Theme persistence and the
     // visible selector can bind to this property without knowing token details.
     in-out property <bool> use-light-theme: false;
-    changed use-light-theme => {
-        AppTheme.mode = use-light-theme ? ThemeMode.light : ThemeMode.dark;
+    in-out property <string> theme_mode_name: "dark";
+    changed theme_mode_name => {
+        if (theme_mode_name == "amoled") {
+            AppTheme.mode = ThemeMode.amoled;
+            root.use-light-theme = false;
+        } else if (theme_mode_name == "light") {
+            AppTheme.mode = ThemeMode.light;
+            root.use-light-theme = true;
+        } else {
+            AppTheme.mode = ThemeMode.dark;
+            root.use-light-theme = false;
+        }
     }
+    changed use-light-theme => {
+        if (root.theme_mode_name != "amoled") {
+            AppTheme.mode = root.use-light-theme ? ThemeMode.light : ThemeMode.dark;
+            root.theme_mode_name = root.use-light-theme ? "light" : "dark";
+        }
+    }
+    callback select_theme_mode(string);
 
     // Callbacks to Rust backend
     callback drag_window();
@@ -209,6 +248,94 @@ export component AppWindow inherits Window {
     in-out property <string> app_version: "v0.2.5";
     in-out property <string> update_check_feedback: "";
     in-out property <bool> is_checking_update: false;
+
+    // Emoji Picker & Soundboard Callbacks & Properties
+    callback select_emoji(string);
+    callback toggle_emoji_picker();
+    callback play_soundboard_sound(string);
+    callback toggle_soundboard_panel();
+
+    select_emoji(code) => {
+        root.chat_input_text = root.chat_input_text + code + " ";
+        root.show_emoji_picker = false;
+    }
+    toggle_emoji_picker => {
+        root.show_emoji_picker = !root.show_emoji_picker;
+        if (root.show_emoji_picker) {
+            root.show_soundboard_panel = false;
+            root.show_command_suggestions = false;
+        }
+    }
+    toggle_soundboard_panel => {
+        root.show_soundboard_panel = !root.show_soundboard_panel;
+        if (root.show_soundboard_panel) {
+            root.show_emoji_picker = false;
+            root.show_command_suggestions = false;
+        }
+    }
+
+    in-out property <bool> show_emoji_picker: false;
+    in-out property <string> emoji_search_query: "";
+    in-out property <[EmojiRow]> emoji_rows: [
+        { emojis: [
+            { code: "😀", name: "grinning", category: "faces", is_custom: false },
+            { code: "😂", name: "joy", category: "faces", is_custom: false },
+            { code: "🤣", name: "rofl", category: "faces", is_custom: false },
+            { code: "😊", name: "blush", category: "faces", is_custom: false },
+            { code: "😍", name: "heart_eyes", category: "faces", is_custom: false },
+            { code: "🥰", name: "smiling_face_with_3_hearts", category: "faces", is_custom: false },
+            { code: "😎", name: "sunglasses", category: "faces", is_custom: false },
+            { code: "🤔", name: "thinking", category: "faces", is_custom: false },
+            { code: "🤫", name: "shushing", category: "faces", is_custom: false },
+            { code: "😭", name: "sob", category: "faces", is_custom: false },
+            { code: "💀", name: "skull", category: "faces", is_custom: false },
+            { code: "🔥", name: "fire", category: "objects", is_custom: false }
+        ]},
+        { emojis: [
+            { code: "✨", name: "sparkles", category: "objects", is_custom: false },
+            { code: "👍", name: "+1", category: "hands", is_custom: false },
+            { code: "👎", name: "-1", category: "hands", is_custom: false },
+            { code: "👏", name: "clap", category: "hands", is_custom: false },
+            { code: "🙌", name: "raised_hands", category: "hands", is_custom: false },
+            { code: "❤️", name: "heart", category: "objects", is_custom: false },
+            { code: "🎉", name: "tada", category: "objects", is_custom: false },
+            { code: "👀", name: "eyes", category: "faces", is_custom: false },
+            { code: "💯", name: "100", category: "objects", is_custom: false },
+            { code: "🚀", name: "rocket", category: "objects", is_custom: false },
+            { code: "🎮", name: "video_game", category: "objects", is_custom: false },
+            { code: "🍻", name: "beers", category: "objects", is_custom: false }
+        ]},
+        { emojis: [
+            { code: "🍕", name: "pizza", category: "objects", is_custom: false },
+            { code: "💩", name: "poop", category: "faces", is_custom: false },
+            { code: "🥺", name: "pleading_face", category: "faces", is_custom: false },
+            { code: "🥳", name: "partying_face", category: "faces", is_custom: false },
+            { code: "🤯", name: "exploding_head", category: "faces", is_custom: false },
+            { code: "🤝", name: "handshake", category: "hands", is_custom: false },
+            { code: "🙏", name: "pray", category: "hands", is_custom: false },
+            { code: "💪", name: "muscle", category: "hands", is_custom: false },
+            { code: "🧠", name: "brain", category: "faces", is_custom: false },
+            { code: "🤡", name: "clown", category: "faces", is_custom: false },
+            { code: "👻", name: "ghost", category: "faces", is_custom: false },
+            { code: "👾", name: "space_invader", category: "objects", is_custom: false }
+        ]}
+    ];
+
+    in-out property <bool> show_soundboard_panel: false;
+    in-out property <[SoundboardRow]> soundboard_rows: [
+        { sounds: [
+            { id: "airhorn", name: "Airhorn", icon: "🎺", category: "soundboard" },
+            { id: "bruh", name: "Bruh", icon: "🗿", category: "soundboard" },
+            { id: "quack", name: "Quack", icon: "🦆", category: "soundboard" },
+            { id: "badumtss", name: "Ba-Dum-Tss", icon: "🥁", category: "soundboard" }
+        ]},
+        { sounds: [
+            { id: "vineboom", name: "Vine Boom", icon: "💥", category: "soundboard" },
+            { id: "tada", name: "Tada Fanfare", icon: "🎉", category: "soundboard" },
+            { id: "applause", name: "Applause", icon: "👏", category: "soundboard" },
+            { id: "cricket", name: "Crickets", icon: "🦗", category: "soundboard" }
+        ]}
+    ];
 
     // Chat Pagination Properties
     in-out property <bool> is_loading_older_messages: false;
@@ -2874,6 +3001,200 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Discord-style Emoji Picker Box
+                    if root.show_emoji_picker : Rectangle {
+                        height: 240px;
+                        background: AppTheme.surface-sidebar;
+                        border-top-left-radius: 8px;
+                        border-top-right-radius: 8px;
+                        border-width: 1px;
+                        border-color: AppTheme.border-subtle;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: AppTheme.surface-scrim;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                Text {
+                                    text: "Emojis";
+                                    color: AppTheme.text-strong;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: close_emojis_ta.has-hover ? AppTheme.interactive-hover : transparent;
+
+                                    Image {
+                                        source: @image-url("../assets/x.svg");
+                                        width: 10px;
+                                        height: 10px;
+                                        colorize: AppTheme.text-muted;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    close_emojis_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.show_emoji_picker = false; }
+                                    }
+                                }
+                            }
+
+                            // Emoji Grid Container
+                            ScrollView {
+                                vertical-stretch: 1;
+
+                                VerticalLayout {
+                                    spacing: 4px;
+
+                                    for row in root.emoji_rows: HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for e in row.emojis: Rectangle {
+                                            width: 34px;
+                                            height: 34px;
+                                            border-radius: 6px;
+                                            background: emoji_cell_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                                            animate background { duration: 100ms; }
+
+                                            Text {
+                                                text: e.code;
+                                                font-size: 20px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            emoji_cell_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.select_emoji(e.code); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Discord-style Soundboard Panel Box
+                    if root.show_soundboard_panel : Rectangle {
+                        height: 220px;
+                        background: AppTheme.surface-sidebar;
+                        border-top-left-radius: 8px;
+                        border-top-right-radius: 8px;
+                        border-width: 1px;
+                        border-color: AppTheme.border-subtle;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: AppTheme.surface-scrim;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Painel de Sons";
+                                        color: AppTheme.text-strong;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        background: AppTheme.surface-control;
+                                        border-radius: 4px;
+                                        height: 18px;
+                                        Text {
+                                            text: "Nitro-Free";
+                                            color: AppTheme.accent;
+                                            font-size: 10px;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: close_sb_ta.has-hover ? AppTheme.interactive-hover : transparent;
+
+                                    Image {
+                                        source: @image-url("../assets/x.svg");
+                                        width: 10px;
+                                        height: 10px;
+                                        colorize: AppTheme.text-muted;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    close_sb_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.show_soundboard_panel = false; }
+                                    }
+                                }
+                            }
+
+                            // Soundboard 2-row Grid
+                            VerticalLayout {
+                                vertical-stretch: 1;
+                                spacing: 6px;
+
+                                for srow in root.soundboard_rows: HorizontalLayout {
+                                    spacing: 8px;
+                                    for s in srow.sounds: Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 64px;
+                                        border-radius: 6px;
+                                        background: sb_cell_ta.has-hover ? AppTheme.interactive-selected : AppTheme.surface-elevated;
+                                        border-width: 1px;
+                                        border-color: sb_cell_ta.has-hover ? AppTheme.accent : AppTheme.border-subtle;
+                                        animate background { duration: 120ms; }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+
+                                            Text {
+                                                text: s.icon;
+                                                font-size: 20px;
+                                                horizontal-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: s.name;
+                                                color: AppTheme.text-strong;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        sb_cell_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.play_soundboard_sound(s.id); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Message / Smart Command Input Box
                     Rectangle {
                         height: 56px;
@@ -3059,6 +3380,60 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            // Soundboard trigger button
+                            Rectangle {
+                                width: 34px;
+                                height: 34px;
+                                border-radius: 6px;
+                                background: soundboard_btn_ta.has-hover ? AppTheme.interactive-hover : (root.show_soundboard_panel ? AppTheme.interactive-selected : transparent);
+                                animate background { duration: 120ms; }
+
+                                Text {
+                                    text: "🔊";
+                                    font-size: 16px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                soundboard_btn_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.show_soundboard_panel = !root.show_soundboard_panel;
+                                        if (root.show_soundboard_panel) {
+                                            root.show_emoji_picker = false;
+                                            root.show_command_suggestions = false;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Emoji picker trigger button
+                            Rectangle {
+                                width: 34px;
+                                height: 34px;
+                                border-radius: 6px;
+                                background: emoji_btn_ta.has-hover ? AppTheme.interactive-hover : (root.show_emoji_picker ? AppTheme.interactive-selected : transparent);
+                                animate background { duration: 120ms; }
+
+                                Text {
+                                    text: "😊";
+                                    font-size: 16px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                emoji_btn_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.show_emoji_picker = !root.show_emoji_picker;
+                                        if (root.show_emoji_picker) {
+                                            root.show_soundboard_panel = false;
+                                            root.show_command_suggestions = false;
+                                        }
+                                    }
+                                }
+                            }
+
                             Button {
                                 text: root.tr_send;
                                 primary: true;
@@ -3136,6 +3511,7 @@ export component AppWindow inherits Window {
         gpu_selection_available: root.gpu_selection_available;
         stream_capture_status: root.stream_capture_status;
         use-light-theme: root.use-light-theme;
+        theme_mode_name: root.theme_mode_name;
         video_capture_options: root.video_capture_options;
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
@@ -3172,6 +3548,7 @@ export component AppWindow inherits Window {
         reset_keybind(arg0) => { root.reset_keybind(arg0); }
         select_video_encoder(arg0) => { root.select_video_encoder(arg0); }
         toggle_theme => { root.toggle_theme(); }
+        select_theme_mode(arg0) => { root.select_theme_mode(arg0); }
         select_video_capture_backend(arg0) => { root.select_video_capture_backend(arg0); }
         select_audio_loopback_backend(arg0) => { root.select_audio_loopback_backend(arg0); }
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
@@ -3595,6 +3972,19 @@ export component AppWindow inherits Window {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                 root.drag_resize("bottom-right");
+            }
+        }
+    }
+    // Top-Right Corner (Only active when unmaximized for normal window resizing)
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
+        x: parent.width - 7px;
+        y: 0px;
+        width: 7px;
+        height: 7px;
+        mouse-cursor: nesw-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top-right");
             }
         }
     }

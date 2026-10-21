@@ -11,9 +11,76 @@ struct DecodedImage {
     rgba: Vec<u8>,
 }
 
+const MAX_FULL_CACHE_BYTES: usize = 36 * 1024 * 1024; // 36 MB budget for decoded image textures
+
+#[derive(Clone)]
+struct CacheEntry {
+    image: DecodedImage,
+    last_access: u64,
+    size_bytes: usize,
+}
+
+#[derive(Default)]
+struct MemoryFullStore {
+    entries: HashMap<String, CacheEntry>,
+    total_bytes: usize,
+    clock: u64,
+}
+
+impl MemoryFullStore {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(32),
+            total_bytes: 0,
+            clock: 0,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<&DecodedImage> {
+        self.clock = self.clock.wrapping_add(1);
+        let clock = self.clock;
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.last_access = clock;
+            Some(&entry.image)
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, key: String, image: DecodedImage) {
+        self.clock = self.clock.wrapping_add(1);
+        let size_bytes = image.rgba.len();
+
+        // Evict least-recently-used images until we are within budget
+        while self.total_bytes + size_bytes > MAX_FULL_CACHE_BYTES && !self.entries.is_empty() {
+            if let Some((oldest_key, _)) = self.entries.iter().min_by_key(|(_, v)| v.last_access).map(|(k, v)| (k.clone(), v.last_access)) {
+                if let Some(removed) = self.entries.remove(&oldest_key) {
+                    self.total_bytes = self.total_bytes.saturating_sub(removed.size_bytes);
+                }
+            } else {
+                break;
+            }
+        }
+
+        if let Some(old) = self.entries.insert(key, CacheEntry {
+            image,
+            last_access: self.clock,
+            size_bytes,
+        }) {
+            self.total_bytes = self.total_bytes.saturating_sub(old.size_bytes);
+        }
+        self.total_bytes += size_bytes;
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.total_bytes = 0;
+    }
+}
+
 pub struct AttachmentCache {
     preview_cache: Mutex<HashMap<String, DecodedImage>>,
-    full_cache: Mutex<HashMap<String, DecodedImage>>,
+    full_cache: Mutex<MemoryFullStore>,
     temp_dir: PathBuf,
 }
 
@@ -31,7 +98,7 @@ pub fn get_attachment_cache() -> Arc<AttachmentCache> {
 
         Arc::new(AttachmentCache {
             preview_cache: Mutex::new(HashMap::with_capacity(64)),
-            full_cache: Mutex::new(HashMap::with_capacity(32)),
+            full_cache: Mutex::new(MemoryFullStore::new()),
             temp_dir,
         })
     }).clone()
@@ -85,7 +152,7 @@ impl AttachmentCache {
         }
 
         // 1. In memory
-        if let Ok(guard) = self.full_cache.lock() {
+        if let Ok(mut guard) = self.full_cache.lock() {
             if let Some(dec) = guard.get(att_id) {
                 let pixel_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                     &dec.rgba,
@@ -108,9 +175,6 @@ impl AttachmentCache {
                         dec.height,
                     );
                     if let Ok(mut guard) = self.full_cache.lock() {
-                        if guard.len() >= 30 {
-                            guard.clear();
-                        }
                         guard.insert(att_id.to_string(), dec);
                     }
                     return Some(slint::Image::from_rgba8(pixel_buffer));
@@ -119,6 +183,16 @@ impl AttachmentCache {
         }
 
         None
+    }
+
+    /// Clear all cached in-memory decoded textures to reclaim RAM
+    pub fn clear_memory(&self) {
+        if let Ok(mut guard) = self.preview_cache.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.full_cache.lock() {
+            guard.clear();
+        }
     }
 
     /// Fetch ultra-low-res thumbnail in background (~500 bytes) for pixel-art placeholder
@@ -249,9 +323,6 @@ impl AttachmentCache {
                                 let img_h = dec.height as i32;
 
                                 if let Ok(mut guard) = cache_arc.full_cache.lock() {
-                                    if guard.len() >= 30 {
-                                        guard.clear();
-                                    }
                                     guard.insert(id_str.clone(), dec);
                                 }
 
@@ -300,7 +371,12 @@ fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedImage> {
             log::warn!("Anexo de imagem com dimensões excessivas rejeitado por segurança: {}x{}", w, h);
             return None;
         }
-        let rgba = dyn_img.to_rgba8();
+        let fitted = if w > 1280 || h > 1280 {
+            dyn_img.thumbnail(1280, 1280)
+        } else {
+            dyn_img
+        };
+        let rgba = fitted.to_rgba8();
         let (width, height) = rgba.dimensions();
         Some(DecodedImage {
             width,

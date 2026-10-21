@@ -39,10 +39,17 @@ fn commit_heap_pages_on_demand() {
     extern "C" {
         fn mi_option_set(option: i32, value: std::os::raw::c_long);
     }
+    // mi_option_purge_delay = 9: delay in ms before purging freed memory to the OS (30ms avoids syscall storms on rapid scroll)
+    const MI_OPTION_PURGE_DELAY: i32 = 9;
+    // mi_option_reserve_huge_os_pages = 7: disable reserving huge OS pages in arenas
+    const MI_OPTION_RESERVE_HUGE_OS_PAGES: i32 = 7;
     // mi_option_page_commit_on_demand in the mimalloc v3 headers of libmimalloc-sys 0.1.49
-    // (the crate has no constant for it).
     const MI_OPTION_PAGE_COMMIT_ON_DEMAND: i32 = 40;
-    unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
+    unsafe {
+        mi_option_set(MI_OPTION_PURGE_DELAY, 30);
+        mi_option_set(MI_OPTION_RESERVE_HUGE_OS_PAGES, 0);
+        mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1);
+    }
 }
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
@@ -53,6 +60,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 slint::include_modules!();
 
+static WINDOW_PERSISTENCE_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     commit_heap_pages_on_demand();
@@ -62,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = i_slint_backend_winit::set_xdg_app_id("litecord");
 
     let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
+        .num_threads(2)
         .thread_name(|i| format!("rayon-worker-{}", i))
         .start_handler(|i| {
             #[cfg(target_os = "windows")]
@@ -117,13 +126,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
         std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
+    let saved_window_state = crate::utils::window_state::load_window_state();
+    info!("🖥️ Estado de janela restaurado: {:?}", saved_window_state);
+
+    let configure_window = |ui: &AppWindow| {
+        ui.window().set_size(slint::LogicalSize::new(
+            saved_window_state.width as f32,
+            saved_window_state.height as f32,
+        ));
+        if let (Some(x), Some(y)) = (saved_window_state.x, saved_window_state.y) {
+            ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+        }
+        if saved_window_state.is_maximized {
+            ui.window().set_maximized(true);
+            ui.set_is_maximized(true);
+        }
+    };
+
     let app = match AppWindow::new() {
         Ok(app) => {
+            configure_window(&app);
             info!("🖥️ Exibindo janela principal (app.show())...");
             if let Err(e) = app.show() {
                 log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
                 std::env::set_var("SLINT_BACKEND", "software");
                 let sw_app = AppWindow::new()?;
+                configure_window(&sw_app);
                 sw_app.show()?;
                 info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
                 sw_app
@@ -136,6 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
             std::env::set_var("SLINT_BACKEND", "software");
             let sw_app = AppWindow::new()?;
+            configure_window(&sw_app);
             sw_app.show()?;
             info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
             sw_app
@@ -182,8 +211,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     avatar_cache::get_avatar_cache().set_app(app_weak.clone());
 
-    let popout_window = PopoutStreamWindow::new()?;
-    let popout_weak = popout_window.as_weak();
+    let popout_window_store: Arc<Mutex<Option<PopoutStreamWindow>>> = Arc::new(Mutex::new(None));
+    let popout_weak_store: Arc<Mutex<Option<slint::Weak<PopoutStreamWindow>>>> = Arc::new(Mutex::new(None));
     let popout_hwnd_store: Arc<Mutex<Option<isize>>> = Arc::new(Mutex::new(None));
 
     // Tell the stream decoder whether any window can show a stream, so nothing is decoded
@@ -200,10 +229,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         // The same changes decide whether a window shows its stream through the GPU.
         let refresh_gpu_video = {
-            let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+            let aw = app_weak.clone();
+            let pws = Arc::clone(&popout_weak_store);
             move || {
-                if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
-                    crate::ui::gpu_video::refresh(&a, &p);
+                if let Some(a) = aw.upgrade() {
+                    let p_opt = pws.lock().unwrap().as_ref().and_then(|pw| pw.upgrade());
+                    crate::ui::gpu_video::refresh(&a, p_opt.as_ref());
                 }
             }
         };
@@ -221,11 +252,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match ev {
                 winit::event::WindowEvent::Resized(physical_size) => {
-                    let is_max = window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized());
+                    let is_max = window.with_winit_window(|w| {
+                        let max = w.is_maximized();
+                        if max {
+                            return true;
+                        }
+                        if let Some(m) = w.current_monitor() {
+                            let ms = m.size();
+                            // In KDE Plasma / Wayland, a maximized window spans full monitor width and height (minus panel margin)
+                            if (physical_size.width as i64 - ms.width as i64).abs() <= 4
+                                && (physical_size.height as i64 - ms.height as i64).abs() <= 120 {
+                                return true;
+                            }
+                        }
+                        false
+                    }).unwrap_or_else(|| window.is_maximized())
+                        || app_weak_win_events.upgrade().map(|u| u.get_is_maximized()).unwrap_or(false);
                     if let Some(ui) = app_weak_win_events.upgrade() {
                         if ui.get_is_maximized() != is_max {
                             ui.set_is_maximized(is_max);
                         }
+                    }
+                    if !WINDOW_PERSISTENCE_READY.load(Ordering::Relaxed) {
+                        return EventResult::Propagate;
                     }
                     if !is_max && physical_size.width > 0 && physical_size.height > 0 {
                         let scale = window.scale_factor() as f64;
@@ -247,7 +296,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 winit::event::WindowEvent::Moved(physical_pos) => {
-                    let is_max = window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized());
+                    if !WINDOW_PERSISTENCE_READY.load(Ordering::Relaxed) {
+                        return EventResult::Propagate;
+                    }
+                    let is_max = window.with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| window.is_maximized())
+                        || app_weak_win_events.upgrade().map(|u| u.get_is_maximized()).unwrap_or(false);
                     if !is_max {
                         let scale = window.scale_factor() as f64;
                         let logical_pos = physical_pos.to_logical::<f64>(scale);
@@ -265,29 +318,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             EventResult::Propagate
         });
-        let (aw, pw) = (app_weak.clone(), popout_weak.clone());
-        let popout_had_area = std::cell::Cell::new(true);
-        popout_window.window().on_winit_window_event(move |window, ev| {
-            if let Some(has) = has_area(window, ev) {
-                if has && !popout_had_area.replace(has) {
-                    i_slint_backend_winit::redraw_whole_window(window);
-                }
-                screen_capture::set_popout_has_area(has);
-                if let (winit::event::WindowEvent::Resized(s), Some(a), Some(p)) = (ev, aw.upgrade(), pw.upgrade()) {
-                    crate::ui::gpu_video::popout_resized(&a, &p, s.width, s.height);
-                }
-            }
-            EventResult::Propagate
-        });
-        let refresh_pop = refresh_gpu_video.clone();
-        popout_window.on_user_id_changed(move |uid| {
-            screen_capture::set_popout_has_stream(!uid.is_empty());
-            refresh_pop();
-        });
-        let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+
+        let aw = app_weak.clone();
+        let pws = Arc::clone(&popout_weak_store);
         app.on_stream_viewport_changed(move |x, y, w, h| {
-            if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
-                crate::ui::gpu_video::viewport_changed(&a, &p, x, y, w, h);
+            if let Some(a) = aw.upgrade() {
+                let p_opt = pws.lock().unwrap().as_ref().and_then(|pw| pw.upgrade());
+                crate::ui::gpu_video::viewport_changed(&a, p_opt.as_ref(), x, y, w, h);
             }
         });
     }
@@ -299,54 +336,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use i_slint_backend_winit::WinitWindowAccessor;
     let app_weak_init = app_weak.clone();
     let hwnd_store_init = Arc::clone(&hwnd_store);
-    let popout_weak_init = popout_weak.clone();
-    let pop_hwnd_c = Arc::clone(&popout_hwnd_store);
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_weak_init.upgrade() {
             ui.window().with_winit_window(|winit_win| {
                 info!("🖥️ [EVENT LOOP] Configurando janela Winit no evento inicial...");
                 let saved_state = crate::utils::window_state::load_window_state();
+                ui.window().set_size(slint::LogicalSize::new(
+                    saved_state.width as f32,
+                    saved_state.height as f32,
+                ));
                 let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(
                     saved_state.width as f64,
                     saved_state.height as f64,
                 ));
                 if let (Some(x), Some(y)) = (saved_state.x, saved_state.y) {
+                    ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
                     winit_win.set_outer_position(winit::dpi::LogicalPosition::new(x as f64, y as f64));
                 }
                 if saved_state.is_maximized {
                     winit_win.set_maximized(true);
+                    ui.window().set_maximized(true);
                     ui.set_is_maximized(true);
                 }
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 winit_win.focus_window();
                 winit_win.request_redraw();
-                if let Some(pop_win) = popout_weak_init.upgrade() {
-                    pop_win.window().with_winit_window(|winit_pop| {
-                        winit_pop.set_decorations(false);
-                        let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
-                        winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
-                        winit_pop.set_visible(false);
-                        #[cfg(target_os = "windows")]
-                        {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            if let Ok(handle) = winit_pop.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    let hwnd = win32_handle.hwnd.get() as isize;
-                                    *pop_hwnd_c.lock().unwrap() = Some(hwnd);
-                                    set_dark_titlebar_color(hwnd);
-                                    unsafe {
-                                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
-                                        };
-                                        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
-                                        SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
+
+                slint::Timer::single_shot(std::time::Duration::from_millis(600), move || {
+                    WINDOW_PERSISTENCE_READY.store(true, Ordering::Relaxed);
+                    info!("🖥️ Persistência de geometria de janela ativada.");
+                });
 
                 // Set native window and taskbar/dock icon (Linux X11/Wayland & Windows)
                 let icon_bytes = include_bytes!("../assets/app_icon.png");
@@ -371,13 +391,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    winit_win.set_decorations(true);
+                    let force_ssd = std::env::var("LITECORD_FORCE_SSD").map(|v| v == "1").unwrap_or(false)
+                        || std::env::var("WSL_DISTRO_NAME").is_ok();
+                    winit_win.set_decorations(force_ssd);
                 }
             });
             ui.window().request_redraw();
-            if let Some(pop_win) = popout_weak_init.upgrade() {
-                crate::ui::gpu_video::install(&ui, &pop_win);
-            }
+            crate::ui::gpu_video::install(&ui, None);
         }
     });
 
@@ -583,86 +603,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Popout Stream Window Callbacks & Window Manager
     // Hides the popout's top bar 2.2 s after the last mouse activity. Single-shot and
     // restarted on activity, so nothing ticks while the popout is closed or idle.
-    let pop_autohide = std::rc::Rc::new(slint::Timer::default());
-    {
-        let pop_w_hide = popout_weak.clone();
-        pop_autohide.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(2200), move || {
-            if let Some(pop) = pop_w_hide.upgrade() {
-                pop.set_show_controls(false);
+    // Popout Stream Window Callbacks & Window Manager
+    fn setup_popout_window(
+        pop_win: &PopoutStreamWindow,
+        app_weak: slint::Weak<AppWindow>,
+        popout_hwnd_store: Arc<Mutex<Option<isize>>>,
+        pop_autohide: std::rc::Rc<slint::Timer>,
+    ) {
+        use i_slint_backend_winit::{EventResult, WinitWindowAccessor};
+        pop_win.window().with_winit_window(|winit_pop| {
+            winit_pop.set_decorations(false);
+            let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
+            winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
+            #[cfg(target_os = "windows")]
+            {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                if let Ok(handle) = winit_pop.window_handle() {
+                    if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                        let hwnd = win32_handle.hwnd.get() as isize;
+                        *popout_hwnd_store.lock().unwrap() = Some(hwnd);
+                        set_dark_titlebar_color(hwnd);
+                        unsafe {
+                            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+                            };
+                            let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+                            SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
+                        }
+                    }
+                }
             }
         });
-        pop_autohide.stop();
-    }
-    let pop_autohide_open = std::rc::Rc::clone(&pop_autohide);
-    let pop_w_cb = popout_weak.clone();
-    let pop_hwnd_cb = Arc::clone(&popout_hwnd_store);
-    let app_weak_pop = app_weak.clone();
-    app.on_popout_stream_window(move |uid_str: slint::SharedString, uname_str: slint::SharedString| {
-        let uid = uid_str.to_string();
-        let uname = uname_str.to_string();
-        info!("📺 Desanexando transmissão de vídeo para janela Popout! User ID: {}, Nome: {}", uid, uname);
-        if let Some(ui) = app_weak_pop.upgrade() {
-            ui.set_popped_out_stream_uid(uid.clone().into());
-            let my_uid = gateway::get_my_user_id().to_string();
-            let is_pop_self = uid == "self" || uid == my_uid;
-            let cur_frame = if is_pop_self { ui.get_active_stream_frame() } else { ui.get_remote_stream_frame() };
-            if let Some(pop_win) = pop_w_cb.upgrade() {
-                pop_win.set_user_id(uid.clone().into());
-                pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
-                pop_win.set_stream_frame(cur_frame);
-                pop_win.set_show_controls(true);
-                pop_autohide_open.restart();
-                pop_win.set_is_self(is_pop_self);
-                if is_pop_self && video_settings::get_enable_self_preview_notice() {
-                    pop_win.set_show_self_preview_notice(true);
-                    let pop_w_notice = pop_w_cb.clone();
-                    slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
-                        if let Some(pop) = pop_w_notice.upgrade() {
-                            pop.set_show_self_preview_notice(false);
-                        }
-                    });
-                } else {
-                    pop_win.set_show_self_preview_notice(false);
-                }
-                let _ = pop_win.show();
-                #[cfg(target_os = "windows")]
-                if let Some(hwnd) = *pop_hwnd_cb.lock().unwrap() {
-                    unsafe {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW, SetForegroundWindow};
-                        ShowWindow(hwnd as _, SW_SHOW);
-                        SetForegroundWindow(hwnd as _);
-                    }
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let is_p = pop_win.get_is_pinned();
-                    if is_p {
-                        set_linux_window_keep_above(true);
-                    }
-                }
-                let _ = pop_win.window().with_winit_window(|w| {
-                    w.set_visible(true);
-                    w.set_minimized(false);
-                    w.focus_window();
-                });
-                i_slint_backend_winit::redraw_whole_window(pop_win.window());
-                // Shown and restored now (showing a hidden window brings no resize event).
-                screen_capture::set_popout_has_area(true);
-                crate::ui::gpu_video::refresh(&ui, &pop_win);
-            }
-        }
-    });
 
-    let pop_w_pin = popout_weak.clone();
-    let pop_hwnd_pin = Arc::clone(&popout_hwnd_store);
-    if let Some(pop_win) = popout_weak.upgrade() {
+        crate::ui::gpu_video::install_popout(pop_win);
+
+        let popout_weak = pop_win.as_weak();
+        let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+        let popout_had_area = std::cell::Cell::new(true);
+        let has_area = |window: &slint::Window, ev: &winit::event::WindowEvent| match ev {
+            winit::event::WindowEvent::Resized(s) => {
+                let minimized = window.with_winit_window(|w| w.is_minimized()).flatten().unwrap_or(false);
+                Some(!minimized && s.width > 0 && s.height > 0)
+            }
+            _ => None,
+        };
+        pop_win.window().on_winit_window_event(move |window, ev| {
+            if let Some(has) = has_area(window, ev) {
+                if has && !popout_had_area.replace(has) {
+                    i_slint_backend_winit::redraw_whole_window(window);
+                }
+                screen_capture::set_popout_has_area(has);
+                if let (winit::event::WindowEvent::Resized(s), Some(a), Some(p)) = (ev, aw.upgrade(), pw.upgrade()) {
+                    crate::ui::gpu_video::popout_resized(&a, &p, s.width, s.height);
+                }
+            }
+            EventResult::Propagate
+        });
+
+        let (aw, pw) = (app_weak.clone(), popout_weak.clone());
+        pop_win.on_user_id_changed(move |uid| {
+            screen_capture::set_popout_has_stream(!uid.is_empty());
+            if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
+                crate::ui::gpu_video::refresh(&a, Some(&p));
+            }
+        });
+
+        let pop_w_pin = popout_weak.clone();
+        let _pop_hwnd_pin = Arc::clone(&popout_hwnd_store);
         pop_win.on_toggle_pin(move || {
             if let Some(pop) = pop_w_pin.upgrade() {
                 let new_pinned = !pop.get_is_pinned();
                 pop.set_is_pinned(new_pinned);
                 info!("📌 Janela Popout Always-on-Top alterado para: {}", new_pinned);
                 #[cfg(target_os = "windows")]
-                if let Some(hwnd) = *pop_hwnd_pin.lock().unwrap() {
+                if let Some(hwnd) = *_pop_hwnd_pin.lock().unwrap() {
                     unsafe {
                         use windows_sys::Win32::UI::WindowsAndMessaging::{
                             SetWindowPos, HWND_TOPMOST, HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
@@ -684,10 +698,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
         });
-    }
 
-    let pop_w_drag = popout_weak.clone();
-    if let Some(pop_win) = popout_weak.upgrade() {
+        let pop_w_drag = popout_weak.clone();
         pop_win.on_start_window_drag(move || {
             if let Some(pop) = pop_w_drag.upgrade() {
                 static LAST_POP_DRAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -712,10 +724,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
         });
-    }
 
-    let pop_w_fs = popout_weak.clone();
-    if let Some(pop_win) = popout_weak.upgrade() {
+        let pop_w_fs = popout_weak.clone();
         pop_win.on_toggle_fullscreen(move || {
             if let Some(pop) = pop_w_fs.upgrade() {
                 let current = pop.get_is_maximized();
@@ -724,14 +734,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pop.window().set_maximized(next);
             }
         });
-    }
 
-    let pop_w_min = popout_weak.clone();
-    let pop_hwnd_min = Arc::clone(&popout_hwnd_store);
-    if let Some(pop_win) = popout_weak.upgrade() {
+        let pop_w_min = popout_weak.clone();
+        let _pop_hwnd_min = Arc::clone(&popout_hwnd_store);
         pop_win.on_minimize_popout(move || {
             #[cfg(target_os = "windows")]
-            if let Some(hwnd) = *pop_hwnd_min.lock().unwrap() {
+            if let Some(hwnd) = *_pop_hwnd_min.lock().unwrap() {
                 unsafe {
                     use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MINIMIZE};
                     ShowWindow(hwnd as _, SW_MINIMIZE);
@@ -741,10 +749,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pop.window().set_minimized(true);
             }
         });
-    }
 
-    let pop_w_resize = popout_weak.clone();
-    if let Some(pop_win) = popout_weak.upgrade() {
+        let pop_w_resize = popout_weak.clone();
         pop_win.on_drag_resize(move |edge: slint::SharedString| {
             if let Some(pop) = pop_w_resize.upgrade() {
                 static LAST_POP_RESIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -780,16 +786,180 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
         });
+
+        let pop_w_ghost = popout_weak.clone();
+        let _pop_hwnd_ghost = Arc::clone(&popout_hwnd_store);
+        let app_weak_ghost = app_weak.clone();
+        pop_win.on_toggle_intangible(move || {
+            let mut new_state = false;
+            if let Some(pop) = pop_w_ghost.upgrade() {
+                new_state = !pop.get_is_intangible();
+                pop.set_is_intangible(new_state);
+                let hittest = !new_state;
+                let _ = pop.window().with_winit_window(move |w| {
+                    let _ = w.set_cursor_hittest(hittest);
+                });
+                if new_state {
+                    info!("👻 Modo Intangível ATIVADO no popup (cliques atravessam para os jogos/apps)!");
+                } else {
+                    info!("🖱️ Modo Intangível DESATIVADO no popup (janela volta a receber cliques).");
+                }
+            }
+            if let Some(ui) = app_weak_ghost.upgrade() {
+                ui.set_is_popout_intangible(new_state);
+            }
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = *_pop_hwnd_ghost.lock().unwrap() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+                    };
+                    let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                    if new_state {
+                        SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT as i32 | WS_EX_LAYERED as i32);
+                    } else {
+                        SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
+                    }
+                }
+            }
+        });
+
+        let pop_w_close = popout_weak.clone();
+        let _pop_hwnd_close = Arc::clone(&popout_hwnd_store);
+        let app_weak_pop_close = app_weak.clone();
+        pop_win.on_close_popout(move || {
+            info!("📺 Fechando janela Popout e reanexando transmissão à sala principal!");
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = *_pop_hwnd_close.lock().unwrap() {
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        ShowWindow, SW_HIDE, GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+                    };
+                    let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
+                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
+                    ShowWindow(hwnd as _, SW_HIDE);
+                }
+            }
+            if let Some(pop) = pop_w_close.upgrade() {
+                pop.set_is_intangible(false);
+                let _ = pop.window().with_winit_window(|w| {
+                    let _ = w.set_cursor_hittest(true);
+                });
+                pop.set_user_id("".into());
+                let _ = pop.hide();
+            }
+            if let Some(ui) = app_weak_pop_close.upgrade() {
+                ui.set_is_popout_intangible(false);
+                ui.set_popped_out_stream_uid("".into());
+            }
+        });
+
+        let pop_w_mouse = popout_weak.clone();
+        let pop_autohide_mouse = std::rc::Rc::clone(&pop_autohide);
+        pop_win.on_mouse_activity(move || {
+            if let Some(pop) = pop_w_mouse.upgrade() {
+                if !pop.get_show_controls() {
+                    pop.set_show_controls(true);
+                }
+                pop_autohide_mouse.restart();
+            }
+        });
+
+        pop_win.on_stream_volume_changed(move |uid_str: slint::SharedString, vol: f32| {
+            let uid = uid_str.to_string().parse::<u64>().unwrap_or(0);
+            if uid != 0 {
+                screen_capture::set_stream_volume(uid, vol);
+            }
+        });
     }
 
-    // Intangible / Click-Through Ghost Mode Callbacks
-    let pop_w_ghost = popout_weak.clone();
+    let pop_autohide = std::rc::Rc::new(slint::Timer::default());
+    let pop_autohide_open = std::rc::Rc::clone(&pop_autohide);
+    let popout_window_store_cb = Arc::clone(&popout_window_store);
+    let popout_weak_store_cb = Arc::clone(&popout_weak_store);
+    let pop_hwnd_cb = Arc::clone(&popout_hwnd_store);
+    let app_weak_pop = app_weak.clone();
+    app.on_popout_stream_window(move |uid_str: slint::SharedString, uname_str: slint::SharedString| {
+        let uid = uid_str.to_string();
+        let uname = uname_str.to_string();
+        info!("📺 Desanexando transmissão de vídeo para janela Popout! User ID: {}, Nome: {}", uid, uname);
+        if let Some(ui) = app_weak_pop.upgrade() {
+            ui.set_popped_out_stream_uid(uid.clone().into());
+            let my_uid = gateway::get_my_user_id().to_string();
+            let is_pop_self = uid == "self" || uid == my_uid;
+            let cur_frame = if is_pop_self { ui.get_active_stream_frame() } else { ui.get_remote_stream_frame() };
+
+            let pop_win = {
+                let mut store = popout_window_store_cb.lock().unwrap();
+                if store.is_none() {
+                    if let Ok(new_pop) = PopoutStreamWindow::new() {
+                        setup_popout_window(
+                            &new_pop,
+                            app_weak_pop.clone(),
+                            Arc::clone(&pop_hwnd_cb),
+                            std::rc::Rc::clone(&pop_autohide_open),
+                        );
+                        *popout_weak_store_cb.lock().unwrap() = Some(new_pop.as_weak());
+                        *store = Some(new_pop);
+                    }
+                }
+                popout_weak_store_cb.lock().unwrap().as_ref().and_then(|w| w.upgrade())
+            };
+
+            if let Some(pop_win) = pop_win {
+                pop_win.set_user_id(uid.clone().into());
+                pop_win.set_username(if uname.is_empty() { ui.get_active_stream_user() } else { uname.into() });
+                pop_win.set_stream_frame(cur_frame);
+                pop_win.set_show_controls(true);
+                pop_autohide_open.restart();
+                pop_win.set_is_self(is_pop_self);
+                if is_pop_self && video_settings::get_enable_self_preview_notice() {
+                    pop_win.set_show_self_preview_notice(true);
+                    let pop_w_notice = pop_win.as_weak();
+                    slint::Timer::single_shot(std::time::Duration::from_secs(8), move || {
+                        if let Some(pop) = pop_w_notice.upgrade() {
+                            pop.set_show_self_preview_notice(false);
+                        }
+                    });
+                } else {
+                    pop_win.set_show_self_preview_notice(false);
+                }
+                let _ = pop_win.show();
+                #[cfg(target_os = "windows")]
+                if let Some(hwnd) = *pop_hwnd_cb.lock().unwrap() {
+                    unsafe {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW, SetForegroundWindow};
+                        ShowWindow(hwnd as _, SW_SHOW);
+                        SetForegroundWindow(hwnd as _);
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let is_p = pop_win.get_is_pinned();
+                    if is_p {
+                        set_linux_window_keep_above(true);
+                    }
+                }
+                let _ = pop_win.window().with_winit_window(|w| {
+                    w.set_visible(true);
+                    w.set_minimized(false);
+                    w.focus_window();
+                });
+                i_slint_backend_winit::redraw_whole_window(pop_win.window());
+                // Shown and restored now (showing a hidden window brings no resize event).
+                screen_capture::set_popout_has_area(true);
+                crate::ui::gpu_video::refresh(&ui, Some(&pop_win));
+            }
+        }
+    });
+
+    let pop_w_store_tg = Arc::clone(&popout_weak_store);
     let pop_hwnd_ghost = Arc::clone(&popout_hwnd_store);
     let app_weak_ghost = app_weak.clone();
-
-    let toggle_ghost_fn = Arc::new(move || {
+    app.on_toggle_popout_intangible(move || {
         let mut new_state = false;
-        if let Some(pop) = pop_w_ghost.upgrade() {
+        let pop_opt = pop_w_store_tg.lock().unwrap().as_ref().and_then(|w| w.upgrade());
+        if let Some(pop) = pop_opt {
             new_state = !pop.get_is_intangible();
             pop.set_is_intangible(new_state);
             let hittest = !new_state;
@@ -821,75 +991,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    if let Some(pop_win) = popout_weak.upgrade() {
-        let tg1 = Arc::clone(&toggle_ghost_fn);
-        pop_win.on_toggle_intangible(move || {
-            tg1();
-        });
-    }
-
-    let tg2 = Arc::clone(&toggle_ghost_fn);
-    app.on_toggle_popout_intangible(move || {
-        tg2();
-    });
-
-    let pop_w_close = popout_weak.clone();
-    let pop_hwnd_close = Arc::clone(&popout_hwnd_store);
-    let app_weak_pop_close = app_weak.clone();
-    if let Some(pop_win) = popout_weak.upgrade() {
-        pop_win.on_close_popout(move || {
-            info!("📺 Fechando janela Popout e reanexando transmissão à sala principal!");
-            #[cfg(target_os = "windows")]
-            if let Some(hwnd) = *pop_hwnd_close.lock().unwrap() {
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        ShowWindow, SW_HIDE, GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
-                    };
-                    let ex_style = GetWindowLongW(hwnd as _, GWL_EXSTYLE);
-                    SetWindowLongW(hwnd as _, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT as i32));
-                    ShowWindow(hwnd as _, SW_HIDE);
-                }
-            }
-            if let Some(pop) = pop_w_close.upgrade() {
-                pop.set_is_intangible(false);
-                let _ = pop.window().with_winit_window(|w| {
-                    let _ = w.set_cursor_hittest(true);
-                });
-                pop.set_user_id("".into());
-                let _ = pop.hide();
-            }
-            if let Some(ui) = app_weak_pop_close.upgrade() {
-                ui.set_is_popout_intangible(false);
-                ui.set_popped_out_stream_uid("".into());
-            }
-        });
-    }
-
-    let pop_w_mouse = popout_weak.clone();
-    let pop_autohide_mouse = std::rc::Rc::clone(&pop_autohide);
-    if let Some(pop_win) = popout_weak.upgrade() {
-        pop_win.on_mouse_activity(move || {
-            if let Some(pop) = pop_w_mouse.upgrade() {
-                if !pop.get_show_controls() {
-                    pop.set_show_controls(true);
-                }
-                pop_autohide_mouse.restart();
-            }
-        });
-
-        pop_win.on_stream_volume_changed(move |uid_str: slint::SharedString, vol: f32| {
-            let uid = uid_str.to_string().parse::<u64>().unwrap_or(0);
-            if uid != 0 {
-                screen_capture::set_stream_volume(uid, vol);
-            }
-        });
-    }
-
     // Screen Share / Live Stream Video Callbacks (P2P UDP Transmitter & Receiver)
     let screen_manager = Arc::new(ScreenCaptureManager::new());
     let sm_clone = Arc::clone(&screen_manager);
     let app_weak_ss = app_weak.clone();
-    let pop_w_ss = popout_weak.clone();
+    let pop_w_ss = Arc::clone(&popout_weak_store);
     let pop_hwnd_ss = Arc::clone(&popout_hwnd_store);
     let hidden_streams: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
@@ -902,7 +1008,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize P2P Video Receiver to receive streams from other users in real time!
     let app_weak_rx = app_weak.clone();
-    let pop_w_rx = popout_weak.clone();
+    let pop_w_rx = Arc::clone(&popout_weak_store);
     let hidden_streams_rx = Arc::clone(&hidden_streams);
     let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
     let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
@@ -910,12 +1016,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     screen_manager.start_receiver(
         {
             let app_w = app_weak_rx.clone();
-            let pop_w = pop_w_rx.clone();
+            let pop_w = Arc::clone(&pop_w_rx);
             move |uid, uname, quality, pixel_buf| {
                 *latest_rx_frame_cb.lock().unwrap() = Some((uid, uname, quality, pixel_buf));
                 if !is_rx_ui_pending_cb.swap(true, Ordering::AcqRel) {
                     let app_w2 = app_w.clone();
-                    let pop_w2 = pop_w.clone();
+                    let pop_w2 = Arc::clone(&pop_w);
                     let latest_slot = Arc::clone(&latest_rx_frame_cb);
                     let pending_flag = Arc::clone(&is_rx_ui_pending_cb);
                     let pending_flag_inner = Arc::clone(&pending_flag);
@@ -936,10 +1042,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 "".to_string()
                             };
+                            let pop_opt = pop_w2.lock().unwrap().as_ref().and_then(|w| w.upgrade());
                             // Next frames are converted at the largest size they are shown at.
                             {
                                 let main_px = app_w2.upgrade().map(|ui| ui.window().size());
-                                let pop_px = pop_w2.upgrade().filter(|p| p.window().is_visible()).map(|p| p.window().size());
+                                let pop_px = pop_opt.as_ref().filter(|p| p.window().is_visible()).map(|p| p.window().size());
                                 let (mut vw, mut vh) = main_px.map(|s| (s.width, s.height)).unwrap_or((0, 0));
                                 if let Some(p) = pop_px {
                                     vw = vw.max(p.width);
@@ -959,9 +1066,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_tr_stream_quality(quality.into());
                                 ui.set_remote_stream_frame(frame.clone());
                                 ui.set_remote_stream_fps(rx_fps_str.clone().into());
-                                if let Some(pop) = pop_w2.upgrade() {
-                                    crate::ui::gpu_video::refresh(&ui, &pop);
-                                }
+                                crate::ui::gpu_video::refresh(&ui, pop_opt.as_ref());
 
                                 // Garantir que o participante na lista de voz esteja marcado como streaming
                                 let cur_model = ui.get_voice_participants();
@@ -975,7 +1080,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             if should_update_pop {
-                                if let Some(pop) = pop_w2.upgrade() {
+                                if let Some(pop) = pop_opt.as_ref() {
                                     let pop_uid = pop.get_user_id().to_string();
                                     if pop_uid == uid_str || pop_uid.is_empty() {
                                         pop.set_stream_frame(frame);
@@ -992,15 +1097,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         {
             let app_w = app_weak_rx.clone();
-            let pop_w = pop_w_rx.clone();
+            let pop_w = Arc::clone(&pop_w_rx);
             let hidden_streams_rx_cb = Arc::clone(&hidden_streams_rx);
             move |uid, is_streaming| {
                 let uid_str = uid.to_string();
                 let app_w2 = app_w.clone();
-                let pop_w2 = pop_w.clone();
+                let pop_w2 = Arc::clone(&pop_w);
                 let hidden_streams_inner = Arc::clone(&hidden_streams_rx_cb);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w2.upgrade() {
+                        let pop_opt = pop_w2.lock().unwrap().as_ref().and_then(|w| w.upgrade());
                         if is_streaming {
                             // Someone else's stream starts hidden, with a Watch button: nothing
                             // is received until the user asks for it.
@@ -1038,7 +1144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             if ui.get_popped_out_stream_uid() == uid_str.as_str() || uid == 0 {
                                 ui.set_popped_out_stream_uid("".into());
-                                if let Some(pop) = pop_w2.upgrade() {
+                                if let Some(pop) = pop_opt.as_ref() {
                                     pop.set_stream_frame(Image::default());
                                     pop.set_user_id("".into());
                                     let _ = pop.hide();
@@ -1057,9 +1163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        if let Some(pop) = pop_w2.upgrade() {
-                            crate::ui::gpu_video::refresh(&ui, &pop);
-                        }
+                        crate::ui::gpu_video::refresh(&ui, pop_opt.as_ref());
                     }
                 });
             }
@@ -1083,7 +1187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let my_uid = gateway::get_my_user_id().to_string();
                 if ui.get_popped_out_stream_uid() == "self" || ui.get_popped_out_stream_uid() == my_uid.as_str() {
                     ui.set_popped_out_stream_uid("".into());
-                    if let Some(pop) = pop_w_ss.upgrade() {
+                    if let Some(pop) = pop_w_ss.lock().unwrap().as_ref().and_then(|w| w.upgrade()) {
                         pop.set_user_id("".into());
                         pop.set_is_self(false);
                         pop.set_show_self_preview_notice(false);
@@ -1170,7 +1274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 if is_pop_self {
-                                    if let Some(pop) = pop_w.upgrade() {
+                                    if let Some(pop) = pop_w.lock().unwrap().as_ref().and_then(|w| w.upgrade()) {
                                         pop.set_stream_frame(frame);
                                         pop.set_stream_fps(fps_str.into());
                                     }
@@ -1416,7 +1520,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("👁️ Ocultando stream de vídeo do usuário {}", uid);
         hidden_streams_hide.lock().unwrap().insert(uid.clone());
         // Hiding someone's stream stops receiving it (the sender stops sending to us).
-        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), false);
+        let peer_uid_num = uid.parse().unwrap_or(0);
+        screen_capture::watch::set_wanted(peer_uid_num, false);
+        screen_capture::stop_mpv_player(peer_uid_num);
         if let Some(ui) = app_weak_hide.upgrade() {
             if ui.get_focused_stream_uid() == uid.as_str() {
                 ui.set_focused_stream_uid("".into());
@@ -1436,19 +1542,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_weak_unhide = app_weak.clone();
     let hidden_streams_unhide = Arc::clone(&hidden_streams);
-    let pop_w_unhide = popout_weak.clone();
+    let pop_w_unhide = Arc::clone(&popout_weak_store);
     let pop_hwnd_unhide = Arc::clone(&popout_hwnd_store);
+    let active_guild_unhide = Arc::clone(&active_guild_id);
     app.on_unhide_stream(move |uid_str: SharedString| {
         let uid = uid_str.to_string();
         info!("👁️ Reexibindo stream de vídeo do usuário {}", uid);
         hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
-        // Watch: ask the sender for the stream.
-        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), true);
+        // Watch: ask the sender for the stream (UDP P2P + Discord Voice Gateway Opcode 20)
+        let peer_uid_num: u64 = uid.parse().unwrap_or(0);
+        screen_capture::watch::set_wanted(peer_uid_num, true);
+        let my_cid = gateway::get_my_voice_channel_id();
+        let gid = active_guild_unhide.lock().unwrap().clone();
+        if peer_uid_num != 0 && my_cid != 0 && !gid.is_empty() {
+            let stream_key = format!("guild:{}:{}:{}", gid, my_cid, peer_uid_num);
+            crate::gateway::voice::watch_stream(&stream_key);
+        }
         if let Some(ui) = app_weak_unhide.upgrade() {
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
                 ui.set_is_popout_intangible(false);
-                if let Some(pop) = pop_w_unhide.upgrade() {
+                if let Some(pop) = pop_w_unhide.lock().unwrap().as_ref().and_then(|w| w.upgrade()) {
                     pop.set_is_intangible(false);
                     let _ = pop.window().with_winit_window(|w| {
                         let _ = w.set_cursor_hittest(true);
@@ -1558,7 +1672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut last_panel_fingerprint: Vec<(u32, u64, u8)> = Vec::new();
+        let mut last_panel_fingerprint: Vec<(u32, u64, u8, u8)> = Vec::new();
         let mut last_panel_update = std::time::Instant::now();
         loop {
             interval.tick().await;
@@ -1595,16 +1709,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Only wake the UI when what it shows can have changed: who is here and the level
+            // Only wake the UI when what it shows can have changed: who is here, peer streaming state, and the level
             // bars (in steps of 5%). In a quiet call this drops the UI updates from 10/s to
             // the 1/s refresh that also picks up anything not covered here (names, mute...).
-            let mut fingerprint: Vec<(u32, u64, u8)> = parts_snapshot
+            let mut fingerprint: Vec<(u32, u64, u8, u8)> = parts_snapshot
                 .iter()
-                .map(|&(ssrc, uid)| (ssrc, uid, (ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) * 20.0) as u8))
+                .map(|&(ssrc, uid)| {
+                    let lvl = (ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) * 20.0) as u8;
+                    let is_streaming = crate::screen_capture::peer_is_streaming(uid) as u8;
+                    (ssrc, uid, lvl, is_streaming)
+                })
                 .collect();
             // Our own bar only shows above the voice threshold; mic noise below it changes nothing.
             let shown_self_level = if self_level >= gateway::get_vad_threshold() { self_level } else { 0.0 };
-            fingerprint.push((0, 0, (shown_self_level * 20.0) as u8));
+            fingerprint.push((0, 0, (shown_self_level * 20.0) as u8, 0));
             if fingerprint == last_panel_fingerprint && last_panel_update.elapsed() < std::time::Duration::from_secs(1) {
                 continue;
             }
@@ -2353,7 +2471,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_toggle_theme(move || {
         let use_light_theme = video_settings::toggle_use_light_theme();
         if let Some(ui) = app_weak_theme.upgrade() {
+            let mode = if use_light_theme { "light" } else { "dark" };
+            ui.set_theme_mode_name(mode.into());
             ui.set_use_light_theme(use_light_theme);
+        }
+    });
+
+    let app_weak_theme_mode = app_weak.clone();
+    app.on_select_theme_mode(move |mode: SharedString| {
+        let m = mode.to_string();
+        video_settings::set_theme_mode(m.clone());
+        if let Some(ui) = app_weak_theme_mode.upgrade() {
+            ui.set_theme_mode_name(mode);
+            ui.set_use_light_theme(m == "light");
         }
     });
 
@@ -2540,6 +2670,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
         screen_capture::watch::clear_wanted();
+        screen_capture::stop_all_mpv_players();
         // Do this even if the window has gone away: the next call starts with fresh audio.
         if let Ok(mut queues) = gateway::get_speaker_pcm_queues().lock() {
             queues.clear();
@@ -3707,6 +3838,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ui) = app_weak_guild_select.upgrade() {
             ui.set_is_voice_focused(false);
+            if gid != "@me" {
+                if let Ok(gmap) = guilds_map_select.lock() {
+                    if let Some(g_data) = gmap.get(&gid) {
+                        ui.set_active_guild_id(gid.clone().into());
+                        ui.set_active_guild_name(g_data.name.clone().into());
+                        ui.set_connection_status(format!("Servidor: {} | Gateway v9 (Online)", g_data.name).into());
+                        if !g_data.channels.is_empty() {
+                            let cats = get_collapsed_categories().lock().unwrap().clone();
+                            let ui_chans = build_ui_channels(&g_data.channels, &cats);
+                            ui.set_channels(std::rc::Rc::new(slint::VecModel::from(ui_chans)).into());
+                        }
+                    }
+                }
+            }
         }
 
         if let Some(tx) = cmd_tx_guild_select.lock().unwrap().as_ref() {
@@ -4125,11 +4270,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
+    fn transform_fakenitro_emojis(input: &str) -> String {
+        let mut out = String::new();
+        let mut rest = input;
+        while let Some(start) = rest.find("<:") {
+            out.push_str(&rest[..start]);
+            if let Some(end) = rest[start..].find('>') {
+                let tag = &rest[start..start + end + 1];
+                let parts: Vec<&str> = tag[2..tag.len() - 1].split(':').collect();
+                if parts.len() == 2 {
+                    let id = parts[1];
+                    out.push_str(&format!(" https://cdn.discordapp.com/emojis/{}.webp?size=48&quality=lossless ", id));
+                } else {
+                    out.push_str(tag);
+                }
+                rest = &rest[start + end + 1..];
+            } else {
+                out.push_str(&rest[start..]);
+                rest = "";
+                break;
+            }
+        }
+        let intermediate = if out.is_empty() { rest.to_string() } else { format!("{}{}", out, rest) };
+        
+        let mut final_out = String::new();
+        let mut a_rest = intermediate.as_str();
+        while let Some(start) = a_rest.find("<a:") {
+            final_out.push_str(&a_rest[..start]);
+            if let Some(end) = a_rest[start..].find('>') {
+                let tag = &a_rest[start..start + end + 1];
+                let parts: Vec<&str> = tag[3..tag.len() - 1].split(':').collect();
+                if parts.len() == 2 {
+                    let id = parts[1];
+                    final_out.push_str(&format!(" https://cdn.discordapp.com/emojis/{}.gif?size=48&quality=lossless ", id));
+                } else {
+                    final_out.push_str(tag);
+                }
+                a_rest = &a_rest[start + end + 1..];
+            } else {
+                final_out.push_str(&a_rest[start..]);
+                a_rest = "";
+                break;
+            }
+        }
+        if !final_out.is_empty() {
+            format!("{}{}", final_out, a_rest)
+        } else {
+            intermediate
+        }
+    }
+
     // Send Message Callback from UI
     let http_client_msg = Arc::clone(&http_client);
     let active_channel_msg = Arc::clone(&active_channel_id);
     app.on_send_message(move |content: SharedString| {
-        let content_str = content.to_string();
+        let content_str = transform_fakenitro_emojis(&content.to_string());
         let channel_id = active_channel_msg.lock().unwrap().clone();
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
 
@@ -4138,6 +4333,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = http.send_message(&channel_id, &content_str).await;
             });
         }
+    });
+
+    // Soundboard Playback Callback
+    app.on_play_soundboard_sound(move |sound_id: SharedString| {
+        let sid = sound_id.to_string();
+        crate::audio::soundboard::play_soundboard_effect(&sid);
     });
 
     // Click Command Callback (fills input with command parameter pill)
@@ -4441,23 +4642,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            let is_max = app_instance.window().is_maximized();
+            let is_max = app_instance.window().with_winit_window(|w| w.is_maximized()).unwrap_or_else(|| app_instance.window().is_maximized()) || app_instance.get_is_maximized();
             let next = !is_max;
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);
+            crate::utils::window_state::update_window_geometry(None, None, None, None, next);
         }
     });
 
-    let sm_for_close = Arc::clone(&screen_manager);
-    let app_weak_close = app_weak.clone();
-    app.on_close_window(move || {
-        info!("Fechar clicado na barra superior: saindo do aplicativo...");
-        if let Some(ui) = app_weak_close.upgrade() {
-            let _ = ui.window().with_winit_window(|winit_win| {
-                let is_max = winit_win.is_maximized();
-                let scale = winit_win.scale_factor();
-                let size = winit_win.inner_size().to_logical::<f64>(scale);
-                let pos = winit_win.outer_position().ok().map(|p| p.to_logical::<f64>(scale));
+    let app_weak_close_req = app_weak.clone();
+    app.window().on_close_requested(move || {
+        if let Some(ui) = app_weak_close_req.upgrade() {
+            let is_max = ui.window().with_winit_window(|w| {
+                let max = w.is_maximized();
+                if max {
+                    return true;
+                }
+                if let Some(m) = w.current_monitor() {
+                    let ms = m.size();
+                    let ps = w.inner_size();
+                    if (ps.width as i64 - ms.width as i64).abs() <= 4
+                        && (ps.height as i64 - ms.height as i64).abs() <= 120 {
+                        return true;
+                    }
+                }
+                false
+            }).unwrap_or_else(|| ui.window().is_maximized()) || ui.get_is_maximized();
+
+            if is_max {
+                // Strictly preserve the unmaximized floating width/height in persistent storage
+                crate::utils::window_state::update_window_geometry(None, None, None, None, true);
+            } else {
+                let scale = ui.window().scale_factor() as f64;
+                let size = ui.window().size().to_logical(scale as f32);
+                let pos = ui.window().with_winit_window(|w| {
+                    w.outer_position().ok().map(|p| p.to_logical::<f64>(scale))
+                }).flatten();
                 let (px, py) = match pos {
                     Some(p) => (Some(p.x.round() as i32), Some(p.y.round() as i32)),
                     None => (None, None),
@@ -4467,9 +4687,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     py,
                     Some(size.width.round() as u32),
                     Some(size.height.round() as u32),
-                    is_max,
+                    false,
                 );
-            });
+            }
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+
+    let sm_for_close = Arc::clone(&screen_manager);
+    let app_weak_close = app_weak.clone();
+    app.on_close_window(move || {
+        info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        if let Some(ui) = app_weak_close.upgrade() {
+            let is_max = ui.window().with_winit_window(|w| {
+                let max = w.is_maximized();
+                if max {
+                    return true;
+                }
+                if let Some(m) = w.current_monitor() {
+                    let ms = m.size();
+                    let ps = w.inner_size();
+                    if (ps.width as i64 - ms.width as i64).abs() <= 4
+                        && (ps.height as i64 - ms.height as i64).abs() <= 120 {
+                        return true;
+                    }
+                }
+                false
+            }).unwrap_or_else(|| ui.window().is_maximized()) || ui.get_is_maximized();
+
+            if is_max {
+                // Strictly preserve the unmaximized floating width/height in persistent storage
+                crate::utils::window_state::update_window_geometry(None, None, None, None, true);
+            } else {
+                let scale = ui.window().scale_factor() as f64;
+                let size = ui.window().size().to_logical(scale as f32);
+                let pos = ui.window().with_winit_window(|w| {
+                    w.outer_position().ok().map(|p| p.to_logical::<f64>(scale))
+                }).flatten();
+                let (px, py) = match pos {
+                    Some(p) => (Some(p.x.round() as i32), Some(p.y.round() as i32)),
+                    None => (None, None),
+                };
+                crate::utils::window_state::update_window_geometry(
+                    px,
+                    py,
+                    Some(size.width.round() as u32),
+                    Some(size.height.round() as u32),
+                    false,
+                );
+            }
         }
         sm_for_close.stop();
         #[cfg(target_os = "linux")]
@@ -4522,6 +4788,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                         trim_process_memory();
                         info!("🧹 [MEMÓRIA] Faxina pós-login concluída.");
+                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            interval.tick().await;
+                            trim_process_memory();
+                        }
                     });
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
@@ -4772,6 +5044,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::VoiceStatesUpdated => {
+                    UI_LOOPS_WAKE.notify_one();
                     if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         crate::ui::helpers::VOICE_STATES_DIRTY.store(true, Ordering::Relaxed);
                         continue;
@@ -4791,8 +5064,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                GatewayEvent::GuildLoaded { .. } => {
-                    // Handled via HTTP REST instant fetching
+                GatewayEvent::GuildLoaded { guild } => {
+                    let gid = guild.id.clone();
+                    let has_channels = !guild.channels.is_empty();
+                    if let Ok(mut gmap) = guilds_map_inner.lock() {
+                        if let Some(existing) = gmap.get_mut(&gid) {
+                            if !guild.name.is_empty() && guild.name != "Servidor" {
+                                existing.name = guild.name.clone();
+                            }
+                            if has_channels {
+                                existing.channels = guild.channels.clone();
+                            }
+                        } else {
+                            gmap.insert(gid.clone(), guild.clone());
+                        }
+                    }
+                    if has_channels && *active_guild_inner.lock().unwrap() == gid {
+                        let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+                        let ui_channels = build_ui_channels(&guild.channels, &cats_guard);
+                        let app_w = app_weak_inner.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w.upgrade() {
+                                ui.set_channels(std::rc::Rc::new(slint::VecModel::from(ui_channels)).into());
+                            }
+                        });
+                    }
                 }
                 GatewayEvent::IncomingCall { channel_id, caller_name } => {
                     // Chamada de DM recebida — mostrar painel de notificação com nome do amigo

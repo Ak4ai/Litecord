@@ -69,7 +69,77 @@ pub fn get_audio_devices_cache() -> Arc<std::sync::Mutex<Option<(Vec<String>, Ve
     CACHED_AUDIO_DEVICES.get_or_init(|| Arc::new(std::sync::Mutex::new(None))).clone()
 }
 
+#[cfg(target_os = "linux")]
+fn query_linux_friendly_audio_devices() -> (Vec<String>, Vec<String>) {
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
+
+    if let Ok(out) = std::process::Command::new("pactl").args(["list", "sources"]).output() {
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if let Some(desc) = trimmed.strip_prefix("device.description = \"") {
+                    if let Some(clean) = desc.strip_suffix('"') {
+                        let name = clean.to_string();
+                        if !inputs.contains(&name) && !name.starts_with("Monitor of") {
+                            inputs.push(name);
+                        }
+                    }
+                } else if let Some(desc) = trimmed.strip_prefix("Description: ") {
+                    let name = desc.to_string();
+                    if !inputs.contains(&name) && !name.starts_with("Monitor of") {
+                        inputs.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(out) = std::process::Command::new("pactl").args(["list", "sinks"]).output() {
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if let Some(desc) = trimmed.strip_prefix("device.description = \"") {
+                    if let Some(clean) = desc.strip_suffix('"') {
+                        let name = clean.to_string();
+                        if !outputs.contains(&name) {
+                            outputs.push(name);
+                        }
+                    }
+                } else if let Some(desc) = trimmed.strip_prefix("Description: ") {
+                    let name = desc.to_string();
+                    if !outputs.contains(&name) {
+                        outputs.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    (inputs, outputs)
+}
+
 pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        let (pw_inputs, pw_outputs) = query_linux_friendly_audio_devices();
+        if !pw_inputs.is_empty() || !pw_outputs.is_empty() {
+            let mut inputs = pw_inputs;
+            let mut outputs = pw_outputs;
+            if inputs.is_empty() {
+                inputs.push("Microfone Padrão do Sistema".to_string());
+            }
+            if outputs.is_empty() {
+                outputs.push("Alto-falantes Padrão do Sistema".to_string());
+            }
+            let result = (inputs, outputs);
+            if let Ok(mut cache) = get_audio_devices_cache().lock() {
+                *cache = Some(result.clone());
+            }
+            return result;
+        }
+    }
+
     let host = cpal::default_host();
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
@@ -77,8 +147,13 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     if let Ok(devices) = host.input_devices() {
         for dev in devices {
             if let Ok(name) = dev.name() {
-                if !inputs.contains(&name) {
-                    inputs.push(name);
+                let clean_name = if let Some(idx) = name.find(" {0.0.") {
+                    name[..idx].to_string()
+                } else {
+                    name
+                };
+                if !inputs.contains(&clean_name) {
+                    inputs.push(clean_name);
                 }
             }
         }
@@ -87,8 +162,13 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     if let Ok(devices) = host.output_devices() {
         for dev in devices {
             if let Ok(name) = dev.name() {
-                if !outputs.contains(&name) {
-                    outputs.push(name);
+                let clean_name = if let Some(idx) = name.find(" {0.0.") {
+                    name[..idx].to_string()
+                } else {
+                    name
+                };
+                if !outputs.contains(&clean_name) {
+                    outputs.push(clean_name);
                 }
             }
         }

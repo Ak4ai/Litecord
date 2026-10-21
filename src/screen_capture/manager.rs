@@ -1336,6 +1336,9 @@ impl ScreenCaptureManager {
                                 log::info!("✅ [DECODER RECOVERY] IDR/SPS recebido para peer {} — retomando decodificação!", peer_uid);
                             }
 
+                            // Zero-Copy MPV Player hardware direct feed
+                            super::mpv_player::feed_frame_to_mpv(peer_uid, &peer_name, &frame_data);
+
                             let decoded = decode_video_frame(&mut decoders, peer_uid, &frame_data);
                             let shown = match decoded {
                                 Decoded::Picture(ref buf, _w, h) => {

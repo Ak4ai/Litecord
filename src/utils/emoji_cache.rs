@@ -298,3 +298,32 @@ fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedEmoji> {
         None
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct CustomEmojiEntry {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+}
+
+static REGISTERED_CUSTOM_EMOJIS: OnceLock<Mutex<Vec<CustomEmojiEntry>>> = OnceLock::new();
+
+pub fn get_custom_emojis_store() -> &'static Mutex<Vec<CustomEmojiEntry>> {
+    REGISTERED_CUSTOM_EMOJIS.get_or_init(|| Mutex::new(Vec::with_capacity(128)))
+}
+
+pub fn register_custom_emoji(id: &str, name: &str, animated: bool) {
+    if let Ok(mut store) = get_custom_emojis_store().lock() {
+        if !store.iter().any(|e| e.id == id) {
+            store.push(CustomEmojiEntry {
+                id: id.to_string(),
+                name: name.to_string(),
+                animated,
+            });
+        }
+    }
+}
+
+pub fn get_all_custom_emojis() -> Vec<CustomEmojiEntry> {
+    get_custom_emojis_store().lock().map(|s| s.clone()).unwrap_or_default()
+}

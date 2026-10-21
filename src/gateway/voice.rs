@@ -25,6 +25,17 @@ const VOICE_QUEUE_LIMIT: usize = 28800;
 const VOICE_PREBUFFER_SAMPLES: usize = 1920;
 const VOICE_RESET_INACTIVE_CALLBACKS: u32 = 3;
 
+static WATCH_STREAM_TX: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>> = std::sync::Mutex::new(None);
+
+/// Instructs the active Voice Gateway session to watch another user's stream (Opcode 20)
+pub fn watch_stream(stream_key: &str) {
+    if let Ok(guard) = WATCH_STREAM_TX.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(stream_key.to_string());
+        }
+    }
+}
+
 pub async fn connect_voice_gateway(
     raw_endpoint: &str,
     guild_id: &str,
@@ -70,6 +81,27 @@ pub async fn connect_voice_gateway(
                 crate::screen_capture::force_signaling_broadcast();
                 let (write, mut read) = ws_stream.split();
                 let write_arc = Arc::new(Mutex::new(write));
+
+                // Channel for watching video streams (Opcode 20 Stream Watch)
+                let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                if let Ok(mut guard) = WATCH_STREAM_TX.lock() {
+                    *guard = Some(watch_tx.clone());
+                }
+
+                let write_arc_watch = Arc::clone(&write_arc);
+                tokio::spawn(async move {
+                    while let Some(stream_key) = watch_rx.recv().await {
+                        let watch_payload = serde_json::json!({
+                            "op": 20,
+                            "d": {
+                                "stream_key": stream_key
+                            }
+                        });
+                        info!("🎬 [VOICE GATEWAY] Enviando OP 20 (Stream Watch) para stream_key: {}", stream_key);
+                        let mut w = write_arc_watch.lock().await;
+                        let _ = w.send(Message::Text(watch_payload.to_string().into())).await;
+                    }
+                });
 
                 let guild_id = guild_id.to_string();
                 let user_id = user_id.to_string();

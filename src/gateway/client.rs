@@ -503,9 +503,19 @@ impl GatewayClient {
                         }
                     }
 
-                    // Parse initial voice states in READY payload
+                    // Parse initial voice states and custom emojis in READY payload
                     if let Some(guilds_arr) = v["d"]["guilds"].as_array() {
                         for g in guilds_arr {
+                            // Extract server emojis for FakeNitro picker
+                            if let Some(em_arr) = g["emojis"].as_array() {
+                                for em in em_arr {
+                                    if let (Some(id), Some(name)) = (em["id"].as_str(), em["name"].as_str()) {
+                                        let anim = em["animated"].as_bool().unwrap_or(false);
+                                        crate::utils::emoji_cache::register_custom_emoji(id, name, anim);
+                                    }
+                                }
+                            }
+
                             if let Some(vs_arr) = g["voice_states"].as_array() {
                                 for vs in vs_arr {
                                     let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
@@ -525,6 +535,38 @@ impl GatewayClient {
                                             gvs.insert(u_id, c_str.clone());
                                             info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", u_id, c_str);
                                         }
+                                        let is_streaming = vs["self_stream"].as_bool().unwrap_or(false);
+                                        if is_streaming {
+                                            crate::screen_capture::types::set_peer_streaming(u_id, true);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Extract channels if present in READY payload (Zero-Network Server Switching)
+                            let gid = g["id"].as_str().unwrap_or("").to_string();
+                            let gname = g["name"].as_str().unwrap_or("Servidor").to_string();
+                            if !gid.is_empty() {
+                                if let Some(chans_arr) = g["channels"].as_array() {
+                                    let mut channels = Vec::new();
+                                    for ch in chans_arr {
+                                        let ch_id = ch["id"].as_str().unwrap_or("").to_string();
+                                        let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
+                                        let ch_type = ch["type"].as_u64().unwrap_or(0);
+                                        if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
+                                            channels.push(ChannelData {
+                                                id: ch_id,
+                                                name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
+                                                is_voice: ch_type == 2 || ch_type == 13,
+                                                is_category: ch_type == 4,
+                                                parent_id: ch["parent_id"].as_str().map(|s| s.to_string()),
+                                                position: ch["position"].as_i64().unwrap_or(0),
+                                            });
+                                        }
+                                    }
+                                    if !channels.is_empty() {
+                                        let guild = GuildData { id: gid.clone(), name: gname, channels };
+                                        let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
                                     }
                                 }
                             }
@@ -674,11 +716,20 @@ impl GatewayClient {
                             if event_chan.as_deref() == Some(my_cid.as_str()) {
                                 info!("👥 [VOICE CHANNEL JOIN] Usuário {} ({}) entrou no nosso canal de voz!", event_uid, display_name);
                                 register_voice_participant(event_uid as u32, event_uid);
+                                let is_streaming = v["d"]["self_stream"].as_bool().unwrap_or(false) || v["d"]["self_video"].as_bool().unwrap_or(false);
+                                crate::screen_capture::types::set_peer_streaming(event_uid, is_streaming);
+                                if is_streaming {
+                                    if let (Some(gid), Some(cid)) = (v["d"]["guild_id"].as_str(), event_chan.as_deref()) {
+                                        let stream_key = format!("guild:{}:{}:{}", gid, cid, event_uid);
+                                        crate::gateway::voice::watch_stream(&stream_key);
+                                    }
+                                }
                             } else {
                                 // Voice states of every server arrive here: only someone who was
                                 // in our channel left it.
                                 if previous_chan.as_deref() == Some(my_cid.as_str()) {
                                     info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
+                                    crate::screen_capture::types::set_peer_streaming(event_uid, false);
                                 }
                                 remove_voice_participant_by_user_id(event_uid);
                             }

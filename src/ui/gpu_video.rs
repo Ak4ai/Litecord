@@ -30,7 +30,7 @@ thread_local! {
 }
 
 /// Hooks the layers into both windows (once the native windows exist).
-pub fn install(app: &AppWindow, popout: &PopoutStreamWindow) {
+pub fn install(app: &AppWindow, popout: Option<&PopoutStreamWindow>) {
     #[cfg(windows)]
     {
         let make = |w: &slint::Window| -> Option<Rc<WindowLayers>> {
@@ -38,17 +38,33 @@ pub fn install(app: &AppWindow, popout: &PopoutStreamWindow) {
             // Fails when the window uses a GPU renderer: then streams stay on the CPU path.
             i_slint_backend_winit::set_layer_sink(w, Some(layers.clone() as Rc<dyn i_slint_backend_winit::LayerSink>)).then_some(layers)
         };
-        let (main, popout) = (make(app.window()), make(popout.window()));
-        log::info!("🎞️ [GPU VIDEO] Camadas de vídeo pela GPU: janela principal {}, popout {}", main.is_some(), popout.is_some());
-        LAYERS.with(|l| *l.borrow_mut() = Windows { main, popout });
+        let main = make(app.window());
+        let popout_layers = popout.and_then(|p| make(p.window()));
+        log::info!("🎞️ [GPU VIDEO] Camadas de vídeo pela GPU: janela principal {}, popout {}", main.is_some(), popout_layers.is_some());
+        LAYERS.with(|l| *l.borrow_mut() = Windows { main, popout: popout_layers });
     }
     #[cfg(not(windows))]
     let _ = (app, popout);
 }
 
+/// Installs GPU video layers for the popout window when lazily created.
+pub fn install_popout(popout: &PopoutStreamWindow) {
+    #[cfg(windows)]
+    {
+        let make = |w: &slint::Window| -> Option<Rc<WindowLayers>> {
+            let layers = Rc::new(WindowLayers::new(hwnd_of(w)?));
+            i_slint_backend_winit::set_layer_sink(w, Some(layers.clone() as Rc<dyn i_slint_backend_winit::LayerSink>)).then_some(layers)
+        };
+        let p_layers = make(popout.window());
+        LAYERS.with(|l| l.borrow_mut().popout = p_layers);
+    }
+    #[cfg(not(windows))]
+    let _ = popout;
+}
+
 /// The remote stream area of the main window moved or changed size (logical pixels;
 /// zero size when it is gone).
-pub fn viewport_changed(app: &AppWindow, popout: &PopoutStreamWindow, x: f32, y: f32, w: f32, h: f32) {
+pub fn viewport_changed(app: &AppWindow, popout: Option<&PopoutStreamWindow>, x: f32, y: f32, w: f32, h: f32) {
     let k = app.window().scale_factor();
     let rect = ((x * k).round() as i32, (y * k).round() as i32, (w * k).round().max(0.0) as u32, (h * k).round().max(0.0) as u32);
     VIEWPORT.with(|v| v.set(rect));
@@ -62,18 +78,18 @@ pub fn viewport_changed(app: &AppWindow, popout: &PopoutStreamWindow, x: f32, y:
 }
 
 /// The popout changed size (physical pixels): the video fills it.
-pub fn popout_resized(app: &AppWindow, popout: &PopoutStreamWindow, w: u32, h: u32) {
+pub fn popout_resized(app: &AppWindow, popout: &PopoutStreamWindow, _w: u32, _h: u32) {
     #[cfg(windows)]
     LAYERS.with(|l| {
         if let Some(p) = l.borrow().popout.as_ref() {
-            p.set_video_rect(0, 0, w, h);
+            p.set_video_rect(0, 0, _w, _h);
         }
     });
-    refresh(app, popout);
+    refresh(app, Some(popout));
 }
 
 /// Re-evaluates which windows show their stream through the GPU.
-pub fn refresh(app: &AppWindow, popout: &PopoutStreamWindow) {
+pub fn refresh(app: &AppWindow, popout: Option<&PopoutStreamWindow>) {
     #[cfg(windows)]
     {
         let parse = |s: slint::SharedString| s.parse::<u64>().unwrap_or(0);
@@ -89,12 +105,19 @@ pub fn refresh(app: &AppWindow, popout: &PopoutStreamWindow) {
             && vh > 0
             && screen_capture::main_window_watching()
             && screen_capture::hw_decode::peer_on_gpu(main_peer);
-        let pop_peer = parse(popout.get_user_id());
-        let pop_wants = pop_peer != 0
-            && screen_capture::watch::is_wanted(pop_peer)
-            && !popout.get_is_self()
-            && screen_capture::popout_watching()
-            && screen_capture::hw_decode::peer_on_gpu(pop_peer);
+
+        let (pop_wants, pop_peer) = if let Some(pop) = popout {
+            let p_peer = parse(pop.get_user_id());
+            let wants = p_peer != 0
+                && screen_capture::watch::is_wanted(p_peer)
+                && !pop.get_is_self()
+                && screen_capture::popout_watching()
+                && screen_capture::hw_decode::peer_on_gpu(p_peer);
+            (wants, p_peer)
+        } else {
+            (false, 0)
+        };
+
         LAYERS.with(|l| {
             let l = l.borrow();
             if let Some(m) = l.main.as_ref() {
@@ -106,15 +129,17 @@ pub fn refresh(app: &AppWindow, popout: &PopoutStreamWindow) {
                 apply(m, main_wants, main_peer, |on| app.set_gpu_video_main(on));
             }
             if let Some(p) = l.popout.as_ref() {
-                if !screen_capture::popout_watching() && p.is_active() {
-                    p.stop_now();
-                    popout.set_gpu_video(false);
+                if let Some(pop) = popout {
+                    if !screen_capture::popout_watching() && p.is_active() {
+                        p.stop_now();
+                        pop.set_gpu_video(false);
+                    }
+                    if pop_wants && !p.is_active() {
+                        let s = pop.window().size();
+                        p.set_video_rect(0, 0, s.width, s.height);
+                    }
+                    apply(p, pop_wants, pop_peer, |on| pop.set_gpu_video(on));
                 }
-                if pop_wants && !p.is_active() {
-                    let s = popout.window().size();
-                    p.set_video_rect(0, 0, s.width, s.height);
-                }
-                apply(p, pop_wants, pop_peer, |on| popout.set_gpu_video(on));
             }
         });
     }

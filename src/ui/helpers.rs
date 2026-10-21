@@ -317,13 +317,15 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let notice = video_settings::get_enable_self_preview_notice();
     let show_hw = video_settings::get_show_hardware_monitor();
     ui.set_use_gpu_renderer(video_settings::get_use_gpu_renderer());
-    let use_light_theme = video_settings::get_use_light_theme();
+    let theme_mode = video_settings::get_theme_mode();
+    let use_light_theme = theme_mode == "light";
 
     ui.set_selected_video_encoder(enc.clone().into());
     ui.set_selected_video_capture_backend(vcap.clone().into());
     ui.set_selected_audio_loopback_backend(aloop.clone().into());
     ui.set_enable_self_preview_notice(notice);
     ui.set_show_hardware_monitor(show_hw);
+    ui.set_theme_mode_name(theme_mode.as_str().into());
     ui.set_use_light_theme(use_light_theme);
 
     #[cfg(target_os = "windows")]
@@ -886,6 +888,9 @@ pub fn map_message_attachments(
         let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full(&a.id, &a.filename) {
             (true, img)
         } else {
+            if a.id.starts_with("embed_img_") {
+                att_cache.download_full_async(&a.id, &a.filename, &a.url, app_weak.clone());
+            }
             (false, slint::Image::default())
         };
 
@@ -909,6 +914,8 @@ pub fn map_message_attachments(
             (a.width, a.height)
         };
 
+        let is_loading = a.id.starts_with("embed_img_") && !is_downloaded;
+
         MessageAttachment {
             id: a.id.clone().into(),
             filename: a.filename.clone().into(),
@@ -919,7 +926,7 @@ pub fn map_message_attachments(
             height,
             is_image: a.is_image,
             is_downloaded,
-            is_loading: false,
+            is_loading,
             full_img,
             preview_img,
         }

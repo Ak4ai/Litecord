@@ -66,6 +66,7 @@ export component SettingsView inherits Rectangle {
     in property <bool> gpu_selection_available;
     in property <string> stream_capture_status;
     in property <bool> use-light-theme;
+    in-out property <string> theme_mode_name: "dark";
     in property <[SettingOptionItem]> video_capture_options;
     in property <[SettingOptionItem]> audio_loopback_options;
     in property <bool> enable_self_preview_notice;
@@ -103,6 +104,7 @@ export component SettingsView inherits Rectangle {
     callback reset_keybind(int);
     callback select_video_encoder(string);
     callback toggle_theme();
+    callback select_theme_mode(string);
     callback select_video_capture_backend(string);
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
@@ -2383,21 +2385,19 @@ export component SettingsView inherits Rectangle {
                                             Rectangle { horizontal-stretch: 1; }
                                         }
 
-                                        // Application color theme
+                                        // Application color theme (Escuro, Claro, AMOLED)
                                         Rectangle {
                                             background: AppTheme.surface-input;
                                             border-radius: 8px;
                                             border-width: 1px;
                                             border-color: AppTheme.border-subtle;
 
-                                            HorizontalLayout {
+                                            VerticalLayout {
                                                 padding: 14px;
                                                 spacing: 12px;
-                                                alignment: space-between;
 
                                                 VerticalLayout {
                                                     spacing: 4px;
-                                                    horizontal-stretch: 1;
 
                                                     Text {
                                                         text: Tr.light_theme;
@@ -2414,34 +2414,130 @@ export component SettingsView inherits Rectangle {
                                                     }
                                                 }
 
-                                                VerticalLayout {
-                                                    alignment: center;
-                                                    Rectangle {
-                                                        width: 42px;
-                                                        height: 24px;
-                                                        border-radius: 12px;
-                                                        background: root.use-light-theme ? AppTheme.accent : AppTheme.surface-control;
-                                                        animate background { duration: 150ms; }
+                                                HorizontalLayout {
+                                                    spacing: 10px;
 
-                                                        Rectangle {
-                                                            x: root.use-light-theme ? 20px : 2px;
-                                                            y: 2px;
-                                                            width: 20px;
-                                                            height: 20px;
-                                                            border-radius: 10px;
-                                                            background: AppTheme.solid-white;
-                                                            animate x { duration: 150ms; easing: ease-out; }
+                                                    // Option 1: Escuro (Dark #313338)
+                                                    Rectangle {
+                                                        horizontal-stretch: 1;
+                                                        height: 52px;
+                                                        border-radius: 6px;
+                                                        background: root.theme_mode_name == "dark" ? AppTheme.interactive-selected : AppTheme.surface-elevated;
+                                                        border-width: root.theme_mode_name == "dark" ? 2px : 1px;
+                                                        border-color: root.theme_mode_name == "dark" ? AppTheme.accent : AppTheme.border-subtle;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 10px;
+                                                            spacing: 8px;
+                                                            alignment: center;
+
+                                                            Rectangle {
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: #313338;
+                                                                border-width: 1px;
+                                                                border-color: #555555;
+                                                            }
+
+                                                            Text {
+                                                                text: "Escuro";
+                                                                color: AppTheme.text-strong;
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
                                                         }
 
-                                                        theme_sw_ta := TouchArea {
+                                                        TouchArea {
                                                             mouse-cursor: pointer;
-                                                            clicked => { root.toggle_theme(); }
+                                                            clicked => { root.select_theme_mode("dark"); }
+                                                        }
+                                                    }
+
+                                                    // Option 2: Claro (Light #FFFFFF)
+                                                    Rectangle {
+                                                        horizontal-stretch: 1;
+                                                        height: 52px;
+                                                        border-radius: 6px;
+                                                        background: root.theme_mode_name == "light" ? AppTheme.interactive-selected : AppTheme.surface-elevated;
+                                                        border-width: root.theme_mode_name == "light" ? 2px : 1px;
+                                                        border-color: root.theme_mode_name == "light" ? AppTheme.accent : AppTheme.border-subtle;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 10px;
+                                                            spacing: 8px;
+                                                            alignment: center;
+
+                                                            Rectangle {
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: #ffffff;
+                                                                border-width: 1px;
+                                                                border-color: #cccccc;
+                                                            }
+
+                                                            Text {
+                                                                text: "Claro";
+                                                                color: AppTheme.text-strong;
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.select_theme_mode("light"); }
+                                                        }
+                                                    }
+
+                                                    // Option 3: AMOLED (Pure Black #000000)
+                                                    Rectangle {
+                                                        horizontal-stretch: 1;
+                                                        height: 52px;
+                                                        border-radius: 6px;
+                                                        background: root.theme_mode_name == "amoled" ? AppTheme.interactive-selected : AppTheme.surface-elevated;
+                                                        border-width: root.theme_mode_name == "amoled" ? 2px : 1px;
+                                                        border-color: root.theme_mode_name == "amoled" ? AppTheme.accent : AppTheme.border-subtle;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 10px;
+                                                            padding-right: 10px;
+                                                            spacing: 8px;
+                                                            alignment: center;
+
+                                                            Rectangle {
+                                                                width: 20px;
+                                                                height: 20px;
+                                                                border-radius: 10px;
+                                                                background: #000000;
+                                                                border-width: 1px;
+                                                                border-color: #333333;
+                                                            }
+
+                                                            Text {
+                                                                text: "AMOLED";
+                                                                color: AppTheme.text-strong;
+                                                                font-size: 12px;
+                                                                font-weight: 700;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+
+                                                        TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.select_theme_mode("amoled"); }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
+
 
                                     // --- SEÇÃO 2: MÉTODO DE CAPTURA DE VÍDEO ---
                                     VerticalLayout {

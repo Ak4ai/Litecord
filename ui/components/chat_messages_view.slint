@@ -936,14 +936,14 @@ export component ChatMessagesView inherits Rectangle {
                             }
 
                             // 3. Darkened overlay for preview state
-                            if att.is_image && !att.is_downloaded : Rectangle {
+                            if att.is_image && !att.is_downloaded && !att.is_loading : Rectangle {
                                 width: 100%;
                                 height: 100%;
                                 background: AppTheme.surface-backdrop;
                             }
 
                             // 4. Rounded Rectangle Download Button in the center (when not downloaded)
-                            if att.is_image && !att.is_downloaded : VerticalLayout {
+                            if att.is_image && !att.is_downloaded && !att.is_loading : VerticalLayout {
                                 alignment: center;
                                 HorizontalLayout {
                                     alignment: center;

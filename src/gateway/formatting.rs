@@ -565,7 +565,15 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
             if let Some(idx) = next_cmd { candidates.push((idx, "cmd")); }
             if let Some((idx, _)) = next_emoji { candidates.push((idx, "emoji")); }
             if let Some(idx) = next_raw_url { candidates.push((idx, "raw_url")); }
-            if let Some((idx, _, _, _)) = next_unicode { candidates.push((idx, "unicode_emoji")); }
+            // Only split unicode emojis if it is a standalone jumbo emoji on the line.
+            // Inline unicode emojis in prose render natively with system fonts in Text with word-wrap!
+            if is_first_block {
+                if let Some((idx, len, _, _)) = next_unicode {
+                    if idx == 0 && rem.len() == len {
+                        candidates.push((idx, "unicode_emoji"));
+                    }
+                }
+            }
 
             if candidates.is_empty() {
                 let parsed = parse_discord_markdown(rem);
@@ -625,7 +633,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             url: String::new(),
                                             command_name: String::new(),
                                         });
-                                        is_first_block = false;
+                                        lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
+                                        is_first_block = true;
                                     }
                                     let display_label = if label.is_empty() {
                                         url.to_string()
@@ -637,7 +646,6 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             l
                                         }
                                     };
-                                    is_first_block = false;
                                     line_blocks.push(MessageBlockData {
                                         text: display_label.clone(),
                                         is_link: true,
@@ -647,6 +655,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                         url: url.to_string(),
                                         command_name: String::new(),
                                     });
+                                    lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
+                                    is_first_block = true;
                                     if !links.iter().any(|l| l.url == url) {
                                         links.push(LinkData {
                                             label: display_label,
@@ -788,6 +798,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: String::new(),
                                 command_name: String::new(),
                             });
+                            lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
                         }
                         line_blocks.push(MessageBlockData {
                             text: raw_url.to_string(),
@@ -798,6 +809,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             url: raw_url.to_string(),
                             command_name: String::new(),
                         });
+                        lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
+                        is_first_block = true;
                         if !links.iter().any(|l| l.url == raw_url) {
                             links.push(LinkData {
                                 label: raw_url.to_string(),
