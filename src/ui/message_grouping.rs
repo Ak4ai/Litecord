@@ -132,6 +132,29 @@ pub fn regroup_messages(messages: &mut [ChatMessage]) {
     }
 }
 
+/// Rewrites the day separators already on screen in the current language.
+/// Only rows that carry a separator are touched, so a language switch costs one
+/// row update per visible day instead of rebuilding the message list.
+pub fn relabel_day_separators(messages: &slint::ModelRc<ChatMessage>) {
+    relabel_day_separators_for(crate::utils::i18n_ui::current_language(), messages);
+}
+
+fn relabel_day_separators_for(lang: Language, messages: &slint::ModelRc<ChatMessage>) {
+    use slint::Model;
+    for index in 0..messages.row_count() {
+        let Some(mut message) = messages.row_data(index) else { continue };
+        if message.day_label.is_empty() {
+            continue;
+        }
+        let Some(sent_at) = parse_local_time(message.created_at.as_str()) else { continue };
+        let label = format_day_for(lang, sent_at.date_naive());
+        if message.day_label.as_str() != label {
+            message.day_label = label.into();
+            messages.set_row_data(index, message);
+        }
+    }
+}
+
 fn format_day(day: NaiveDate) -> String {
     format_day_for(crate::utils::i18n_ui::current_language(), day)
 }
@@ -270,6 +293,25 @@ mod tests {
         assert_eq!(format_day_for(Language::French, day), "24 septembre 2026");
         assert_eq!(format_day_for(Language::Russian, day), "24 сентября 2026 г.");
         assert_eq!(format_day_for(Language::Japanese, day), "2026年9月24日");
+    }
+
+    #[test]
+    fn language_switch_rewrites_only_the_separators_on_screen() {
+        use slint::Model;
+        let mut first = ChatMessage::default();
+        set_message_metadata(&mut first, "1", "2026-09-24T12:00:00+00:00");
+        first.id = "10".into();
+        first.day_label = "24 de setembro de 2026".into();
+        let mut grouped = ChatMessage::default();
+        set_message_metadata(&mut grouped, "1", "2026-09-24T12:01:00+00:00");
+        grouped.id = "11".into();
+
+        let model = slint::ModelRc::new(slint::VecModel::from(vec![first, grouped]));
+        relabel_day_separators_for(Language::English, &model);
+
+        let day = parse_local_time("2026-09-24T12:00:00+00:00").unwrap().date_naive();
+        assert_eq!(model.row_data(0).unwrap().day_label.as_str(), format_day_for(Language::English, day));
+        assert_eq!(model.row_data(1).unwrap().day_label.as_str(), "");
     }
 
     #[test]
