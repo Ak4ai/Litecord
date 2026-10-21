@@ -7,6 +7,17 @@ export struct LinkItem {
     url: string,
 }
 
+export struct InviteCard {
+    code: string,
+    url: string,
+    loaded: bool,
+    guild_name: string,
+    description: string,
+    counts: string,
+    has_icon: bool,
+    icon_img: image,
+}
+
 export struct MessageBlock {
     text: string,
     is_link: bool,
@@ -74,6 +85,7 @@ export struct ChatMessage {
     links: [LinkItem],
     buttons: [MessageButton],
     attachments: [MessageAttachment],
+    invites: [InviteCard],
 }
 
 export component ChatMessagesView inherits Rectangle {
@@ -897,6 +909,86 @@ export component ChatMessagesView inherits Rectangle {
                                 clicked => {
                                     if btn.url != "" {
                                         root.open_link(btn.url);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Server invite cards (discord.gg/… links), filled in once the invite is fetched.
+                    if msg.invites.length > 0: VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        alignment: start;
+
+                        for invite in msg.invites: HorizontalLayout {
+                            alignment: start;
+                            Rectangle {
+                                width: 400px;
+                                background: AppTheme.surface-elevated;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                HorizontalLayout {
+                                    padding: 12px;
+                                    spacing: 12px;
+                                    Rectangle {
+                                        width: 48px;
+                                        height: 48px;
+                                        border-radius: 16px;
+                                        background: AppTheme.surface-control;
+                                        if invite.has_icon: Image {
+                                            width: 48px;
+                                            height: 48px;
+                                            source: invite.icon_img;
+                                            image-fit: cover;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text {
+                                            text: invite.loaded ? invite.guild_name : Tr.invite_loading;
+                                            color: AppTheme.text-strong;
+                                            font-family: ChatTypography.family;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                        if invite.counts != "": Text {
+                                            text: invite.counts;
+                                            color: AppTheme.text-muted;
+                                            font-size: 12px;
+                                            overflow: elide;
+                                        }
+                                        if invite.description != "": Text {
+                                            text: invite.description;
+                                            color: AppTheme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                            max-height: 32px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 76px;
+                                            height: 32px;
+                                            border-radius: 4px;
+                                            background: join_ta.has-hover ? #15803d : #16a34a;
+                                            Text {
+                                                text: Tr.invite_join;
+                                                color: AppTheme.text-on-accent;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                            }
+                                            join_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.open_link(invite.url); }
+                                            }
+                                        }
                                     }
                                 }
                             }
