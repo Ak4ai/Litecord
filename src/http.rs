@@ -115,14 +115,36 @@ impl DiscordHttpClient {
     }
 
     pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
-        let user = self.get_current_user().await?;
-        let user_id = user["id"].as_str().ok_or("Missing current user id")?;
+        static PERMISSIONS_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, crate::channel_permissions::ChannelPermissions)>>> = std::sync::OnceLock::new();
+        let cache = PERMISSIONS_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        if let Ok(guard) = cache.lock() {
+            if let Some((inserted, perms)) = guard.get(guild_id) {
+                // Cache permissions for 5 minutes per guild to eliminate redundant REST calls
+                if inserted.elapsed() < std::time::Duration::from_secs(300) {
+                    return Ok(perms.clone());
+                }
+            }
+        }
+
+        let user_id = {
+            let my_uid = crate::gateway::get_my_user_id();
+            if my_uid != 0 {
+                my_uid.to_string()
+            } else {
+                let user = self.get_current_user().await?;
+                user["id"].as_str().ok_or("Missing current user id")?.to_string()
+            }
+        };
         let guild_url = format!("https://discord.com/api/v10/guilds/{}", guild_id);
         let member_url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
         let (guild, member) = tokio::try_join!(
             self.get_permission_data(&guild_url), self.get_permission_data(&member_url)
         )?;
-        crate::channel_permissions::ChannelPermissions::new(&guild, &member, user_id)
+        let perms = crate::channel_permissions::ChannelPermissions::new(&guild, &member, &user_id)?;
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(guild_id.to_string(), (std::time::Instant::now(), perms.clone()));
+        }
+        Ok(perms)
     }
 
     async fn get_permission_data(&self, url: &str) -> Result<serde_json::Value, String> {
