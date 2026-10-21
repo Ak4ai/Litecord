@@ -50,19 +50,41 @@ impl DiscordHttpClient {
         }
     }
 
+    /// The server list is fetched once at startup and nothing fetches it again, so a
+    /// passing Discord error (a 5xx, a dropped connection) used to leave the sidebar
+    /// empty for the whole session. Those are retried with a growing pause; any other
+    /// status, such as a refused token, is returned at once.
     pub async fn get_user_guilds(&self) -> Result<Vec<serde_json::Value>, String> {
+        const RETRY_DELAYS_MS: [u64; 3] = [1_000, 3_000, 8_000];
+        let mut attempt = 0;
+        loop {
+            let (result, transient) = self.get_user_guilds_once().await;
+            match result {
+                Ok(guilds) => return Ok(guilds),
+                Err(e) if transient && attempt < RETRY_DELAYS_MS.len() => {
+                    warn!("Lista de servidores falhou ({}), tentando de novo em {} ms", e, RETRY_DELAYS_MS[attempt]);
+                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn get_user_guilds_once(&self) -> (Result<Vec<serde_json::Value>, String>, bool) {
         let url = "https://discord.com/api/v10/users/@me/guilds";
         match self.client.get(url).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
                     if let Ok(guilds) = resp.json::<Vec<serde_json::Value>>().await {
-                        return Ok(guilds);
+                        return (Ok(guilds), false);
                     }
                 }
-                Err(format!("Status HTTP {}", status))
+                let transient = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                (Err(format!("Status HTTP {}", status)), transient)
             }
-            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+            Err(e) => (Err(format!("Erro HTTP: {:?}", e)), true),
         }
     }
 
