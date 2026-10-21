@@ -784,6 +784,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
+                                                                        let mut aec_ref = Vec::with_capacity(frames);
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
@@ -841,6 +842,7 @@ pub async fn connect_voice_gateway(
 
                                                                             let limited_l = soft_limit(mixed_l);
                                                                             let limited_r = soft_limit(mixed_r);
+                                                                            aec_ref.push((limited_l + limited_r) * 0.5);
                                                                             if out_channels >= 2 {
                                                                                 output[f * out_channels + 0] = limited_l;
                                                                                 output[f * out_channels + 1] = limited_r;
@@ -851,6 +853,7 @@ pub async fn connect_voice_gateway(
                                                                                 output[f] = soft_limit((mixed_l + mixed_r) * 0.5);
                                                                             }
                                                                         }
+                                                                        crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
                                                                 },
                                                                 |err| { warn!("Erro no stream de saída F32: {:?}", err); },
@@ -951,6 +954,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
+                                                                        let mut aec_ref = Vec::with_capacity(frames);
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
@@ -997,17 +1001,23 @@ pub async fn connect_voice_gateway(
                                                                                 }
                                                                             }
 
-                                                                            let clamped_l = (soft_limit(mixed_l) * 32767.0) as i16;
-                                                                            let clamped_r = (soft_limit(mixed_r) * 32767.0) as i16;
+                                                                            let limited_l = soft_limit(mixed_l);
+                                                                            let limited_r = soft_limit(mixed_r);
+                                                                            aec_ref.push((limited_l + limited_r) * 0.5);
+
+                                                                            let clamped_l = (limited_l * 32767.0) as i16;
+                                                                            let clamped_r = (limited_r * 32767.0) as i16;
                                                                             if out_channels >= 2 {
                                                                                 output[f * out_channels + 0] = clamped_l;
                                                                                 output[f * out_channels + 1] = clamped_r;
                                                                                 for ch in 2..out_channels {
                                                                                     output[f * out_channels + ch] = 0;
                                                                                 }
-                                                                                    output[f] = (soft_limit((mixed_l + mixed_r) * 0.5) * 32767.0) as i16;
+                                                                            } else {
+                                                                                output[f] = (soft_limit((mixed_l + mixed_r) * 0.5) * 32767.0) as i16;
                                                                             }
                                                                         }
+                                                                        crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
                                                                 },
                                                                 |err| { warn!("Erro no stream de saída I16: {:?}", err); },
@@ -1055,6 +1065,7 @@ pub async fn connect_voice_gateway(
 
                                                 tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();
+                                                let mut voice_proc = crate::audio::dsp::VoiceProcessor::new();
                                                 let mut seq: u16 = 0;
                                                 let mut timestamp: u32 = 0;
                                                 let mut nonce_cnt: u32 = 0;
@@ -1140,23 +1151,43 @@ pub async fn connect_voice_gateway(
                                                                     let drop_count = q.len() - 960 * 2;
                                                                     q.drain(0..drop_count);
                                                                 }
-                                                                // Only extract when full 20ms (960 samples) frame is available
+                                                                // Extract 20ms (960 samples) or use elastic padding if brief jitter occurs
                                                                 if q.len() >= 960 {
                                                                     for i in 0..960 {
                                                                         pcm_frame[i] = q.pop_front().unwrap_or(0.0);
                                                                     }
-                                                                    // Enforce VAD threshold gating
-                                                                    let mut sum_sq = 0.0f32;
-                                                                    for &s in pcm_frame.iter() {
-                                                                        sum_sq += s * s;
+                                                                } else if q.len() >= 480 {
+                                                                    let avail = q.len();
+                                                                    for i in 0..avail {
+                                                                        pcm_frame[i] = q.pop_front().unwrap_or(0.0);
                                                                     }
-                                                                    let rms = (sum_sq / 960.0).sqrt();
-                                                                    let level = (rms * 6.0).min(1.0);
-                                                                    if level >= get_vad_threshold() {
-                                                                        has_audio = true;
+                                                                    let last = pcm_frame[avail - 1];
+                                                                    for i in avail..960 {
+                                                                        let decay = (960 - i) as f32 / (960 - avail) as f32;
+                                                                        pcm_frame[i] = last * decay;
                                                                     }
                                                                 }
                                                             }
+                                                        }
+                                                    }
+
+                                                    if !is_muted {
+                                                        // Process audio with VoiceProcessor (AEC, Krisp/Standard Denoising, AGC)
+                                                        let suppression_mode = crate::utils::video_settings::get_noise_suppression();
+                                                        let enable_aec = crate::utils::video_settings::get_echo_cancellation();
+                                                        let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
+
+                                                        voice_proc.process_frame(&mut pcm_frame, &suppression_mode, enable_aec, enable_agc);
+
+                                                        // Enforce VAD threshold gating on processed audio
+                                                        let mut sum_sq = 0.0f32;
+                                                        for &s in pcm_frame.iter() {
+                                                            sum_sq += s * s;
+                                                        }
+                                                        let rms = (sum_sq / 960.0).sqrt();
+                                                        let level = (rms * 6.0).min(1.0);
+                                                        if level >= get_vad_threshold() {
+                                                            has_audio = true;
                                                         }
                                                     }
 
