@@ -55,7 +55,11 @@ export component ChannelSidebar inherits Rectangle {
     in-out property <int> dragging_channel_idx: -1;
     in-out property <int> drop_target_channel_idx: -1;
 
-    width: 230px;
+    // Dragged by the handle on the right edge; saved when the drag ends.
+    in-out property <length> sidebar_width: 230px;
+    callback sidebar_width_committed(length);
+
+    width: sidebar_width;
     background: AppTheme.surface-sidebar;
     border-top-left-radius: 8px;
     clip: true;
@@ -125,7 +129,7 @@ export component ChannelSidebar inherits Rectangle {
                             if channel.has_separator : HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    width: 170px;
+                                    width: root.sidebar_width - 60px;
                                     height: 2px;
                                     border-radius: 1px;
                                     background: AppTheme.separator;
@@ -585,5 +589,29 @@ export component ChannelSidebar inherits Rectangle {
                 }
             }
         }
+    }
+
+    // Resize handle: drag the right edge to widen or narrow the channel list.
+    resize_handle := TouchArea {
+        x: parent.width - 6px;
+        width: 6px;
+        height: parent.height;
+        mouse-cursor: ew-resize;
+        moved => {
+            if (self.pressed) {
+                root.sidebar_width = clamp(root.sidebar_width + (self.mouse-x - self.pressed-x), 180px, 420px);
+            }
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.up) {
+                root.sidebar_width_committed(root.sidebar_width);
+            }
+        }
+    }
+    if resize_handle.has-hover || resize_handle.pressed: Rectangle {
+        x: parent.width - 2px;
+        width: 2px;
+        height: parent.height;
+        background: AppTheme.accent;
     }
 }
