@@ -969,7 +969,7 @@ pub fn build_ui_channels(
             let has_separator = category_count > 1;
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
-                name: ch.name.clone().into(),
+                name: crate::utils::styled_text::plain_display_name(&ch.name).as_ref().into(),
                 is_voice: false,
                 voice_count: 0,
                 is_voice_member: false,
@@ -997,7 +997,7 @@ pub fn build_ui_channels(
             let vcount = voice_participants.len() as i32;
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
-                name: ch.name.clone().into(),
+                name: crate::utils::styled_text::plain_display_name(&ch.name).as_ref().into(),
                 is_voice: ch.is_voice,
                 voice_count: vcount,
                 is_voice_member: false,
@@ -1022,7 +1022,7 @@ pub fn build_ui_channels(
                     .collect();
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
-                    name: name.into(),
+                    name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: true,
