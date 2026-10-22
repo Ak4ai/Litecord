@@ -506,7 +506,12 @@ pub async fn connect_voice_gateway(
                                                                                                 warn!("🔑 [DAVE DIAG] decrypt() FALHOU para SSRC={} UserID={} (payload_len={}, group_users={:?}): {:?}",
                                                                                                     ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
                                                                                             }
-                                                                                            (Vec::new(), false)
+                                                                                            let has_dave_magic = transport_payload.len() >= 4 && transport_payload.ends_with(&[0xFA, 0xFA]);
+                                                                                            if has_dave_magic {
+                                                                                                (Vec::new(), false)
+                                                                                            } else {
+                                                                                                (transport_payload.to_vec(), true)
+                                                                                            }
                                                                                         }
                                                                                     }
                                                                                 } else {
@@ -721,10 +726,13 @@ pub async fn connect_voice_gateway(
                                                     #[cfg(target_os = "linux")]
                                                     let stream_config = crate::audio::engine::linux_voice_stream_config(&device, &config, false);
 
+                                                    let stream_healthy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
                                                             let sq_f32 = Arc::clone(&sq);
                                                             let ssrc_to_userid_f32 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let stream_healthy_f32 = Arc::clone(&stream_healthy);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [f32], _| {
@@ -888,13 +896,17 @@ pub async fn connect_voice_gateway(
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
                                                                 },
-                                                                |err| { warn!("Erro no stream de saída F32: {:?}", err); },
+                                                                move |err| {
+                                                                    warn!("Erro no stream de saída F32: {:?}", err);
+                                                                    stream_healthy_f32.store(false, Ordering::SeqCst);
+                                                                },
                                                                 None,
                                                             )
                                                         }
                                                         cpal::SampleFormat::I16 => {
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let stream_healthy_i16 = Arc::clone(&stream_healthy);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [i16], _| {
@@ -1052,7 +1064,10 @@ pub async fn connect_voice_gateway(
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
                                                                 },
-                                                                |err| { warn!("Erro no stream de saída I16: {:?}", err); },
+                                                                move |err| {
+                                                                    warn!("Erro no stream de saída I16: {:?}", err);
+                                                                    stream_healthy_i16.store(false, Ordering::SeqCst);
+                                                                },
                                                                 None,
                                                             )
                                                         }
@@ -1071,12 +1086,17 @@ pub async fn connect_voice_gateway(
                                                                 continue;
                                                             }
                                                             info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
-                                                            // Keep stream alive until voice session ends OR user selects another output device!
+                                                            // Keep stream alive until voice session ends, device error occurs, OR user selects another output device!
                                                             loop {
                                                                 std::thread::sleep(std::time::Duration::from_millis(100));
                                                                 if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
                                                                     info!("Stream de saída encerrado (sessão expirada).");
                                                                     return;
+                                                                }
+                                                                if !stream_healthy.load(Ordering::SeqCst) {
+                                                                    warn!("⚠️ Stream de áudio de saída (Speaker) reportou falha do backend de áudio! Reiniciando automaticamente...");
+                                                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                                                    break; // Sai do loop interno, dropa o stream com erro e o while externo reconstrói e reinicia!
                                                                 }
                                                                 let new_target = get_selected_output_device_store().lock().unwrap().clone();
                                                                 if new_target != current_target_dev {
@@ -1491,7 +1511,7 @@ pub async fn connect_voice_gateway(
                                     let epoch = val["d"]["epoch"].as_u64().unwrap_or(0);
                                     let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(1);
                                     info!("DAVE Prepare Epoch (op=24): epoch={}, protocol_version={}", epoch, protocol_version);
-                                    if epoch == 1 {
+                                    if epoch >= 1 {
                                         let key_pkg_bytes = {
                                             let mut sess = dave_session.lock().unwrap();
                                             if let Some(ref mut s) = *sess {
@@ -1514,7 +1534,7 @@ pub async fn connect_voice_gateway(
                                             pkt.extend_from_slice(&kp);
                                             let mut w = write_arc.lock().await;
                                             let _ = w.send(Message::Binary(pkt.into())).await;
-                                            info!("DAVE: Novo KeyPackage (op=26) gerado e enviado para Epoch Reset (op=24)!");
+                                            info!("DAVE: Novo KeyPackage (op=26) gerado e enviado para Epoch Reset (op=24, epoch={})!", epoch);
                                         }
                                     }
                                 }
