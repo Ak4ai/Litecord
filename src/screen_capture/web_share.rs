@@ -130,7 +130,7 @@ pub fn start() -> io::Result<String> {
             status_changed();
             let _ = ready_tx.send(Ok(()));
             tokio::select! {
-                result = signal::run(ws, key, commands_tx, stop_rx.clone()) => {
+                result = signal::serve(ws, &base, &room, &host_token, key, commands_tx, stop_rx.clone()) => {
                     if let Err(e) = result { warn!("[WEB SHARE] {e}"); *running_state.error.lock().unwrap() = e; }
                 },
                 _ = run_rtc(socket, local, public, commands_rx, frames_rx, stop_rx, &running_state) => {},
@@ -237,7 +237,12 @@ struct Viewer {
     waiting_keyframe: bool,
     video_epoch: u64,
     created: Instant,
+    /// ICE lost the path (Wi-Fi roaming, a NAT rebinding, a busy network) at this moment;
+    /// it often comes back within seconds.
+    lost_since: Option<Instant>,
 }
+/// How long a viewer whose connection dropped may take to come back before it is removed.
+const ICE_GRACE: Duration = Duration::from_secs(15);
 async fn run_rtc(
     socket: tokio::net::UdpSocket, local: SocketAddr, mut public: Option<SocketAddr>,
     mut commands: mpsc::Receiver<Command>, mut frames: mpsc::Receiver<MediaFrame>,
@@ -249,14 +254,26 @@ async fn run_rtc(
     let mut viewers: Vec<Viewer> = Vec::new();
     let mut audio: Option<audio::AudioEncoder> = None;
     let mut buf = vec![0u8; 65536];
+    // Counted while somebody watches and logged every 5 s, to tell where a frozen picture
+    // comes from: frames not arriving, frames held back for a keyframe, or packets the
+    // socket refused.
+    let mut stats = WebStats::default();
+    let mut stats_since = Instant::now();
     loop {
         let now = Instant::now();
         let mut next = now + Duration::from_secs(3600);
         viewers.retain_mut(|v| {
             if !v.connected && now.duration_since(v.created) > Duration::from_secs(30) { return false; }
+            if v.lost_since.is_some_and(|t| now.duration_since(t) > ICE_GRACE) {
+                warn!("[WEB SHARE] Viewer did not come back within {} s: removed", ICE_GRACE.as_secs());
+                return false;
+            }
             loop {
                 match v.rtc.poll_output() {
-                    Ok(Output::Transmit(t)) => { let _ = socket.try_send_to(&t.contents, t.destination); },
+                    Ok(Output::Transmit(t)) => {
+                        stats.packets += 1;
+                        if socket.try_send_to(&t.contents, t.destination).is_err() { stats.send_errors += 1; }
+                    },
                     Ok(Output::Timeout(t)) => { next = next.min(t); break true; },
                     Ok(Output::Event(e)) => match e {
                         Event::MediaAdded(m) => {
@@ -270,11 +287,20 @@ async fn run_rtc(
                             }
                         },
                         Event::IceConnectionStateChange(IceConnectionState::Connected | IceConnectionState::Completed) => {
+                            if let Some(t) = v.lost_since.take() {
+                                info!("[WEB SHARE] Viewer connection back after {:.1} s", t.elapsed().as_secs_f64());
+                            }
                             v.connected = true;
+                            v.waiting_keyframe = true;
                             super::request_intra_keyframe();
                         },
-                        Event::KeyframeRequest(_) => { v.waiting_keyframe = true; super::request_intra_keyframe(); },
-                        Event::IceConnectionStateChange(IceConnectionState::Disconnected) => break false,
+                        Event::KeyframeRequest(_) => { stats.keyframe_requests += 1; v.waiting_keyframe = true; super::request_intra_keyframe(); },
+                        Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
+                            warn!("[WEB SHARE] Viewer connection lost (ICE disconnected) after {:.1} s; waiting up to {} s for it",
+                                v.created.elapsed().as_secs_f64(), ICE_GRACE.as_secs());
+                            if !v.connected { break false; }
+                            v.lost_since.get_or_insert(now);
+                        },
                         _ => {},
                     },
                     Err(e) => { warn!("[WEB SHARE] Connection closed: {e}"); break false; },
@@ -282,6 +308,14 @@ async fn run_rtc(
             }
         });
         let count = viewers.iter().filter(|v| v.connected).count();
+        if count > 0 && stats_since.elapsed() >= Duration::from_secs(5) {
+            info!("[WEB SHARE] 5 s: {} frames in, {} sent, {} stale, {} held for a keyframe, {} keyframe requests, {} packets, {} refused by the socket, {} viewer(s)",
+                stats.frames_in, stats.frames_sent, stats.stale, stats.held, stats.keyframe_requests, stats.packets, stats.send_errors, count);
+            stats = WebStats::default();
+            stats_since = Instant::now();
+        } else if count == 0 {
+            stats_since = Instant::now();
+        }
         if state.viewers.swap(count, Ordering::Relaxed) != count { status_changed(); }
         if viewers.is_empty() { audio = None; }
         tokio::select! {
@@ -305,7 +339,8 @@ async fn run_rtc(
                     match rtc.sdp_api().accept_offer(offer) {
                         Ok(answer) => {
                             viewers.push(Viewer { id, rtc, video: None, audio: None, connected: false,
-                                waiting_keyframe: true, video_epoch: VIDEO_EPOCH.load(Ordering::Relaxed), created: Instant::now() });
+                                waiting_keyframe: true, video_epoch: VIDEO_EPOCH.load(Ordering::Relaxed), created: Instant::now(),
+                                lost_since: None });
                             let _ = reply.send(Ok(answer));
                         },
                         Err(_) => { let _ = reply.send(Err(400)); },
@@ -324,18 +359,20 @@ async fn run_rtc(
             },
             frame = frames.recv() => match frame {
                 Some(MediaFrame::Video(frame, at, epoch)) => {
+                    stats.frames_in += 1;
                     let stale = at.elapsed() > Duration::from_millis(150);
                     let idr = contains_idr(&frame);
                     for v in &mut viewers {
-                        if !v.connected { continue; }
+                        if !v.connected || v.lost_since.is_some() { continue; }
                         if v.video_epoch != epoch {
                             v.video_epoch = epoch;
                             v.waiting_keyframe = true;
                             super::request_intra_keyframe();
                         }
-                        if stale { v.waiting_keyframe = true; super::request_intra_keyframe(); continue; }
-                        if v.waiting_keyframe && !idr { continue; }
+                        if stale { stats.stale += 1; v.waiting_keyframe = true; super::request_intra_keyframe(); continue; }
+                        if v.waiting_keyframe && !idr { stats.held += 1; continue; }
                         v.waiting_keyframe = false;
+                        stats.frames_sent += 1;
                         if let Some((mid, pt)) = v.video {
                             if let Some(writer) = v.rtc.writer(mid) {
                                 let time = MediaTime::new(at.duration_since(started).as_micros() as u64 * 9 / 100, Frequency::NINETY_KHZ);
@@ -351,7 +388,7 @@ async fn run_rtc(
                         for (packet, offset) in encoder.push(&pcm, rate) {
                             let time = MediaTime::new(offset, Frequency::FORTY_EIGHT_KHZ);
                             for v in &mut viewers {
-                                if let Some((mid, pt)) = v.audio.filter(|_| v.connected) {
+                                if let Some((mid, pt)) = v.audio.filter(|_| v.connected && v.lost_since.is_none()) {
                                     if let Some(writer) = v.rtc.writer(mid) { let _ = writer.write(pt, at, time, packet.clone()); }
                                 }
                             }
@@ -367,6 +404,16 @@ async fn run_rtc(
         }
     }
     state.viewers.store(0, Ordering::Relaxed);
+}
+#[derive(Default)]
+struct WebStats {
+    frames_in: u32,
+    frames_sent: u32,
+    stale: u32,
+    held: u32,
+    keyframe_requests: u32,
+    packets: u32,
+    send_errors: u32,
 }
 fn contains_idr(data: &[u8]) -> bool {
     data.windows(4).any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 5)

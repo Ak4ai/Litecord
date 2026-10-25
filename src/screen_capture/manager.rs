@@ -790,6 +790,14 @@ impl ScreenCaptureManager {
                 let mut total_net_us = 0u128;
                 let mut total_blt_us = 0u128;
                 let mut total_pix_us = 0u128;
+                // Pacing: how long the waits between frames asked for and actually took, and
+                // the slowest loop turn, to tell a slow encoder from late wake-ups.
+                let mut total_park_asked_us = 0u128;
+                let mut total_park_us = 0u128;
+                let mut max_turn_us = 0u128;
+                // Pictures the capture delivered (the loop re-encodes the last one otherwise).
+                let mut new_captures = 0u32;
+                let mut turn_start = Instant::now();
                 let mut last_local_preview = Instant::now() - Duration::from_secs(1);
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
                 let mut last_idr = Instant::now() - Duration::from_secs(10);
@@ -861,6 +869,7 @@ impl ScreenCaptureManager {
                     #[cfg(windows)]
                     if let Some(f) = super::gpu_tx::take_latest() {
                         gpu_frame = Some(f);
+                        new_captures += 1;
                     }
                     #[cfg(windows)]
                     if let Some((device, w, h)) = super::gpu_tx::take_new_device() {
@@ -873,6 +882,7 @@ impl ScreenCaptureManager {
 
                     // Drena quadros novos da GPU para sempre ter o frame mais atualizado
                     while let Ok(new_frame) = rx_frame.try_recv() {
+                        new_captures += 1;
                         if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
                             let _ = tx_recycle.try_send(old_buf);
                         }
@@ -912,6 +922,8 @@ impl ScreenCaptureManager {
                         let sleep_dur = (next_tick - now).min(frame_target_interval);
                         // Woken early when a viewer arrives (wake_tx), instead of a full idle tick.
                         std::thread::park_timeout(sleep_dur);
+                        total_park_asked_us += sleep_dur.as_micros();
+                        total_park_us += now.elapsed().as_micros();
                     }
                     next_tick += frame_target_interval;
                     if now > next_tick + frame_target_interval * 2 {
@@ -1130,6 +1142,12 @@ impl ScreenCaptureManager {
                     }
 
                     tx_frame_count += 1;
+                    let turn_us = turn_start.elapsed().as_micros();
+                    turn_start = Instant::now();
+                    max_turn_us = max_turn_us.max(turn_us);
+                    if watched && turn_us > 100_000 {
+                        warn!("🐢 [TX] Volta do laço de envio levou {:.1} ms (codificação {:.1} ms)", turn_us as f64 / 1e3, enc_dur as f64 / 1e3);
+                    }
                     if last_tx_stats.elapsed() >= Duration::from_secs(1) {
                         let elapsed_s = last_tx_stats.elapsed().as_secs_f64();
                         let fps = (tx_frame_count as f64) / elapsed_s;
@@ -1144,8 +1162,13 @@ impl ScreenCaptureManager {
                         let _avg_pix_ms = (total_pix_us as f64) / n / 1000.0;
                         let cur_mbps = (REQUESTED_BITRATE_BPS.load(Ordering::Relaxed) as f64) / 1_000_000.0;
 
-                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms",
-                            fps, target_fps, cur_mbps, avg_enc_ms, avg_preview_ms, avg_crypt_ms, avg_fec_ms, avg_net_ms);
+                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms | Espera: {:.2}/{:.2}ms | Pior volta: {:.1}ms | Capturas novas: {}",
+                            fps, target_fps, cur_mbps, avg_enc_ms, avg_preview_ms, avg_crypt_ms, avg_fec_ms, avg_net_ms,
+                            total_park_us as f64 / n / 1000.0, total_park_asked_us as f64 / n / 1000.0, max_turn_us as f64 / 1000.0, new_captures);
+                        new_captures = 0;
+                        total_park_us = 0;
+                        total_park_asked_us = 0;
+                        max_turn_us = 0;
 
                         tx_frame_count = 0;
                         total_encode_us = 0;

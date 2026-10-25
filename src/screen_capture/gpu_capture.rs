@@ -381,8 +381,17 @@ fn run_duplication(
 ) {
     let mut duplication = Some(dup);
     let frame_interval = Duration::from_nanos(1_000_000_000 / req.fps.max(1));
+    let mut was_watched = false;
     while req.is_running.load(Ordering::Relaxed) && !sink.cancelled.load(Ordering::Acquire) {
         let start = Instant::now();
+        // Someone started watching: duplicate again, since a new duplication's first frame
+        // is the whole screen. The open one only reports changes, and a still screen (a
+        // paused game, a document) would leave the new viewer without any picture.
+        let watched = super::manager::tx_watched();
+        if watched && !was_watched {
+            duplication = None;
+        }
+        was_watched = watched;
         // Nobody watching and no preview shown: no frames asked for (the duplication stays
         // open, so the next one comes at once when they are wanted again).
         if !frames_wanted() {
@@ -510,8 +519,19 @@ fn run_wgc(
         // preview (Litecord hidden behind a game), the session is closed, and opened again
         // when someone watches or the preview shows.
         let mut unwanted_since: Option<Instant> = None;
+        let mut was_watched = false;
         while req.is_running.load(Ordering::Relaxed) && !cancelled.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(100));
+            // Someone started watching: a new session sends the current picture at once,
+            // while the open one only sends changes (a still screen sends nothing).
+            let watched = super::manager::tx_watched();
+            if watched && !was_watched {
+                if let Some((pool, session)) = live.take() {
+                    let _ = session.Close();
+                    let _ = pool.Close();
+                }
+            }
+            was_watched = watched;
             if frames_wanted() {
                 unwanted_since = None;
                 if live.is_none() {

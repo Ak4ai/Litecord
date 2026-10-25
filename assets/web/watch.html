@@ -55,7 +55,7 @@ const text = pt ? {
 document.documentElement.lang = pt ? 'pt-BR' : 'en';
 play.textContent = text.sound;
 const say = (state) => { status.textContent = text[state]; status.dataset.state = state; };
-let pc, ws, ping, deadline, ended = false;
+let pc, ws, ping, deadline, ended = false, signalingLost = false;
 function finish(state) {
   if (ended) return;
   ended = true;
@@ -64,6 +64,11 @@ function finish(state) {
   play.style.display = 'none'; say(state);
 }
 
+// A short playout buffer absorbs a frame that arrives late (the sender's GPU busy with a
+// game, a Wi-Fi hiccup) instead of freezing the picture until the next one.
+function smooth(receiver) {
+  if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 120;
+}
 const bytesToBase64 = bytes => btoa(String.fromCharCode(...bytes));
 const base64ToBytes = value => Uint8Array.from(atob(value), c => c.charCodeAt(0));
 async function seal(key, value) {
@@ -79,6 +84,31 @@ async function open(key, value) {
   const packed = base64ToBytes(value);
   const plain = await crypto.subtle.decrypt({name: 'AES-GCM', iv: packed.slice(0, 12)}, key, packed.slice(12));
   return JSON.parse(new TextDecoder().decode(plain));
+}
+
+// The picture travels straight from the sharer; the server only introduced the two.
+// When it goes away (a restart, or the sharer reconnecting to it), a picture that is
+// still arriving keeps playing; one that stopped means the stream really ended.
+function signalingGone() {
+  if (ended || signalingLost) return;
+  if (pc?.connectionState !== 'connected') return finish('ended');
+  signalingLost = true;
+  clearInterval(ping);
+  // Ends once nothing arrives from the sharer for a few seconds.
+  const received = async () => {
+    let total = 0;
+    try { (await pc.getStats()).forEach(e => { if (e.type === 'inbound-rtp') total += e.packetsReceived || 0; }); } catch {}
+    return total;
+  };
+  let last = -1;
+  const check = async () => {
+    if (ended) return;
+    const now = await received();
+    if (now === last || pc.connectionState === 'failed' || pc.connectionState === 'closed') return finish('ended');
+    last = now;
+    setTimeout(check, 4000);
+  };
+  check();
 }
 
 async function connect() {
@@ -102,6 +132,7 @@ async function connect() {
   pc.addTransceiver('audio', { direction: 'recvonly' });
   const stream = new MediaStream();
   pc.ontrack = (e) => {
+    smooth(e.receiver);
     stream.addTrack(e.track);
     video.srcObject = stream;
   };
@@ -134,12 +165,12 @@ async function connect() {
       } else if (message.op === 'answer') {
         await pc.setRemoteDescription(await open(key, message.payload));
         clearTimeout(deadline); deadline = setTimeout(() => finish('network'), 20000);
-      } else if (message.op === 'ended') finish('ended');
+      } else if (message.op === 'ended') signalingGone();
       else if (message.op === 'reject') finish(message.status === 409 ? 'full' : 'invalid');
     } catch { finish('invalid'); }
   };
   ws.onerror = () => finish('unavailable');
-  ws.onclose = () => { if (!ended) finish('ended'); };
+  ws.onclose = () => signalingGone();
   // Local test instrumentation can inspect RTCPeerConnection through its own wrapper.
   window.addEventListener('pagehide', () => finish('ended'), {once: true});
 }
@@ -150,7 +181,7 @@ async function connectManual() {
   pc.addTransceiver('video', {direction: 'recvonly'});
   pc.addTransceiver('audio', {direction: 'recvonly'});
   const stream = new MediaStream();
-  pc.ontrack = event => { stream.addTrack(event.track); video.srcObject = stream; };
+  pc.ontrack = event => { smooth(event.receiver); stream.addTrack(event.track); video.srcObject = stream; };
   pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') finish('network'); };
   video.onplaying = () => { clearTimeout(deadline); say('playing'); if (video.muted) play.style.display = 'block'; };
   play.onclick = () => { video.muted = false; video.play().catch(() => {}); play.style.display = 'none'; };

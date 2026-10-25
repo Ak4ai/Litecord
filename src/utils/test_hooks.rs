@@ -13,6 +13,8 @@
 //! LITECORD_TEST_DECODE_DELAY_MS=<ms>       slow every video decode down (simulates a busy receiver)
 //! LITECORD_TEST_DECODE_STALL=<ms>,<every ms> stall the decoder now and then (simulates game hitches)
 //! LITECORD_TEST_HIDE_OUTPUT_SECS=<s>       voice sees no output device for the first <s> seconds
+//! LITECORD_TEST_MIC=synth                  a generated voice-like tone instead of a microphone
+//! LITECORD_TEST_SILENT_PLAYBACK=1          mix received voice as usual (and log it), then play silence
 //! ```
 
 use std::io::Write;
@@ -29,6 +31,9 @@ pub static CPU_DECODE: AtomicBool = AtomicBool::new(false);
 
 /// Drop the gateway connection on its next message, like a network loss (automation port).
 pub static DROP_GATEWAY: AtomicBool = AtomicBool::new(false);
+
+/// Stop the voice output stream as a failing audio device would (automation port).
+pub static BREAK_VOICE_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
@@ -80,6 +85,78 @@ pub fn hide_output_device() -> bool {
         .is_some_and(|secs| start.elapsed().as_secs() < secs)
 }
 
+pub fn mic_synth() -> bool {
+    env("LITECORD_TEST_MIC").as_deref() == Some("synth")
+}
+
+pub fn silent_playback() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| env("LITECORD_TEST_SILENT_PLAYBACK").is_some())
+}
+
+/// Feeds the voice pipeline a generated tone, paced like a microphone (10 ms blocks),
+/// until `stop` is set. 300 ms of tone then 200 ms of silence, so the voice activity
+/// detection opens and closes as it does for speech.
+pub fn run_synth_mic(stop: std::sync::Arc<AtomicBool>) {
+    use std::sync::atomic::Ordering;
+    let _fine = crate::utils::timer_resolution::FineTimerGuard::new();
+    let queue = crate::gateway::get_mic_pcm_queue();
+    let start = Instant::now();
+    let mut produced: u64 = 0;
+    while !stop.load(Ordering::Relaxed) {
+        let due = (start.elapsed().as_micros() as u64 * 48) / 1000;
+        if due >= produced + 480 {
+            let block: Vec<f32> = (0..480u64)
+                .map(|i| {
+                    let n = produced + i;
+                    let on = (n / 4800) % 5 < 3;
+                    if on { 0.3 * (n as f32 * 2.0 * std::f32::consts::PI * 330.0 / 48000.0).sin() } else { 0.0 }
+                })
+                .collect();
+            produced += 480;
+            let level = if block.iter().any(|s| *s != 0.0) { 1.0 } else { 0.0 };
+            crate::gateway::set_self_mic_level(level);
+            if let Ok(mut q) = queue.lock() {
+                crate::audio::engine::push_to_mic_queues(&mut q, &block, &block, level);
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// Called at the end of the voice output callback: logs whether the block carries
+/// sound (`play`, value = audible samples) and silences it under SILENT_PLAYBACK.
+pub fn voice_played_f32(out: &mut [f32]) {
+    let n = out.iter().filter(|s| s.abs() > 1e-4).count();
+    if n > 0 {
+        record("play", n as u32, false);
+    }
+    if silent_playback() {
+        out.fill(0.0);
+    }
+}
+
+pub fn voice_played_i16(out: &mut [i16]) {
+    let n = out.iter().filter(|s| s.unsigned_abs() > 3).count();
+    if n > 0 {
+        record("play", n as u32, false);
+    }
+    if silent_playback() {
+        out.fill(0);
+    }
+}
+
+/// A received voice packet that DAVE could not decrypt.
+pub fn dave_decrypt_failed() {
+    record("dave_fail", 0, false);
+}
+
+/// The voice output stream was (re)started.
+pub fn voice_output_started() {
+    record("out_start", 0, false);
+}
+
 pub fn mute_output() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| env("LITECORD_TEST_MUTE_OUTPUT").is_some())
@@ -96,6 +173,10 @@ fn voice_log() -> Option<&'static Mutex<VoiceLog>> {
         let path = env("LITECORD_TEST_VOICE_LOG")?;
         let mut file = std::io::BufWriter::new(std::fs::File::create(path).ok()?);
         let _ = writeln!(file, "t_us,event,value,flag");
+        // Wall clock of t_us = 0, so logs of two instances line up with each other.
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let _ = writeln!(file, "0,t0_unix_s,{},0", unix.as_secs());
+        let _ = writeln!(file, "0,t0_unix_ms,{},0", unix.subsec_millis());
         Some(Mutex::new(VoiceLog { file, t0: Instant::now() }))
     })
     .as_ref()
@@ -148,6 +229,7 @@ pub fn voice_captured(samples: &[f32]) {
 
 /// Decoded received voice (stereo pairs at 48 kHz), appended as mono f32.
 pub fn voice_decoded(pairs: &[(f32, f32)]) {
+    record("dec", pairs.len() as u32, false);
     static PCM: OnceLock<Option<Mutex<std::io::BufWriter<std::fs::File>>>> = OnceLock::new();
     let Some(out) = PCM
         .get_or_init(|| {
