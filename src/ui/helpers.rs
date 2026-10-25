@@ -229,6 +229,7 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_current_language_code(lang.code().into());
     i18n_ui::set_current(resolved);
     i18n_ui::apply_to_window(ui, i18n_ui::table_for(resolved));
+    crate::ui::message_grouping::relabel_day_separators(&ui.get_messages());
     ui.set_tr_login_title(tr.login_title.into());
     ui.set_tr_login_desc(tr.login_desc.into());
     ui.set_tr_login_placeholder(tr.login_placeholder.into());
