@@ -1,0 +1,373 @@
+// Building blocks of the settings window: one look for every tab.
+// A row is a title with an optional one-line explanation under it and its control on
+// the right; long option lists are dropdowns instead of radio lists.
+import { AppTheme, TypeScale } from "../theme.slint";
+
+export struct SettingOptionItem {
+    id: string,
+    name: string,
+    desc: string,
+    is_selected: bool,
+}
+
+export struct AudioDeviceItem {
+    id: string,
+    name: string,
+    is_selected: bool,
+}
+
+export component SettingsNavItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 6px;
+    background: root.active ? AppTheme.interactive-selected : (ta.has-hover ? AppTheme.interactive-hover : transparent);
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.text;
+            color: root.active ? AppTheme.text-strong : AppTheme.text-secondary;
+            font-size: TypeScale.body;
+            font-weight: root.active ? 600 : 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SettingsNavGroup inherits Text {
+    color: AppTheme.text-muted;
+    font-size: TypeScale.micro;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+
+export component SettingsPageTitle inherits VerticalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    spacing: 4px;
+    Text {
+        text: root.title;
+        color: AppTheme.text-strong;
+        font-size: TypeScale.heading;
+        font-weight: 700;
+    }
+    if root.subtitle != "": Text {
+        text: root.subtitle;
+        color: AppTheme.text-muted;
+        font-size: TypeScale.body;
+        wrap: word-wrap;
+    }
+}
+
+// Section heading plus its rows, separated from the next section by a rule.
+export component SettingsSection inherits VerticalLayout {
+    in property <string> title;
+    in property <bool> last: false;
+    spacing: 16px;
+    alignment: start;
+    vertical-stretch: 0;
+    if root.title != "": Text {
+        text: root.title;
+        color: AppTheme.text-secondary;
+        font-size: TypeScale.small;
+        font-weight: 600;
+    }
+    @children
+    if !root.last: Rectangle {
+        height: 1px;
+        background: AppTheme.separator;
+    }
+}
+
+// Title and explanation on the left, the control (children) on the right.
+export component SettingsRow inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> desc;
+    spacing: 24px;
+    vertical-stretch: 0;
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        horizontal-stretch: 1;
+        Text {
+            text: root.title;
+            color: AppTheme.text-strong;
+            font-size: TypeScale.body;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        if root.desc != "": Text {
+            text: root.desc;
+            color: AppTheme.text-muted;
+            font-size: TypeScale.small;
+            wrap: word-wrap;
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        @children
+    }
+}
+
+export component SettingsSwitch inherits Rectangle {
+    in property <bool> checked;
+    callback toggled();
+
+    width: 40px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.checked ? AppTheme.accent : AppTheme.surface-control;
+    animate background { duration: 120ms; }
+    Rectangle {
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: AppTheme.solid-white;
+        animate x { duration: 120ms; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+export component SettingsSwitchRow inherits SettingsRow {
+    in property <bool> checked;
+    callback toggled();
+    SettingsSwitch {
+        checked: root.checked;
+        toggled => { root.toggled(); }
+    }
+}
+
+export component SettingsButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 36px;
+    min-width: label.preferred-width + 32px;
+    border-radius: 6px;
+    border-width: root.primary ? 0px : 1px;
+    border-color: AppTheme.border-subtle;
+    background: !root.enabled ? AppTheme.surface-disabled
+        : root.primary ? (ta.has-hover ? AppTheme.accent-hover : AppTheme.accent)
+        : (ta.has-hover ? AppTheme.interactive-hover : AppTheme.surface-window);
+    label := Text {
+        text: root.text;
+        color: !root.enabled ? AppTheme.text-muted : root.primary ? AppTheme.text-on-accent : AppTheme.text-strong;
+        font-size: TypeScale.body;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Closed state of a dropdown: the chosen value and a chevron.
+component SelectField inherits Rectangle {
+    in property <bool> open;
+    callback clicked();
+    height: 40px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.open ? AppTheme.accent : AppTheme.border-subtle;
+    background: ta.has-hover ? AppTheme.surface-elevated : AppTheme.surface-window;
+    // The value on the left; the chevron sits at the right edge, outside the layout.
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 34px;
+        alignment: start;
+        @children
+    }
+    Path {
+        x: parent.width - 22px;
+        y: (parent.height - 6px) / 2;
+        width: 10px;
+        height: 6px;
+        commands: "M 0 0 L 5 6 L 10 0";
+        stroke: AppTheme.text-muted;
+        stroke-width: 1.5px;
+        fill: transparent;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component SelectOption inherits Rectangle {
+    in property <string> name;
+    in property <string> desc;
+    in property <bool> selected;
+    callback clicked();
+    min-height: root.desc != "" ? 52px : 36px;
+    border-radius: 4px;
+    background: root.selected ? AppTheme.interactive-selected : (ta.has-hover ? AppTheme.interactive-hover : transparent);
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.name;
+            color: AppTheme.text-strong;
+            font-size: TypeScale.body;
+            font-weight: root.selected ? 600 : 500;
+            overflow: elide;
+        }
+        if root.desc != "": Text {
+            text: root.desc;
+            color: AppTheme.text-muted;
+            font-size: TypeScale.caption;
+            wrap: word-wrap;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Dropdown over the `SettingOptionItem` lists (encoders, capture, proxy mode...).
+export component OptionSelect inherits VerticalLayout {
+    in property <[SettingOptionItem]> options;
+    in property <string> selected-id: "";   // when set, wins over `is_selected`
+    callback picked(string);
+
+    field := SelectField {
+        open: false;
+        clicked => { popup.show(); }
+        for o in root.options: Text {
+            visible: root.selected-id != "" ? o.id == root.selected-id : o.is_selected;
+            width: self.visible ? self.preferred-width : 0px;
+            text: o.name;
+            color: AppTheme.text-strong;
+            font-size: TypeScale.body;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    popup := PopupWindow {
+        x: 0px;
+        y: field.height + 4px;
+        width: field.width;
+        Rectangle {
+            background: AppTheme.surface-window;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: AppTheme.border-subtle;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000030;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+                for o in root.options: SelectOption {
+                    name: o.name;
+                    desc: o.desc;
+                    selected: root.selected-id != "" ? o.id == root.selected-id : o.is_selected;
+                    clicked => {
+                        root.picked(o.id);
+                        popup.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Dropdown over the audio device lists.
+export component DeviceSelect inherits VerticalLayout {
+    in property <[AudioDeviceItem]> devices;
+    callback picked(string);
+
+    field := SelectField {
+        open: false;
+        clicked => { popup.show(); }
+        for d in root.devices: Text {
+            visible: d.is_selected;
+            width: self.visible ? self.preferred-width : 0px;
+            text: d.name;
+            color: AppTheme.text-strong;
+            font-size: TypeScale.body;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    popup := PopupWindow {
+        x: 0px;
+        y: field.height + 4px;
+        width: field.width;
+        Rectangle {
+            background: AppTheme.surface-window;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: AppTheme.border-subtle;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000030;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+                for d in root.devices: SelectOption {
+                    name: d.name;
+                    desc: "";
+                    selected: d.is_selected;
+                    clicked => {
+                        root.picked(d.name);
+                        popup.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Labelled text box (proxy host, port, user, password).
+export component SettingsInput inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <InputType> input-type: InputType.text;
+    spacing: 6px;
+    Text {
+        text: root.label;
+        color: AppTheme.text-strong;
+        font-size: TypeScale.small;
+        font-weight: 600;
+    }
+    Rectangle {
+        height: 38px;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: input.has-focus ? AppTheme.accent : AppTheme.border-subtle;
+        background: AppTheme.surface-window;
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            input := TextInput {
+                text <=> root.text;
+                input-type: root.input-type;
+                color: AppTheme.text-strong;
+                font-size: TypeScale.body;
+                vertical-alignment: center;
+                single-line: true;
+            }
+        }
+    }
+}
