@@ -343,6 +343,9 @@ export component AppWindow inherits Window {
     in-out property <[SettingOptionItem]> video_encoder_options: [];
     in-out property <[SettingOptionItem]> video_capture_options: [];
     in-out property <[SettingOptionItem]> audio_loopback_options: [];
+    in-out property <[SettingOptionItem]> noise_suppression_options: [];
+    in-out property <bool> echo_cancellation: false;
+    in-out property <bool> automatic_gain_control: false;
 
     callback select_video_encoder(string);
     callback select_video_capture_backend(string);
@@ -355,6 +358,9 @@ export component AppWindow inherits Window {
     callback run_network_diagnostics();
     callback copy_network_diagnostics();
     callback toggle_theme();
+    callback select_noise_suppression(string);
+    callback toggle_echo_cancellation();
+    callback toggle_automatic_gain_control();
 
 
     // Network & Proxy Settings Properties
@@ -3133,6 +3139,9 @@ export component AppWindow inherits Window {
         tr_keybind_deafen_title: root.tr_keybind_deafen_title;
         tr_keybind_deafen_desc: root.tr_keybind_deafen_desc;
         keybind_deafen_str: root.keybind_deafen_str;
+        noise_suppression_options: root.noise_suppression_options;
+        echo_cancellation: root.echo_cancellation;
+        automatic_gain_control: root.automatic_gain_control;
         video_encoder_options: root.video_encoder_options;
         gpu_selection_available: root.gpu_selection_available;
         stream_capture_status: root.stream_capture_status;
@@ -3165,6 +3174,9 @@ export component AppWindow inherits Window {
         set_mic_volume(arg0) => { root.set_mic_volume(arg0); }
         set_vad_threshold(arg0) => { root.set_vad_threshold(arg0); }
         toggle_test_mic => { root.toggle_test_mic(); }
+        select_noise_suppression(arg0) => { root.select_noise_suppression(arg0); }
+        toggle_echo_cancellation => { root.toggle_echo_cancellation(); }
+        toggle_automatic_gain_control => { root.toggle_automatic_gain_control(); }
         change_language(arg0) => { root.change_language(arg0); }
         start_recording_keybind(arg0) => { root.start_recording_keybind(arg0); }
         reset_keybind(arg0) => { root.reset_keybind(arg0); }

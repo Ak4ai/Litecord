@@ -52,6 +52,9 @@ export component SettingsView inherits Rectangle {
     in property <string> tr_keybind_deafen_title;
     in property <string> tr_keybind_deafen_desc;
     in property <string> keybind_deafen_str;
+    in property <[SettingOptionItem]> noise_suppression_options;
+    in property <bool> echo_cancellation: false;
+    in property <bool> automatic_gain_control: false;
     in property <[SettingOptionItem]> video_encoder_options;
     in property <bool> gpu_selection_available;
     in property <string> stream_capture_status;
@@ -85,6 +88,9 @@ export component SettingsView inherits Rectangle {
     callback set_mic_volume(float);
     callback set_vad_threshold(float);
     callback toggle_test_mic();
+    callback select_noise_suppression(string);
+    callback toggle_echo_cancellation();
+    callback toggle_automatic_gain_control();
     callback change_language(string);
     callback start_recording_keybind(int);
     callback reset_keybind(int);
@@ -333,6 +339,31 @@ export component SettingsView inherits Rectangle {
                                         text: root.is_testing_mic ? root.tr_settings_btn_test_stop : root.tr_settings_btn_test_start;
                                         clicked => { root.toggle_test_mic(); }
                                     }
+                                }
+                            }
+
+                            SettingsSection {
+                                title: Tr.voice_processing;
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    Text { text: Tr.noise_suppression; color: AppTheme.text-strong; font-size: TypeScale.body; font-weight: 600; }
+                                    OptionSelect {
+                                        options: root.noise_suppression_options;
+                                        picked(id) => { root.select_noise_suppression(id); }
+                                    }
+                                    Text { text: Tr.noise_suppression_desc; color: AppTheme.text-muted; font-size: TypeScale.small; wrap: word-wrap; }
+                                }
+                                SettingsSwitchRow {
+                                    title: Tr.echo_cancellation;
+                                    desc: Tr.echo_cancellation_desc;
+                                    checked: root.echo_cancellation;
+                                    toggled => { root.toggle_echo_cancellation(); }
+                                }
+                                SettingsSwitchRow {
+                                    title: Tr.auto_gain_control;
+                                    desc: Tr.auto_gain_control_desc;
+                                    checked: root.automatic_gain_control;
+                                    toggled => { root.toggle_automatic_gain_control(); }
                                 }
                             }
 
