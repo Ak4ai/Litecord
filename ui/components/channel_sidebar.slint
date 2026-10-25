@@ -17,6 +17,10 @@ export struct ChannelItem {
     is_collapsed: bool,
     has_separator: bool,
     unread_count: int,  // Badge de mensagens não lidas (0 = sem badge)
+    // Leading emoji of the name, drawn as a colour image; `label` is the rest of the name.
+    emoji_id: string,
+    emoji_slot: int,    // index into `emoji_pool`
+    label: string,
 }
 
 
@@ -27,6 +31,7 @@ export component ChannelSidebar inherits Rectangle {
     // Shared thumbnail pool: a row shows pool[slot] only while pool_urls[slot]
     // still equals its own avatar_url, so a recycled slot never shows a wrong face.
     in property <[image]> avatar_pool;
+    in property <[image]> emoji_pool;
     in property <[string]> avatar_pool_urls;
     in-out property <string> active_channel_id;
     in property <bool> is_in_voice;
@@ -154,8 +159,17 @@ export component ChannelSidebar inherits Rectangle {
                                     }
                                 }
 
+                                if channel.emoji_id != "": VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: root.emoji_pool[channel.emoji_slot];
+                                        width: 14px;
+                                        height: 14px;
+                                        image-fit: contain;
+                                    }
+                                }
                                 Text {
-                                    text: channel.name;
+                                    text: channel.emoji_id != "" ? channel.label : channel.name;
                                     color: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
                                     font-size: 11px;
                                     font-weight: 800;
@@ -223,9 +237,18 @@ export component ChannelSidebar inherits Rectangle {
                                 }
                             }
 
-                            // Channel Name
+                            // Channel Name (leading emoji as a colour image)
+                            if channel.emoji_id != "": VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: root.emoji_pool[channel.emoji_slot];
+                                    width: 16px;
+                                    height: 16px;
+                                    image-fit: contain;
+                                }
+                            }
                             Text {
-                                text: channel.name;
+                                text: channel.emoji_id != "" ? channel.label : channel.name;
                                 color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.text-strong : (channel.unread_count > 0 ? AppTheme.text-strong : AppTheme.text-primary));
                                 font-size: 13px;
                                 font-weight: channel.unread_count > 0 ? 700 : 600;

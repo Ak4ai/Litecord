@@ -494,6 +494,7 @@ export component AppWindow inherits Window {
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
     in property <[image]> avatar_pool: [];
+    in property <[image]> channel_emoji_pool: [];
     in property <[string]> avatar_pool_urls: [];
     in-out property <[ChatMessage]> messages: [
         { author: "Litecord System", show_header: true, timestamp: Tr.now_label, content: Tr.welcome_msg }
@@ -1283,6 +1284,7 @@ export component AppWindow inherits Window {
                 tr_server_channels: root.tr_server_channels;
                 channels: root.channels;
                 avatar_pool: root.avatar_pool;
+                emoji_pool: root.channel_emoji_pool;
                 avatar_pool_urls: root.avatar_pool_urls;
                 is_in_voice: root.is_in_voice;
                 is_voice_connecting: root.is_voice_connecting;

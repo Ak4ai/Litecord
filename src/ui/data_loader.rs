@@ -702,6 +702,7 @@ pub async fn fetch_and_populate_dms(
                     is_collapsed: false,
                     has_separator: false,
                     unread_count: unread_dm_count,
+                    ..Default::default()
                 });
             }
 
