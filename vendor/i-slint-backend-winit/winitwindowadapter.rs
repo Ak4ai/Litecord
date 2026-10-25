@@ -438,17 +438,19 @@ impl WinitWindowAdapter {
 
         #[cfg(all(unix, not(target_vendor = "apple")))]
         {
-            if let Some(xdg_app_id) = WindowInner::from_pub(self.window()).xdg_app_id() {
-                #[cfg(feature = "wayland")]
-                {
-                    use winit::platform::wayland::WindowAttributesExtWayland;
-                    window_attributes = window_attributes.with_name(xdg_app_id.clone(), "");
-                }
-                #[cfg(feature = "x11")]
-                {
-                    use winit::platform::x11::WindowAttributesExtX11;
-                    window_attributes = window_attributes.with_name(xdg_app_id.clone(), "");
-                }
+            let xdg_app_id = WindowInner::from_pub(self.window())
+                .xdg_app_id()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "litecord".to_string());
+            #[cfg(feature = "wayland")]
+            {
+                use winit::platform::wayland::WindowAttributesExtWayland;
+                window_attributes = window_attributes.with_name(xdg_app_id.clone(), "");
+            }
+            #[cfg(feature = "x11")]
+            {
+                use winit::platform::x11::WindowAttributesExtX11;
+                window_attributes = window_attributes.with_name(xdg_app_id.clone(), xdg_app_id.clone());
             }
         }
 

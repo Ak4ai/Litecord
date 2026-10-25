@@ -58,6 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     commit_heap_pages_on_demand();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    let _ = i_slint_backend_winit::set_xdg_app_id("litecord");
+
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(4)
         .thread_name(|i| format!("rayon-worker-{}", i))

@@ -37,6 +37,7 @@ mod ios;
 
 /// Re-export of the winit crate.
 pub use winit;
+pub use i_slint_core::api::set_xdg_app_id;
 
 /// Internal type used by the winit backend for thread communication and window system updates.
 ///
