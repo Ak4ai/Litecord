@@ -221,7 +221,7 @@ fn apply_inline_markdown(input: &str) -> String {
         }
     });
     // <#CHANNEL_ID> — channel mentions
-    s = regex_replace_simple(&s, "<#", ">", |_inner| "#canal".to_string());
+    s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
 
     // <:name:ID> — custom emoji
     s = regex_replace_simple(&s, "<a:", ">", |inner| {
@@ -509,7 +509,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         return lines;
     }
 
-    let cleaned = clean_discord_whitespace(input);
+    let cleaned = clean_discord_whitespace(&super::channel_names::link_channel_mentions(input));
 
     for raw_line in cleaned.split('\n') {
         let trimmed_line = raw_line.trim_start();
