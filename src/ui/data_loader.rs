@@ -15,7 +15,7 @@ use crate::ui::message_grouping::{apply_message_metadata, regroup_messages};
 use crate::auth::vault::*;
 use crate::utils::updater;
 use crate::utils::{avatar_cache, emoji_cache};
-use slint::{Image, Model};
+use slint::{ComponentHandle, Image, Model};
 
 #[derive(Clone, Debug, Default)]
 pub struct RawGuildItem {
@@ -126,7 +126,7 @@ pub async fn fetch_and_populate_guilds(
                         let mut has_image = false;
                         let mut icon_image = Image::default();
                         if let Some(ref path_str) = raw.icon_path {
-                            if let Some(img) = load_rounded_guild_icon(path_str) {
+                            if let Some(img) = load_rounded_guild_icon(path_str, ui.window().scale_factor()) {
                                 has_image = true;
                                 icon_image = img;
                             }
@@ -180,7 +180,7 @@ pub async fn fetch_and_populate_guilds(
                                     let gid = item.id.to_string();
                                     let icon_path = cache_dir.join(format!("{}.png", gid));
                                     if icon_path.exists() {
-                                        if let Some(img) = load_rounded_guild_icon(&icon_path.to_string_lossy()) {
+                                        if let Some(img) = load_rounded_guild_icon(&icon_path.to_string_lossy(), ui.window().scale_factor()) {
                                             item.has_image = true;
                                             item.icon_image = img;
                                         }
@@ -1085,8 +1085,18 @@ pub fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
 
 /// Server icon with its corners already rounded (radius = a third of the side, the 16 px
 /// of the 48 px tile), so it looks the same on the software renderer.
-fn load_rounded_guild_icon(path: &str) -> Option<Image> {
-    let mut rgba = image::open(path).ok()?.to_rgba8();
+/// It is resized here, once and with a smooth filter, to the tile's size in physical
+/// pixels: the software renderer would otherwise shrink the full-size icon on every
+/// frame without smoothing, which made the edges jagged. It also keeps less in memory.
+fn load_rounded_guild_icon(path: &str, scale_factor: f32) -> Option<Image> {
+    const TILE_LOGICAL_PX: f32 = 48.0;
+    let side = (TILE_LOGICAL_PX * scale_factor.clamp(1.0, 4.0)).round() as u32;
+    let decoded = image::open(path).ok()?;
+    let mut rgba = if decoded.width() > side || decoded.height() > side {
+        decoded.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8()
+    } else {
+        decoded.to_rgba8()
+    };
     let (w, h) = rgba.dimensions();
     crate::utils::image_shape::round_corners(&mut rgba, w, h, w.min(h) as f32 / 3.0);
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h);
