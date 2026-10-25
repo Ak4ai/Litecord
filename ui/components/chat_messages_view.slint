@@ -1,5 +1,5 @@
 import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
-import { AppTheme, ChatTypography } from "../theme.slint";
+import { AppTheme, ChatTypography , TypeScale } from "../theme.slint";
 import { Tr } from "tr.slint";
 
 export struct LinkItem {
@@ -148,7 +148,7 @@ export component ChatMessagesView inherits Rectangle {
                         Text {
                             text: root.is_loading_older_messages ? Tr.loading_older : Tr.load_older;
                             color: AppTheme.accent;
-                            font-size: 11px;
+                            font-size: TypeScale.caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -172,7 +172,7 @@ export component ChatMessagesView inherits Rectangle {
                     spacing: 10px;
                     alignment: center;
                     Rectangle { height: 1px; background: AppTheme.separator; horizontal-stretch: 1; }
-                    Text { text: msg.day_label; color: AppTheme.text-muted; font-size: 11px; font-weight: 600; }
+                    Text { text: msg.day_label; color: AppTheme.text-muted; font-size: TypeScale.caption; font-weight: 600; }
                     Rectangle { height: 1px; background: AppTheme.separator; horizontal-stretch: 1; }
                 }
 
@@ -197,7 +197,7 @@ export component ChatMessagesView inherits Rectangle {
                     width: 42px;
                     text: msg.hover_timestamp;
                     color: AppTheme.text-subtle;
-                    font-size: 10px;
+                    font-size: TypeScale.micro;
                     horizontal-alignment: right;
                 }
 
@@ -212,7 +212,7 @@ export component ChatMessagesView inherits Rectangle {
                     Text {
                         text: msg.avatar_initial;
                         color: AppTheme.text-secondary;
-                        font-size: 13px;
+                        font-size: TypeScale.body;
                         font-weight: 700;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -270,7 +270,7 @@ export component ChatMessagesView inherits Rectangle {
                                 if msg.reply-command != "": Text {
                                     text: Tr.used_command;
                                     color: AppTheme.text-reply;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     vertical-alignment: center;
                                 }
 
@@ -288,7 +288,7 @@ export component ChatMessagesView inherits Rectangle {
                                         Text {
                                             text: msg.reply-command;
                                             color: rep_cmd_ta.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -330,7 +330,7 @@ export component ChatMessagesView inherits Rectangle {
                                 Text {
                                     text: "APP";
                                     color: AppTheme.text-on-accent;
-                                    font-size: 9px;
+                                    font-size: TypeScale.micro;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
@@ -340,7 +340,7 @@ export component ChatMessagesView inherits Rectangle {
                             text: msg.timestamp;
                             color: AppTheme.text-subtle;
                             font-family: ChatTypography.family;
-                            font-size: 10px;
+                            font-size: TypeScale.micro;
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -441,7 +441,7 @@ export component ChatMessagesView inherits Rectangle {
                                         Text {
                                             text: line.blocks[0].text;
                                             color: cmd_ta_single.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                            font-size: 12px;
+                                            font-size: TypeScale.small;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -492,7 +492,7 @@ export component ChatMessagesView inherits Rectangle {
                                                 Text {
                                                     text: block.text;
                                                     color: cmd_ta_mix.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -529,7 +529,7 @@ export component ChatMessagesView inherits Rectangle {
                                                     text: block.text;
                                                     color: block_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                     font-family: ChatTypography.family;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                     overflow: elide;
@@ -589,7 +589,7 @@ export component ChatMessagesView inherits Rectangle {
                                 text: msg.code-block;
                                 color: AppTheme.success;
                                 font-family: "Courier New";
-                                font-size: 12.5px;
+                                font-size: TypeScale.small;
                                 wrap: word-wrap;
                             }
                         }
@@ -686,7 +686,7 @@ export component ChatMessagesView inherits Rectangle {
                                                     Text {
                                                         text: line.blocks[0].text;
                                                         color: ecmd_ta_single.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -722,7 +722,7 @@ export component ChatMessagesView inherits Rectangle {
                                                             Text {
                                                                 text: block.text;
                                                                 color: ecmd_ta_mix.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                                                font-size: 11px;
+                                                                font-size: TypeScale.caption;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
                                                             }
@@ -749,7 +749,7 @@ export component ChatMessagesView inherits Rectangle {
                                                                 text: block.text;
                                                                 color: eblock_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                                 font-family: ChatTypography.family;
-                                                                font-size: 12px;
+                                                                font-size: TypeScale.small;
                                                                 font-weight: 600;
                                                                 vertical-alignment: center;
                                                                 overflow: elide;
@@ -813,7 +813,7 @@ export component ChatMessagesView inherits Rectangle {
                                     text: msg.embed-footer;
                                     color: AppTheme.text-muted;
                                     font-family: ChatTypography.family;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     wrap: word-wrap;
                                 }
                             }
@@ -866,7 +866,7 @@ export component ChatMessagesView inherits Rectangle {
                                     alignment: center;
                                     Text {
                                         text: btn.emoji;
-                                        font-size: 13px;
+                                        font-size: TypeScale.body;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -874,7 +874,7 @@ export component ChatMessagesView inherits Rectangle {
                                 Text {
                                     text: btn.label;
                                     color: btn.is_disabled ? AppTheme.text-subtle : AppTheme.text-on-accent;
-                                    font-size: 12px;
+                                    font-size: TypeScale.small;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
@@ -976,7 +976,7 @@ export component ChatMessagesView inherits Rectangle {
                                                 Text {
                                                     text: att.is_loading ? Tr.downloading : (att.size_str != "" ? (Tr.download_image_size + att.size_str + ")") : Tr.download_image);
                                                     color: AppTheme.text-on-accent;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                 }
@@ -1013,7 +1013,7 @@ export component ChatMessagesView inherits Rectangle {
                                     horizontal-stretch: 1;
                                     text: att.filename;
                                     color: AppTheme.accent-link-hover;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     overflow: elide;
                                     vertical-alignment: center;
                                 }
@@ -1021,7 +1021,7 @@ export component ChatMessagesView inherits Rectangle {
                                 Text {
                                     text: att.size_str;
                                     color: AppTheme.text-muted;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     vertical-alignment: center;
                                 }
 
@@ -1059,7 +1059,7 @@ export component ChatMessagesView inherits Rectangle {
                                     text: link.label;
                                     color: link_ta.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                     vertical-alignment: center;
-                                    font-size: 12.5px;
+                                    font-size: TypeScale.small;
                                     font-weight: 500;
                                 }
                             }

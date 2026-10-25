@@ -1,5 +1,5 @@
 import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
-import { AppTheme } from "../theme.slint";
+import { AppTheme , TypeScale } from "../theme.slint";
 import { IconButton } from "icon_button.slint";
 
 export struct ChannelItem {
@@ -82,7 +82,7 @@ export component ChannelSidebar inherits Rectangle {
             Text {
                 text: root.active_guild_name != "" ? root.active_guild_name : root.tr_server_channels;
                 color: AppTheme.text-strong;
-                font-size: 14px;
+                font-size: TypeScale.title;
                 font-weight: 700;
                 overflow: elide;
                 vertical-alignment: center;
@@ -171,7 +171,7 @@ export component ChannelSidebar inherits Rectangle {
                                 Text {
                                     text: channel.emoji_id != "" ? channel.label : channel.name;
                                     color: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     font-weight: 800;
                                     horizontal-alignment: left;
                                     vertical-alignment: center;
@@ -214,7 +214,7 @@ export component ChannelSidebar inherits Rectangle {
                                     Text {
                                         text: channel.avatar_text;
                                         color: (channel.id == root.active_channel_id) ? AppTheme.text-on-accent : AppTheme.text-strong;
-                                        font-size: 10px;
+                                        font-size: TypeScale.micro;
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -229,7 +229,7 @@ export component ChannelSidebar inherits Rectangle {
                                 if channel.avatar_text == "" : Text {
                                     text: "#";
                                     color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.accent-soft : AppTheme.text-subtle);
-                                    font-size: 16px;
+                                    font-size: TypeScale.title;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -250,7 +250,7 @@ export component ChannelSidebar inherits Rectangle {
                             Text {
                                 text: channel.emoji_id != "" ? channel.label : channel.name;
                                 color: touch_area.has_hover ? AppTheme.text-strong : (channel.id == root.active_channel_id ? AppTheme.text-strong : (channel.unread_count > 0 ? AppTheme.text-strong : AppTheme.text-primary));
-                                font-size: 13px;
+                                font-size: TypeScale.body;
                                 font-weight: channel.unread_count > 0 ? 700 : 600;
                                 horizontal-alignment: left;
                                 vertical-alignment: center;
@@ -274,7 +274,7 @@ export component ChannelSidebar inherits Rectangle {
                                         height: parent.height;
                                         text: channel.unread_count > 99 ? "99+" : "\{channel.unread_count}";
                                         color: #ffffff;
-                                        font-size: 11px;
+                                        font-size: TypeScale.caption;
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -294,7 +294,7 @@ export component ChannelSidebar inherits Rectangle {
                                     Text {
                                         text: "\{channel.voice_count}";
                                         color: AppTheme.text-on-accent;
-                                        font-size: 11px;
+                                        font-size: TypeScale.caption;
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -321,7 +321,7 @@ export component ChannelSidebar inherits Rectangle {
                                     Text {
                                         text: channel.avatar_text;
                                         color: AppTheme.text-primary;
-                                        font-size: 8px;
+                                        font-size: TypeScale.micro;
                                         font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -337,7 +337,7 @@ export component ChannelSidebar inherits Rectangle {
                             Text {
                                 text: channel.name;
                                 color: touch_area.has-hover ? AppTheme.text-strong : AppTheme.text-muted;
-                                font-size: 12px;
+                                font-size: TypeScale.small;
                                 font-weight: 500;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
@@ -417,14 +417,14 @@ export component ChannelSidebar inherits Rectangle {
                     Text {
                         text: root.is_voice_connecting ? root.tr_voice_connecting : root.tr_voice_connected;
                         color: AppTheme.text-on-accent;
-                        font-size: 11px;
+                        font-size: TypeScale.caption;
                         font-weight: 800;
                         overflow: elide;
                     }
                     Text {
                         text: root.current_voice_channel;
                         color: AppTheme.text-on-status;
-                        font-size: 10px;
+                        font-size: TypeScale.micro;
                         font-weight: 500;
                         overflow: elide;
                     }
@@ -463,7 +463,7 @@ export component ChannelSidebar inherits Rectangle {
                             Text {
                                 text: root.tr_leave;
                                 color: AppTheme.text-on-accent;
-                                font-size: 11px;
+                                font-size: TypeScale.caption;
                                 font-weight: 700;
                                 vertical-alignment: center;
                             }
@@ -529,7 +529,7 @@ export component ChannelSidebar inherits Rectangle {
                                         if !root.user_avatar_has_image: Text {
                                             text: root.user_avatar_initials != "" ? root.user_avatar_initials : "U";
                                             color: AppTheme.text-on-accent;
-                                            font-size: 13px;
+                                            font-size: TypeScale.body;
                                             font-weight: 700;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -560,7 +560,7 @@ export component ChannelSidebar inherits Rectangle {
                             Text {
                                 text: root.user_display_name != "" ? root.user_display_name : root.user_tag;
                                 color: AppTheme.text-strong;
-                                font-size: 12px;
+                                font-size: TypeScale.small;
                                 font-weight: 700;
                                 overflow: elide;
                                 vertical-alignment: center;
@@ -569,7 +569,7 @@ export component ChannelSidebar inherits Rectangle {
                             Text {
                                 text: root.user_handle != "" ? root.user_handle : "Online";
                                 color: AppTheme.text-muted;
-                                font-size: 10.5px;
+                                font-size: TypeScale.micro;
                                 font-weight: 500;
                                 overflow: elide;
                                 vertical-alignment: center;
