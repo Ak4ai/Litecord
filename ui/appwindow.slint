@@ -350,6 +350,8 @@ export component AppWindow inherits Window {
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
     callback toggle_gpu_renderer();
+    in-out property <length> channel_sidebar_width: 230px;
+    callback channel_sidebar_width_committed(length);
     callback run_network_diagnostics();
     callback copy_network_diagnostics();
     callback toggle_theme();
@@ -1275,6 +1277,8 @@ export component AppWindow inherits Window {
 
             // 2. Channels Sidebar
             ChannelSidebar {
+                sidebar_width <=> root.channel_sidebar_width;
+                sidebar_width_committed(w) => { root.channel_sidebar_width_committed(w); }
                 active_guild_name: root.active_guild_name;
                 tr_server_channels: root.tr_server_channels;
                 channels: root.channels;

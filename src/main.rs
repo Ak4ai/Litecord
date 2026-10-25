@@ -2303,6 +2303,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    app.set_channel_sidebar_width(video_settings::get_channel_sidebar_width());
+    app.on_channel_sidebar_width_committed(|width| {
+        video_settings::set_channel_sidebar_width(width);
+    });
+
     let app_weak_gpu = app.as_weak();
     app.on_toggle_gpu_renderer(move || {
         let new_val = video_settings::toggle_use_gpu_renderer();

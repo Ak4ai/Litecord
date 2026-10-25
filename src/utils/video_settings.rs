@@ -19,6 +19,16 @@ pub struct VideoSettings {
     /// keep a GPU context (and its driver threads) next to the game.
     #[serde(default)]
     pub use_gpu_renderer: bool,           // default false
+    /// Width of the channel list, in logical pixels, as the user dragged it.
+    #[serde(default = "default_channel_sidebar_width")]
+    pub channel_sidebar_width: f32,
+}
+
+pub const CHANNEL_SIDEBAR_MIN_WIDTH: f32 = 180.0;
+pub const CHANNEL_SIDEBAR_MAX_WIDTH: f32 = 420.0;
+
+fn default_channel_sidebar_width() -> f32 {
+    230.0
 }
 
 fn default_true() -> bool {
@@ -35,6 +45,7 @@ impl Default for VideoSettings {
             show_hardware_monitor: true,
             use_light_theme: false,
             use_gpu_renderer: false,
+            channel_sidebar_width: default_channel_sidebar_width(),
         }
     }
 }
@@ -125,6 +136,17 @@ pub fn toggle_show_hardware_monitor() -> bool {
     let new_val = store.show_hardware_monitor;
     save_video_settings(&store);
     new_val
+}
+
+pub fn get_channel_sidebar_width() -> f32 {
+    let width = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).channel_sidebar_width;
+    width.clamp(CHANNEL_SIDEBAR_MIN_WIDTH, CHANNEL_SIDEBAR_MAX_WIDTH)
+}
+
+pub fn set_channel_sidebar_width(width: f32) {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.channel_sidebar_width = width.clamp(CHANNEL_SIDEBAR_MIN_WIDTH, CHANNEL_SIDEBAR_MAX_WIDTH);
+    save_video_settings(&store);
 }
 
 pub fn get_use_gpu_renderer() -> bool {
