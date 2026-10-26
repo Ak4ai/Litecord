@@ -54,7 +54,7 @@
 ### 6.1 The bundle
 
 - Layout: `Litecord.app/Contents/{MacOS/litecord, Info.plist, Resources/Litecord.icns}`.
-- **Info.plist** (extends Phase 1 Change 4): `CFBundleIdentifier` (e.g. `com.litecord.app` — pick once, never change it), `CFBundleName`, `CFBundleShortVersionString` (from Cargo.toml version), `CFBundleExecutable`, `LSMinimumSystemVersion` (12.3 — the SCK floor), `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, `LSApplicationCategoryType = public.app-category.social-networking`.
+- **Info.plist** (extends Phase 1 Change 4): `CFBundleIdentifier` (e.g. `com.litecord.app` — pick once, never change it), `CFBundleName`, `CFBundleShortVersionString` (from Cargo.toml version), `CFBundleExecutable`, `CFBundlePackageType = APPL`, `NSHighResolutionCapable` (true), `LSMinimumSystemVersion` (12.3 — the SCK floor), `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, `LSApplicationCategoryType = public.app-category.social-networking`.
 - **Icon:** convert `assets/app_icon.ico` → `.icns` (`iconutil`/`sips`); add the source PNG set to `assets/`.
 - Build step: a small `scripts/macos/bundle.sh` (copy binary, write Info.plist, `codesign`) — keeps the bundle reproducible outside Xcode.
 
