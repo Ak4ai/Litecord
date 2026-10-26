@@ -44,6 +44,18 @@ fn commit_heap_pages_on_demand() {
     const MI_OPTION_PAGE_COMMIT_ON_DEMAND: i32 = 40;
     unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
 }
+
+/// The command that hands a URL to the default browser on this platform
+/// (the spawn arm of `on_open_link`; Windows uses ShellExecuteW instead).
+/// macOS has no xdg-open — `open` is its default-browser handler.
+#[cfg(target_os = "macos")]
+fn browser_open_command() -> &'static str {
+    "open"
+}
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn browser_open_command() -> &'static str {
+    "xdg-open"
+}
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -548,7 +560,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            let _ = std::process::Command::new(browser_open_command()).arg(&url).spawn();
         }
     });
 
@@ -4835,5 +4847,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
     crate::ui::window_place::save_now();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Chat links must hand off to the platform's default-browser handler:
+    /// `open` on macOS (there is no xdg-open — links would silently fail),
+    /// xdg-open on the other non-Windows platforms. Windows uses
+    /// ShellExecuteW directly in `on_open_link`, so it has no command.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn browser_open_command_is_open_on_macos() {
+        assert_eq!(crate::browser_open_command(), "open");
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    #[test]
+    fn browser_open_command_is_xdg_open_off_macos() {
+        assert_eq!(crate::browser_open_command(), "xdg-open");
+    }
 }
 
