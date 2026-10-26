@@ -359,10 +359,12 @@ pub fn start(req: Request) -> bool {
     ready
 }
 
-/// Asks Windows to schedule this device's GPU work (the capture, the conversion and the
-/// encoder all run on it) ahead of other processes', as Sunshine does: while a game keeps
-/// the GPUs busy, work queued at normal priority waits behind it. The highest levels need
-/// the "increase scheduling priority" privilege, so lower ones are tried in turn.
+/// Asks Windows to give this device's GPU work (the capture, the conversion and the encoder
+/// all run on it) a higher priority. Windows only uses it to order this process's own work;
+/// against a game's work, the process's scheduling class counts, and raising that one to
+/// above normal or high made no measurable difference while a game kept the GPU at 100%.
+/// The highest levels need the "increase scheduling priority" privilege, so lower ones are
+/// tried in turn.
 fn raise_gpu_priority(device: &ID3D11Device, gpu: &str) {
     let Ok(dxgi) = device.cast::<IDXGIDevice>() else { return };
     for level in [7, 4, 1] {
