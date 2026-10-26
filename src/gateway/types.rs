@@ -170,6 +170,7 @@ pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USERNAME: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static MY_VOICE_CHANNEL_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static IS_SELF_SPEAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static VAD_THRESHOLD: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
 pub static IS_TESTING_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static MIC_LOOPBACK_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
@@ -196,7 +197,7 @@ fn default_mic_volume() -> f32 {
 impl Default for GlobalAudioConfig {
     fn default() -> Self {
         Self {
-            vad_threshold: 0.05,
+            vad_threshold: 0.40, // -60 dBFS: Discord standard sensitivity threshold
             mic_volume: 1.0,
             input_device: String::new(),
             output_device: String::new(),
@@ -206,7 +207,12 @@ impl Default for GlobalAudioConfig {
 
 pub fn load_persisted_audio_config() -> GlobalAudioConfig {
     if let Ok(data) = std::fs::read_to_string(GLOBAL_AUDIO_CONFIG_FILE) {
-        if let Ok(cfg) = serde_json::from_str::<GlobalAudioConfig>(&data) {
+        if let Ok(mut cfg) = serde_json::from_str::<GlobalAudioConfig>(&data) {
+            // Migrate legacy linear threshold (e.g. 0.05) to Discord standard dB threshold 0.40 (-60 dB)
+            if cfg.vad_threshold < 0.15 {
+                cfg.vad_threshold = 0.40;
+                save_persisted_audio_config(&cfg);
+            }
             return cfg;
         }
     }
@@ -405,6 +411,14 @@ pub fn set_self_mic_level(val: f32) {
 
 pub fn get_self_mic_level() -> f32 {
     f32::from_bits(SELF_MIC_LEVEL.load(Ordering::Relaxed))
+}
+
+pub fn set_self_speaking(val: bool) {
+    IS_SELF_SPEAKING.store(val, Ordering::Relaxed);
+}
+
+pub fn is_self_speaking() -> bool {
+    IS_SELF_SPEAKING.load(Ordering::Relaxed)
 }
 
 /// Signalled by the microphone callback whenever a full 20 ms frame (960 samples)

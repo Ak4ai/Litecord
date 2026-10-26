@@ -426,7 +426,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected_output_device: "Alto-falantes Padrão do Sistema";
     in-out property <float> mic_level: 0.0; // Real-time mic volume level (0.0 to 1.0)
     in-out property <float> mic_volume: 1.0; // Microphone Input Gain Volume (0.0 to 2.0, 100% = 1.0)
-    in-out property <float> vad_threshold: 0.05; // Voice Activity Detection Threshold (0.0 to 1.0)
+    in-out property <float> vad_threshold: 0.40; // Voice Activity Detection Threshold (0.0 to 1.0, 0.40 = -60 dB)
     in-out property <bool> is_testing_mic: false; // Mic loopback ("Se ouvir") test active
 
     // Screen Share / Live Video Grid Properties

@@ -370,12 +370,13 @@ pub struct VoiceProcessor {
     volume_analyzer: VolumeAnalyzer,
     // Echo cancellation adaptive filter coefficients (64 taps NLMS)
     aec_filter: [f32; 64],
-    aec_delay_buffer: [f32; 4096],
+    aec_delay_buffer: [f32; 8192],
     aec_delay_idx: usize,
-    // Delay estimator for speaker-to-mic alignment
+    // Delay estimator for acoustic speaker-to-mic alignment
     aec_speaker_energy_hist: [f32; 32],
+    aec_mic_energy_hist: [f32; 32],
     aec_hist_idx: usize,
-    _aec_estimated_delay_blocks: usize,
+    aec_estimated_delay_samples: usize,
     // Automatic Gain Control (AGC2) state
     agc_speech_envelope: f32,
     agc_current_gain: f32,
@@ -400,11 +401,12 @@ impl VoiceProcessor {
             hpf: BiquadHpf::new_80hz_48khz(),
             volume_analyzer: VolumeAnalyzer::new(),
             aec_filter: [0.0; 64],
-            aec_delay_buffer: [0.0; 4096],
+            aec_delay_buffer: [0.0; 8192],
             aec_delay_idx: 0,
             aec_speaker_energy_hist: [0.0; 32],
+            aec_mic_energy_hist: [0.0; 32],
             aec_hist_idx: 0,
-            _aec_estimated_delay_blocks: 0,
+            aec_estimated_delay_samples: 960,
             agc_speech_envelope: 0.125, // -18 dBFS speech RMS baseline
             agc_current_gain: 1.0,
             neural_gate_gain: 1.0,
@@ -469,7 +471,7 @@ impl VoiceProcessor {
     }
 
     /// Applies Acoustic Echo Cancellation using a Normalized LMS adaptive filter
-    /// with delay correlation and non-linear Residual Echo Suppression (RES).
+    /// with delay correlation, acoustic delay alignment, and non-linear Residual Echo Suppression (RES).
     fn apply_aec(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) {
         let mut speaker_samples = [0.0f32; FRAME_SIZE_SAMPLES];
         let count = pop_speaker_reference(&mut speaker_samples);
@@ -477,29 +479,80 @@ impl VoiceProcessor {
             return;
         }
 
-        // Calculate speaker reference RMS energy
-        let mut spk_sq = 0.0f32;
-        for &s in &speaker_samples[..count] {
-            spk_sq += s * s;
+        // 1. Acoustic Delay Estimator:
+        // Real-world desktop latency (playback buffer -> air -> mic hardware buffer) is typically 15ms - 60ms.
+        // We compute RMS across 4 sub-blocks of 240 samples (5ms each) for speaker ref and mic input.
+        const SUB_BLOCK_SAMPLES: usize = 240;
+        let hist_len = self.aec_speaker_energy_hist.len();
+
+        for sb in 0..4 {
+            let start = sb * SUB_BLOCK_SAMPLES;
+            let end = start + SUB_BLOCK_SAMPLES;
+
+            let mut spk_sq = 0.0f32;
+            for &s in &speaker_samples[start..end] {
+                spk_sq += s * s;
+            }
+            let spk_rms = (spk_sq / SUB_BLOCK_SAMPLES as f32).sqrt();
+
+            let mut mic_sq = 0.0f32;
+            for &s in &frame[start..end] {
+                mic_sq += s * s;
+            }
+            let mic_rms = (mic_sq / SUB_BLOCK_SAMPLES as f32).sqrt();
+
+            self.aec_speaker_energy_hist[self.aec_hist_idx] = spk_rms;
+            self.aec_mic_energy_hist[self.aec_hist_idx] = mic_rms;
+            self.aec_hist_idx = (self.aec_hist_idx + 1) % hist_len;
         }
-        let spk_energy = spk_sq / count as f32;
 
-        // Track speaker energy history in 32 sub-blocks (~160ms) to estimate delay
-        self.aec_speaker_energy_hist[self.aec_hist_idx] = spk_energy;
-        self.aec_hist_idx = (self.aec_hist_idx + 1) % 32;
+        // Cross-correlation across recent 160ms history:
+        // Evaluates lags from 2 to 20 sub-blocks (10ms to 100ms) to identify acoustic echo delay.
+        let spk_total_energy: f32 = self.aec_speaker_energy_hist.iter().sum();
+        if spk_total_energy > 0.04 {
+            let mut best_lag = 4; // default ~20ms
+            let mut max_corr = 0.0f32;
+            let mut sum_corr = 0.0f32;
+            let mut corr_count = 0;
 
+            for lag in 2..=20 {
+                let mut corr = 0.0f32;
+                for m in 0..10 {
+                    let mic_idx = (self.aec_hist_idx + hist_len - 1 - m) % hist_len;
+                    let spk_idx = (self.aec_hist_idx + hist_len - 1 - m - lag) % hist_len;
+                    corr += self.aec_mic_energy_hist[mic_idx] * self.aec_speaker_energy_hist[spk_idx];
+                }
+                sum_corr += corr;
+                corr_count += 1;
+                if corr > max_corr {
+                    max_corr = corr;
+                    best_lag = lag;
+                }
+            }
+
+            let avg_corr = sum_corr / corr_count.max(1) as f32;
+            if max_corr > avg_corr * 1.30 && max_corr > 0.0005 {
+                let target_delay = best_lag * SUB_BLOCK_SAMPLES;
+                // Smooth IIR tracking to avoid abrupt delay jumps
+                self.aec_estimated_delay_samples = (self.aec_estimated_delay_samples * 7 + target_delay) / 8;
+            }
+        }
+
+        // 2. Normalized LMS Adaptive Filter with Delay Alignment and Double-Talk Detection
+        let buf_len = self.aec_delay_buffer.len();
+        let base_delay = self.aec_estimated_delay_samples.clamp(0, 5760); // Clamp to max 120ms
         let num_taps = self.aec_filter.len();
-        let mu = 0.02f32; // Conservative step size to avoid filter divergence
+        let mu = 0.02f32; // Normalized step size
 
         for i in 0..frame.len() {
             let ref_sample = speaker_samples[i];
             self.aec_delay_buffer[self.aec_delay_idx] = ref_sample;
 
-            // Estimate echo using tapped delay line
+            // Estimate acoustic echo using delay-aligned tapped delay line
             let mut echo_estimate = 0.0f32;
             let mut power = 1e-4f32;
             for tap in 0..num_taps {
-                let delay_pos = (self.aec_delay_idx + self.aec_delay_buffer.len() - tap) % self.aec_delay_buffer.len();
+                let delay_pos = (self.aec_delay_idx + buf_len - base_delay - tap) % buf_len;
                 let x = self.aec_delay_buffer[delay_pos];
                 echo_estimate += self.aec_filter[tap] * x;
                 power += x * x;
@@ -508,25 +561,29 @@ impl VoiceProcessor {
             let mic_val = frame[i];
             let error = mic_val - echo_estimate;
 
-            // Only adapt filter when speaker output is present
-            if power > 0.0005 {
+            // Double-Talk Detection: When mic has strong local energy exceeding estimated echo,
+            // near-end user is speaking. Freeze adaptation to preserve speech and avoid corrupting filter.
+            let is_double_talk = mic_val.abs() > (echo_estimate.abs() * 2.5 + 0.04);
+
+            if power > 0.0005 && !is_double_talk {
                 let norm = mu / power;
                 for tap in 0..num_taps {
-                    let delay_pos = (self.aec_delay_idx + self.aec_delay_buffer.len() - tap) % self.aec_delay_buffer.len();
-                    self.aec_filter[tap] += norm * error * self.aec_delay_buffer[delay_pos];
-                }
-
-                // Residual Echo Suppressor (RES):
-                // When speaker output is loud and mic input is close to estimated echo,
-                // suppress non-linear residual echo artifacts smoothly
-                if echo_estimate.abs() > 0.01 && (mic_val - echo_estimate).abs() < echo_estimate.abs() * 0.8 {
-                    frame[i] = error * 0.25;
-                } else {
-                    frame[i] = error;
+                    let delay_pos = (self.aec_delay_idx + buf_len - base_delay - tap) % buf_len;
+                    // NLMS adaptation with slight leaky factor
+                    self.aec_filter[tap] = (self.aec_filter[tap] + norm * error * self.aec_delay_buffer[delay_pos]) * 0.99999;
                 }
             }
 
-            self.aec_delay_idx = (self.aec_delay_idx + 1) % self.aec_delay_buffer.len();
+            // Residual Echo Suppressor (RES):
+            // When speaker output is loud and mic input is dominated by echo,
+            // suppress non-linear residual echo artifacts smoothly without affecting double-talk speech.
+            if echo_estimate.abs() > 0.008 && !is_double_talk && error.abs() < echo_estimate.abs() * 1.5 {
+                frame[i] = error * 0.20; // -14 dB residual attenuation
+            } else {
+                frame[i] = error;
+            }
+
+            self.aec_delay_idx = (self.aec_delay_idx + 1) % buf_len;
         }
     }
 
@@ -633,7 +690,7 @@ impl VoiceProcessor {
             }
         }
 
-        // 3. Neural Voice Gate with Fast Attack (3ms) and Smooth Release (80ms)
+        // 3. Neural Voice Gate with Fast Attack (2ms ramp) and Smooth Release (120ms)
         // Target gate gain: 1.0 when human voice is verified (vad_prob >= 0.45); down to -32dB (0.025) on silence/typing
         let target_gate = if vad_prob >= 0.45 {
             1.0f32
@@ -644,17 +701,36 @@ impl VoiceProcessor {
             0.025 + (vad_prob - 0.15) / 0.30 * 0.975
         };
 
-        let gate_step = if target_gate > self.neural_gate_gain {
-            0.15f32 // Fast attack: opens in ~3 frames (60ms) without clipping first syllable
+        let start_gain = self.neural_gate_gain;
+        let end_gain = if target_gate > start_gain {
+            // Fast attack: jump straight to target gate without delay
+            target_gate
         } else {
-            0.04f32 // Smooth release: closes gracefully without stutter
+            // Smooth release across frames
+            start_gain * 0.92 + target_gate * 0.08
         };
 
-        self.neural_gate_gain = self.neural_gate_gain * (1.0 - gate_step) + target_gate * gate_step;
+        // Sample-by-sample interpolation to eliminate clicks and prevent clipping first syllable:
+        // On voice onset, ramp up across the first 2ms (96 samples) to preserve initial consonants
+        let ramp_len = if target_gate > start_gain {
+            96.min(frame.len())
+        } else {
+            frame.len()
+        };
 
-        for s in frame.iter_mut() {
-            *s *= self.neural_gate_gain;
+        let ramp_step = (end_gain - start_gain) / ramp_len as f32;
+        let mut cur_gain = start_gain;
+
+        for (i, s) in frame.iter_mut().enumerate() {
+            if i < ramp_len {
+                cur_gain += ramp_step;
+            } else {
+                cur_gain = end_gain;
+            }
+            *s *= cur_gain;
         }
+
+        self.neural_gate_gain = end_gain;
 
         vad_prob
     }
@@ -862,5 +938,57 @@ mod tests {
         assert!(!metrics.is_voice, "Keyboard click should NOT be classified as human voice");
         // Transient peak should be heavily attenuated
         assert!(peak_after < 0.25, "Keyboard click peak should be suppressed, got {:.3}", peak_after);
+    }
+
+    #[test]
+    fn test_acoustic_echo_cancellation_and_double_talk() {
+        let mut vp = VoiceProcessor::new();
+
+        // Simulate far-end speaker audio: continuous 440Hz tone
+        let mut spk_frame = [0.0f32; FRAME_SIZE_SAMPLES];
+        for i in 0..FRAME_SIZE_SAMPLES {
+            spk_frame[i] = (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / 48000.0).sin() * 0.4;
+        }
+
+        // Feed multiple frames of speaker reference and delayed echo into mic to allow NLMS to converge
+        for _ in 0..15 {
+            push_speaker_reference(&spk_frame);
+            // Mic picks up acoustic echo with 50% coupling
+            let mut echo_frame = [0.0f32; FRAME_SIZE_SAMPLES];
+            for i in 0..FRAME_SIZE_SAMPLES {
+                echo_frame[i] = spk_frame[i] * 0.5;
+            }
+            vp.process_frame(&mut echo_frame, "none", true, false);
+        }
+
+        // Now test single-talk echo suppression
+        push_speaker_reference(&spk_frame);
+        let mut echo_frame = [0.0f32; FRAME_SIZE_SAMPLES];
+        for i in 0..FRAME_SIZE_SAMPLES {
+            echo_frame[i] = spk_frame[i] * 0.5;
+        }
+        let orig_rms = (echo_frame.iter().map(|s| s * s).sum::<f32>() / FRAME_SIZE_SAMPLES as f32).sqrt();
+        vp.process_frame(&mut echo_frame, "none", true, false);
+        let post_aec_rms = (echo_frame.iter().map(|s| s * s).sum::<f32>() / FRAME_SIZE_SAMPLES as f32).sqrt();
+
+        // Echo should be suppressed by at least 8 dB (ratio < 0.40)
+        assert!(
+            post_aec_rms < orig_rms * 0.40,
+            "AEC should suppress acoustic echo: orig={:.4}, post={:.4}",
+            orig_rms, post_aec_rms
+        );
+
+        // Now test double-talk: near-end speaker talks loudly (1000Hz tone at 0.6 amplitude)
+        push_speaker_reference(&spk_frame);
+        let mut double_talk_frame = [0.0f32; FRAME_SIZE_SAMPLES];
+        for i in 0..FRAME_SIZE_SAMPLES {
+            let local_voice = (2.0 * std::f32::consts::PI * 1000.0 * (i as f32) / 48000.0).sin() * 0.6;
+            let echo = spk_frame[i] * 0.2;
+            double_talk_frame[i] = local_voice + echo;
+        }
+        vp.process_frame(&mut double_talk_frame, "none", true, false);
+        let dt_rms = (double_talk_frame.iter().map(|s| s * s).sum::<f32>() / FRAME_SIZE_SAMPLES as f32).sqrt();
+        // Near-end voice should be preserved (RMS should remain substantial, > 0.25)
+        assert!(dt_rms > 0.25, "Double-talk near-end voice should be preserved, got {:.4}", dt_rms);
     }
 }
