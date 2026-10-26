@@ -210,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let refresh_main = refresh_gpu_video.clone();
         let main_had_area = std::cell::Cell::new(true);
+        let main_weak = app_weak.clone();
         app.window().on_winit_window_event(move |window, ev| {
             if let Some(has) = has_area(window, ev) {
                 if has && !main_had_area.replace(has) {
@@ -217,6 +218,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 screen_capture::set_main_window_has_area(has);
                 refresh_main();
+            }
+            if matches!(ev, winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::Resized(_)) {
+                crate::ui::window_place::observe(&main_weak);
+                window.with_winit_window(|w| {
+                    // Maximizing also happens outside the title bar button (Win+Up, snapping).
+                    if let Some(ui) = main_weak.upgrade() {
+                        if ui.get_is_maximized() != w.is_maximized() {
+                            ui.set_is_maximized(w.is_maximized());
+                        }
+                    }
+                });
             }
             EventResult::Propagate
         });
@@ -260,8 +272,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_init.upgrade() {
             ui.window().with_winit_window(|winit_win| {
                 info!("🖥️ [EVENT LOOP] Configurando janela Winit no evento inicial...");
-                let _ = winit_win.request_inner_size(winit::dpi::LogicalSize::new(980.0, 620.0));
-                winit_win.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
+                if crate::ui::window_place::restore(winit_win) {
+                    ui.set_is_maximized(true);
+                }
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 // A frameless window gets no drop shadow, so over another light window its
@@ -4288,6 +4301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hwnd_store_minimize = Arc::clone(&hwnd_store);
     app.on_minimize_to_tray(move || {
         info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
+        crate::ui::window_place::save_now();
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
@@ -4422,6 +4436,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sm_for_close = Arc::clone(&screen_manager);
     app.on_close_window(move || {
         info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        crate::ui::window_place::save_now();
         sm_for_close.stop();
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
@@ -4814,6 +4829,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     app.run()?;
+    crate::ui::window_place::save_now();
     Ok(())
 }
 

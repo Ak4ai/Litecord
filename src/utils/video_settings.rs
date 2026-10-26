@@ -28,7 +28,29 @@ pub struct VideoSettings {
     pub echo_cancellation: bool,         // default false
     #[serde(default)]
     pub automatic_gain_control: bool,    // default false
+    /// Where the main window was when it last moved or resized. None until it does.
+    #[serde(default)]
+    pub window: Option<WindowGeometry>,
 }
+
+/// Position in physical pixels (a logical position is ambiguous across monitors with
+/// different scaling), size in logical pixels. While maximized the size kept is the one
+/// the window returns to. Wayland gives no position, so it can be missing.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    #[serde(default)]
+    pub x: Option<i32>,
+    #[serde(default)]
+    pub y: Option<i32>,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+/// Smaller saved sizes are treated as damaged and ignored.
+pub const WINDOW_MIN_WIDTH: u32 = 400;
+pub const WINDOW_MIN_HEIGHT: u32 = 300;
 
 pub const CHANNEL_SIDEBAR_MIN_WIDTH: f32 = 180.0;
 pub const CHANNEL_SIDEBAR_MAX_WIDTH: f32 = 420.0;
@@ -59,6 +81,7 @@ impl Default for VideoSettings {
             noise_suppression: "none".to_string(),
             echo_cancellation: false,
             automatic_gain_control: false,
+            window: None,
         }
     }
 }
@@ -160,6 +183,20 @@ pub fn set_channel_sidebar_width(width: f32) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.channel_sidebar_width = width.clamp(CHANNEL_SIDEBAR_MIN_WIDTH, CHANNEL_SIDEBAR_MAX_WIDTH);
     save_video_settings(&store);
+}
+
+pub fn get_window_geometry() -> Option<WindowGeometry> {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).window
+        .filter(|g| g.width >= WINDOW_MIN_WIDTH && g.height >= WINDOW_MIN_HEIGHT)
+}
+
+/// Writes the file only when the geometry actually changed.
+pub fn set_window_geometry(geometry: WindowGeometry) {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    if store.window != Some(geometry) {
+        store.window = Some(geometry);
+        save_video_settings(&store);
+    }
 }
 
 pub fn get_use_gpu_renderer() -> bool {
