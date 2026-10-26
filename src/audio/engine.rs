@@ -198,7 +198,7 @@ fn report_mic_level(level_tx: &mpsc::Sender<f32>, level: f32) {
     }
 }
 
-pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], level: f32) {
+pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], _level: f32) {
     for &s in pcm_samples {
         let clamped = s.clamp(-1.0, 1.0);
         if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
@@ -212,24 +212,55 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
         gateway::MIC_FRAME_READY.notify_one();
     }
     if gateway::is_testing_mic() {
-        let vad = gateway::get_vad_threshold();
-        let is_active = level >= vad;
-        pub static LAST_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
-        let log_mtx = LAST_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
-        if let Ok(mut last) = log_mtx.lock() {
-            if last.elapsed().as_millis() >= 1000 {
-                *last = std::time::Instant::now();
-                info!("🧪 [TEST MIC STATS] mic_level={:.3}, vad_threshold={:.3}, active={}", level, vad, is_active);
-            }
-        }
-        if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
-            if loop_q.len() > 6000 {
-                let excess = loop_q.len() - 3500;
-                loop_q.drain(0..excess);
-            }
-            for &s in loop_samples {
-                let sample_to_play = if is_active { s.clamp(-1.0, 1.0) } else { 0.0 };
-                loop_q.push_back(sample_to_play);
+        // If connected to voice, voice.rs already processes audio and feeds loop_q.
+        // If NOT connected to a voice channel, process the loopback audio here through VoiceProcessor:
+        let in_call = gateway::is_connected_to_voice();
+        if !in_call {
+            static TEST_VOICE_PROC: std::sync::OnceLock<std::sync::Mutex<crate::audio::dsp::VoiceProcessor>> = std::sync::OnceLock::new();
+            let proc_mtx = TEST_VOICE_PROC.get_or_init(|| std::sync::Mutex::new(crate::audio::dsp::VoiceProcessor::new()));
+            static TEST_RESAMPLE_Q: std::sync::OnceLock<std::sync::Mutex<VecDeque<f32>>> = std::sync::OnceLock::new();
+            let q_mtx = TEST_RESAMPLE_Q.get_or_init(|| std::sync::Mutex::new(VecDeque::with_capacity(4800)));
+
+            let suppression_mode = crate::utils::video_settings::get_noise_suppression();
+            let enable_aec = crate::utils::video_settings::get_echo_cancellation();
+            let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
+            let vad_threshold = gateway::get_vad_threshold();
+            let vad_threshold_db = crate::audio::dsp::VolumeAnalyzer::ui_level_to_db(vad_threshold);
+
+            if let (Ok(mut proc), Ok(mut q_accum)) = (proc_mtx.lock(), q_mtx.lock()) {
+                for &s in loop_samples {
+                    q_accum.push_back(s);
+                }
+
+                while q_accum.len() >= 960 {
+                    let mut frame = [0.0f32; 960];
+                    for i in 0..960 {
+                        frame[i] = q_accum.pop_front().unwrap_or(0.0);
+                    }
+
+                    let metrics = proc.process_frame(&mut frame, &suppression_mode, enable_aec, enable_agc);
+                    // Update UI meter with post-DSP level
+                    gateway::set_self_mic_level(metrics.ui_level);
+
+                    let passes_volume = metrics.volume_db >= vad_threshold_db;
+                    let passes_neural = if suppression_mode == "advanced" || suppression_mode == "krisp" {
+                        metrics.vad_prob >= 0.35
+                    } else {
+                        metrics.vad_prob >= 0.20 || metrics.volume_db >= -28.0
+                    };
+                    let is_active = passes_volume && passes_neural;
+
+                    if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
+                        if loop_q.len() > 6000 {
+                            let excess = loop_q.len() - 3500;
+                            loop_q.drain(0..excess);
+                        }
+                        for &s in frame.iter() {
+                            let sample_to_play = if is_active { s.clamp(-1.0, 1.0) } else { 0.0 };
+                            loop_q.push_back(sample_to_play);
+                        }
+                    }
+                }
             }
         }
     }
