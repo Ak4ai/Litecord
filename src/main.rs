@@ -4303,6 +4303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_minimize_to_tray(move || {
         info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
         crate::ui::window_place::save_now();
+        crate::ui::invite_cards::clear();
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
         PENDING_MESSAGES.store(0, Ordering::Relaxed);
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");

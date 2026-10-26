@@ -1,10 +1,13 @@
 //! Server invite cards for `discord.gg/<code>` links, like the official client.
 //!
 //! The message only carries the link; the server's name, icon and member counts come
-//! from `GET /invites/<code>`. Each code is fetched once per session and cached, only
-//! for messages that are being shown, and the rows holding that code are updated in
-//! place when the answer arrives. A code that fails is remembered and its message keeps
-//! the plain link.
+//! from `GET /invites/<code>`. Each code is fetched once, only for messages that are
+//! being shown, and the rows holding that code are updated in place when the answer
+//! arrives. A code that fails is remembered and its message keeps the plain link.
+//!
+//! Images are asked of the CDN near the card's size and kept already shaped for the
+//! window, so showing a card again copies nothing. The cache keeps the last MAX_CACHED
+//! codes (a cover is ~0.3-0.6 MB) and is emptied when the app goes to the tray.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -15,6 +18,8 @@ use crate::utils::i18n::Language;
 use crate::{AppWindow, ChatMessage, InviteCard};
 
 const MAX_CARDS_PER_MESSAGE: usize = 3;
+/// Codes kept, the last ones shown.
+const MAX_CACHED: usize = 32;
 const ICON_LOGICAL_PX: f32 = 48.0;
 const INVITE_HOSTS: [&str; 3] = ["discord.gg/", "discord.com/invite/", "discordapp.com/invite/"];
 
@@ -24,8 +29,8 @@ struct InviteInfo {
     description: String,
     online: Option<u64>,
     members: Option<u64>,
-    /// Square RGBA icon at its downloaded size; shaped per window scale when shown.
-    icon: Option<(Vec<u8>, u32)>,
+    /// Rounded icon at the tile's physical size.
+    icon: Option<Pixels>,
     event: Option<EventInfo>,
 }
 
@@ -36,9 +41,12 @@ struct EventInfo {
     starts_at: Option<chrono::DateTime<chrono::Local>>,
     live: bool,
     interested: Option<u64>,
-    /// RGBA cover at 400 logical px wide (2.5:1), already sized for the window.
-    cover: Option<(Vec<u8>, u32, u32)>,
+    /// Cover cropped to the card's frame at its physical size.
+    cover: Option<Pixels>,
 }
+
+/// Shared, reference counted pixels: a card shown again reuses them.
+type Pixels = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
 const EVENT_KEY_PREFIX: &str = "event:";
 const INVITE_EVENT_QUERY: &str = "?event=";
@@ -82,9 +90,45 @@ enum Entry {
     Failed,
 }
 
-fn cache() -> &'static Mutex<HashMap<String, Entry>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Entry>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Default)]
+struct Cache {
+    /// Each entry with the turn it was last shown on.
+    entries: HashMap<String, (Entry, u64)>,
+    turn: u64,
+}
+
+impl Cache {
+    fn get(&mut self, code: &str) -> Option<Entry> {
+        self.turn += 1;
+        let turn = self.turn;
+        self.entries.get_mut(code).map(|(entry, used)| {
+            *used = turn;
+            entry.clone()
+        })
+    }
+
+    fn insert(&mut self, code: String, entry: Entry) {
+        self.turn += 1;
+        if !self.entries.contains_key(&code) && self.entries.len() >= MAX_CACHED {
+            let oldest = self.entries.iter().min_by_key(|(_, (_, used))| *used).map(|(k, _)| k.clone());
+            if let Some(oldest) = oldest {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(code, (entry, self.turn));
+    }
+}
+
+fn cache() -> &'static Mutex<Cache> {
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The app went to the tray: cards already on screen keep their images, the rest goes.
+pub fn clear() {
+    if let Ok(mut cache) = cache().lock() {
+        cache.entries.retain(|_, (entry, _)| matches!(entry, Entry::Loading));
+    }
 }
 
 /// Invite codes in the order they appear, without repeats.
@@ -138,7 +182,7 @@ pub fn hydrate(messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {
             codes
                 .iter()
                 .filter_map(|code| match entries.get(code) {
-                    Some(Entry::Ready(info)) => Some(ready_card(code, info, scale)),
+                    Some(Entry::Ready(info)) => Some(ready_card(code, &info)),
                     Some(Entry::Loading) => Some(loading_card(code)),
                     Some(Entry::Failed) => None,
                     None => {
@@ -151,7 +195,7 @@ pub fn hydrate(messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {
         };
         message.invites = ModelRc::new(VecModel::from(cards));
         for code in to_fetch {
-            fetch(code, app.clone());
+            fetch(code, scale, app.clone());
         }
     }
 }
@@ -173,7 +217,7 @@ fn loading_card(code: &str) -> InviteCard {
     }
 }
 
-fn event_card(code: &str, info: &InviteInfo, event: &EventInfo, scale: f32) -> InviteCard {
+fn event_card(code: &str, info: &InviteInfo, event: &EventInfo) -> InviteCard {
     let t = crate::utils::i18n_ui::ui_text();
     let lang = crate::utils::i18n_ui::current_language();
     let event_when = if event.live {
@@ -181,19 +225,7 @@ fn event_card(code: &str, info: &InviteInfo, event: &EventInfo, scale: f32) -> I
     } else {
         event.starts_at.map(|at| at.format("%d/%m/%Y %H:%M").to_string()).unwrap_or_default()
     };
-    let cover = event.cover.as_ref().map(|(rgba, w, h)| {
-        let target_w = (EVENT_COVER_LOGICAL.0 * scale.clamp(1.0, 4.0)).round() as u32;
-        let target_h = (EVENT_COVER_LOGICAL.1 * scale.clamp(1.0, 4.0)).round() as u32;
-        let img = image::RgbaImage::from_raw(*w, *h, rgba.clone()).unwrap_or_default();
-        let sized = if *w > target_w {
-            image::imageops::resize(&img, target_w, target_h, image::imageops::FilterType::Lanczos3)
-        } else {
-            img
-        };
-        let (sw, sh) = sized.dimensions();
-        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(sized.as_raw(), sw, sh);
-        slint::Image::from_rgba8(buffer)
-    });
+    let cover = event.cover.clone().map(slint::Image::from_rgba8);
     InviteCard {
         code: code.into(),
         url: invite_url(code).into(),
@@ -214,9 +246,9 @@ fn event_card(code: &str, info: &InviteInfo, event: &EventInfo, scale: f32) -> I
     }
 }
 
-fn ready_card(code: &str, info: &InviteInfo, scale: f32) -> InviteCard {
+fn ready_card(code: &str, info: &InviteInfo) -> InviteCard {
     if let Some(event) = &info.event {
-        return event_card(code, info, event, scale);
+        return event_card(code, info, event);
     }
     let lang = crate::utils::i18n_ui::current_language();
     let t = crate::utils::i18n_ui::ui_text();
@@ -227,7 +259,7 @@ fn ready_card(code: &str, info: &InviteInfo, scale: f32) -> InviteCard {
     if let Some(n) = info.members {
         counts.push(t.invite_members.replace("{}", &group_digits(n, lang)));
     }
-    let icon = info.icon.as_ref().map(|(rgba, side)| shaped_icon(rgba, *side, scale));
+    let icon = info.icon.clone().map(slint::Image::from_rgba8);
     InviteCard {
         code: code.into(),
         url: invite_url(code).into(),
@@ -241,21 +273,19 @@ fn ready_card(code: &str, info: &InviteInfo, scale: f32) -> InviteCard {
     }
 }
 
-/// Smooth resize to the tile's physical size, then rounded corners: the software
-/// renderer neither smooths a shrinking image nor clips to a radius.
-fn shaped_icon(rgba: &[u8], side: u32, scale: f32) -> slint::Image {
-    let target = (ICON_LOGICAL_PX * scale.clamp(1.0, 4.0)).round() as u32;
-    let mut pixels = match image::RgbaImage::from_raw(side, side, rgba.to_vec()) {
-        Some(img) if side > target => {
-            image::imageops::resize(&img, target, target, image::imageops::FilterType::Lanczos3)
-        }
-        Some(img) => img,
-        None => return slint::Image::default(),
-    };
-    let (w, h) = pixels.dimensions();
-    crate::utils::image_shape::round_corners(&mut pixels, w, h, w as f32 / 3.0);
-    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(pixels.as_raw(), w, h);
-    slint::Image::from_rgba8(buffer)
+/// Physical pixels for a logical size on this window.
+fn physical(logical: f32, scale: f32) -> u32 {
+    (logical * scale.clamp(1.0, 4.0)).round() as u32
+}
+
+/// The CDN's size step (a power of two) at or above `px`.
+fn cdn_size(px: u32) -> u32 {
+    px.clamp(16, 4096).next_power_of_two()
+}
+
+fn to_pixels(img: image::RgbaImage) -> Pixels {
+    let (w, h) = img.dimensions();
+    Pixels::clone_from_slice(img.as_raw(), w, h)
 }
 
 fn group_digits(n: u64, lang: Language) -> String {
@@ -275,19 +305,18 @@ fn group_digits(n: u64, lang: Language) -> String {
     out
 }
 
-fn http_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        let builder = reqwest::Client::builder()
-            .user_agent(crate::utils::client_identity::user_agent())
-            .timeout(std::time::Duration::from_secs(10));
-        crate::utils::apply_proxy_to_builder(builder).build().unwrap_or_default()
-    })
+/// Built per lookup, like the avatar downloads: a proxy changed in the settings applies
+/// at once, and no connection pool stays open between the rare lookups.
+fn http_client() -> reqwest::Client {
+    let builder = reqwest::Client::builder()
+        .user_agent(crate::utils::client_identity::user_agent())
+        .timeout(std::time::Duration::from_secs(10));
+    crate::utils::apply_proxy_to_builder(builder).build().unwrap_or_default()
 }
 
-fn fetch(code: String, app: slint::Weak<AppWindow>) {
+fn fetch(code: String, scale: f32, app: slint::Weak<AppWindow>) {
     tokio::spawn(async move {
-        let entry = match fetch_info(&code).await {
+        let entry = match fetch_info(&code, scale).await {
             Some(info) => Entry::Ready(info),
             None => Entry::Failed,
         };
@@ -300,21 +329,21 @@ fn fetch(code: String, app: slint::Weak<AppWindow>) {
     });
 }
 
-async fn fetch_info(code: &str) -> Option<InviteInfo> {
+async fn fetch_info(code: &str, scale: f32) -> Option<InviteInfo> {
     if let Some((guild_id, event_id)) = code.strip_prefix(EVENT_KEY_PREFIX).and_then(|ids| ids.split_once(':')) {
-        return fetch_event(guild_id, event_id).await;
+        return fetch_event(guild_id, event_id, scale).await;
     }
-    fetch_invite(code).await
+    fetch_invite(code, scale).await
 }
 
-async fn fetch_event(guild_id: &str, event_id: &str) -> Option<InviteInfo> {
+async fn fetch_event(guild_id: &str, event_id: &str, scale: f32) -> Option<InviteInfo> {
     let client = SESSION_CLIENT.get()?.lock().ok()?.clone()?;
     let json = client.get_scheduled_event(guild_id, event_id).await.ok()?;
-    event_from_json(&json, event_id).await
+    event_from_json(&json, event_id, scale).await
 }
 
 /// Card data of a scheduled event object, from the events API or an invite.
-async fn event_from_json(json: &serde_json::Value, event_id: &str) -> Option<InviteInfo> {
+async fn event_from_json(json: &serde_json::Value, event_id: &str, scale: f32) -> Option<InviteInfo> {
     json.get("name")?;
     let starts_at = json["scheduled_start_time"]
         .as_str()
@@ -324,7 +353,9 @@ async fn event_from_json(json: &serde_json::Value, event_id: &str) -> Option<Inv
     let live = json["status"].as_u64() == Some(2);
     let cover = match json["image"].as_str() {
         Some(hash) if hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
-            download_cover(&format!("https://cdn.discordapp.com/guild-events/{event_id}/{hash}.png?size=1024")).await
+            let (w, h) = (physical(EVENT_COVER_LOGICAL.0, scale), physical(EVENT_COVER_LOGICAL.1, scale));
+            let url = format!("https://cdn.discordapp.com/guild-events/{event_id}/{hash}.png?size={}", cdn_size(w));
+            download_cover(&url, w, h).await
         }
         _ => None,
     };
@@ -338,25 +369,22 @@ async fn event_from_json(json: &serde_json::Value, event_id: &str) -> Option<Inv
     })
 }
 
-/// Cover cropped to the card's 2.5:1 frame at up to 1000 px wide.
-async fn download_cover(url: &str) -> Option<(Vec<u8>, u32, u32)> {
+/// Cover cropped to the card's 2.5:1 frame at `w` x `h` physical pixels.
+async fn download_cover(url: &str, w: u32, h: u32) -> Option<Pixels> {
     let bytes = http_client().get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
     if bytes.len() > 8 * 1024 * 1024 {
         return None;
     }
     tokio::task::spawn_blocking(move || {
         let img = image::load_from_memory(&bytes).ok()?;
-        let w = img.width().min(1000);
-        let h = (w as f32 / 2.5).round() as u32;
-        let cropped = img.resize_to_fill(w, h, image::imageops::FilterType::Lanczos3).to_rgba8();
-        Some((cropped.into_raw(), w, h))
+        Some(to_pixels(img.resize_to_fill(w, h, image::imageops::FilterType::Lanczos3).to_rgba8()))
     })
     .await
     .ok()
     .flatten()
 }
 
-async fn fetch_invite(key: &str) -> Option<InviteInfo> {
+async fn fetch_invite(key: &str, scale: f32) -> Option<InviteInfo> {
     let (code, event_id) = match key.split_once(INVITE_EVENT_QUERY) {
         Some((code, event)) => (code, Some(event)),
         None => (key, None),
@@ -369,7 +397,7 @@ async fn fetch_invite(key: &str) -> Option<InviteInfo> {
     let json: serde_json::Value = http_client().get(&url).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
     // An event that has ended is no longer returned: the plain invite card is shown.
     if let (Some(event_id), Some(event)) = (event_id, json.get("guild_scheduled_event")) {
-        if let Some(info) = event_from_json(event, event_id).await {
+        if let Some(info) = event_from_json(event, event_id, scale).await {
             return Some(info);
         }
     }
@@ -377,7 +405,8 @@ async fn fetch_invite(key: &str) -> Option<InviteInfo> {
     let guild_id = guild["id"].as_str()?;
     let icon = match guild["icon"].as_str() {
         Some(hash) if hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
-            download_icon(&format!("https://cdn.discordapp.com/icons/{guild_id}/{hash}.png?size=128")).await
+            let side = physical(ICON_LOGICAL_PX, scale);
+            download_icon(&format!("https://cdn.discordapp.com/icons/{guild_id}/{hash}.png?size={}", cdn_size(side)), side).await
         }
         _ => None,
     };
@@ -391,16 +420,18 @@ async fn fetch_invite(key: &str) -> Option<InviteInfo> {
     })
 }
 
-async fn download_icon(url: &str) -> Option<(Vec<u8>, u32)> {
+/// Smooth resize to the tile's physical size, then rounded corners: the software
+/// renderer neither smooths a shrinking image nor clips to a radius.
+async fn download_icon(url: &str, side: u32) -> Option<Pixels> {
     let bytes = http_client().get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
     if bytes.len() > 2 * 1024 * 1024 {
         return None;
     }
     tokio::task::spawn_blocking(move || {
         let img = image::load_from_memory(&bytes).ok()?;
-        let side = img.width().min(img.height()).min(256);
-        let square = img.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8();
-        Some((square.into_raw(), side))
+        let mut square = img.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8();
+        crate::utils::image_shape::round_corners(&mut square, side, side, side as f32 / 3.0);
+        Some(to_pixels(square))
     })
     .await
     .ok()
@@ -458,6 +489,27 @@ mod tests {
     #[test]
     fn ignores_text_without_invites() {
         assert!(invite_codes("see https://discord.com/channels/1/2").is_empty());
+    }
+
+    #[test]
+    fn cache_keeps_the_codes_shown_last() {
+        let mut cache = Cache::default();
+        for i in 0..MAX_CACHED {
+            cache.insert(format!("c{i}"), Entry::Failed);
+        }
+        assert!(cache.get("c0").is_some(), "shown again: now the newest");
+        cache.insert("new".into(), Entry::Failed);
+        assert_eq!(cache.entries.len(), MAX_CACHED);
+        assert!(cache.get("c1").is_none(), "the least recently shown went");
+        assert!(cache.get("c0").is_some() && cache.get("new").is_some());
+    }
+
+    #[test]
+    fn images_are_asked_near_the_card_size() {
+        assert_eq!(cdn_size(physical(48.0, 1.0)), 64);
+        assert_eq!(cdn_size(physical(48.0, 1.5)), 128);
+        assert_eq!(cdn_size(physical(400.0, 1.0)), 512);
+        assert_eq!(cdn_size(physical(400.0, 1.5)), 1024);
     }
 
     #[test]
