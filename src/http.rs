@@ -137,14 +137,25 @@ impl DiscordHttpClient {
     }
 
     pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
-        let user = self.get_current_user().await?;
-        let user_id = user["id"].as_str().ok_or("Missing current user id")?;
+        if let Some(permissions) = crate::channel_permissions::cached(guild_id) {
+            return Ok(permissions);
+        }
+        // The gateway already said who the user is; asking again cost a round trip.
+        let user_id = match crate::gateway::get_my_user_id() {
+            0 => {
+                let user = self.get_current_user().await?;
+                user["id"].as_str().ok_or("Missing current user id")?.to_string()
+            }
+            id => id.to_string(),
+        };
         let guild_url = format!("https://discord.com/api/v10/guilds/{}", guild_id);
         let member_url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
         let (guild, member) = tokio::try_join!(
             self.get_permission_data(&guild_url), self.get_permission_data(&member_url)
         )?;
-        crate::channel_permissions::ChannelPermissions::new(&guild, &member, user_id)
+        let permissions = crate::channel_permissions::ChannelPermissions::new(&guild, &member, &user_id)?;
+        crate::channel_permissions::remember(&permissions);
+        Ok(permissions)
     }
 
     async fn get_permission_data(&self, url: &str) -> Result<serde_json::Value, String> {
