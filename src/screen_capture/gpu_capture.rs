@@ -391,6 +391,10 @@ fn duplicate(
 /// How long the capture waits for the screen to change before the send thread repeats the
 /// last picture.
 const ACQUIRE_WAIT: Duration = Duration::from_millis(20);
+/// Between two asks for a frame. Each ask costs a call into the driver, so asking every
+/// millisecond kept a core 5% busy on a still screen; a frame lasts 16.7 ms at 60 FPS,
+/// and one found up to 4 ms late still goes out with the next one sent.
+const ACQUIRE_POLL: Duration = Duration::from_millis(4);
 
 /// `AcquireNextFrame`, waiting up to `wait` for a new frame without sitting inside the call.
 ///
@@ -409,7 +413,7 @@ fn acquire_frame(
     loop {
         match unsafe { dup.AcquireNextFrame(0, info, resource) } {
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT && start.elapsed() < wait => {
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(ACQUIRE_POLL);
             }
             other => return other,
         }
@@ -423,7 +427,7 @@ fn run_duplication(
     sink: &mut Sink,
     req: &Request,
 ) {
-    // The waits between asks for a frame are 1 ms, not a timer tick.
+    // The waits between asks for a frame are a few ms, not a 15.6 ms timer tick.
     let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
     let mut duplication = Some(dup);
     let frame_interval = Duration::from_nanos(1_000_000_000 / req.fps.max(1));
