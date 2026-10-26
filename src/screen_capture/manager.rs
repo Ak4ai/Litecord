@@ -797,6 +797,11 @@ impl ScreenCaptureManager {
                 let mut max_turn_us = 0u128;
                 // Pictures the capture delivered (the loop re-encodes the last one otherwise).
                 let mut new_captures = 0u32;
+                // A picture arrived since the last encode, when the last one arrived, and
+                // when the last encode was.
+                let mut fresh_picture = false;
+                let mut last_fresh = Instant::now();
+                let mut last_encode = Instant::now() - STILL_REPEAT_EVERY;
                 let mut turn_start = Instant::now();
                 let mut last_local_preview = Instant::now() - Duration::from_secs(1);
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
@@ -870,6 +875,8 @@ impl ScreenCaptureManager {
                     if let Some(f) = super::gpu_tx::take_latest() {
                         gpu_frame = Some(f);
                         new_captures += 1;
+                        fresh_picture = true;
+                        last_fresh = Instant::now();
                     }
                     #[cfg(windows)]
                     if let Some((device, w, h)) = super::gpu_tx::take_new_device() {
@@ -883,6 +890,8 @@ impl ScreenCaptureManager {
                     // Drena quadros novos da GPU para sempre ter o frame mais atualizado
                     while let Ok(new_frame) = rx_frame.try_recv() {
                         new_captures += 1;
+                        fresh_picture = true;
+                        last_fresh = Instant::now();
                         if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
                             let _ = tx_recycle.try_send(old_buf);
                         }
@@ -1023,17 +1032,33 @@ impl ScreenCaptureManager {
                         info!("👀 [ASSISTIR SOB DEMANDA] {}", if watched { "Alguém começou a assistir: codificando." } else { "Ninguém assistindo: codificação pausada." });
                     }
 
+                    // A still screen is not encoded again on every tick: a repeat goes out
+                    // every STILL_REPEAT_EVERY, and anything new or a keyframe at once.
+                    // While pictures keep coming, a tick the capture missed is still
+                    // filled with a repeat, so the pace stays even.
+                    let encode_now = fresh_picture
+                        || last_fresh.elapsed() < STILL_REPEAT_EVERY
+                        || last_encode.elapsed() >= STILL_REPEAT_EVERY
+                        || KEYFRAME_REQUESTED.load(Ordering::Relaxed);
+                    if watched && encode_now {
+                        fresh_picture = false;
+                        last_encode = Instant::now();
+                    }
                     let enc_start = Instant::now();
                     let frame_bytes_opt = if !watched {
                         None
                     } else if gpu_path {
                         #[cfg(windows)]
                         {
-                            encode_on_gpu(&mut gpu_encoder, gpu_frame.as_ref(), target_fps as u32)
+                            if encode_now {
+                                encode_on_gpu(&mut gpu_encoder, gpu_frame.as_ref(), target_fps as u32)
+                            } else {
+                                finished_on_gpu(&mut gpu_encoder)
+                            }
                         }
                         #[cfg(not(windows))]
                         None
-                    } else if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame {
+                    } else if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| encode_now) {
                         let enc = h264_encoder.get_or_insert_with(|| crate::encoder::create_best_encoder(target_fps as u32, camera_index.is_none()));
                         let target_bitrate = REQUESTED_BITRATE_BPS.load(Ordering::Relaxed);
                         if enc.get_bitrate_bps() != target_bitrate {
@@ -2456,6 +2481,11 @@ impl ScreenCaptureManager {
 
 /// Capture and send pace while nobody watches: the local preview's rate.
 pub(super) const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
+/// With nothing new on screen, how often the last picture is sent again (10 per second).
+/// Encoding the same picture on every tick cost a core ~10% on a still screen for
+/// nothing; Sunshine also lowers the rate of repeats. Native viewers drop a stream after
+/// 2.5 s without frames, so repeats cannot stop altogether.
+const STILL_REPEAT_EVERY: Duration = Duration::from_millis(100);
 
 /// The stream's send thread, woken when a viewer arrives.
 static TX_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
@@ -2482,6 +2512,28 @@ pub(super) fn tx_watched() -> bool {
 #[cfg(windows)]
 const ENCODED_WAIT: Duration = Duration::from_millis(8);
 
+/// A picture the encoder finished after its turn, without handing it a new one.
+#[cfg(windows)]
+fn finished_on_gpu(encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>) -> Option<Vec<u8>> {
+    gpu_output(encoder, Duration::ZERO)
+}
+
+/// The encoder's next picture within `wait`; on a failure, back to the CPU path.
+#[cfg(windows)]
+fn gpu_output(encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>, wait: Duration) -> Option<Vec<u8>> {
+    match encoder.as_ref()?.1.next_output(wait)? {
+        Ok(bytes) => {
+            super::gpu_tx::confirm();
+            Some(bytes)
+        }
+        Err(e) => {
+            *encoder = None;
+            super::gpu_tx::give_up(&format!("falha ao codificar pela GPU ({e})"));
+            None
+        }
+    }
+}
+
 /// Hands the newest GPU picture to the encoder thread of its device (created on first
 /// use) and returns the oldest finished one, if any. Any failure sends the rest of the
 /// stream back to the CPU path.
@@ -2501,17 +2553,7 @@ fn encode_on_gpu(
         enc.force_idr();
     }
     enc.submit(f);
-    match enc.next_output(ENCODED_WAIT)? {
-        Ok(bytes) => {
-            super::gpu_tx::confirm();
-            Some(bytes)
-        }
-        Err(e) => {
-            *encoder = None;
-            super::gpu_tx::give_up(&format!("falha ao codificar pela GPU ({e})"));
-            None
-        }
-    }
+    gpu_output(encoder, ENCODED_WAIT)
 }
 
 /// Opens the texture encoder of `device` unless it is open already. Opening Quick Sync
