@@ -313,6 +313,7 @@ pub async fn connect_voice_gateway(
                                                     let mut decrypt_err_cnt = 0u64;
                                                     let mut opus_err_cnt = 0u64;
                                                     let mut dave_decrypt_fail_cnt = 0u64;
+                                                    let mut dave_plaintext_cnt = 0u64;
                                                     let mut _dave_not_ready_cnt = 0u64;
 
                                                     info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
@@ -479,6 +480,13 @@ pub async fn connect_voice_gateway(
                                                                                         Ok(d) => {
                                                                                             dave_flow_rx.failures.store(0, Ordering::Relaxed);
                                                                                             (d, true)
+                                                                                        }
+                                                                                        Err(_) if !has_dave_magic && dave_flow_rx.plaintext_allowed() => {
+                                                                                            dave_plaintext_cnt += 1;
+                                                                                            if dave_plaintext_cnt % 500 == 1 {
+                                                                                                info!("🔓 [DAVE] Tocando pacotes sem DAVE durante a transição para a versão 0 ({} até agora).", dave_plaintext_cnt);
+                                                                                            }
+                                                                                            (transport_payload.to_vec(), true)
                                                                                         }
                                                                                         Err(e) => {
                                                                                             start_over = dave_flow_rx.failed_once();
@@ -1505,7 +1513,7 @@ pub async fn connect_voice_gateway(
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
                                     let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(0);
                                     info!("DAVE Prepare Transition (op=21): transition_id={}, protocol_version={}", transition_id, protocol_version);
-                                    dave_flow.prepare(transition_id);
+                                    dave_flow.prepare_protocol(transition_id, protocol_version);
                                     let ready = serde_json::json!({
                                         "op": 23,
                                         "d": { "transition_id": transition_id }
@@ -1776,6 +1784,15 @@ const VOICE_CLOSE_FINAL: [u16; 6] = [4004, 4006, 4014, 4017, 4021, 4022];
 const DAVE_FAILURE_TOLERANCE: u32 = 36;
 /// At most one request for a new group in this long, whatever keeps failing.
 const DAVE_START_OVER_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+/// After going back to DAVE, packets without it still play this long (libdave's value).
+const DAVE_PLAINTEXT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Plaintext {
+    Refused,
+    Allowed,
+    Until(std::time::Instant),
+}
 
 type VoiceSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -1784,8 +1801,10 @@ type VoiceSink = futures_util::stream::SplitSink<
 
 /// DAVE bookkeeping shared by the gateway handler and the receiver.
 struct DaveFlow {
-    /// Transition announced and not executed yet.
-    pending: std::sync::Mutex<Option<u64>>,
+    /// Transition announced and not executed yet, and whether it drops DAVE (version 0).
+    pending: std::sync::Mutex<Option<(u64, bool)>>,
+    /// When packets sent without DAVE may be played.
+    plaintext: std::sync::Mutex<Plaintext>,
     /// The last transition announced, named when telling the server it failed.
     last_transition: std::sync::atomic::AtomicU64,
     /// Received packets in a row that DAVE could not decrypt.
@@ -1798,25 +1817,57 @@ impl DaveFlow {
     fn new() -> Self {
         Self {
             pending: std::sync::Mutex::new(None),
+            plaintext: std::sync::Mutex::new(Plaintext::Refused),
             last_transition: std::sync::atomic::AtomicU64::new(0),
             failures: std::sync::atomic::AtomicU32::new(0),
             last_start_over: std::sync::Mutex::new(None),
         }
     }
 
+    /// A transition inside DAVE (a commit or a welcome).
     fn prepare(&self, transition_id: u64) {
+        self.prepare_protocol(transition_id, 1);
+    }
+
+    /// A protocol transition (op 21). Going to version 0, members that already switched
+    /// send audio without DAVE, and it has to play from now on, as libdave does.
+    fn prepare_protocol(&self, transition_id: u64, protocol_version: u64) {
         if transition_id != 0 {
             self.last_transition.store(transition_id, Ordering::Relaxed);
         }
-        *self.pending.lock().unwrap() = Some(transition_id);
+        let to_plain = protocol_version == 0;
+        if to_plain {
+            *self.plaintext.lock().unwrap() = Plaintext::Allowed;
+        }
+        *self.pending.lock().unwrap() = Some((transition_id, to_plain));
     }
 
-    /// The announced transition took effect: failures before it do not count.
+    /// The announced transition took effect: failures before it do not count. Back to
+    /// DAVE after a downgrade, packets without it still play for a few seconds, while
+    /// the others switch.
     fn execute(&self, transition_id: u64) {
         let mut pending = self.pending.lock().unwrap();
-        if *pending == Some(transition_id) {
-            *pending = None;
-            self.failures.store(0, Ordering::Relaxed);
+        let Some((id, to_plain)) = *pending else { return };
+        if id != transition_id {
+            return;
+        }
+        *pending = None;
+        self.failures.store(0, Ordering::Relaxed);
+        let mut plaintext = self.plaintext.lock().unwrap();
+        if to_plain {
+            *plaintext = Plaintext::Allowed;
+        } else if *plaintext == Plaintext::Allowed {
+            *plaintext = Plaintext::Until(std::time::Instant::now() + DAVE_PLAINTEXT_GRACE);
+        }
+    }
+
+    /// A packet without the DAVE marker may be played. Outside a downgrade it is refused:
+    /// accepting it would let anyone on the media path replace an encrypted voice.
+    fn plaintext_allowed(&self) -> bool {
+        match *self.plaintext.lock().unwrap() {
+            Plaintext::Refused => false,
+            Plaintext::Allowed => true,
+            Plaintext::Until(t) => std::time::Instant::now() < t,
         }
     }
 
@@ -1910,6 +1961,27 @@ mod dave_flow_tests {
         flow.execute(7);
         assert_eq!(flow.failures.load(Ordering::Relaxed), 0);
         assert_eq!(flow.last_transition.load(Ordering::Relaxed), 7);
+    }
+
+    #[test]
+    fn plaintext_plays_only_from_a_downgrade_until_shortly_after_dave_returns() {
+        let flow = DaveFlow::new();
+        assert!(!flow.plaintext_allowed(), "never outside a downgrade");
+        flow.prepare_protocol(3, 1);
+        flow.execute(3);
+        assert!(!flow.plaintext_allowed(), "a transition that keeps DAVE allows nothing");
+
+        flow.prepare_protocol(4, 0);
+        assert!(flow.plaintext_allowed(), "already while the downgrade is announced");
+        flow.execute(4);
+        assert!(flow.plaintext_allowed());
+
+        flow.prepare(5);
+        assert!(flow.plaintext_allowed(), "still downgraded until the upgrade is executed");
+        flow.execute(5);
+        assert!(flow.plaintext_allowed(), "a grace period while the others switch back");
+        *flow.plaintext.lock().unwrap() = Plaintext::Until(std::time::Instant::now());
+        assert!(!flow.plaintext_allowed());
     }
 
     #[test]
