@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>litecord</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.litecord.app</string>
+	<key>CFBundleName</key>
+	<string>Litecord</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Litecord uses the microphone to transmit your voice in voice channels.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Litecord uses the camera to share your video in streams.</string>
+</dict>
+</plist>
