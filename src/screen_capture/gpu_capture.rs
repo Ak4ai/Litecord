@@ -308,6 +308,7 @@ pub fn start(req: Request) -> bool {
         .name("gpu-capture".into())
         .spawn(move || {
             crate::cpu_profiler::set_current_thread_name("gpu-capture");
+            crate::utils::thread_priority::raise_current_thread();
             let device = match create_device(&adapter) {
                 Ok(d) => d,
                 Err(e) => {

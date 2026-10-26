@@ -320,6 +320,7 @@ impl ScreenCaptureManager {
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 }
                 crate::cpu_profiler::set_current_thread_name("screen-capture-tx");
+                crate::utils::thread_priority::raise_current_thread();
                 *TX_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current());
 
                 // Created with the first CPU picture: when the GPU path works, never.

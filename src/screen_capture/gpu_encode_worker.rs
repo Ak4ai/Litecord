@@ -47,6 +47,7 @@ impl<T: Send + 'static> LatestWorker<T> {
             std::thread::Builder::new()
                 .name(name.to_string())
                 .spawn(move || {
+                    crate::utils::thread_priority::raise_current_thread();
                     let mut report = Instant::now();
                     let (mut turns, mut slowest) = (0u32, Duration::ZERO);
                     loop {

@@ -101,6 +101,7 @@ pub fn start() -> io::Result<String> {
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let worker_state = Arc::clone(&state);
     let thread = std::thread::Builder::new().name("web-share".into()).spawn(move || {
+        crate::utils::thread_priority::raise_current_thread();
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(r) => r,
             Err(e) => { let _ = ready_tx.send(Err(e.to_string())); return; }
