@@ -19,7 +19,7 @@ cd "$(dirname "$0")/../.."
 BIN="${1:-target/release/litecord}"
 [ -x "$BIN" ] || { echo "error: binary not found: $BIN (run: cargo build --release)" >&2; exit 1; }
 
-APP="target/release/litecord.app"
+APP="target/release/Litecord.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/litecord"

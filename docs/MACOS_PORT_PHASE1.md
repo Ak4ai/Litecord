@@ -109,7 +109,7 @@ cargo check --bin litecord
 cargo build --release
 
 # 3. Run it
-open target/release/litecord          # if bundled
+open target/release/Litecord.app      # if bundled
 # or: cargo run                        # bare binary; expect TCC prompts for mic/camera
 
 # 4. Functional smoke test
