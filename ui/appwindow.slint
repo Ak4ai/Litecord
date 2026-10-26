@@ -436,6 +436,7 @@ export component AppWindow inherits Window {
     in-out property <bool> web_share_active: false;
     in-out property <bool> web_share_pending: false;
     in-out property <bool> web_share_copied: false;
+    in-out property <bool> show_web_share_modal: false;
     in-out property <string> web_share_url: "";
     in-out property <string> web_share_error: "";
     in-out property <int> web_share_viewers: 0;
@@ -1426,7 +1427,7 @@ export component AppWindow inherits Window {
                                     background: root.web_share_active ? (web_ta.has-hover ? AppTheme.accent-hover : AppTheme.accent) : (web_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat);
                                     opacity: root.web_share_pending ? 0.5 : 1;
                                     accessible-role: button;
-                                    accessible-label: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_stop + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
+                                    accessible-label: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_title + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
                                     Image {
                                         x: 7px;
                                         y: 7px;
@@ -1447,31 +1448,25 @@ export component AppWindow inherits Window {
                                         border-width: 1px;
                                         border-color: AppTheme.border-subtle;
                                         Text {
-                                            text: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_stop + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
+                                            text: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_title + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
                                             color: AppTheme.text-strong;
                                             font-size: TypeScale.small;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
                                     }
-                                    web_ta := TouchArea { enabled: !root.web_share_pending; mouse-cursor: pointer; clicked => { root.toggle_web_share(); } }
-                                }
-                            }
-                            if root.web_share_active: VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    height: 32px;
-                                    min-width: 110px;
-                                    border-radius: 4px;
-                                    background: copy_web_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat;
-                                    Text {
-                                        text: root.web_share_copied ? Tr.web_share_copied : Tr.web_share_copy;
-                                        color: AppTheme.text-strong;
-                                        font-size: TypeScale.small;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    web_ta := TouchArea {
+                                        enabled: !root.web_share_pending;
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if root.web_share_active {
+                                                root.web_share_copied = false;
+                                                root.show_web_share_modal = true;
+                                            } else {
+                                                root.toggle_web_share();
+                                            }
+                                        }
                                     }
-                                    copy_web_ta := TouchArea { mouse-cursor: pointer; clicked => { root.copy_web_share_link(); } }
                                 }
                             }
                             VerticalLayout {
@@ -3802,6 +3797,186 @@ export component AppWindow inherits Window {
                                 accept_touch := TouchArea {
                                     mouse-cursor: pointer;
                                     clicked => { root.update_app_accept(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Web sharing: the link to send to whoever will watch in a browser.
+    if root.show_web_share_modal && root.web_share_active: Rectangle {
+        background: AppTheme.backdrop;
+        width: 100%;
+        height: 100%;
+        z: 9999;
+
+        TouchArea {
+            clicked => { root.show_web_share_modal = false; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 460px;
+                    background: AppTheme.surface-sidebar;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: AppTheme.border-subtle;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: AppTheme.backdrop;
+
+                    // Clicks inside the window do not close it.
+                    TouchArea { }
+
+                    VerticalBox {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 12px;
+
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 20px;
+                                background: AppTheme.accent-subtle;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    source: @image-url("../assets/globe.svg");
+                                    width: 20px;
+                                    height: 20px;
+                                    colorize: AppTheme.accent;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: Tr.web_share_title;
+                                    color: AppTheme.text-strong;
+                                    font-size: TypeScale.title;
+                                    font-weight: 700;
+                                }
+
+                                Text {
+                                    text: root.web_share_viewers + "/3 " + Tr.web_share_watching;
+                                    color: AppTheme.text-muted;
+                                    font-size: TypeScale.small;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: Tr.web_share_hint;
+                            color: AppTheme.text-secondary;
+                            font-size: TypeScale.body;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            height: 40px;
+                            background: AppTheme.surface-input;
+                            border-radius: 6px;
+                            clip: true;
+
+                            TextInput {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: root.web_share_url;
+                                read-only: true;
+                                single-line: true;
+                                color: AppTheme.text-primary;
+                                font-size: TypeScale.small;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: web_stop_touch.has-hover ? AppTheme.danger-action-subtle : AppTheme.surface-sidebar;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: AppTheme.separator;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: Tr.web_share_stop;
+                                        color: AppTheme.danger;
+                                        font-size: TypeScale.small;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                web_stop_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.show_web_share_modal = false;
+                                        root.toggle_web_share();
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: web_close_touch.has-hover ? AppTheme.surface-control-hover : AppTheme.interactive-hover;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: Tr.close;
+                                        color: AppTheme.text-primary;
+                                        font-size: TypeScale.small;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                web_close_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.show_web_share_modal = false; }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: web_copy_touch.has-hover ? AppTheme.accent-hover : AppTheme.accent;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: root.web_share_copied ? Tr.web_share_copied : Tr.web_share_copy;
+                                        color: AppTheme.text-on-accent;
+                                        font-size: TypeScale.small;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                web_copy_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.copy_web_share_link(); }
                                 }
                             }
                         }

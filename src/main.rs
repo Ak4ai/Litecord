@@ -1204,6 +1204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(url) if manager.is_active() && screen_capture::web_share::is_active() => {
                             ui.set_web_share_url(url.into());
                             ui.set_web_share_active(true);
+                            ui.set_show_web_share_modal(true);
                         },
                         Err(e) => ui.set_web_share_error(e.to_string().into()),
                         _ => {},
