@@ -1286,6 +1286,9 @@ pub async fn connect_voice_gateway(
                                                         }
                                                     };
 
+                                                    // Keep self speaking indicator perfectly synced with transmitted voice
+                                                    set_self_speaking(!is_muted && (has_audio || speech_hangover_frames > 0));
+
                                                     seq = seq.wrapping_add(1);
                                                     nonce_cnt = nonce_cnt.wrapping_add(1);
 

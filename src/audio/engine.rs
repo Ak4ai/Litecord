@@ -189,16 +189,13 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     result
 }
 
-/// Publishes the mic level for the voice panel and the meter. Only the UI reads it,
-/// so while the window is hidden the async task that forwards it is not woken.
-fn report_mic_level(level_tx: &mpsc::Sender<f32>, level: f32) {
+/// Kept for backward-compatibility with capture thread handle
+#[allow(dead_code)]
+fn report_mic_level(_level_tx: &mpsc::Sender<f32>, level: f32) {
     gateway::set_self_mic_level(level);
-    if crate::ui::helpers::APP_IS_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
-        let _ = level_tx.try_send(level);
-    }
 }
 
-pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], _level: f32) {
+pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
     for &s in pcm_samples {
         let clamped = s.clamp(-1.0, 1.0);
         if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
@@ -211,45 +208,50 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
     if pcm_q.len() >= 960 {
         gateway::MIC_FRAME_READY.notify_one();
     }
-    if gateway::is_testing_mic() {
-        // If connected to voice, voice.rs already processes audio and feeds loop_q.
-        // If NOT connected to a voice channel, process the loopback audio here through VoiceProcessor:
-        let in_call = gateway::is_connected_to_voice();
-        if !in_call {
-            static TEST_VOICE_PROC: std::sync::OnceLock<std::sync::Mutex<crate::audio::dsp::VoiceProcessor>> = std::sync::OnceLock::new();
-            let proc_mtx = TEST_VOICE_PROC.get_or_init(|| std::sync::Mutex::new(crate::audio::dsp::VoiceProcessor::new()));
-            static TEST_RESAMPLE_Q: std::sync::OnceLock<std::sync::Mutex<VecDeque<f32>>> = std::sync::OnceLock::new();
-            let q_mtx = TEST_RESAMPLE_Q.get_or_init(|| std::sync::Mutex::new(VecDeque::with_capacity(4800)));
 
-            let suppression_mode = crate::utils::video_settings::get_noise_suppression();
-            let enable_aec = crate::utils::video_settings::get_echo_cancellation();
-            let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
-            let vad_threshold = gateway::get_vad_threshold();
-            let vad_threshold_db = crate::audio::dsp::VolumeAnalyzer::ui_level_to_db(vad_threshold);
+    let in_call = gateway::is_connected_to_voice();
+    let is_testing = gateway::is_testing_mic();
+    let is_settings_open = crate::ui::helpers::MIC_METER_VISIBLE.load(std::sync::atomic::Ordering::Relaxed);
 
-            if let (Ok(mut proc), Ok(mut q_accum)) = (proc_mtx.lock(), q_mtx.lock()) {
-                for &s in loop_samples {
-                    q_accum.push_back(s);
+    // If connected to voice, voice.rs already processes audio with VoiceProcessor and feeds loop_q + set_self_mic_level.
+    // If NOT connected to a voice channel, but either testing mic ("se ouvir") OR settings modal is open:
+    if !in_call && (is_testing || is_settings_open) {
+        static TEST_VOICE_PROC: std::sync::OnceLock<std::sync::Mutex<crate::audio::dsp::VoiceProcessor>> = std::sync::OnceLock::new();
+        let proc_mtx = TEST_VOICE_PROC.get_or_init(|| std::sync::Mutex::new(crate::audio::dsp::VoiceProcessor::new()));
+        static TEST_RESAMPLE_Q: std::sync::OnceLock<std::sync::Mutex<VecDeque<f32>>> = std::sync::OnceLock::new();
+        let q_mtx = TEST_RESAMPLE_Q.get_or_init(|| std::sync::Mutex::new(VecDeque::with_capacity(4800)));
+
+        let suppression_mode = crate::utils::video_settings::get_noise_suppression();
+        let enable_aec = crate::utils::video_settings::get_echo_cancellation();
+        let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
+        let vad_threshold = gateway::get_vad_threshold();
+        let vad_threshold_db = crate::audio::dsp::VolumeAnalyzer::ui_level_to_db(vad_threshold);
+
+        if let (Ok(mut proc), Ok(mut q_accum)) = (proc_mtx.lock(), q_mtx.lock()) {
+            for &s in pcm_samples {
+                q_accum.push_back(s);
+            }
+
+            while q_accum.len() >= 960 {
+                let mut frame = [0.0f32; 960];
+                for i in 0..960 {
+                    frame[i] = q_accum.pop_front().unwrap_or(0.0);
                 }
 
-                while q_accum.len() >= 960 {
-                    let mut frame = [0.0f32; 960];
-                    for i in 0..960 {
-                        frame[i] = q_accum.pop_front().unwrap_or(0.0);
-                    }
+                let metrics = proc.process_frame(&mut frame, &suppression_mode, enable_aec, enable_agc);
+                // Update UI meter with true post-DSP decibel level
+                gateway::set_self_mic_level(metrics.ui_level);
 
-                    let metrics = proc.process_frame(&mut frame, &suppression_mode, enable_aec, enable_agc);
-                    // Update UI meter with post-DSP level
-                    gateway::set_self_mic_level(metrics.ui_level);
+                let passes_volume = metrics.volume_db >= vad_threshold_db;
+                let passes_neural = if suppression_mode == "advanced" || suppression_mode == "krisp" {
+                    metrics.vad_prob >= 0.35
+                } else {
+                    metrics.vad_prob >= 0.20 || metrics.volume_db >= -28.0
+                };
+                let is_active = passes_volume && passes_neural;
+                gateway::set_self_speaking(is_active);
 
-                    let passes_volume = metrics.volume_db >= vad_threshold_db;
-                    let passes_neural = if suppression_mode == "advanced" || suppression_mode == "krisp" {
-                        metrics.vad_prob >= 0.35
-                    } else {
-                        metrics.vad_prob >= 0.20 || metrics.volume_db >= -28.0
-                    };
-                    let is_active = passes_volume && passes_neural;
-
+                if is_testing {
                     if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
                         if loop_q.len() > 6000 {
                             let excess = loop_q.len() - 3500;
@@ -262,6 +264,11 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
                     }
                 }
             }
+        }
+    } else if !in_call && !is_testing && !is_settings_open {
+        // Drain pcm_q when completely idle so samples never accumulate
+        if pcm_q.len() > 1920 {
+            pcm_q.clear();
         }
     }
 }
@@ -293,7 +300,7 @@ pub fn start_mic_capture(device_name: String, level_tx: mpsc::Sender<f32>) -> Mi
 
 fn open_mic_stream(
     device_name: String,
-    level_tx: mpsc::Sender<f32>,
+    _level_tx: mpsc::Sender<f32>,
 ) -> Option<cpal::Stream> {
     let host = cpal::default_host();
 
@@ -345,25 +352,19 @@ fn open_mic_stream(
 
                     let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
-                    let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().sum::<f32>() / num_channels as f32) * mic_gain;
-                        sum_sq += s * s;
                         mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    report_mic_level(&level_tx, level);
-
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &mono_samples);
                         } else {
                             let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
-                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
                 },
@@ -385,25 +386,19 @@ fn open_mic_stream(
 
                     let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
-                    let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / num_channels as f32) * mic_gain;
-                        sum_sq += s * s;
                         mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    report_mic_level(&level_tx, level);
-
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &mono_samples);
                         } else {
                             let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
-                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
                 },
@@ -425,25 +420,19 @@ fn open_mic_stream(
 
                     let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
-                    let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / num_channels as f32) * mic_gain;
-                        sum_sq += s * s;
                         mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    report_mic_level(&level_tx, level);
-
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &mono_samples);
                         } else {
                             let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
-                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
                 },
@@ -515,7 +504,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
                             let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             for ch in 0..channels {
                                 output[f * channels + ch] = sample;
@@ -560,7 +549,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
                             let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             let val = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
                             for ch in 0..channels {
@@ -606,7 +595,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
                             let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             let val = (sample * 2147483647.0).clamp(-2147483648.0, 2147483647.0) as i32;
                             for ch in 0..channels {
@@ -652,7 +641,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
                             let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             let val = ((sample + 1.0) * 32767.5).clamp(0.0, 65535.0) as u16;
                             for ch in 0..channels {

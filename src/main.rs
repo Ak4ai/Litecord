@@ -526,37 +526,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = enumerate_audio_devices();
     });
 
-    // Tokio MPSC Channel for Microphone Volume Level (0.0 to 1.0)
-    let (level_tx, mut level_rx) = mpsc::channel::<f32>(100);
+    // Tokio MPSC Channel for Microphone Volume Level (kept for backward compatibility with capture handle)
+    let (level_tx, _level_rx) = mpsc::channel::<f32>(100);
 
     // Dispatch Microphone Volume Level to Slint UI Thread (throttled to 15 FPS / 66 ms)
     let app_weak_level = app_weak.clone();
     tokio::spawn(async move {
-        let mut last_send = std::time::Instant::now();
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(66));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_level = -1.0f32;
-        while let Some(level) = level_rx.recv().await {
-            gateway::set_self_mic_level(level);
-            // Only the settings meter shows this value (the voice panel reads the level
-            // directly), so the UI is not woken for it otherwise.
+        loop {
+            interval.tick().await;
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !MIC_METER_VISIBLE.load(Ordering::Relaxed) {
                 continue;
             }
+            let level = gateway::get_self_mic_level();
             // Skip UI redraw if microphone was silent and is still silent
-            if level < 0.005 && last_level < 0.005 {
+            if (level - last_level).abs() < 0.005 && level < 0.01 {
                 continue;
             }
-            let now = std::time::Instant::now();
-            // 15 FPS is plenty for a level meter and halves the UI wakeups during a call.
-            if now.duration_since(last_send).as_millis() >= 66 {
-                last_send = now;
-                last_level = level;
-                let app_w_inner = app_weak_level.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = app_w_inner.upgrade() {
-                        ui.set_mic_level(level);
-                    }
-                });
-            }
+            last_level = level;
+            let app_w_inner = app_weak_level.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_inner.upgrade() {
+                    ui.set_mic_level(level);
+                }
+            });
         }
     });
 
@@ -1720,8 +1715,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (ssrc, uid, lvl, is_streaming)
                 })
                 .collect();
-            // Our own bar only shows above the voice threshold; mic noise below it changes nothing.
-            let shown_self_level = if self_level >= gateway::get_vad_threshold() { self_level } else { 0.0 };
+            // Our own bar only shows when voice is active according to the DSP/VAD
+            let shown_self_level = if gateway::is_self_speaking() { self_level } else { 0.0 };
             fingerprint.push((0, 0, (shown_self_level * 20.0) as u8, 0));
             if fingerprint == last_panel_fingerprint && last_panel_update.elapsed() < std::time::Duration::from_secs(1) {
                 continue;
@@ -1870,7 +1865,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if is_self_muted {
                             (0.0, false, true)
                         } else {
-                            let is_spk = mic_lvl >= gateway::get_vad_threshold();
+                            let is_spk = gateway::is_self_speaking();
                             let lvl = if is_spk { mic_lvl } else { 0.0 };
                             (lvl, is_spk, false)
                         }
