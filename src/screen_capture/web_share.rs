@@ -86,6 +86,11 @@ pub fn start() -> io::Result<String> {
         format!("file:///{}#manual", page.to_string_lossy().replace('\\', "/"))
     } else { format!("{}/watch#room={room}&key={}", http_base(&base), hex(&key)) };
     let socket = UdpSocket::bind("0.0.0.0:0")?;
+    // A picture leaves the encoder as one burst of packets (a keyframe is hundreds of them);
+    // with Windows' default send buffer the socket refused a third of a 1080p60 stream.
+    let sock = socket2::SockRef::from(&socket);
+    let _ = sock.set_send_buffer_size(SEND_BUFFER);
+    let _ = sock.set_recv_buffer_size(RECV_BUFFER);
     let ip = super::get_local_lan_addresses(0).into_iter().map(|a| a.ip())
         .find(|ip| ip.is_ipv4() && !ip.is_loopback()).unwrap_or(IpAddr::from([127, 0, 0, 1]));
     let local = SocketAddr::new(ip, socket.local_addr()?.port());
@@ -243,6 +248,42 @@ struct Viewer {
 }
 /// How long a viewer whose connection dropped may take to come back before it is removed.
 const ICE_GRACE: Duration = Duration::from_secs(15);
+/// Socket buffers: room for a few keyframes at once.
+const SEND_BUFFER: usize = 4 << 20;
+const RECV_BUFFER: usize = 1 << 20;
+/// Packets the socket could not take yet, kept to send as soon as it can. Past this many
+/// the oldest are dropped (a viewer that far behind needs a new picture, not old packets).
+const BACKLOG_MAX: usize = 2048;
+
+type Backlog = std::collections::VecDeque<(Vec<u8>, SocketAddr)>;
+
+/// Sends `packet` now, or queues it behind the ones the socket refused so they keep their order.
+fn send_or_queue(socket: &tokio::net::UdpSocket, backlog: &mut Backlog, packet: &[u8], to: SocketAddr, stats: &mut WebStats) {
+    if backlog.is_empty() {
+        match socket.try_send_to(packet, to) {
+            Ok(_) => return,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {},
+            Err(_) => { stats.send_errors += 1; return; },
+        }
+    }
+    if backlog.len() >= BACKLOG_MAX {
+        backlog.pop_front();
+        stats.send_errors += 1;
+    }
+    stats.queued += 1;
+    backlog.push_back((packet.to_vec(), to));
+}
+
+/// Sends what the socket accepts of the queue.
+fn flush_backlog(socket: &tokio::net::UdpSocket, backlog: &mut Backlog, stats: &mut WebStats) {
+    while let Some((packet, to)) = backlog.front() {
+        match socket.try_send_to(packet, *to) {
+            Ok(_) => { backlog.pop_front(); },
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(_) => { stats.send_errors += 1; backlog.pop_front(); },
+        }
+    }
+}
 async fn run_rtc(
     socket: tokio::net::UdpSocket, local: SocketAddr, mut public: Option<SocketAddr>,
     mut commands: mpsc::Receiver<Command>, mut frames: mpsc::Receiver<MediaFrame>,
@@ -259,7 +300,9 @@ async fn run_rtc(
     // socket refused.
     let mut stats = WebStats::default();
     let mut stats_since = Instant::now();
+    let mut backlog = Backlog::new();
     loop {
+        flush_backlog(&socket, &mut backlog, &mut stats);
         let now = Instant::now();
         let mut next = now + Duration::from_secs(3600);
         viewers.retain_mut(|v| {
@@ -272,7 +315,7 @@ async fn run_rtc(
                 match v.rtc.poll_output() {
                     Ok(Output::Transmit(t)) => {
                         stats.packets += 1;
-                        if socket.try_send_to(&t.contents, t.destination).is_err() { stats.send_errors += 1; }
+                        send_or_queue(&socket, &mut backlog, &t.contents, t.destination, &mut stats);
                     },
                     Ok(Output::Timeout(t)) => { next = next.min(t); break true; },
                     Ok(Output::Event(e)) => match e {
@@ -309,8 +352,8 @@ async fn run_rtc(
         });
         let count = viewers.iter().filter(|v| v.connected).count();
         if count > 0 && stats_since.elapsed() >= Duration::from_secs(5) {
-            info!("[WEB SHARE] 5 s: {} frames in, {} sent, {} stale, {} held for a keyframe, {} keyframe requests, {} packets, {} refused by the socket, {} viewer(s)",
-                stats.frames_in, stats.frames_sent, stats.stale, stats.held, stats.keyframe_requests, stats.packets, stats.send_errors, count);
+            info!("[WEB SHARE] 5 s: {} frames in, {} sent, {} stale, {} held for a keyframe, {} keyframe requests, {} packets, {} queued by the socket, {} lost, {} viewer(s)",
+                stats.frames_in, stats.frames_sent, stats.stale, stats.held, stats.keyframe_requests, stats.packets, stats.queued, stats.send_errors, count);
             stats = WebStats::default();
             stats_since = Instant::now();
         } else if count == 0 {
@@ -397,6 +440,9 @@ async fn run_rtc(
                 },
                 None => break,
             },
+            _ = socket.writable(), if !backlog.is_empty() => {
+                flush_backlog(&socket, &mut backlog, &mut stats);
+            },
             _ = tokio::time::sleep_until(next.into()) => {
                 let now = Instant::now();
                 for v in &mut viewers { let _ = v.rtc.handle_input(Input::Timeout(now)); }
@@ -413,6 +459,9 @@ struct WebStats {
     held: u32,
     keyframe_requests: u32,
     packets: u32,
+    /// Packets the socket could not take at once (sent later from the queue).
+    queued: u32,
+    /// Packets lost for good: a send error, or the queue was full.
     send_errors: u32,
 }
 fn contains_idr(data: &[u8]) -> bool {

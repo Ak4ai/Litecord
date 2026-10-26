@@ -12,6 +12,7 @@ pub mod net_diagnostics;
 pub mod web_share;
 pub mod watch;
 pub mod stream_audio;
+pub mod gpu_encode_worker;
 #[cfg(windows)]
 pub mod gpu_tx;
 #[cfg(windows)]

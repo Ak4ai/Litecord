@@ -19,9 +19,10 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
-/// Stream pictures in flight at once: the one being encoded (and re-sent while the screen
-/// does not change), the newest one, and room for the capture to write the next.
-const RING: usize = 4;
+/// Stream pictures in flight at once: the one being encoded, the one waiting for the
+/// encoder thread, the one the send loop keeps (re-sent while the screen does not
+/// change), the newest, and room for the capture to write the next.
+const RING: usize = 6;
 
 /// Behind the picture when its shape differs from the stream's (#111214, as the CPU path).
 const BACKGROUND: (f32, f32, f32) = (17.0 / 255.0, 18.0 / 255.0, 20.0 / 255.0);

@@ -321,6 +321,7 @@ pub fn start(req: Request) -> bool {
                     let _ = mt.SetMultithreadProtected(true);
                 }
             }
+            raise_gpu_priority(&device, &gpu.name);
             if worker_cancelled.load(Ordering::Acquire) || !req.is_running.load(Ordering::Relaxed) { return; }
             let mut sink = Sink::new(&req, &device, worker_cancelled);
             if req.hwnd == 0 && drives_monitor {
@@ -357,6 +358,21 @@ pub fn start(req: Request) -> bool {
     ready
 }
 
+/// Asks Windows to schedule this device's GPU work (the capture, the conversion and the
+/// encoder all run on it) ahead of other processes', as Sunshine does: while a game keeps
+/// the GPUs busy, work queued at normal priority waits behind it. The highest levels need
+/// the "increase scheduling priority" privilege, so lower ones are tried in turn.
+fn raise_gpu_priority(device: &ID3D11Device, gpu: &str) {
+    let Ok(dxgi) = device.cast::<IDXGIDevice>() else { return };
+    for level in [7, 4, 1] {
+        if unsafe { dxgi.SetGPUThreadPriority(level) }.is_ok() {
+            info!("⚡ [CAPTURA GPU] Prioridade de agendamento da {} elevada para {}", gpu, level);
+            return;
+        }
+    }
+    info!("ℹ️ [CAPTURA GPU] Windows não aceitou elevar a prioridade de agendamento da {}", gpu);
+}
+
 /// After this long without a reason to capture, the capture stops asking for frames.
 const IDLE_CLOSE_AFTER: Duration = Duration::from_secs(1);
 
@@ -372,6 +388,34 @@ fn duplicate(
     unsafe { output.DuplicateOutput(device) }
 }
 
+/// How long the capture waits for the screen to change before the send thread repeats the
+/// last picture.
+const ACQUIRE_WAIT: Duration = Duration::from_millis(20);
+
+/// `AcquireNextFrame`, waiting up to `wait` for a new frame without sitting inside the call.
+///
+/// The call holds the lock of the multithread-protected device for as long as it waits
+/// (Sunshine documents the same), and the send thread's encoder uses this device: a wait
+/// inside the call made its copies and `ProcessInput` wait up to the whole timeout, which
+/// showed as 12-20 ms "slow frames" whenever the screen changed less often than the
+/// stream's pace. Asking without a timeout and sleeping between asks leaves the lock free.
+fn acquire_frame(
+    dup: &IDXGIOutputDuplication,
+    info: &mut DXGI_OUTDUPL_FRAME_INFO,
+    resource: &mut Option<IDXGIResource>,
+    wait: Duration,
+) -> windows::core::Result<()> {
+    let start = Instant::now();
+    loop {
+        match unsafe { dup.AcquireNextFrame(0, info, resource) } {
+            Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT && start.elapsed() < wait => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            other => return other,
+        }
+    }
+}
+
 fn run_duplication(
     dup: IDXGIOutputDuplication,
     device: &ID3D11Device,
@@ -379,6 +423,8 @@ fn run_duplication(
     sink: &mut Sink,
     req: &Request,
 ) {
+    // The waits between asks for a frame are 1 ms, not a timer tick.
+    let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
     let mut duplication = Some(dup);
     let frame_interval = Duration::from_nanos(1_000_000_000 / req.fps.max(1));
     let mut was_watched = false;
@@ -408,7 +454,7 @@ fn run_duplication(
         let dup = duplication.as_ref().unwrap();
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource = None;
-        match unsafe { dup.AcquireNextFrame(20, &mut info, &mut resource) } {
+        match acquire_frame(dup, &mut info, &mut resource, ACQUIRE_WAIT) {
             Ok(()) => {
                 if let Some(tex) = resource.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
                     sink.deliver(&tex);

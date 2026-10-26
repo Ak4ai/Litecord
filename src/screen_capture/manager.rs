@@ -325,7 +325,7 @@ impl ScreenCaptureManager {
                 // Created with the first CPU picture: when the GPU path works, never.
                 let mut h264_encoder: Option<Box<dyn crate::encoder::VideoEncoder>> = None;
                 #[cfg(windows)]
-                let mut gpu_encoder: Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)> = None;
+                let mut gpu_encoder: Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)> = None;
                 #[cfg(windows)]
                 let mut gpu_frame: Option<super::gpu_tx::GpuFrame> = None;
 
@@ -2476,11 +2476,18 @@ pub(super) fn tx_watched() -> bool {
     TX_WATCHED.load(Ordering::Relaxed)
 }
 
-/// Encodes the newest GPU picture with the texture encoder of its device (created on
-/// first use). Any failure sends the rest of the stream back to the CPU path.
+/// How long the send thread waits for the picture it just handed to the encoder thread
+/// (usually a few milliseconds). A slower encoder does not hold the loop up: its picture
+/// comes out with a later turn.
+#[cfg(windows)]
+const ENCODED_WAIT: Duration = Duration::from_millis(8);
+
+/// Hands the newest GPU picture to the encoder thread of its device (created on first
+/// use) and returns the oldest finished one, if any. Any failure sends the rest of the
+/// stream back to the CPU path.
 #[cfg(windows)]
 fn encode_on_gpu(
-    encoder: &mut Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)>,
+    encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>,
     frame: Option<&super::gpu_tx::GpuFrame>,
     fps: u32,
 ) -> Option<Vec<u8>> {
@@ -2493,7 +2500,8 @@ fn encode_on_gpu(
     if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) {
         enc.force_idr();
     }
-    match enc.encode_texture(&f.texture) {
+    enc.submit(f);
+    match enc.next_output(ENCODED_WAIT)? {
         Ok(bytes) => {
             super::gpu_tx::confirm();
             Some(bytes)
@@ -2511,7 +2519,7 @@ fn encode_on_gpu(
 /// than when the first viewer arrives. False (and the CPU path) when it cannot open.
 #[cfg(windows)]
 fn open_gpu_encoder(
-    encoder: &mut Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)>,
+    encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>,
     device: &::windows::Win32::Graphics::Direct3D11::ID3D11Device,
     width: u32,
     height: u32,
@@ -2525,7 +2533,7 @@ fn open_gpu_encoder(
     let vendor = super::gpu_tx::vendor_of(device).unwrap_or(0);
     match crate::encoder::create_gpu_encoder(device, vendor, width, height, fps, REQUESTED_BITRATE_BPS.load(Ordering::Relaxed)) {
         Ok(e) => {
-            *encoder = Some((key, e));
+            *encoder = Some((key, super::gpu_encode_worker::GpuEncodeWorker::new(e)));
             true
         }
         Err(e) => {
