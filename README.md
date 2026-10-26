@@ -145,7 +145,7 @@ Take control of crowded voice calls with custom per-user priorities (`[ - ] P:N 
 - **Linux Hardware-Bound AES-256-GCM Vault (`~/.config/litecord/session.vault`)**: Follows the XDG Base Directory specification with strict Unix permissions (`0700` directory, `0600` file). Credentials are encrypted at rest with AES-256-GCM using keys derived from `/etc/machine-id` and UID, preventing token exfiltration across machines.
 - **Windows DPAPI Encryption (`%APPDATA%/Litecord/session.vault`)**: Locally stored tokens are protected via Windows DPAPI (`CryptProtectData`), bound to the local user account.
 - **Strict Zero-Token Logging & Atomic Cleanup**: Tokens are never printed in logs or console output and are atomically purged upon logout.
-- **Direct Discord Connections Only**: No intermediary proxies, third-party relays, or tracking servers. All requests go directly to `discord.com` endpoints.
+- **Direct Discord Connections**: No intermediary proxies or tracking servers. Chat and calls go directly to `discord.com` endpoints; the only other servers are Litecord's own signaling worker (screen sharing, no media goes through it) and GitHub (updates).
 - **Shell Injection Shield**: Hyperlinks are strictly validated against an `http://` / `https://` whitelist and dispatched via native OS APIs (`ShellExecuteW` / `xdg-open`)—never through shell interpreters (`cmd.exe`).
 
 ### ⌨️ 5. Intelligent Slash Commands & Parameter Chips
