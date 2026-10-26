@@ -1,12 +1,21 @@
+#[cfg(windows)]
 use std::mem::ManuallyDrop;
+#[cfg(windows)]
 use std::time::Instant;
+#[cfg(windows)]
 use windows::core::*;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::*;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::*;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::*;
+#[cfg(windows)]
 use windows::Win32::Media::MediaFoundation::*;
+#[cfg(windows)]
 use windows::Win32::System::Com::*;
 
+#[cfg(windows)]
 fn main() -> Result<()> {
     println!("============================================================");
     println!("🚀 TESTE: HARDWARE DIRECT MFT ENCODER (IMFTransform)");
@@ -193,4 +202,9 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn main() {
+    println!("test_wmf is only supported on Windows.");
 }
