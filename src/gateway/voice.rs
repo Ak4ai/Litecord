@@ -1639,6 +1639,17 @@ pub async fn connect_voice_gateway(
                                         false,
                                         &ssrc_to_userid,
                                     );
+                                    // Keep the speaking-indicator mapping populated, as the
+                                    // old combined op 11/12 handler did.
+                                    let audio_ssrc = val["d"]["audio_ssrc"].as_u64().unwrap_or(0) as u32;
+                                    let video_uid: u64 = val["d"]["user_id"]
+                                        .as_str()
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .or_else(|| val["d"]["user_id"].as_u64())
+                                        .unwrap_or(0);
+                                    if audio_ssrc > 0 && video_uid > 0 {
+                                        register_voice_participant(audio_ssrc, video_uid);
+                                    }
                                     if !wants.is_empty() {
                                         if let Ok(mut set) = native_wants.lock() {
                                             set.extend(wants.iter().copied());
