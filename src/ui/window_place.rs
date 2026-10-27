@@ -15,6 +15,7 @@ use crate::utils::video_settings::{self, WindowGeometry, WINDOW_MIN_HEIGHT, WIND
 use crate::AppWindow;
 
 const DEFAULT_SIZE: (u32, u32) = (980, 620);
+#[cfg(not(target_os = "linux"))]
 const DEFAULT_POSITION: (f64, f64) = (100.0, 100.0);
 const SAVE_AFTER: Duration = Duration::from_secs(1);
 /// How much of the title bar must lie on a monitor for a saved position to be used.
@@ -22,6 +23,7 @@ const MIN_VISIBLE: (i32, i32) = (120, 24);
 
 thread_local! {
     // Only the UI thread sees window events, so the state lives there.
+    static READY: Cell<bool> = const { Cell::new(false) };
     static DIRTY: Cell<bool> = const { Cell::new(false) };
     static WINDOW: RefCell<Option<slint::Weak<AppWindow>>> = const { RefCell::new(None) };
     static LAST: Cell<Option<WindowGeometry>> = const { Cell::new(None) };
@@ -35,6 +37,12 @@ pub fn restore(window: &winit::window::Window) -> bool {
     LAST.with(|l| l.set(saved));
     // Events from before this (the window appearing where the system put it) are stale.
     DIRTY.with(|d| d.set(false));
+    READY.with(|r| r.set(false));
+    // Ignore initial asynchronous configure/resize events emitted by the compositor during surface mapping
+    slint::Timer::single_shot(Duration::from_millis(800), move || {
+        READY.with(|r| r.set(true));
+    });
+
     let (width, height) = saved.map_or(DEFAULT_SIZE, |g| (g.width, g.height));
     let _ = window.request_inner_size(winit::dpi::LogicalSize::new(width as f64, height as f64));
     let position = saved.and_then(|g| Some((g.x?, g.y?))).filter(|&(x, y)| {
@@ -49,7 +57,10 @@ pub fn restore(window: &winit::window::Window) -> bool {
     });
     match position {
         Some((x, y)) => window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y)),
-        None => window.set_outer_position(winit::dpi::LogicalPosition::new(DEFAULT_POSITION.0, DEFAULT_POSITION.1)),
+        None => {
+            #[cfg(not(target_os = "linux"))]
+            window.set_outer_position(winit::dpi::LogicalPosition::new(DEFAULT_POSITION.0, DEFAULT_POSITION.1));
+        }
     }
     let maximized = saved.is_some_and(|g| g.maximized);
     if maximized {
@@ -62,6 +73,9 @@ pub fn restore(window: &winit::window::Window) -> bool {
 /// Read during the events it can be wrong: maximizing reports the maximized size first
 /// and the maximized flag only after.
 pub fn observe(app: &slint::Weak<AppWindow>) {
+    if !READY.with(|r| r.get()) {
+        return;
+    }
     DIRTY.with(|d| d.set(true));
     WINDOW.with(|w| *w.borrow_mut() = Some(app.clone()));
     SAVE_TIMER.with(|t| {
@@ -92,7 +106,23 @@ fn current(window: &winit::window::Window, previous: Option<WindowGeometry>) -> 
     if window.is_minimized().unwrap_or(false) {
         return None;
     }
-    let maximized = window.is_maximized();
+    let maximized = window.is_maximized() || {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(m) = window.current_monitor() {
+                let ms = m.size();
+                let ps = window.inner_size();
+                (ps.width as i64 - ms.width as i64).abs() <= 4
+                    && (ps.height as i64 - ms.height as i64).abs() <= 120
+            } else {
+                false
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    };
     if maximized {
         // Keep the size and place the window goes back to when restored.
         let (width, height) = previous.map_or(DEFAULT_SIZE, |g| (g.width, g.height));
