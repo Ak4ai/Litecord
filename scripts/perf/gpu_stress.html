@@ -1,0 +1,18 @@
+<style>body{margin:0;background:#000;overflow:hidden}canvas{width:100vw;height:100vh;display:block}</style>
+<canvas id=c></canvas><script>
+const c=document.getElementById('c');c.width=1920;c.height=1080;
+const gl=c.getContext('webgl2',{powerPreference:'high-performance',antialias:false});
+const vs=`#version 300 es
+in vec2 p;void main(){gl_Position=vec4(p,0,1);}`;
+const fs=`#version 300 es
+precision highp float;uniform float t;out vec4 o;
+void main(){vec2 uv=gl_FragCoord.xy/vec2(1920.,1080.);vec3 col=vec3(0);float a=0.;
+for(int i=0;i<260;i++){float f=float(i);a+=sin(uv.x*(10.+f*.37)+t+f)*cos(uv.y*(12.+f*.29)-t*1.3+f*.5);col+=.004*vec3(sin(a+f),cos(a*1.3),sin(a*.7+t));}
+o=vec4(.5+.5*col,1);}`;
+function sh(t,s){const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);return x}
+const pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,vs));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(pr);gl.useProgram(pr);
+const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+const l=gl.getAttribLocation(pr,'p');gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);
+const u=gl.getUniformLocation(pr,'t');
+function d(ms){gl.uniform1f(u,ms/1000);for(let k=0;k<6;k++)gl.drawArrays(gl.TRIANGLE_STRIP,0,4);requestAnimationFrame(d)}requestAnimationFrame(d);
+</script>

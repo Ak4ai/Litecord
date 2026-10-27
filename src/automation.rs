@@ -232,6 +232,7 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
                 "show_settings_modal" => ui.set_show_settings_modal(as_bool()?),
                 "settings_active_tab" => ui.set_settings_active_tab(as_int()?),
                 "show_stream_modal" => ui.set_show_stream_modal(as_bool()?),
+                "show_web_share_modal" => ui.set_show_web_share_modal(as_bool()?),
                 "show_user_menu" => ui.set_show_user_menu(as_bool()?),
                 other => return Err(format!("property {other} is not settable from automation")),
             }
@@ -308,6 +309,10 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
         }
         "drop_gateway" => {
             crate::utils::test_hooks::DROP_GATEWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "ok": true }))
+        }
+        "break_voice_output" => {
+            crate::utils::test_hooks::BREAK_VOICE_OUTPUT.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(json!({ "ok": true }))
         }
         "minimize" => {
@@ -445,6 +450,7 @@ fn state(ui: &AppWindow) -> Value {
         "show_settings_modal": ui.get_show_settings_modal(),
         "settings_active_tab": ui.get_settings_active_tab(),
         "show_stream_modal": ui.get_show_stream_modal(),
+        "show_web_share_modal": ui.get_show_web_share_modal(),
         "voice": {
             "is_in_voice": ui.get_is_in_voice(),
             "is_connecting": ui.get_is_voice_connecting(),

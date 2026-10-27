@@ -165,6 +165,19 @@ pub struct MicCapture {
 
 pub fn start_mic_capture(device_name: String, level_tx: mpsc::Sender<f32>) -> MicCapture {
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::mic_synth() {
+        info!("🧪 [TEST MIC] Tom sintético no lugar do microfone.");
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gen_stop = Arc::clone(&stop);
+        let _ = std::thread::Builder::new().name("mic-synth".into())
+            .spawn(move || crate::utils::test_hooks::run_synth_mic(gen_stop));
+        let _ = std::thread::Builder::new().name("mic-capture-owner".into()).spawn(move || {
+            let _ = stop_rx.recv();
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        return MicCapture { _stop: stop_tx };
+    }
     let spawned = std::thread::Builder::new().name("mic-capture-owner".into()).spawn(move || {
         let stream = open_mic_stream(device_name, level_tx);
         if stream.is_none() {
@@ -224,6 +237,7 @@ fn open_mic_stream(
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&pcm_queue);
+            let mut resampler = crate::audio::dsp::PhaseResampler::new();
             target_dev.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &_| {
@@ -249,19 +263,8 @@ fn open_mic_stream(
                         if sample_rate == 48000 {
                             push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
                         } else {
-                            let ratio = 48000.0 / sample_rate as f64;
-                            let out_len = (frames as f64 * ratio) as usize;
-                            let mut resampled_buf = Vec::with_capacity(out_len);
-                            for i in 0..out_len {
-                                let src_pos = i as f64 / ratio;
-                                let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
-                                let frac = (src_pos - src_idx as f64) as f32;
-                                
-                                let s0 = mono_samples[src_idx];
-                                let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
-                                let resampled = s0 * (1.0 - frac) + s1 * frac;
-                                resampled_buf.push(resampled);
-                            }
+                            let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
+                            resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
                             push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
                         }
                     }
@@ -274,6 +277,7 @@ fn open_mic_stream(
         }
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&pcm_queue);
+            let mut resampler = crate::audio::dsp::PhaseResampler::new();
             target_dev.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _: &_| {
@@ -299,19 +303,8 @@ fn open_mic_stream(
                         if sample_rate == 48000 {
                             push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
                         } else {
-                            let ratio = 48000.0 / sample_rate as f64;
-                            let out_len = (frames as f64 * ratio) as usize;
-                            let mut resampled_buf = Vec::with_capacity(out_len);
-                            for i in 0..out_len {
-                                let src_pos = i as f64 / ratio;
-                                let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
-                                let frac = (src_pos - src_idx as f64) as f32;
-                                
-                                let s0 = mono_samples[src_idx];
-                                let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
-                                let resampled = s0 * (1.0 - frac) + s1 * frac;
-                                resampled_buf.push(resampled);
-                            }
+                            let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
+                            resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
                             push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
                         }
                     }
@@ -324,6 +317,7 @@ fn open_mic_stream(
         }
         cpal::SampleFormat::I32 => {
             let q_arc = Arc::clone(&pcm_queue);
+            let mut resampler = crate::audio::dsp::PhaseResampler::new();
             target_dev.build_input_stream(
                 &stream_config,
                 move |data: &[i32], _: &_| {
@@ -349,19 +343,8 @@ fn open_mic_stream(
                         if sample_rate == 48000 {
                             push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
                         } else {
-                            let ratio = 48000.0 / sample_rate as f64;
-                            let out_len = (frames as f64 * ratio) as usize;
-                            let mut resampled_buf = Vec::with_capacity(out_len);
-                            for i in 0..out_len {
-                                let src_pos = i as f64 / ratio;
-                                let src_idx = (src_pos as usize).min(frames.saturating_sub(1));
-                                let frac = (src_pos - src_idx as f64) as f32;
-                                
-                                let s0 = mono_samples[src_idx];
-                                let s1 = mono_samples[(src_idx + 1).min(frames.saturating_sub(1))];
-                                let resampled = s0 * (1.0 - frac) + s1 * frac;
-                                resampled_buf.push(resampled);
-                            }
+                            let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
+                            resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
                             push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
                         }
                     }

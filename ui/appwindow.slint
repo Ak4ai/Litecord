@@ -1,7 +1,7 @@
 import { Tr } from "components/tr.slint";
 export { Tr }
 import { Button, VerticalBox, HorizontalBox, LineEdit, ScrollView, ListView, TextEdit, CheckBox, Slider } from "std-widgets.slint";
-import { AppTheme, ChatTypography, ThemeMode } from "theme.slint";
+import { AppTheme, ChatTypography, ThemeMode , TypeScale } from "theme.slint";
 import "../assets/fonts/Inter-Variable.ttf";
 
 import { IconButton } from "components/icon_button.slint";
@@ -84,7 +84,7 @@ export component AppWindow inherits Window {
     min-width: 680px;
     min-height: 480px;
     background: AppTheme.surface-window;
-    default-font-family: "Segoe UI, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+    default-font-family: TypeScale.family;
 
     // Public bridge for the backend/settings layer. Theme persistence and the
     // visible selector can bind to this property without knowing token details.
@@ -343,6 +343,9 @@ export component AppWindow inherits Window {
     in-out property <[SettingOptionItem]> video_encoder_options: [];
     in-out property <[SettingOptionItem]> video_capture_options: [];
     in-out property <[SettingOptionItem]> audio_loopback_options: [];
+    in-out property <[SettingOptionItem]> noise_suppression_options: [];
+    in-out property <bool> echo_cancellation: false;
+    in-out property <bool> automatic_gain_control: false;
 
     callback select_video_encoder(string);
     callback select_video_capture_backend(string);
@@ -350,9 +353,14 @@ export component AppWindow inherits Window {
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
     callback toggle_gpu_renderer();
+    in-out property <length> channel_sidebar_width: 230px;
+    callback channel_sidebar_width_committed(length);
     callback run_network_diagnostics();
     callback copy_network_diagnostics();
     callback toggle_theme();
+    callback select_noise_suppression(string);
+    callback toggle_echo_cancellation();
+    callback toggle_automatic_gain_control();
 
 
     // Network & Proxy Settings Properties
@@ -428,6 +436,7 @@ export component AppWindow inherits Window {
     in-out property <bool> web_share_active: false;
     in-out property <bool> web_share_pending: false;
     in-out property <bool> web_share_copied: false;
+    in-out property <bool> show_web_share_modal: false;
     in-out property <string> web_share_url: "";
     in-out property <string> web_share_error: "";
     in-out property <int> web_share_viewers: 0;
@@ -447,7 +456,7 @@ export component AppWindow inherits Window {
             text: root.web_share_error;
             color: AppTheme.text-strong;
             wrap: word-wrap;
-            font-size: 13px;
+            font-size: TypeScale.body;
         }
         TouchArea { mouse-cursor: pointer; clicked => { root.web_share_error = ""; } }
     }
@@ -492,6 +501,7 @@ export component AppWindow inherits Window {
     in-out property <[GuildItem]> guilds: [];
     in-out property <[ChannelItem]> channels: [];
     in property <[image]> avatar_pool: [];
+    in property <[image]> channel_emoji_pool: [];
     in property <[string]> avatar_pool_urls: [];
     in-out property <[ChatMessage]> messages: [
         { author: "Litecord System", show_header: true, timestamp: Tr.now_label, content: Tr.welcome_msg }
@@ -544,7 +554,7 @@ export component AppWindow inherits Window {
                                 text: "LITECORD";
                                 color: AppTheme.text-strong;
                                 font-weight: 800;
-                                font-size: 13px;
+                                font-size: TypeScale.body;
                             }
                         }
 
@@ -555,7 +565,7 @@ export component AppWindow inherits Window {
                                 text: root.app_version;
                                 color: AppTheme.text-muted;
                                 font-weight: 600;
-                                font-size: 11px;
+                                font-size: TypeScale.caption;
                             }
                         }
 
@@ -568,13 +578,13 @@ export component AppWindow inherits Window {
                                     text: "-";
                                     color: AppTheme.danger;
                                     font-weight: 700;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                 }
                                 Text {
                                     text: root.titlebar_error;
                                     color: AppTheme.danger;
                                     font-weight: 600;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                 }
                             }
                         }
@@ -604,7 +614,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.hardware_cpu_text;
                             color: root.hardware_cpu_val > 85 ? AppTheme.danger : AppTheme.text-muted;
-                            font-size: 11px;
+                            font-size: TypeScale.caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -612,7 +622,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: "•";
                             color: AppTheme.surface-control;
-                            font-size: 10px;
+                            font-size: TypeScale.micro;
                             vertical-alignment: center;
                         }
 
@@ -620,7 +630,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.hardware_ram_text;
                             color: root.hardware_ram_val > 500 ? AppTheme.danger : AppTheme.text-muted;
-                            font-size: 11px;
+                            font-size: TypeScale.caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -628,7 +638,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: "•";
                             color: AppTheme.surface-control;
-                            font-size: 10px;
+                            font-size: TypeScale.micro;
                             vertical-alignment: center;
                         }
 
@@ -636,7 +646,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.hardware_gpu_text;
                             color: root.hardware_gpu_val > 90 ? AppTheme.danger : AppTheme.text-muted;
-                            font-size: 11px;
+                            font-size: TypeScale.caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -795,7 +805,7 @@ export component AppWindow inherits Window {
                                     horizontal-stretch: 1;
                                     text: root.login_alert_message;
                                     color: root.login_alert_is_error ? AppTheme.danger : AppTheme.text-primary;
-                                    font-size: 12px;
+                                    font-size: TypeScale.small;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                     horizontal-alignment: left;
@@ -855,7 +865,7 @@ export component AppWindow inherits Window {
                                     Text {
                                         text: root.tr_login_title;
                                         color: AppTheme.text-strong;
-                                        font-size: 20px;
+                                        font-size: TypeScale.heading;
                                         font-weight: 700;
                                         vertical-alignment: center;
                                     }
@@ -864,7 +874,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.tr_login_desc;
                                     color: AppTheme.text-muted;
-                                    font-size: 12px;
+                                    font-size: TypeScale.small;
                                     wrap: word-wrap;
                                 }
 
@@ -971,7 +981,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: "✓ " + root.qr_scanned_user;
                                                     color: AppTheme.success;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     horizontal-alignment: center;
                                                     overflow: elide;
@@ -980,7 +990,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: root.tr_qr_confirm;
                                                     color: AppTheme.text-on-accent;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 600;
                                                     horizontal-alignment: center;
                                                     wrap: word-wrap;
@@ -993,7 +1003,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.tr_qr_title;
                                     color: AppTheme.text-strong;
-                                    font-size: 14px;
+                                    font-size: TypeScale.title;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                 }
@@ -1001,7 +1011,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.tr_qr_desc;
                                     color: AppTheme.text-muted;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     horizontal-alignment: center;
                                     wrap: word-wrap;
                                 }
@@ -1034,7 +1044,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.qr_regenerate;
                                                 color: AppTheme.text-strong;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 600;
                                                 vertical-alignment: center;
                                             }
@@ -1122,7 +1132,7 @@ export component AppWindow inherits Window {
                                     height: parent.height;
                                     text: root.total_dm_unread_count > 99 ? "99+" : "\{root.total_dm_unread_count}";
                                     color: #ffffff;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -1186,11 +1196,15 @@ export component AppWindow inherits Window {
                                         alignment: center;
                                         spacing: 0px;
 
-                                        // Left indicator pill (Discord style)
-                                        VerticalLayout {
-                                            alignment: center;
+                                        // Left indicator pill (Discord style). Placed by hand in a box of
+                                        // fixed size: inside a layout, its animated height made every frame
+                                        // of a hover redo the layout of the whole server column.
+                                        Rectangle {
                                             width: 8px;
+                                            height: 48px;
                                             Rectangle {
+                                                x: 0;
+                                                y: (parent.height - self.height) / 2;
                                                 width: 4px;
                                                 height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
                                                 background: AppTheme.text-strong;
@@ -1219,7 +1233,7 @@ export component AppWindow inherits Window {
                                             if !guild.has_image: Text {
                                                 text: guild.icon;
                                                 color: AppTheme.text-on-accent;
-                                                font-size: 14px;
+                                                font-size: TypeScale.title;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -1271,10 +1285,13 @@ export component AppWindow inherits Window {
 
             // 2. Channels Sidebar
             ChannelSidebar {
+                sidebar_width <=> root.channel_sidebar_width;
+                sidebar_width_committed(w) => { root.channel_sidebar_width_committed(w); }
                 active_guild_name: root.active_guild_name;
                 tr_server_channels: root.tr_server_channels;
                 channels: root.channels;
                 avatar_pool: root.avatar_pool;
+                emoji_pool: root.channel_emoji_pool;
                 avatar_pool_urls: root.avatar_pool_urls;
                 is_in_voice: root.is_in_voice;
                 is_voice_connecting: root.is_voice_connecting;
@@ -1346,7 +1363,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.current_voice_channel;
                                     color: AppTheme.text-strong;
-                                    font-size: 15px;
+                                    font-size: TypeScale.title;
                                     font-weight: 800;
                                 }
                             }
@@ -1382,7 +1399,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
                                             color: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
-                                            font-size: 13px;
+                                            font-size: TypeScale.body;
                                             font-weight: 600;
                                             vertical-alignment: center;
                                         }
@@ -1410,7 +1427,7 @@ export component AppWindow inherits Window {
                                     background: root.web_share_active ? (web_ta.has-hover ? AppTheme.accent-hover : AppTheme.accent) : (web_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat);
                                     opacity: root.web_share_pending ? 0.5 : 1;
                                     accessible-role: button;
-                                    accessible-label: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_stop + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
+                                    accessible-label: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_title + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
                                     Image {
                                         x: 7px;
                                         y: 7px;
@@ -1431,31 +1448,25 @@ export component AppWindow inherits Window {
                                         border-width: 1px;
                                         border-color: AppTheme.border-subtle;
                                         Text {
-                                            text: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_stop + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
+                                            text: root.web_share_pending ? Tr.web_share_connecting : (root.web_share_active ? Tr.web_share_title + " (" + root.web_share_viewers + "/3)" : Tr.web_share_start);
                                             color: AppTheme.text-strong;
-                                            font-size: 12px;
+                                            font-size: TypeScale.small;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
                                     }
-                                    web_ta := TouchArea { enabled: !root.web_share_pending; mouse-cursor: pointer; clicked => { root.toggle_web_share(); } }
-                                }
-                            }
-                            if root.web_share_active: VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    height: 32px;
-                                    min-width: 110px;
-                                    border-radius: 4px;
-                                    background: copy_web_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat;
-                                    Text {
-                                        text: root.web_share_copied ? Tr.web_share_copied : Tr.web_share_copy;
-                                        color: AppTheme.text-strong;
-                                        font-size: 12px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    web_ta := TouchArea {
+                                        enabled: !root.web_share_pending;
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if root.web_share_active {
+                                                root.web_share_copied = false;
+                                                root.show_web_share_modal = true;
+                                            } else {
+                                                root.toggle_web_share();
+                                            }
+                                        }
                                     }
-                                    copy_web_ta := TouchArea { mouse-cursor: pointer; clicked => { root.copy_web_share_link(); } }
                                 }
                             }
                             VerticalLayout {
@@ -1487,7 +1498,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: root.tr_view_text_chat;
                                             color: AppTheme.text-strong;
-                                            font-size: 13px;
+                                            font-size: TypeScale.body;
                                             font-weight: 600;
                                             vertical-alignment: center;
                                         }
@@ -1532,7 +1543,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: root.tr_leave_call;
                                             color: (btn_leave_ta.has-hover || btn_leave_ta.pressed ? AppTheme.text-on-accent : AppTheme.text-strong);
-                                            font-size: 13px;
+                                            font-size: TypeScale.body;
                                             font-weight: 600;
                                             vertical-alignment: center;
                                         }
@@ -1588,7 +1599,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.tr_voice_connecting_title;
                                     color: AppTheme.text-strong;
-                                    font-size: 16px;
+                                    font-size: TypeScale.title;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                 }
@@ -1596,7 +1607,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: root.tr_voice_connecting_desc;
                                     color: AppTheme.text-muted;
-                                    font-size: 12px;
+                                    font-size: TypeScale.small;
                                     horizontal-alignment: center;
                                 }
                             }
@@ -1626,7 +1637,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: root.tr_voice_participants_title + " (" + root.voice_participants.length + ")";
                                 color: AppTheme.text-muted;
-                                font-size: 11px;
+                                font-size: TypeScale.caption;
                                 font-weight: 700;
                             }
 
@@ -1740,7 +1751,7 @@ export component AppWindow inherits Window {
                                                                 Text {
                                                                     text: root.tr_live_badge;
                                                                     color: AppTheme.text-on-accent;
-                                                                    font-size: 10px;
+                                                                    font-size: TypeScale.micro;
                                                                     font-weight: 800;
                                                                     vertical-alignment: center;
                                                                 }
@@ -1761,7 +1772,7 @@ export component AppWindow inherits Window {
                                                                 Text {
                                                                     text: (stream_top_bar.width >= 320px) ? (p.username + " • " + root.tr_stream_quality) : p.username;
                                                                     color: AppTheme.text-primary;
-                                                                    font-size: 11px;
+                                                                    font-size: TypeScale.caption;
                                                                     font-weight: 600;
                                                                     vertical-alignment: center;
                                                                     overflow: elide;
@@ -1792,7 +1803,7 @@ export component AppWindow inherits Window {
                                                                 Text {
                                                                     text: (p.is_self && root.is_screen_sharing) ? root.local_preview_fps : root.remote_stream_fps;
                                                                     color: AppTheme.success;
-                                                                    font-size: 11px;
+                                                                    font-size: TypeScale.caption;
                                                                     font-weight: 800;
                                                                     vertical-alignment: center;
                                                                 }
@@ -1862,7 +1873,7 @@ export component AppWindow inherits Window {
                                                                     Text {
                                                                         text: "\{Math.round(root.stream_remote_volume * 100)}%";
                                                                         color: AppTheme.text-muted;
-                                                                        font-size: 9px;
+                                                                        font-size: TypeScale.micro;
                                                                         font-weight: 700;
                                                                         vertical-alignment: center;
                                                                     }
@@ -1920,7 +1931,7 @@ export component AppWindow inherits Window {
                                                                         height: 20px;
                                                                         border-radius: 3px;
                                                                         background: str_pdec_ta.has-hover ? AppTheme.border-subtle : transparent;
-                                                                        Text { text: "-"; color: AppTheme.text-primary; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                                                        Text { text: "-"; color: AppTheme.text-primary; font-size: TypeScale.caption; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                                                                         str_pdec_ta := TouchArea {
                                                                             mouse-cursor: pointer;
                                                                             clicked => { if p.priority > 0 { root.set_user_priority(p.user_id, p.priority - 1); } }
@@ -1933,7 +1944,7 @@ export component AppWindow inherits Window {
                                                                         Text {
                                                                             text: p.priority == 0 ? "Normal" : ("P" + p.priority);
                                                                             color: p.priority > 0 ? AppTheme.accent : AppTheme.text-muted;
-                                                                            font-size: 9px;
+                                                                            font-size: TypeScale.micro;
                                                                             font-weight: 700;
                                                                             horizontal-alignment: center;
                                                                         }
@@ -1944,7 +1955,7 @@ export component AppWindow inherits Window {
                                                                         height: 20px;
                                                                         border-radius: 3px;
                                                                         background: str_pinc_ta.has-hover ? AppTheme.border-subtle : transparent;
-                                                                        Text { text: "+"; color: AppTheme.text-primary; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                                                        Text { text: "+"; color: AppTheme.text-primary; font-size: TypeScale.caption; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                                                                         str_pinc_ta := TouchArea {
                                                                             mouse-cursor: pointer;
                                                                             clicked => { if p.priority < 3 { root.set_user_priority(p.user_id, p.priority + 1); } }
@@ -2094,7 +2105,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: Tr.preview_reduced;
                                                     color: AppTheme.text-primary;
-                                                    font-size: 10px;
+                                                    font-size: TypeScale.micro;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                     overflow: elide;
@@ -2135,7 +2146,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: Tr.you_are_streaming;
                                                     color: AppTheme.text-on-accent;
-                                                    font-size: 11px;
+                                                    font-size: TypeScale.caption;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2172,7 +2183,7 @@ export component AppWindow inherits Window {
                                                      Text {
                                                          text: p.avatar_text;
                                                          color: AppTheme.text-on-accent;
-                                                         font-size: 16px;
+                                                         font-size: TypeScale.title;
                                                          font-weight: 700;
                                                          horizontal-alignment: center;
                                                          vertical-alignment: center;
@@ -2200,7 +2211,7 @@ export component AppWindow inherits Window {
                                                          text: p.username;
                                                          color: p.is_self ? AppTheme.accent-medium : (p.is_speaking ? AppTheme.text-on-accent : AppTheme.text-primary);
                                                          font-weight: 700;
-                                                         font-size: 14px;
+                                                         font-size: TypeScale.title;
                                                          vertical-alignment: center;
                                                      }
 
@@ -2214,7 +2225,7 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: root.tr_badge_you;
                                                                  color: AppTheme.text-on-accent;
-                                                                 font-size: 9px;
+                                                                 font-size: TypeScale.micro;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
                                                              }
@@ -2233,7 +2244,7 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: Tr.detached_badge;
                                                                  color: AppTheme.accent;
-                                                                 font-size: 9px;
+                                                                 font-size: TypeScale.micro;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
                                                              }
@@ -2264,7 +2275,7 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: Tr.live_badge;
                                                                  color: AppTheme.danger;
-                                                                 font-size: 9px;
+                                                                 font-size: TypeScale.micro;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
                                                              }
@@ -2289,7 +2300,7 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: Tr.label_muted_caps;
                                                                  color: AppTheme.danger;
-                                                                 font-size: 11px;
+                                                                 font-size: TypeScale.caption;
                                                                  font-weight: 700;
                                                                  vertical-alignment: center;
                                                              }
@@ -2323,7 +2334,7 @@ export component AppWindow inherits Window {
                                                               Text {
                                                                   text: Tr.disable_intangible;
                                                                   color: AppTheme.text-on-accent;
-                                                                  font-size: 10px;
+                                                                  font-size: TypeScale.micro;
                                                                   font-weight: 700;
                                                                   vertical-alignment: center;
                                                               }
@@ -2365,7 +2376,7 @@ export component AppWindow inherits Window {
                                                                      width: p.is_self ? 0px : self.preferred-width;
                                                                      text: Tr.watch_stream;
                                                                      color: AppTheme.text-on-accent;
-                                                                     font-size: 11px;
+                                                                     font-size: TypeScale.caption;
                                                                      font-weight: 700;
                                                                      vertical-alignment: center;
                                                                  }
@@ -2411,7 +2422,7 @@ export component AppWindow inherits Window {
                                                          Text {
                                                              text: root.is_muted ? Tr.label_muted : (p.is_speaking ? Tr.label_transmitting : Tr.label_mic_active);
                                                              color: root.is_muted ? AppTheme.danger : (p.is_speaking ? AppTheme.success : AppTheme.text-subtle);
-                                                             font-size: 11px;
+                                                             font-size: TypeScale.caption;
                                                              font-weight: 600;
                                                              vertical-alignment: center;
                                                          }
@@ -2457,7 +2468,7 @@ export component AppWindow inherits Window {
                                                          Text {
                                                              text: "Vol: " + Math.round(p.volume * 100) + "%";
                                                              color: AppTheme.text-secondary;
-                                                             font-size: 11px;
+                                                             font-size: TypeScale.caption;
                                                              vertical-alignment: center;
                                                          }
                                                      }
@@ -2499,7 +2510,7 @@ export component AppWindow inherits Window {
                                                                       Text {
                                                                           text: "-";
                                                                           color: AppTheme.text-primary;
-                                                                          font-size: 12px;
+                                                                          font-size: TypeScale.small;
                                                                           font-weight: 700;
                                                                           horizontal-alignment: center;
                                                                           vertical-alignment: center;
@@ -2522,7 +2533,7 @@ export component AppWindow inherits Window {
                                                                       Text {
                                                                           text: p.priority == 0 ? "Normal" : ("Prio " + p.priority);
                                                                           color: p.priority > 0 ? AppTheme.accent : AppTheme.text-muted;
-                                                                          font-size: 10px;
+                                                                          font-size: TypeScale.micro;
                                                                           font-weight: 700;
                                                                           horizontal-alignment: center;
                                                                           vertical-alignment: center;
@@ -2539,7 +2550,7 @@ export component AppWindow inherits Window {
                                                                       Text {
                                                                           text: "+";
                                                                           color: AppTheme.text-primary;
-                                                                          font-size: 12px;
+                                                                          font-size: TypeScale.small;
                                                                           font-weight: 700;
                                                                           horizontal-alignment: center;
                                                                           vertical-alignment: center;
@@ -2594,7 +2605,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: (root.active_guild_id == "@me") ? "@" : "#";
                                 color: AppTheme.text-subtle;
-                                font-size: 18px;
+                                font-size: TypeScale.heading;
                                 font-weight: 800;
                                 vertical-alignment: center;
                             }
@@ -2602,7 +2613,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: root.active_channel_name;
                                 color: AppTheme.text-strong;
-                                font-size: 15px;
+                                font-size: TypeScale.title;
                                 font-weight: 700;
                                 vertical-alignment: center;
                             }
@@ -2680,7 +2691,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: root.tr_view_voice_room;
                                                 color: AppTheme.text-on-accent;
-                                                font-size: 13px;
+                                                font-size: TypeScale.body;
                                                 font-weight: 600;
                                                 vertical-alignment: center;
                                             }
@@ -2756,7 +2767,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: Tr.smart_commands;
                                     color: AppTheme.text-muted;
-                                    font-size: 10px;
+                                    font-size: TypeScale.micro;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
@@ -2764,7 +2775,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: Tr.click_autocomplete;
                                     color: AppTheme.accent;
-                                    font-size: 10px;
+                                    font-size: TypeScale.micro;
                                     vertical-alignment: center;
                                 }
                             }
@@ -2801,7 +2812,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: cmd.name;
                                                     color: (idx == root.active_suggestion_index) ? AppTheme.text-strong : AppTheme.accent-link-hover;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -2823,7 +2834,7 @@ export component AppWindow inherits Window {
                                                         Text {
                                                             text: cmd.app_name;
                                                             color: (idx == root.active_suggestion_index) ? AppTheme.text-strong : AppTheme.accent-soft;
-                                                            font-size: 10px;
+                                                            font-size: TypeScale.micro;
                                                             font-weight: 700;
                                                             vertical-alignment: center;
                                                         }
@@ -2836,7 +2847,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: cmd.desc;
                                                     color: (idx == root.active_suggestion_index) ? AppTheme.text-primary : AppTheme.text-muted;
-                                                    font-size: 11.5px;
+                                                    font-size: TypeScale.caption;
                                                     vertical-alignment: center;
                                                     overflow: elide;
                                                 }
@@ -2849,7 +2860,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: cmd.usage;
                                                     color: (idx == root.active_suggestion_index) ? AppTheme.text-muted : AppTheme.text-faint;
-                                                    font-size: 10.5px;
+                                                    font-size: TypeScale.micro;
                                                     font-family: "Courier New";
                                                     vertical-alignment: center;
                                                 }
@@ -2907,7 +2918,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: root.active_command_name;
                                             color: AppTheme.accent-link-hover;
-                                            font-size: 13px;
+                                            font-size: TypeScale.body;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -2958,7 +2969,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: root.active_param_name + ":";
                                             color: AppTheme.accent;
-                                            font-size: 12px;
+                                            font-size: TypeScale.small;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -3123,6 +3134,9 @@ export component AppWindow inherits Window {
         tr_keybind_deafen_title: root.tr_keybind_deafen_title;
         tr_keybind_deafen_desc: root.tr_keybind_deafen_desc;
         keybind_deafen_str: root.keybind_deafen_str;
+        noise_suppression_options: root.noise_suppression_options;
+        echo_cancellation: root.echo_cancellation;
+        automatic_gain_control: root.automatic_gain_control;
         video_encoder_options: root.video_encoder_options;
         gpu_selection_available: root.gpu_selection_available;
         stream_capture_status: root.stream_capture_status;
@@ -3155,6 +3169,9 @@ export component AppWindow inherits Window {
         set_mic_volume(arg0) => { root.set_mic_volume(arg0); }
         set_vad_threshold(arg0) => { root.set_vad_threshold(arg0); }
         toggle_test_mic => { root.toggle_test_mic(); }
+        select_noise_suppression(arg0) => { root.select_noise_suppression(arg0); }
+        toggle_echo_cancellation => { root.toggle_echo_cancellation(); }
+        toggle_automatic_gain_control => { root.toggle_automatic_gain_control(); }
         change_language(arg0) => { root.change_language(arg0); }
         start_recording_keybind(arg0) => { root.start_recording_keybind(arg0); }
         reset_keybind(arg0) => { root.reset_keybind(arg0); }
@@ -3212,7 +3229,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: Tr.manage_accounts;
                                 color: AppTheme.text-strong;
-                                font-size: 15px;
+                                font-size: TypeScale.title;
                                 font-weight: 700;
                                 vertical-alignment: center;
                             }
@@ -3243,7 +3260,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: Tr.manage_accounts_desc;
                             color: AppTheme.text-muted;
-                            font-size: 11px;
+                            font-size: TypeScale.caption;
                             wrap: word-wrap;
                         }
 
@@ -3282,7 +3299,7 @@ export component AppWindow inherits Window {
                                                     Text {
                                                         text: acc.avatar_initials != "" ? acc.avatar_initials : "@";
                                                         color: AppTheme.text-on-accent;
-                                                        font-size: 13px;
+                                                        font-size: TypeScale.body;
                                                         font-weight: 700;
                                                         horizontal-alignment: center;
                                                         vertical-alignment: center;
@@ -3299,7 +3316,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: acc.username != "" ? acc.username : acc.tag;
                                                 color: AppTheme.text-strong;
-                                                font-size: 12px;
+                                                font-size: TypeScale.small;
                                                 font-weight: 700;
                                                 overflow: elide;
                                                 vertical-alignment: center;
@@ -3307,7 +3324,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: acc.tag;
                                                 color: AppTheme.text-muted;
-                                                font-size: 10px;
+                                                font-size: TypeScale.micro;
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
@@ -3333,7 +3350,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.account_connected;
                                                 color: AppTheme.success;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -3358,7 +3375,7 @@ export component AppWindow inherits Window {
                                                     Text {
                                                         text: Tr.account_sign_in;
                                                         color: AppTheme.text-on-accent;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         font-weight: 600;
                                                         horizontal-alignment: center;
                                                         vertical-alignment: center;
@@ -3421,7 +3438,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: Tr.add_account;
                                     color: AppTheme.accent;
-                                    font-size: 12px;
+                                    font-size: TypeScale.small;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
@@ -3472,7 +3489,7 @@ export component AppWindow inherits Window {
                                     Text {
                                         text: Tr.sign_out_all;
                                         color: AppTheme.text-on-accent;
-                                        font-size: 12px;
+                                        font-size: TypeScale.small;
                                         font-weight: 600;
                                         vertical-alignment: center;
                                     }
@@ -3494,8 +3511,9 @@ export component AppWindow inherits Window {
     }
 
     // Window Drag Resize Borders & Corner Handles (on PointerEventKind.down for 0-latency instant resize)
+    // Disabled when window is maximized so all titlebar buttons and edge pixels reach window controls
     // Left edge
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 12px;
         width: 7px;
@@ -3507,12 +3525,12 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // Right edge
-    if root.drag_area_enabled: TouchArea {
+    // Right edge (starts below titlebar at y: 32px so titlebar close button is never obstructed)
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 7px;
-        y: 12px;
+        y: 32px;
         width: 7px;
-        height: parent.height - 24px;
+        height: parent.height - 44px;
         mouse-cursor: ew-resize;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
@@ -3520,11 +3538,11 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // Top edge
-    if root.drag_area_enabled: TouchArea {
+    // Top edge (stops before window control buttons on the top right)
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 12px;
         y: 0px;
-        width: parent.width - 24px;
+        width: parent.width - (root.show_hardware_monitor ? 390px : 176px) - 12px;
         height: 7px;
         mouse-cursor: ns-resize;
         pointer-event(event) => {
@@ -3534,7 +3552,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom edge
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 12px;
         y: parent.height - 7px;
         width: parent.width - 24px;
@@ -3547,7 +3565,7 @@ export component AppWindow inherits Window {
         }
     }
     // Top-Left Corner
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: 0px;
         width: 12px;
@@ -3559,21 +3577,8 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // Top-Right Corner
-    if root.drag_area_enabled: TouchArea {
-        x: parent.width - 12px;
-        y: 0px;
-        width: 12px;
-        height: 12px;
-        mouse-cursor: nesw-resize;
-        pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                root.drag_resize("top-right");
-            }
-        }
-    }
     // Bottom-Left Corner
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: 0px;
         y: parent.height - 12px;
         width: 12px;
@@ -3586,7 +3591,7 @@ export component AppWindow inherits Window {
         }
     }
     // Bottom-Right Corner
-    if root.drag_area_enabled: TouchArea {
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
         x: parent.width - 12px;
         y: parent.height - 12px;
         width: 12px;
@@ -3656,14 +3661,14 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: Tr.update_available;
                                     color: AppTheme.text-strong;
-                                    font-size: 16px;
+                                    font-size: TypeScale.title;
                                     font-weight: 700;
                                 }
 
                                 Text {
                                     text: "Litecord " + root.update_version;
                                     color: AppTheme.success;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     font-weight: 600;
                                 }
                             }
@@ -3673,7 +3678,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.is_updating ? root.update_status_text : Tr.update_prompt;
                             color: AppTheme.text-secondary;
-                            font-size: 13px;
+                            font-size: TypeScale.body;
                             wrap: word-wrap;
                         }
 
@@ -3699,7 +3704,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: Math.round(root.update_progress * 100) + "%";
                                 color: AppTheme.text-subtle;
-                                font-size: 11px;
+                                font-size: TypeScale.caption;
                                 horizontal-alignment: right;
                             }
                         }
@@ -3722,7 +3727,7 @@ export component AppWindow inherits Window {
                                     Text {
                                         text: Tr.dont_show_again;
                                         color: AppTheme.text-muted;
-                                        font-size: 12px;
+                                        font-size: TypeScale.small;
                                         font-weight: 500;
                                         vertical-alignment: center;
                                     }
@@ -3746,7 +3751,7 @@ export component AppWindow inherits Window {
                                     Text {
                                         text: Tr.remind_later;
                                         color: AppTheme.text-primary;
-                                        font-size: 12px;
+                                        font-size: TypeScale.small;
                                         font-weight: 600;
                                         vertical-alignment: center;
                                     }
@@ -3771,7 +3776,7 @@ export component AppWindow inherits Window {
                                     Text {
                                         text: Tr.yes_update;
                                         color: AppTheme.text-on-accent;
-                                        font-size: 12px;
+                                        font-size: TypeScale.small;
                                         font-weight: 700;
                                         vertical-alignment: center;
                                     }
@@ -3780,6 +3785,186 @@ export component AppWindow inherits Window {
                                 accept_touch := TouchArea {
                                     mouse-cursor: pointer;
                                     clicked => { root.update_app_accept(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Web sharing: the link to send to whoever will watch in a browser.
+    if root.show_web_share_modal && root.web_share_active: Rectangle {
+        background: AppTheme.backdrop;
+        width: 100%;
+        height: 100%;
+        z: 9999;
+
+        TouchArea {
+            clicked => { root.show_web_share_modal = false; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 460px;
+                    background: AppTheme.surface-sidebar;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: AppTheme.border-subtle;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: AppTheme.backdrop;
+
+                    // Clicks inside the window do not close it.
+                    TouchArea { }
+
+                    VerticalBox {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 12px;
+
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 20px;
+                                background: AppTheme.accent-subtle;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    source: @image-url("../assets/globe.svg");
+                                    width: 20px;
+                                    height: 20px;
+                                    colorize: AppTheme.accent;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: Tr.web_share_title;
+                                    color: AppTheme.text-strong;
+                                    font-size: TypeScale.title;
+                                    font-weight: 700;
+                                }
+
+                                Text {
+                                    text: root.web_share_viewers + "/3 " + Tr.web_share_watching;
+                                    color: AppTheme.text-muted;
+                                    font-size: TypeScale.small;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: Tr.web_share_hint;
+                            color: AppTheme.text-secondary;
+                            font-size: TypeScale.body;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            height: 40px;
+                            background: AppTheme.surface-input;
+                            border-radius: 6px;
+                            clip: true;
+
+                            TextInput {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: root.web_share_url;
+                                read-only: true;
+                                single-line: true;
+                                color: AppTheme.text-primary;
+                                font-size: TypeScale.small;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: web_stop_touch.has-hover ? AppTheme.danger-action-subtle : AppTheme.surface-sidebar;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: AppTheme.separator;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: Tr.web_share_stop;
+                                        color: AppTheme.danger;
+                                        font-size: TypeScale.small;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                web_stop_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.show_web_share_modal = false;
+                                        root.toggle_web_share();
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: web_close_touch.has-hover ? AppTheme.surface-control-hover : AppTheme.interactive-hover;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: Tr.close;
+                                        color: AppTheme.text-primary;
+                                        font-size: TypeScale.small;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                web_close_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.show_web_share_modal = false; }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 36px;
+                                horizontal-stretch: 1;
+                                background: web_copy_touch.has-hover ? AppTheme.accent-hover : AppTheme.accent;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: root.web_share_copied ? Tr.web_share_copied : Tr.web_share_copy;
+                                        color: AppTheme.text-on-accent;
+                                        font-size: TypeScale.small;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                web_copy_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.copy_web_share_link(); }
                                 }
                             }
                         }
@@ -3841,7 +4026,7 @@ export component AppWindow inherits Window {
                                     Text {
                                         text: Tr.share_your_screen;
                                         color: AppTheme.text-strong;
-                                        font-size: 16px;
+                                        font-size: TypeScale.title;
                                         font-weight: 700;
                                     }
                                 }
@@ -3897,7 +4082,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: root.is_linux ? Tr.screens_windows : Tr.screens;
                                                 color: root.stream_source_tab == "screens" ? AppTheme.text-strong : AppTheme.text-muted;
-                                                font-size: 13px;
+                                                font-size: TypeScale.body;
                                                 font-weight: root.stream_source_tab == "screens" ? 700 : 500;
                                                 vertical-alignment: center;
                                             }
@@ -3940,7 +4125,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.windows_tab;
                                                 color: root.stream_source_tab == "windows" ? AppTheme.text-strong : AppTheme.text-muted;
-                                                font-size: 13px;
+                                                font-size: TypeScale.body;
                                                 font-weight: root.stream_source_tab == "windows" ? 700 : 500;
                                                 vertical-alignment: center;
                                             }
@@ -3985,7 +4170,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.camera;
                                                 color: root.stream_source_tab == "cameras" ? AppTheme.text-strong : AppTheme.text-muted;
-                                                font-size: 13px;
+                                                font-size: TypeScale.body;
                                                 font-weight: root.stream_source_tab == "cameras" ? 700 : 500;
                                                 vertical-alignment: center;
                                             }
@@ -4076,7 +4261,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: root.is_linux ? Tr.screen_window : scr.name;
                                                 color: root.stream_selected_source_index == idx ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 overflow: elide;
@@ -4085,7 +4270,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: root.is_linux ? Tr.system_portal : scr.resolution;
                                                 color: AppTheme.text-subtle;
-                                                font-size: 10px;
+                                                font-size: TypeScale.micro;
                                                 horizontal-alignment: center;
                                                 overflow: elide;
                                             }
@@ -4151,7 +4336,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: win.title;
                                                 color: root.stream_selected_source_index == idx ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 overflow: elide;
@@ -4160,7 +4345,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: win.app_name;
                                                 color: AppTheme.text-subtle;
-                                                font-size: 10px;
+                                                font-size: TypeScale.micro;
                                                 horizontal-alignment: center;
                                                 overflow: elide;
                                             }
@@ -4225,7 +4410,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: cam.name;
                                                 color: root.stream_selected_source_index == idx ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 overflow: elide;
@@ -4234,7 +4419,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "Webcam";
                                                 color: AppTheme.text-subtle;
-                                                font-size: 10px;
+                                                font-size: TypeScale.micro;
                                                 horizontal-alignment: center;
                                                 overflow: elide;
                                             }
@@ -4261,7 +4446,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.no_camera;
                                                 color: AppTheme.text-muted;
-                                                font-size: 12px;
+                                                font-size: TypeScale.small;
                                                 horizontal-alignment: center;
                                             }
                                         }
@@ -4273,7 +4458,7 @@ export component AppWindow inherits Window {
                             if root.stream_source_tab != "cameras": Text {
                                 text: Tr.stream_quality;
                                 color: AppTheme.text-secondary;
-                                font-size: 11px;
+                                font-size: TypeScale.caption;
                                 font-weight: 800;
                             }
 
@@ -4285,7 +4470,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: Tr.resolution;
                                     color: AppTheme.text-muted;
-                                    font-size: 10px;
+                                    font-size: TypeScale.micro;
                                     font-weight: 700;
                                 }
 
@@ -4306,7 +4491,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "1080p (1920×1080)";
                                                 color: root.stream_selected_res == "1080p" ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -4332,7 +4517,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "720p (1280×720)";
                                                 color: root.stream_selected_res == "720p" ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -4358,7 +4543,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "480p (854×480)";
                                                 color: root.stream_selected_res == "480p" ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -4381,7 +4566,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: Tr.frame_rate;
                                     color: AppTheme.text-muted;
-                                    font-size: 10px;
+                                    font-size: TypeScale.micro;
                                     font-weight: 700;
                                 }
 
@@ -4402,7 +4587,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "60 FPS";
                                                 color: root.stream_selected_fps == 60 ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -4428,7 +4613,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "30 FPS";
                                                 color: root.stream_selected_fps == 30 ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -4454,7 +4639,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "15 FPS";
                                                 color: root.stream_selected_fps == 15 ? AppTheme.text-strong : AppTheme.text-primary;
-                                                font-size: 11px;
+                                                font-size: TypeScale.caption;
                                                 font-weight: 700;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -4499,7 +4684,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: Tr.webcam_native;
                                             color: AppTheme.text-muted;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                         }
                                     }
                                 }
@@ -4540,14 +4725,14 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.stream_pc_audio;
                                                 color: AppTheme.text-strong;
-                                                font-size: 12px;
+                                                font-size: TypeScale.small;
                                                 font-weight: 700;
                                             }
 
                                             Text {
                                                 text: Tr.stream_pc_audio_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 10px;
+                                                font-size: TypeScale.micro;
                                             }
                                         }
                                     }
@@ -4618,14 +4803,14 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.browser_stream;
                                                 color: AppTheme.text-strong;
-                                                font-size: 12px;
+                                                font-size: TypeScale.small;
                                                 font-weight: 700;
                                             }
 
                                             Text {
                                                 text: Tr.browser_stream_desc;
                                                 color: AppTheme.text-muted;
-                                                font-size: 10px;
+                                                font-size: TypeScale.micro;
                                             }
                                         }
                                     }
@@ -4658,7 +4843,7 @@ export component AppWindow inherits Window {
                                                 Text {
                                                     text: Tr.open;
                                                     color: AppTheme.text-on-accent;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -4706,14 +4891,14 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: Tr.direct_camera;
                                             color: AppTheme.text-strong;
-                                            font-size: 12px;
+                                            font-size: TypeScale.small;
                                             font-weight: 700;
                                         }
 
                                         Text {
                                             text: Tr.direct_camera_desc;
                                             color: AppTheme.text-muted;
-                                            font-size: 10px;
+                                            font-size: TypeScale.micro;
                                         }
                                     }
                                 }
@@ -4744,7 +4929,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.cancel;
                                                 color: AppTheme.text-primary;
-                                                font-size: 13px;
+                                                font-size: TypeScale.body;
                                                 font-weight: 600;
                                                 vertical-alignment: center;
                                             }
@@ -4785,7 +4970,7 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: Tr.start_stream;
                                                 color: AppTheme.text-on-accent;
-                                                font-size: 13px;
+                                                font-size: TypeScale.body;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
                                             }
@@ -4860,13 +5045,13 @@ export component AppWindow inherits Window {
                     Text {
                         text: Tr.incoming_call;
                         color: AppTheme.text-muted;
-                        font-size: 11px;
+                        font-size: TypeScale.caption;
                         font-weight: 600;
                     }
                     Text {
                         text: root.incoming_call_caller_name;
                         color: AppTheme.text-strong;
-                        font-size: 14px;
+                        font-size: TypeScale.title;
                         font-weight: 700;
                         overflow: elide;
                     }
@@ -4902,7 +5087,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: Tr.answer;
                                 color: #ffffff;
-                                font-size: 13px;
+                                font-size: TypeScale.body;
                                 font-weight: 700;
                             }
                         }
@@ -4938,7 +5123,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: Tr.decline;
                                 color: #ffffff;
-                                font-size: 13px;
+                                font-size: TypeScale.body;
                                 font-weight: 700;
                             }
                         }
@@ -4964,7 +5149,7 @@ export component PopoutStreamWindow inherits Window {
     preferred-height: 360px;
     min-width: 180px;
     min-height: 100px;
-    default-font-family: "Segoe UI, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+    default-font-family: TypeScale.family;
 
     // Visual boundary border
     Rectangle {
@@ -5077,7 +5262,7 @@ export component PopoutStreamWindow inherits Window {
                             Text {
                                 text: Tr.live_badge;
                                 color: AppTheme.text-on-accent;
-                                font-size: 10px;
+                                font-size: TypeScale.micro;
                                 font-weight: 800;
                                 vertical-alignment: center;
                             }
@@ -5110,7 +5295,7 @@ export component PopoutStreamWindow inherits Window {
                             Text {
                                 text: root.stream_fps;
                                 color: AppTheme.success;
-                                font-size: 10px;
+                                font-size: TypeScale.micro;
                                 font-weight: 800;
                                 vertical-alignment: center;
                             }
@@ -5124,7 +5309,7 @@ export component PopoutStreamWindow inherits Window {
                     Text {
                         text: root.username;
                         color: AppTheme.text-strong;
-                        font-size: 12px;
+                        font-size: TypeScale.small;
                         font-weight: 700;
                         vertical-alignment: center;
                         overflow: elide;
@@ -5188,7 +5373,7 @@ export component PopoutStreamWindow inherits Window {
                         Text {
                             text: "\{Math.round(root.stream_volume * 100)}%";
                             color: AppTheme.text-muted;
-                            font-size: 10px;
+                            font-size: TypeScale.micro;
                             font-weight: 700;
                             vertical-alignment: center;
                         }
@@ -5357,7 +5542,7 @@ export component PopoutStreamWindow inherits Window {
             Text {
                 text: Tr.preview_reduced;
                 color: AppTheme.text-primary;
-                font-size: 10px;
+                font-size: TypeScale.micro;
                 font-weight: 600;
                 vertical-alignment: center;
                 overflow: elide;

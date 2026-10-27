@@ -26,8 +26,8 @@ use serde_json::{json, Value};
 
 use super::i18n::{self, Language};
 
-const CHROME_VERSION: &str = "127.0.0.0";
-const CLIENT_BUILD_NUMBER: u32 = 320000;
+const CHROME_VERSION: &str = "157.0.0.0";
+const CLIENT_BUILD_NUMBER: u32 = 650389;
 
 #[cfg(target_os = "windows")]
 const OS_NAME: &str = "Windows";

@@ -50,19 +50,41 @@ impl DiscordHttpClient {
         }
     }
 
+    /// The server list is fetched once at startup and nothing fetches it again, so a
+    /// passing Discord error (a 5xx, a dropped connection) used to leave the sidebar
+    /// empty for the whole session. Those are retried with a growing pause; any other
+    /// status, such as a refused token, is returned at once.
     pub async fn get_user_guilds(&self) -> Result<Vec<serde_json::Value>, String> {
+        const RETRY_DELAYS_MS: [u64; 3] = [1_000, 3_000, 8_000];
+        let mut attempt = 0;
+        loop {
+            let (result, transient) = self.get_user_guilds_once().await;
+            match result {
+                Ok(guilds) => return Ok(guilds),
+                Err(e) if transient && attempt < RETRY_DELAYS_MS.len() => {
+                    warn!("Lista de servidores falhou ({}), tentando de novo em {} ms", e, RETRY_DELAYS_MS[attempt]);
+                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn get_user_guilds_once(&self) -> (Result<Vec<serde_json::Value>, String>, bool) {
         let url = "https://discord.com/api/v10/users/@me/guilds";
         match self.client.get(url).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
                     if let Ok(guilds) = resp.json::<Vec<serde_json::Value>>().await {
-                        return Ok(guilds);
+                        return (Ok(guilds), false);
                     }
                 }
-                Err(format!("Status HTTP {}", status))
+                let transient = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                (Err(format!("Status HTTP {}", status)), transient)
             }
-            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+            Err(e) => (Err(format!("Erro HTTP: {:?}", e)), true),
         }
     }
 
@@ -115,14 +137,25 @@ impl DiscordHttpClient {
     }
 
     pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
-        let user = self.get_current_user().await?;
-        let user_id = user["id"].as_str().ok_or("Missing current user id")?;
+        if let Some(permissions) = crate::channel_permissions::cached(guild_id) {
+            return Ok(permissions);
+        }
+        // The gateway already said who the user is; asking again cost a round trip.
+        let user_id = match crate::gateway::get_my_user_id() {
+            0 => {
+                let user = self.get_current_user().await?;
+                user["id"].as_str().ok_or("Missing current user id")?.to_string()
+            }
+            id => id.to_string(),
+        };
         let guild_url = format!("https://discord.com/api/v10/guilds/{}", guild_id);
         let member_url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
         let (guild, member) = tokio::try_join!(
             self.get_permission_data(&guild_url), self.get_permission_data(&member_url)
         )?;
-        crate::channel_permissions::ChannelPermissions::new(&guild, &member, user_id)
+        let permissions = crate::channel_permissions::ChannelPermissions::new(&guild, &member, &user_id)?;
+        crate::channel_permissions::remember(&permissions);
+        Ok(permissions)
     }
 
     async fn get_permission_data(&self, url: &str) -> Result<serde_json::Value, String> {
@@ -228,6 +261,17 @@ impl DiscordHttpClient {
                 Err(err)
             }
         }
+    }
+
+    /// A scheduled event of a server the user is in, with its interested count.
+    pub async fn get_scheduled_event(&self, guild_id: &str, event_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{guild_id}/scheduled-events/{event_id}?with_user_count=true");
+        let resp = self.client.get(&url).send().await.map_err(|e| format!("Erro HTTP: {:?}", e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("Status HTTP {}", status));
+        }
+        resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON: {:?}", e))
     }
 
     pub async fn get_user_profile(&self, user_id: &str) -> Result<serde_json::Value, String> {

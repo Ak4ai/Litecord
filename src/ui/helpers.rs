@@ -229,6 +229,7 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     ui.set_current_language_code(lang.code().into());
     i18n_ui::set_current(resolved);
     i18n_ui::apply_to_window(ui, i18n_ui::table_for(resolved));
+    crate::ui::message_grouping::relabel_day_separators(&ui.get_messages());
     ui.set_tr_login_title(tr.login_title.into());
     ui.set_tr_login_desc(tr.login_desc.into());
     ui.set_tr_login_placeholder(tr.login_placeholder.into());
@@ -492,6 +493,66 @@ pub fn refresh_stream_capture_status(ui: &AppWindow) {
         format!("{}: {} · {} · {}", text.gpu_capture_now, gpu, backend, path)
     }).unwrap_or_default();
     ui.set_stream_capture_status(value.into());
+}
+
+pub fn populate_voice_processing_settings(ui: &AppWindow) {
+    let ns = video_settings::get_noise_suppression();
+    let aec = video_settings::get_echo_cancellation();
+    let agc = video_settings::get_automatic_gain_control();
+
+    ui.set_echo_cancellation(aec);
+    ui.set_automatic_gain_control(agc);
+
+    let lang = i18n::load_persisted_language_config();
+    let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
+        i18n::Language::English => (
+            "Advanced Suppression",
+            "Deep neural network background noise removal and transient filtering.",
+            "Standard (RNNoise)",
+            "Classic recurrent neural network noise reduction.",
+            "Disabled (Default)",
+            "No noise suppression applied to microphone."
+        ),
+        i18n::Language::Spanish => (
+            "Supresión avanzada",
+            "Supresión por red neuronal profunda y filtrado de transientes.",
+            "Estándar (RNNoise)",
+            "Reducción de ruido clásica basada en red neuronal recurrente.",
+            "Desactivado (Predeterminado)",
+            "Sin procesamiento de supresión de ruido en el micrófono."
+        ),
+        _ => (
+            "Supressão Avançada",
+            "Supressão por rede neural profunda e filtragem de transientes.",
+            "Padrão (RNNoise)",
+            "Redução de ruído clássica baseada em rede neural recorrente.",
+            "Desativado (Padrão)",
+            "Sem processamento de supressão de ruído no microfone."
+        ),
+    };
+
+    let ns_items = vec![
+        SettingOptionItem {
+            id: "advanced".into(),
+            name: adv_name.into(),
+            desc: adv_desc.into(),
+            is_selected: ns == "advanced" || ns == "krisp",
+        },
+        SettingOptionItem {
+            id: "standard".into(),
+            name: std_name.into(),
+            desc: std_desc.into(),
+            is_selected: ns == "standard",
+        },
+        SettingOptionItem {
+            id: "none".into(),
+            name: off_name.into(),
+            desc: off_desc.into(),
+            is_selected: ns == "none" || ns.is_empty(),
+        },
+    ];
+
+    ui.set_noise_suppression_options(std::rc::Rc::new(slint::VecModel::from(ns_items)).into());
 }
 
 pub fn populate_network_proxy_settings(ui: &AppWindow) {
@@ -969,7 +1030,7 @@ pub fn build_ui_channels(
             let has_separator = category_count > 1;
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
-                name: ch.name.clone().into(),
+                name: crate::utils::styled_text::plain_display_name(&ch.name).as_ref().into(),
                 is_voice: false,
                 voice_count: 0,
                 is_voice_member: false,
@@ -982,6 +1043,7 @@ pub fn build_ui_channels(
                 is_collapsed,
                 has_separator,
                 unread_count: 0,
+                ..crate::ui::helpers::channel_emoji_fields(&crate::utils::styled_text::plain_display_name(&ch.name))
             });
         } else {
             if let Some(ref pid) = ch.parent_id {
@@ -997,7 +1059,7 @@ pub fn build_ui_channels(
             let vcount = voice_participants.len() as i32;
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
-                name: ch.name.clone().into(),
+                name: crate::utils::styled_text::plain_display_name(&ch.name).as_ref().into(),
                 is_voice: ch.is_voice,
                 voice_count: vcount,
                 is_voice_member: false,
@@ -1010,6 +1072,7 @@ pub fn build_ui_channels(
                 is_collapsed: false,
                 has_separator: false,
                 unread_count: 0,
+                ..crate::ui::helpers::channel_emoji_fields(&crate::utils::styled_text::plain_display_name(&ch.name))
             });
 
             for (user_id, name) in voice_participants {
@@ -1022,7 +1085,7 @@ pub fn build_ui_channels(
                     .collect();
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
-                    name: name.into(),
+                    name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: true,
@@ -1035,6 +1098,7 @@ pub fn build_ui_channels(
                     is_collapsed: false,
                     has_separator: false,
                     unread_count: 0,
+                    ..Default::default()
                 });
             }
         }
@@ -1170,5 +1234,83 @@ mod hidden_activity_tests {
             vec![("b".to_string(), 1), ("a".to_string(), 2), ("c".to_string(), 0)]
         );
         assert!(take_hidden_channel_activity().is_empty());
+    }
+}
+
+const CHANNEL_EMOJI_SLOTS: usize = 128;
+
+/// Window and image pool of the channel list's emoji. `ChannelItem` rows are built off
+/// the UI thread too, and an image cannot cross threads, so a row holds a slot number
+/// and the images live in `channel_emoji_pool`, filled on the UI thread.
+static CHANNEL_EMOJI_APP: std::sync::Mutex<Option<slint::Weak<AppWindow>>> = std::sync::Mutex::new(None);
+static CHANNEL_EMOJI_SLOT_OF: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, i32>>> =
+    std::sync::OnceLock::new();
+
+/// Must run on the UI thread: installs the image pool.
+pub fn set_channel_emoji_app(app: slint::Weak<AppWindow>) {
+    if let Some(ui) = app.upgrade() {
+        let pool = std::rc::Rc::new(slint::VecModel::from(vec![slint::Image::default(); CHANNEL_EMOJI_SLOTS]));
+        ui.set_channel_emoji_pool(pool.into());
+    }
+    if let Ok(mut slot) = CHANNEL_EMOJI_APP.lock() {
+        *slot = Some(app);
+    }
+}
+
+/// Channel names often start with an emoji. No loaded font draws emoji in colour,
+/// so they showed as grey outlines; the chat already draws them as Twemoji images
+/// from the emoji cache, and the channel list now does the same. Returns the
+/// emoji fields of a `ChannelItem` (the rest default); a name without a leading
+/// emoji keeps them empty and is drawn as text.
+pub fn channel_emoji_fields(name: &str) -> ChannelItem {
+    let trimmed = name.trim_start();
+    let Some((0, len, _, emoji_id)) = gateway::formatting::find_next_unicode_emoji(trimmed) else {
+        return ChannelItem::default();
+    };
+    let (slot, is_new) = {
+        let mut slots = CHANNEL_EMOJI_SLOT_OF.get_or_init(Default::default).lock().unwrap();
+        match slots.get(&emoji_id) {
+            Some(slot) => (*slot, false),
+            None if slots.len() < CHANNEL_EMOJI_SLOTS => {
+                let slot = slots.len() as i32;
+                slots.insert(emoji_id.clone(), slot);
+                (slot, true)
+            }
+            // Pool full: this name keeps its emoji as text.
+            None => return ChannelItem::default(),
+        }
+    };
+    if is_new {
+        let app = CHANNEL_EMOJI_APP.lock().ok().and_then(|a| a.clone());
+        let id = emoji_id.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app else { return };
+            let emoji_mgr = emoji_cache::get_emoji_cache();
+            match emoji_mgr.get(&id) {
+                Some(img) => {
+                    if let Some(ui) = app.upgrade() {
+                        refresh_channel_emoji(&ui, &id, &img);
+                    }
+                }
+                None => emoji_mgr.fetch_priority_async(&id, "", app),
+            }
+        });
+    }
+    ChannelItem {
+        label: trimmed[len..].trim_start().into(),
+        emoji_id: emoji_id.into(),
+        emoji_slot: slot,
+        ..Default::default()
+    }
+}
+
+/// Puts `emoji_id`'s image in its pool slot once it is cached.
+pub fn refresh_channel_emoji(ui: &AppWindow, emoji_id: &str, img: &slint::Image) {
+    let slot = CHANNEL_EMOJI_SLOT_OF.get().and_then(|s| s.lock().ok()?.get(emoji_id).copied());
+    if let Some(slot) = slot {
+        let pool = ui.get_channel_emoji_pool();
+        if (slot as usize) < pool.row_count() {
+            pool.set_row_data(slot as usize, img.clone());
+        }
     }
 }

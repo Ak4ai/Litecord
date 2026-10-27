@@ -229,6 +229,20 @@ pub fn vkey_to_name(vkey: i32) -> &'static str {
 /// 0 = None, 1 = Recording Mute, 2 = Recording Deafen
 pub static RECORDING_TARGET: AtomicU8 = AtomicU8::new(0);
 
+pub fn start_recording(target: u8) {
+    RECORDING_TARGET.store(target, Ordering::Relaxed);
+    wake_listener();
+}
+
+/// Wakes the Linux listener so it re-masks the mice at once (see `mask_events`).
+fn wake_listener() {
+    #[cfg(target_os = "linux")]
+    unsafe { libc::eventfd_write(*WAKE_FD, 1); }
+}
+
+#[cfg(target_os = "linux")]
+static WAKE_FD: std::sync::LazyLock<i32> = std::sync::LazyLock::new(|| unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) });
+
 /// Virtual keys of the mouse buttons a shortcut can use (right, middle, back, forward).
 pub const MOUSE_BUTTON_VKEYS: [i32; 4] = [0x02, 0x04, 0x05, 0x06];
 
@@ -262,6 +276,7 @@ impl KeybindManager {
     pub fn update_config(&self, new_cfg: KeybindsConfig) {
         save_persisted_keybinds_config(&new_cfg);
         *self.config.lock().unwrap_or_else(|e| e.into_inner()) = new_cfg;
+        wake_listener();
     }
 
     pub fn start_global_listener<FMute, FDeaf, FRecordDone>(
@@ -496,6 +511,8 @@ impl KeybindManager {
                     let mut deafen_was_pressed = false;
                     let mut last_scan = Instant::now() - Duration::from_secs(10);
                     let mut kbd_fds: Vec<i32> = Vec::new();
+                    let mut not_keyboards = Vec::new();
+                    let mut watch_mouse = false;
 
                     while is_running.load(Ordering::Relaxed) {
                         // Sleep until a keyboard reports an event (or the next device rescan is
@@ -507,16 +524,19 @@ impl KeybindManager {
                             wait_for_key_events(&kbd_fds, rescan_in);
                         }
 
+                        let watch = RECORDING_TARGET.load(Ordering::Relaxed) != 0
+                            || uses_mouse_button(&config_arc.lock().unwrap_or_else(|e| e.into_inner()));
+                        if watch != watch_mouse {
+                            watch_mouse = watch;
+                            for &fd in &kbd_fds { mask_events(fd, watch_mouse); }
+                        }
                         if kbd_fds.is_empty() || last_scan.elapsed() >= Duration::from_secs(5) {
                             last_scan = Instant::now();
-                            for fd in kbd_fds.drain(..) {
-                                unsafe { libc::close(fd); }
-                            }
-                            kbd_fds = find_keyboard_devices();
+                            find_keyboard_devices(&mut kbd_fds, &mut not_keyboards, watch_mouse);
                             if kbd_fds.is_empty() {
                                 static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                                 if !WARNED.swap(true, Ordering::Relaxed) {
-                                    log::warn!("⚠️ [KEYBINDS] Nenhum teclado com permissão de leitura em /dev/input/. Atalhos globais requerem acesso aos dispositivos de entrada.");
+                                    log::warn!("⚠️ [KEYBINDS] Nenhum teclado com permissão de leitura em /dev/input/. Atalhos globais requerem acesso aos dispositivos de entrada: sudo usermod -aG input $USER (e entre na sessão de novo).");
                                 }
                             }
                         }
@@ -703,7 +723,7 @@ impl KeybindManager {
 /// the pending events (the caller reads the key state with EVIOCGKEY afterwards).
 #[cfg(target_os = "linux")]
 fn wait_for_key_events(fds: &[i32], timeout: Duration) {
-    let mut pollfds: Vec<libc::pollfd> = fds.iter().map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let mut pollfds: Vec<libc::pollfd> = fds.iter().chain([&*WAKE_FD]).map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
     let ready = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, timeout_ms) };
     if ready <= 0 {
@@ -718,14 +738,39 @@ fn wait_for_key_events(fds: &[i32], timeout: Duration) {
     }
 }
 
+/// Only events a shortcut can use wake the listener (EVIOCSMASK): the kernel drops motion (EV_REL,
+/// EV_ABS, EV_MSC) and, on mice, every button but Mouse 2-5, and those too unless `watch_mouse`.
 #[cfg(target_os = "linux")]
-fn find_keyboard_devices() -> Vec<i32> {
-    let mut fds = Vec::new();
+fn mask_events(fd: i32, watch_mouse: bool) {
+    #[repr(C)] struct InputMask { ty: u32, size: u32, codes: u64 }
+    let set = |ty: u32, codes: &[u64]| unsafe {
+        libc::ioctl(fd, 0x40104593, &InputMask { ty, size: (codes.len() * 8) as u32, codes: codes.as_ptr() as u64 });
+    };
+    for ty in [2, 3, 4] { set(ty, &[]); }
+    let mut key_bits = [0u8; 64];
+    unsafe { libc::ioctl(fd, 0x80404521 /* EVIOCGBIT(EV_KEY) */, key_bits.as_mut_ptr()) };
+    if key_bits[30 / 8] & (1 << (30 % 8)) == 0 { // no KEY_A: a mouse
+        set(1, &[0, 0, 0, 0, if watch_mouse { 0b1111 << (273 % 64) } else { 0 }]); // BTN_RIGHT..BTN_EXTRA
+    }
+}
+
+/// Opens the keyboards and mice not open yet. Devices are known by /dev node (number + inode, so a
+/// replugged one is new) and non-keyboards are remembered, so a rescan opens and closes nothing:
+/// every evdev close waits for an RCU grace period, and keys tapped meanwhile were lost.
+#[cfg(target_os = "linux")]
+fn find_keyboard_devices(fds: &mut Vec<i32>, not_keyboards: &mut Vec<(u64, u64)>, watch_mouse: bool) {
+    use std::os::unix::fs::MetadataExt;
+    let open: Vec<_> = fds.iter().filter_map(|fd| std::fs::metadata(format!("/proc/self/fd/{fd}")).ok()).map(|m| (m.rdev(), m.ino())).collect();
+    let known = std::mem::take(not_keyboards);
     if let Ok(entries) = std::fs::read_dir("/dev/input") {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.starts_with("event") {
+                    let Ok(meta) = std::fs::metadata(&path) else { continue };
+                    let id = (meta.rdev(), meta.ino());
+                    if known.contains(&id) { not_keyboards.push(id); continue; }
+                    if open.contains(&id) { continue; }
                     if let Ok(c_path) = std::ffi::CString::new(path.to_str().unwrap_or("")) {
                         let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
                         if fd >= 0 {
@@ -733,10 +778,14 @@ fn find_keyboard_devices() -> Vec<i32> {
                             const EVIOCGBIT_KEY_64: u64 = 0x80404521;
                             let res = unsafe { libc::ioctl(fd, EVIOCGBIT_KEY_64 as _, key_bits.as_mut_ptr()) };
                             const KEY_A: usize = 30;
-                            let is_kbd = res >= 0 && (key_bits[KEY_A / 8] & (1 << (KEY_A % 8))) != 0;
+                            const BTN_RIGHT: usize = 273;
+                            let has = |code: usize| (key_bits[code / 8] & (1 << (code % 8))) != 0;
+                            let is_kbd = res >= 0 && (has(KEY_A) || has(BTN_RIGHT));
                             if is_kbd {
+                                mask_events(fd, watch_mouse);
                                 fds.push(fd);
                             } else {
+                                if res >= 0 { not_keyboards.push(id); }
                                 unsafe { libc::close(fd); }
                             }
                         }
@@ -745,7 +794,6 @@ fn find_keyboard_devices() -> Vec<i32> {
             }
         }
     }
-    fds
 }
 
 #[cfg(target_os = "linux")]
@@ -775,6 +823,7 @@ pub fn vk_to_evdev_code(vk: i32) -> Option<u16> {
         0xC0 => Some(41), 0xBD => Some(12), 0xBB => Some(13), 0xDB => Some(26),
         0xDD => Some(27), 0xBA => Some(39), 0xDE => Some(40), 0xBC => Some(51),
         0xBE => Some(52), 0xBF => Some(53), 0xDC => Some(43),
+        0x02 => Some(273), 0x04 => Some(274), 0x05 => Some(275), 0x06 => Some(276),
         _ => None,
     }
 }
@@ -806,6 +855,7 @@ pub fn evdev_code_to_vk(code: u16) -> Option<i32> {
         41 => Some(0xC0), 12 => Some(0xBD), 13 => Some(0xBB), 26 => Some(0xDB),
         27 => Some(0xDD), 39 => Some(0xBA), 40 => Some(0xDE), 51 => Some(0xBC),
         52 => Some(0xBE), 53 => Some(0xBF), 43 => Some(0xDC),
+        273 => Some(0x02), 274 => Some(0x04), 275 => Some(0x05), 276 => Some(0x06),
         _ => None,
     }
 }
@@ -818,6 +868,7 @@ const CANDIDATE_EVDEV_KEYS: &[u16] = &[
     82, 79, 80, 81, 75, 76, 77, 71, 72, 73, 55, 78, 74, 98,
     57, 15, 1, 110, 111, 102, 107, 104, 109, 103, 108, 105, 106, 58, 119, 70,
     41, 12, 13, 26, 27, 39, 40, 51, 52, 53, 43,
+    273, 274, 275, 276, // mouse buttons (not the left one)
 ];
 
 /// Creates a message-only window that receives raw keyboard input from the whole

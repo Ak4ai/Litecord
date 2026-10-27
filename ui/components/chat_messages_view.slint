@@ -1,10 +1,27 @@
 import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
-import { AppTheme, ChatTypography } from "../theme.slint";
+import { AppTheme, ChatTypography , TypeScale } from "../theme.slint";
 import { Tr } from "tr.slint";
 
 export struct LinkItem {
     label: string,
     url: string,
+}
+
+export struct InviteCard {
+    code: string,
+    url: string,
+    loaded: bool,
+    guild_name: string,
+    description: string,
+    counts: string,
+    has_icon: bool,
+    icon_img: image,
+    // Scheduled event cards (discord.com/events/… links) reuse the struct.
+    is_event: bool,
+    event_when: string,
+    event_live: bool,
+    has_cover: bool,
+    cover_img: image,
 }
 
 export struct MessageBlock {
@@ -74,6 +91,7 @@ export struct ChatMessage {
     links: [LinkItem],
     buttons: [MessageButton],
     attachments: [MessageAttachment],
+    invites: [InviteCard],
 }
 
 export component ChatMessagesView inherits Rectangle {
@@ -148,7 +166,7 @@ export component ChatMessagesView inherits Rectangle {
                         Text {
                             text: root.is_loading_older_messages ? Tr.loading_older : Tr.load_older;
                             color: AppTheme.accent;
-                            font-size: 11px;
+                            font-size: TypeScale.caption;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -172,7 +190,7 @@ export component ChatMessagesView inherits Rectangle {
                     spacing: 10px;
                     alignment: center;
                     Rectangle { height: 1px; background: AppTheme.separator; horizontal-stretch: 1; }
-                    Text { text: msg.day_label; color: AppTheme.text-muted; font-size: 11px; font-weight: 600; }
+                    Text { text: msg.day_label; color: AppTheme.text-muted; font-size: TypeScale.caption; font-weight: 600; }
                     Rectangle { height: 1px; background: AppTheme.separator; horizontal-stretch: 1; }
                 }
 
@@ -197,7 +215,7 @@ export component ChatMessagesView inherits Rectangle {
                     width: 42px;
                     text: msg.hover_timestamp;
                     color: AppTheme.text-subtle;
-                    font-size: 10px;
+                    font-size: TypeScale.micro;
                     horizontal-alignment: right;
                 }
 
@@ -212,7 +230,7 @@ export component ChatMessagesView inherits Rectangle {
                     Text {
                         text: msg.avatar_initial;
                         color: AppTheme.text-secondary;
-                        font-size: 13px;
+                        font-size: TypeScale.body;
                         font-weight: 700;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -270,7 +288,7 @@ export component ChatMessagesView inherits Rectangle {
                                 if msg.reply-command != "": Text {
                                     text: Tr.used_command;
                                     color: AppTheme.text-reply;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     vertical-alignment: center;
                                 }
 
@@ -288,7 +306,7 @@ export component ChatMessagesView inherits Rectangle {
                                         Text {
                                             text: msg.reply-command;
                                             color: rep_cmd_ta.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                            font-size: 11px;
+                                            font-size: TypeScale.caption;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -330,7 +348,7 @@ export component ChatMessagesView inherits Rectangle {
                                 Text {
                                     text: "APP";
                                     color: AppTheme.text-on-accent;
-                                    font-size: 9px;
+                                    font-size: TypeScale.micro;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
@@ -340,7 +358,7 @@ export component ChatMessagesView inherits Rectangle {
                             text: msg.timestamp;
                             color: AppTheme.text-subtle;
                             font-family: ChatTypography.family;
-                            font-size: 10px;
+                            font-size: TypeScale.micro;
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -441,7 +459,7 @@ export component ChatMessagesView inherits Rectangle {
                                         Text {
                                             text: line.blocks[0].text;
                                             color: cmd_ta_single.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                            font-size: 12px;
+                                            font-size: TypeScale.small;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
@@ -492,7 +510,7 @@ export component ChatMessagesView inherits Rectangle {
                                                 Text {
                                                     text: block.text;
                                                     color: cmd_ta_mix.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                                    font-size: 12px;
+                                                    font-size: TypeScale.small;
                                                     font-weight: 700;
                                                     vertical-alignment: center;
                                                 }
@@ -529,7 +547,7 @@ export component ChatMessagesView inherits Rectangle {
                                                     text: block.text;
                                                     color: block_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                     font-family: ChatTypography.family;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                     overflow: elide;
@@ -589,7 +607,7 @@ export component ChatMessagesView inherits Rectangle {
                                 text: msg.code-block;
                                 color: AppTheme.success;
                                 font-family: "Courier New";
-                                font-size: 12.5px;
+                                font-size: TypeScale.small;
                                 wrap: word-wrap;
                             }
                         }
@@ -686,7 +704,7 @@ export component ChatMessagesView inherits Rectangle {
                                                     Text {
                                                         text: line.blocks[0].text;
                                                         color: ecmd_ta_single.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                                        font-size: 11px;
+                                                        font-size: TypeScale.caption;
                                                         font-weight: 700;
                                                         vertical-alignment: center;
                                                     }
@@ -722,7 +740,7 @@ export component ChatMessagesView inherits Rectangle {
                                                             Text {
                                                                 text: block.text;
                                                                 color: ecmd_ta_mix.has-hover ? AppTheme.text-on-accent : AppTheme.accent-link-hover;
-                                                                font-size: 11px;
+                                                                font-size: TypeScale.caption;
                                                                 font-weight: 700;
                                                                 vertical-alignment: center;
                                                             }
@@ -749,7 +767,7 @@ export component ChatMessagesView inherits Rectangle {
                                                                 text: block.text;
                                                                 color: eblock_ta_mix.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                                                 font-family: ChatTypography.family;
-                                                                font-size: 12px;
+                                                                font-size: TypeScale.small;
                                                                 font-weight: 600;
                                                                 vertical-alignment: center;
                                                                 overflow: elide;
@@ -813,7 +831,7 @@ export component ChatMessagesView inherits Rectangle {
                                     text: msg.embed-footer;
                                     color: AppTheme.text-muted;
                                     font-family: ChatTypography.family;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     wrap: word-wrap;
                                 }
                             }
@@ -866,7 +884,7 @@ export component ChatMessagesView inherits Rectangle {
                                     alignment: center;
                                     Text {
                                         text: btn.emoji;
-                                        font-size: 13px;
+                                        font-size: TypeScale.body;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -874,7 +892,7 @@ export component ChatMessagesView inherits Rectangle {
                                 Text {
                                     text: btn.label;
                                     color: btn.is_disabled ? AppTheme.text-subtle : AppTheme.text-on-accent;
-                                    font-size: 12px;
+                                    font-size: TypeScale.small;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
@@ -897,6 +915,156 @@ export component ChatMessagesView inherits Rectangle {
                                 clicked => {
                                     if btn.url != "" {
                                         root.open_link(btn.url);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Server invite cards (discord.gg/… links), filled in once the invite is fetched.
+                    if msg.invites.length > 0: VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        alignment: start;
+
+                        for invite in msg.invites: HorizontalLayout {
+                            alignment: start;
+                            // Scheduled event: cover, when it starts, title, description.
+                            if invite.is_event: Rectangle {
+                                width: 400px;
+                                background: AppTheme.surface-elevated;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                clip: true;
+                                VerticalLayout {
+                                    if invite.has_cover: Image {
+                                        width: 400px;
+                                        height: 160px;
+                                        source: invite.cover_img;
+                                        image-fit: cover;
+                                    }
+                                    VerticalLayout {
+                                        padding: 12px;
+                                        spacing: 4px;
+                                        Text {
+                                            text: invite.loaded ? invite.event_when : Tr.invite_loading;
+                                            color: invite.event_live ? #16a34a : AppTheme.accent;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                        }
+                                        if invite.loaded: Text {
+                                            text: invite.guild_name;
+                                            color: AppTheme.text-strong;
+                                            font-family: ChatTypography.family;
+                                            font-size: 16px;
+                                            font-weight: 700;
+                                            wrap: word-wrap;
+                                        }
+                                        if invite.description != "": Text {
+                                            text: invite.description;
+                                            color: AppTheme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                            max-height: 48px;
+                                            overflow: elide;
+                                        }
+                                        HorizontalLayout {
+                                            padding-top: 6px;
+                                            spacing: 8px;
+                                            Text {
+                                                text: invite.counts;
+                                                color: AppTheme.text-muted;
+                                                font-size: 12px;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                            Rectangle {
+                                                width: 104px;
+                                                height: 32px;
+                                                border-radius: 4px;
+                                                background: event_ta.has-hover ? #15803d : #16a34a;
+                                                Text {
+                                                    text: Tr.event_view;
+                                                    color: AppTheme.text-on-accent;
+                                                    font-size: 13px;
+                                                    font-weight: 600;
+                                                }
+                                                event_ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.open_link(invite.url); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !invite.is_event: Rectangle {
+                                width: 400px;
+                                background: AppTheme.surface-elevated;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                HorizontalLayout {
+                                    padding: 12px;
+                                    spacing: 12px;
+                                    Rectangle {
+                                        width: 48px;
+                                        height: 48px;
+                                        border-radius: 16px;
+                                        background: AppTheme.surface-control;
+                                        if invite.has_icon: Image {
+                                            width: 48px;
+                                            height: 48px;
+                                            source: invite.icon_img;
+                                            image-fit: cover;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text {
+                                            text: invite.loaded ? invite.guild_name : Tr.invite_loading;
+                                            color: AppTheme.text-strong;
+                                            font-family: ChatTypography.family;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                        if invite.counts != "": Text {
+                                            text: invite.counts;
+                                            color: AppTheme.text-muted;
+                                            font-size: 12px;
+                                            overflow: elide;
+                                        }
+                                        if invite.description != "": Text {
+                                            text: invite.description;
+                                            color: AppTheme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                            max-height: 32px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 76px;
+                                            height: 32px;
+                                            border-radius: 4px;
+                                            background: join_ta.has-hover ? #15803d : #16a34a;
+                                            Text {
+                                                text: Tr.invite_join;
+                                                color: AppTheme.text-on-accent;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                            }
+                                            join_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.open_link(invite.url); }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -976,7 +1144,7 @@ export component ChatMessagesView inherits Rectangle {
                                                 Text {
                                                     text: att.is_loading ? Tr.downloading : (att.size_str != "" ? (Tr.download_image_size + att.size_str + ")") : Tr.download_image);
                                                     color: AppTheme.text-on-accent;
-                                                    font-size: 13px;
+                                                    font-size: TypeScale.body;
                                                     font-weight: 600;
                                                     vertical-alignment: center;
                                                 }
@@ -1013,7 +1181,7 @@ export component ChatMessagesView inherits Rectangle {
                                     horizontal-stretch: 1;
                                     text: att.filename;
                                     color: AppTheme.accent-link-hover;
-                                    font-size: 13px;
+                                    font-size: TypeScale.body;
                                     overflow: elide;
                                     vertical-alignment: center;
                                 }
@@ -1021,7 +1189,7 @@ export component ChatMessagesView inherits Rectangle {
                                 Text {
                                     text: att.size_str;
                                     color: AppTheme.text-muted;
-                                    font-size: 11px;
+                                    font-size: TypeScale.caption;
                                     vertical-alignment: center;
                                 }
 
@@ -1059,7 +1227,7 @@ export component ChatMessagesView inherits Rectangle {
                                     text: link.label;
                                     color: link_ta.has-hover ? AppTheme.accent-link-hover : AppTheme.link;
                                     vertical-alignment: center;
-                                    font-size: 12.5px;
+                                    font-size: TypeScale.small;
                                     font-weight: 500;
                                 }
                             }

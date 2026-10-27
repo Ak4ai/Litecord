@@ -19,7 +19,7 @@ pub fn clean_discord_whitespace(input: &str) -> String {
                 // skip
             }
             _ => {
-                out.push(c);
+                out.push(crate::utils::styled_text::plain_letter(c).unwrap_or(c));
             }
         }
     }
@@ -221,7 +221,7 @@ fn apply_inline_markdown(input: &str) -> String {
         }
     });
     // <#CHANNEL_ID> — channel mentions
-    s = regex_replace_simple(&s, "<#", ">", |_inner| "#canal".to_string());
+    s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
 
     // <:name:ID> — custom emoji
     s = regex_replace_simple(&s, "<a:", ">", |inner| {
@@ -381,7 +381,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let author_obj = &m["author"];
     let name = author_obj["global_name"].as_str()
         .unwrap_or_else(|| author_obj["username"].as_str().unwrap_or("Unknown"));
-    name.to_string()
+    crate::utils::styled_text::plain_display_name(name).into_owned()
 }
 
 pub fn is_emoji_char(c: char) -> bool {
@@ -509,7 +509,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         return lines;
     }
 
-    let cleaned = clean_discord_whitespace(input);
+    let cleaned = clean_discord_whitespace(&super::channel_names::link_channel_mentions(input));
 
     for raw_line in cleaned.split('\n') {
         let trimmed_line = raw_line.trim_start();
@@ -600,7 +600,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         let after_label = &after_bracket[bracket_end + 1..];
                         if after_label.starts_with('(') {
                             if let Some(paren_end) = after_label.find(')') {
-                                let url = &after_label[1..paren_end];
+                                // `[label](<url>)` is Discord's link without an embed preview.
+                                let url = after_label[1..paren_end].trim().trim_start_matches('<').trim_end_matches('>');
                                 if url.starts_with("http") {
                                     let mut next_rem = &after_label[paren_end + 1..];
                                     let is_bold_wrapped = before.ends_with("**") && next_rem.starts_with("**");
@@ -778,7 +779,18 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                     }
 
                     if raw_url.len() > 8 {
-                        if !before.is_empty() {
+                        // `<https://…>` (spaces allowed inside) is a link without a preview:
+                        // the brackets are markup, not text.
+                        let mut before = before;
+                        let mut after_url = &rem[first_idx + raw_url.len()..];
+                        if let (Some(b), Some(a)) = (
+                            before.trim_end().strip_suffix('<'),
+                            after_url.trim_start().strip_prefix('>'),
+                        ) {
+                            before = b;
+                            after_url = a;
+                        }
+                        if !before.trim().is_empty() {
                             line_blocks.push(MessageBlockData {
                                 text: parse_discord_markdown(before),
                                 is_link: false,
@@ -804,7 +816,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: raw_url.to_string(),
                             });
                         }
-                        rem = &rem[first_idx + raw_url.len()..];
+                        rem = after_url;
                     } else {
                         let slice_len = first_idx + 4;
                         line_blocks.push(MessageBlockData {
@@ -853,11 +865,42 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         }
 
         if !line_blocks.is_empty() {
-            lines.push(MessageLineData { blocks: line_blocks });
+            push_line_split_long_text(line_blocks, &mut lines);
         }
     }
 
     lines
+}
+
+/// Slint has no inline text flow: a mixed line is a HorizontalLayout, and a long
+/// word-wrapped Text squeezed between links collapses to one letter per row.
+/// Long text blocks of a mixed line therefore get a row of their own, where they
+/// wrap at full width; short text stays inline with its links and emojis.
+fn push_line_split_long_text(blocks: Vec<MessageBlockData>, lines: &mut Vec<MessageLineData>) {
+    const INLINE_TEXT_MAX_CHARS: usize = 40;
+
+    if blocks.len() <= 1 {
+        lines.push(MessageLineData { blocks });
+        return;
+    }
+
+    let mut row: Vec<MessageBlockData> = Vec::new();
+    for block in blocks {
+        let is_plain_text = !block.is_link && !block.is_command && !block.is_emoji;
+        if is_plain_text && block.text.chars().count() > INLINE_TEXT_MAX_CHARS {
+            if !row.is_empty() {
+                lines.push(MessageLineData { blocks: std::mem::take(&mut row) });
+            }
+            let mut block = block;
+            block.text = block.text.trim().to_string();
+            lines.push(MessageLineData { blocks: vec![block] });
+        } else {
+            row.push(block);
+        }
+    }
+    if !row.is_empty() {
+        lines.push(MessageLineData { blocks: row });
+    }
 }
 
 pub fn format_decimal_color(color_val: &Value) -> String {
@@ -1079,8 +1122,44 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
         reply_command = cmd_str;
     }
 
-    // 1. Raw Text Content — parsed into lines and regular text
     let mut code_block = String::new();
+
+    // Handle forwarded messages (message_snapshots)
+    if let Some(snapshots) = m.get("message_snapshots").and_then(|s| s.as_array()) {
+        for snap in snapshots {
+            if let Some(snap_msg) = snap.get("message") {
+                let (f_content, f_cmds, f_lines, f_embed, f_elines, _, f_footer, f_code, _, _, _, f_links, f_btns, f_atts) = format_discord_message_parts(snap_msg);
+                commands.extend(f_cmds);
+                links.extend(f_links);
+                buttons.extend(f_btns);
+                attachments_list.extend(f_atts);
+                if !f_code.is_empty() && code_block.is_empty() {
+                    code_block = f_code;
+                }
+                if !f_footer.is_empty() {
+                    if embed_footer.is_empty() {
+                        embed_footer = f_footer;
+                    } else {
+                        embed_footer = format!("{}\n{}", embed_footer, f_footer);
+                    }
+                }
+                if !f_elines.is_empty() {
+                    embed_lines.extend(f_elines);
+                }
+                if !f_embed.is_empty() {
+                    embed_parts_all.push(f_embed);
+                }
+                if !f_content.is_empty() {
+                    content_parts.push(format!("↪ *[Mensagem encaminhada]*\n{}", f_content));
+                    content_lines.extend(f_lines);
+                } else if !f_lines.is_empty() {
+                    content_lines.extend(f_lines);
+                }
+            }
+        }
+    }
+
+    // 1. Raw Text Content — parsed into lines and regular text
     if let Some(content) = m["content"].as_str() {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
@@ -1246,16 +1325,46 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 }
             }
 
-            // Embed image
+            // Embed provider (e.g. Steam, Epic Games, YouTube)
+            if let Some(provider_name) = embed["provider"]["name"].as_str() {
+                if !provider_name.is_empty() && embed.get("author").is_none() {
+                    ep.insert(0, format!("🎮 *{}*", provider_name));
+                }
+            }
+
+            // Embed image (e.g. game banners, store banners)
             if let Some(img_url) = embed["image"]["url"].as_str() {
                 if !img_url.is_empty() {
+                    let proxy_img = embed["image"]["proxy_url"].as_str().unwrap_or(img_url);
+                    let w = embed["image"]["width"].as_i64().unwrap_or(0) as i32;
+                    let h = embed["image"]["height"].as_i64().unwrap_or(0) as i32;
                     links.push(LinkData {
                         label: "Ver Imagem do Embed".to_string(),
                         url: img_url.to_string(),
                     });
-                    if ep.is_empty() && embed.get("title").is_none() && embed.get("description").is_none() {
-                        ep.push(format!("🖼️ [Imagem: {}]", img_url));
-                    }
+                    attachments_list.push(MessageAttachmentData {
+                        id: format!("embed_img_{}", attachments_list.len()),
+                        filename: "embed_image.png".to_string(),
+                        url: img_url.to_string(),
+                        proxy_url: proxy_img.to_string(),
+                        size_bytes: 0,
+                        size_str: String::new(),
+                        width: w,
+                        height: h,
+                        content_type: "image/png".to_string(),
+                        is_image: true,
+                    });
+                }
+            }
+
+            // Embed video
+            if let Some(video_url) = embed["video"]["url"].as_str() {
+                if !video_url.is_empty() {
+                    links.push(LinkData {
+                        label: "Assistir Vídeo".to_string(),
+                        url: video_url.to_string(),
+                    });
+                    ep.push(format!("🎥 [Vídeo: {}]", video_url));
                 }
             }
 
@@ -1321,6 +1430,10 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 format!("{:.1} MB", size_bytes as f64 / (1024.0 * 1024.0))
             };
 
+            let is_voice = att.get("flags").and_then(|f| f.as_u64()).map(|f| f & 8192 != 0).unwrap_or(false)
+                || (filename.ends_with(".ogg") && content_type.starts_with("audio/"));
+            let duration_secs = att.get("duration_secs").and_then(|d| d.as_f64());
+
             let is_image = content_type.starts_with("image/") 
                 || filename.ends_with(".png") 
                 || filename.ends_with(".jpg") 
@@ -1328,7 +1441,16 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 || filename.ends_with(".webp") 
                 || filename.ends_with(".gif");
 
-            if !is_image {
+            if is_voice {
+                let dur = duration_secs.map(|d| format!(" ({:.0}s)", d)).unwrap_or_default();
+                content_parts.push(format!("🎤 [Mensagem de Voz{}]", dur));
+                if !url.is_empty() {
+                    links.push(LinkData {
+                        label: format!("▶ Ouvir Mensagem de Voz{}", dur),
+                        url: url.clone(),
+                    });
+                }
+            } else if !is_image {
                 let label = if content_type.starts_with("video/") {
                     "Video"
                 } else if content_type.starts_with("audio/") {
@@ -1443,7 +1565,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             0 => String::new(),
             1 => "[Membro adicionado ao grupo]".to_string(),
             2 => "[Membro removido do grupo]".to_string(),
-            3 => "[Chamada]".to_string(),
+            3 => "[Chamada de voz iniciada/encerrada]".to_string(),
             4 => "[Nome do canal alterado]".to_string(),
             5 => "[Ícone do canal alterado]".to_string(),
             6 => "[Mensagem Fixada]".to_string(),
@@ -1455,13 +1577,22 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             12 => "[Canal seguido adicionado]".to_string(),
             14 => "[Servidor desqualificado da descoberta]".to_string(),
             15 => "[Servidor requalificado na descoberta]".to_string(),
+            18 => "[Novo tópico criado]".to_string(),
             19 => String::new(),
             20 => String::new(),
-            21 => "[Mensagem inicial de thread]".to_string(),
+            21 => "[Mensagem inicial de tópico/fórum]".to_string(),
             22 => "[Lembrete de convite]".to_string(),
             23 => String::new(),
             24 => "[Ação do AutoMod]".to_string(),
             25 => "[Compra de assinatura de cargo]".to_string(),
+            26 => "[Oferta Nitro / Upgrade]".to_string(),
+            27..=30 => "[Transmissão de Palco iniciada/atualizada]".to_string(),
+            31 => "[Assinatura de aplicativo ativada]".to_string(),
+            32 => "[Integração de canal adicionada]".to_string(),
+            33 => "[Integração de canal removida]".to_string(),
+            36..=38 => "[Alerta de segurança do servidor]".to_string(),
+            39 => "[Compra realizada no servidor]".to_string(),
+            40 => "[Resultado de enquete finalizado]".to_string(),
             _ => String::new(),
         }
     } else {
@@ -1490,6 +1621,12 @@ pub fn format_discord_message(m: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn styled_letters_in_messages_and_authors_become_plain() {
+        assert_eq!(clean_discord_whitespace("➡ 𝗙𝘂𝗹𝗹 𝗪𝗮𝗹𝗸𝘁𝗵𝗿𝗼𝘂𝗴𝗵 ━━ 𝟭𝟬𝟬%"), "➡ Full Walkthrough ━━ 100%");
+        assert_eq!(format_discord_author(&json!({ "author": { "global_name": "𝗗𝗿𝗼𝗽𝗶𝗻𝘅" } })), "Dropinx");
+    }
 
     #[test]
     fn test_strikethrough_combining() {
@@ -1580,5 +1717,110 @@ mod tests {
         assert_eq!(format_discord_timestamp(now + 3 * 3600 + 30, Some("R")), t.time_in.replace("{}", "3 h"));
         assert_eq!(format_discord_timestamp(now - 10, Some("R")), t.time_just_now);
     }
-}
 
+    #[test]
+    fn test_forwarded_message_snapshots() {
+        let msg = json!({
+            "id": "789",
+            "type": 0,
+            "content": "",
+            "message_snapshots": [
+                {
+                    "message": {
+                        "type": 0,
+                        "content": "Jogo Gratis: Half-Life 2",
+                        "embeds": [
+                            {
+                                "title": "Disponível no Steam!",
+                                "description": "Resgate grátis até amanhã"
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+        let (content, _, content_lines, embed_content, _, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(&msg);
+        assert!(content.contains("Mensagem encaminhada"));
+        assert!(content.contains("Jogo Gratis: Half-Life 2"));
+        assert!(embed_content.contains("Disponível no Steam!"));
+        assert!(!content_lines.is_empty());
+    }
+
+    #[test]
+    fn test_voice_message_and_embed_image() {
+        let msg = json!({
+            "id": "999",
+            "type": 0,
+            "content": "",
+            "attachments": [
+                {
+                    "id": "v1",
+                    "filename": "voice-message.ogg",
+                    "content_type": "audio/ogg",
+                    "flags": 8192,
+                    "duration_secs": 15.4,
+                    "url": "https://cdn.discordapp.com/voice.ogg"
+                }
+            ],
+            "embeds": [
+                {
+                    "title": "Epic Games Free Game",
+                    "image": {
+                        "url": "https://cdn.discordapp.com/game-banner.png",
+                        "width": 1920,
+                        "height": 1080
+                    }
+                }
+            ]
+        });
+        let (content, _, _, _, _, _, _, _, _, _, _, links, _, attachments) = format_discord_message_parts(&msg);
+        assert!(content.contains("Mensagem de Voz"));
+        assert!(content.contains("15s"));
+        assert!(links.iter().any(|l| l.label.contains("Ouvir Mensagem de Voz")));
+        assert!(attachments.iter().any(|a| a.is_image && a.url.contains("game-banner.png")));
+    }
+
+
+    #[test]
+    fn angle_bracket_links_become_clickable_links() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("• [Watch the talk](<https://youtu.be/abc>)", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://youtu.be/abc");
+        let blocks = &lines[0].blocks;
+        assert!(blocks.iter().any(|b| b.is_link && b.text == "Watch the talk"));
+        assert!(blocks.iter().all(|b| !b.text.contains("](<") && !b.text.contains(">)")));
+    }
+
+    #[test]
+    fn long_text_between_links_gets_its_own_row() {
+        let mut links = Vec::new();
+        let input = "[Godotfest](<https://godotfest.com>) talking about how to build a community on Discord and evolve it. [Grab a ticket here](<https://tickets.godotfest.com>) to get a discount!";
+        let lines = parse_text_into_lines(input, &mut links);
+        assert_eq!(links.len(), 2);
+        for line in &lines {
+            if line.blocks.len() > 1 {
+                assert!(line.blocks.iter().all(|b| b.is_link || b.text.chars().count() <= 40));
+            }
+        }
+        assert!(lines.iter().any(|l| l.blocks.len() == 1 && l.blocks[0].text.starts_with("talking about")));
+    }
+
+    #[test]
+    fn bare_links_in_angle_brackets_drop_the_brackets() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("Clean Code - < http://amzn.to/2tC >", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "http://amzn.to/2tC");
+        let text: String = lines[0].blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(!text.contains('<') && !text.contains('>'), "{text}");
+    }
+
+    #[test]
+    fn short_text_stays_inline_with_its_link() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("When: soon | [RSVP now](https://example.com)", &mut links);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].blocks.len(), 2);
+    }
+}
