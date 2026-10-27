@@ -123,6 +123,21 @@ pub fn register_user_video(
                     },
                 );
             }
+            // RTX has its own SSRC; registering it lets the receiver spot
+            // retransmissions and map them back to the primary stream.
+            if *rtx != 0 {
+                map.insert(
+                    *rtx,
+                    VideoSsrc {
+                        user_id,
+                        ssrc: *ssrc,
+                        rtx_ssrc: *rtx,
+                        rid: rid.clone(),
+                        quality: *quality,
+                        stream: stream_connection,
+                    },
+                );
+            }
         }
     });
 }
