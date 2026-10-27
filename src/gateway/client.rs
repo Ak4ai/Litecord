@@ -934,16 +934,19 @@ impl GatewayClient {
                                     crate::screen_capture::types::mark_stream_started(event_uid);
                                 }
                                 crate::screen_capture::types::set_peer_streaming(event_uid, is_streaming);
-                                if self_stream {
-                                    if let Some(cid) = event_chan.as_deref() {
-                                        // Go Live keys differ for guilds and DM calls; the old
-                                        // code always used the guild form, which never matches a
-                                        // call and therefore never subscribed to anything.
-                                        let stream_key = match v["d"]["guild_id"].as_str() {
-                                            Some(gid) => format!("guild:{}:{}:{}", gid, cid, event_uid),
-                                            None => format!("call:{}:{}", cid, event_uid),
-                                        };
+                                if let Some(cid) = event_chan.as_deref() {
+                                    // Go Live keys differ for guilds and DM calls; the old
+                                    // code always used the guild form, which never matches a
+                                    // call and therefore never subscribed to anything.
+                                    let stream_key = match v["d"]["guild_id"].as_str() {
+                                        Some(gid) => format!("guild:{}:{}:{}", gid, cid, event_uid),
+                                        None => format!("call:{}:{}", cid, event_uid),
+                                    };
+                                    if self_stream {
                                         crate::gateway::watch_stream(&stream_key);
+                                    } else {
+                                        // Go Live ended (or was never on): stop viewing it.
+                                        crate::gateway::unwatch_stream(&stream_key);
                                     }
                                 }
                             } else {
@@ -1152,11 +1155,17 @@ impl GatewayClient {
                     info!("🎬 [STREAM_DELETE] encerrando stream key={} (reason={:?})",
                         stream_key, v["d"]["reason"].as_str());
                     if !stream_key.is_empty() {
-                        crate::native_video::stream::stop_stream_viewer(&stream_key);
+                        // Forget the subscription too, so a gateway resume does not
+                        // re-watch a stream that no longer exists.
+                        crate::gateway::unwatch_stream(&stream_key);
                         self.stream_servers.lock().unwrap().remove(&stream_key);
                     }
                     if owner != 0 {
-                        crate::screen_capture::types::set_peer_streaming(owner, false);
+                        let (_streaming, camera_on) =
+                            crate::screen_capture::types::get_user_stream_flags(owner);
+                        if !camera_on && !crate::native_video::stream::has_viewer_for(owner) {
+                            crate::screen_capture::types::set_peer_streaming(owner, false);
+                        }
                     }
                 }
                 "MESSAGE_CREATE" => {
