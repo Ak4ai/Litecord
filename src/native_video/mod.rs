@@ -147,6 +147,12 @@ pub fn unregister_user_video(user_id: u64) {
     with_map(|map| map.retain(|_, entry| entry.user_id != user_id));
 }
 
+/// Removes only the SSRCs that belong to one kind of connection, so the parent
+/// voice connection and a Go Live viewer cannot erase each other's entries.
+pub(crate) fn unregister_user_video_of(user_id: u64, stream_connection: bool) {
+    with_map(|map| map.retain(|_, entry| entry.user_id != user_id || entry.stream != stream_connection));
+}
+
 /// Whether `ssrc` belongs to a video stream (and not to Opus audio).
 pub fn is_video_ssrc(ssrc: u32) -> bool {
     with_map(|map| map.contains_key(&ssrc))
@@ -223,16 +229,20 @@ pub fn handle_video_state(
     }
 
     if video_ssrc == 0 && streams.is_empty() {
-        // Video stopped (or never started).  Keep the user's audio SSRC mapped:
-        // losing it would break the speaking indicator and audio attribution.
-        unregister_user_video(user_id);
+        // Video stopped (or never started) on this connection.  Keep the user's
+        // audio SSRC mapped: losing it would break the speaking indicator and
+        // audio attribution.
+        unregister_user_video_of(user_id, stream_connection);
         if let Ok(mut map) = ssrc_to_uid.lock() {
             map.retain(|ssrc, uid| *uid != user_id || (audio_ssrc != 0 && *ssrc == audio_ssrc));
             if audio_ssrc != 0 {
                 map.insert(audio_ssrc, user_id);
             }
         }
-        crate::screen_capture::types::set_peer_streaming(user_id, false);
+        // A Go Live viewer may still be sending this user's video.
+        if !crate::native_video::stream::has_viewer_for(user_id) {
+            crate::screen_capture::types::set_peer_streaming(user_id, false);
+        }
         return Vec::new();
     }
 
@@ -341,5 +351,45 @@ mod tests {
         let shared = map.lock().unwrap();
         assert_eq!(shared.get(&424251), Some(&424250));
         assert_eq!(shared.get(&424252), None);
+    }
+
+    #[test]
+    fn stopping_camera_keeps_the_go_live_ssrcs() {
+        let map = Arc::new(Mutex::new(HashMap::new()));
+        let camera = json!({
+            "user_id": 424260,
+            "audio_ssrc": 424261,
+            "video_ssrc": 424262,
+            "streams": []
+        });
+        handle_video_state(&camera, 0, false, &map);
+
+        let go_live = json!({
+            "user_id": 424260,
+            "audio_ssrc": 424261,
+            "video_ssrc": 424263,
+            "streams": [{ "rid": "100", "ssrc": 424264, "rtx_ssrc": 424265, "quality": 100 }]
+        });
+        handle_video_state(&go_live, 424260, true, &map);
+        assert_eq!(user_for_video_ssrc(424264), Some(424260));
+
+        // Camera off on the parent connection must not erase the Go Live SSRCs.
+        let camera_off = json!({
+            "user_id": 424260,
+            "audio_ssrc": 424261,
+            "video_ssrc": 0,
+            "streams": []
+        });
+        handle_video_state(&camera_off, 0, false, &map);
+        assert_eq!(user_for_video_ssrc(424262), None);
+        assert_eq!(user_for_video_ssrc(424263), Some(424260));
+        assert_eq!(user_for_video_ssrc(424264), Some(424260));
+
+        // And the Go Live viewer ending only removes its own entries.
+        unregister_user_video_of(424260, true);
+        assert_eq!(user_for_video_ssrc(424263), None);
+        assert_eq!(user_for_video_ssrc(424264), None);
+        let shared = map.lock().unwrap();
+        assert_eq!(shared.get(&424261), Some(&424260));
     }
 }

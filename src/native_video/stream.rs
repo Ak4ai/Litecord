@@ -146,10 +146,13 @@ pub async fn connect_stream_viewer(
     }
 
     end_generation(&stream_key, generation);
-    unregister_user_video(owner_id);
+    // Only this viewer's SSRCs: the user may still be sharing their camera on
+    // the parent voice connection.
+    super::unregister_user_video_of(owner_id, true);
     // The server may keep the voice state "streaming" for a moment; do not leave
-    // an empty stream card in the UI when this was the only viewer.
-    if !has_viewer_for(owner_id) {
+    // an empty stream card in the UI unless the camera is still sending.
+    let (_still_streaming, camera_on) = crate::screen_capture::types::get_user_stream_flags(owner_id);
+    if !has_viewer_for(owner_id) && !camera_on {
         crate::screen_capture::types::set_peer_streaming(owner_id, false);
     }
     log::info!("🛑 [GO LIVE] Visualização encerrada key={}", stream_key);
