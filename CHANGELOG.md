@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Mensagens encaminhadas**, banners de mídia, mensagens de voz e os demais tipos de mensagem do Discord. Contribuição de @stickyfran (#62).
 - Menções de canal com o nome real e clicáveis (#56), links `[texto](<url>)` e `<url>` e texto que quebrava letra por letra (#46), separadores de dia que mudam com o idioma (#50) e nova tentativa da lista de servidores quando o Discord falha por um momento (#52). Contribuições de @starzynhobr.
 - **Abrir um servidor já visitado ficou mais rápido**: as permissões dos últimos 8 servidores ficam guardadas por até 5 min e são descartadas quando cargos ou o próprio membro mudam; a lista de canais é conferida em ~390 ms em vez de ~530 ms. Baseado na #61 de @stickyfran.
+- **Letras estilizadas (𝗥𝗨𝗟𝗘𝗦, 𝘋𝘪𝘤𝘢𝘴) aparecem nas mensagens, nos embeds, nos nomes de autores e nos canais que começam com emoji**; antes ficavam em branco.
 - A rolagem da lista de servidores não cai mais para ~26 FPS com o mouse sobre ela.
 - O `build.rs` só roda de novo quando o commit muda (#49, @starzynhobr).
 
