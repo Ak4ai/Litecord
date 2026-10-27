@@ -84,12 +84,17 @@ pub fn get_local_version_string() -> String {
     }
 }
 
-/// Compares version string a with b (e.g., "0.2.2" > "0.2.1")
+/// Compares version string a with b (e.g., "0.2.2" > "0.2.1"). Only the numbers count:
+/// "1.3.1-beta" is 1.3.1. Reading each part as a whole number turned "1-beta" into 0, so
+/// a release that only changed the last number looked like the one already installed.
 pub fn is_newer_version(remote_ver: &str, current_ver: &str) -> bool {
     let parse_ver = |v: &str| -> Vec<u64> {
         v.trim_start_matches('v')
             .split('.')
-            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .map(|p| {
+                let digits = p.find(|c: char| !c.is_ascii_digit()).map_or(p, |end| &p[..end]);
+                digits.parse::<u64>().unwrap_or(0)
+            })
             .collect()
     };
 
@@ -499,5 +504,20 @@ pub async fn download_and_install_update(
             }
         }
         Err("Falha ao descompactar e instalar a atualização no Linux.".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_newer_version;
+
+    #[test]
+    fn a_new_last_number_with_a_suffix_is_newer() {
+        assert!(is_newer_version("1.3.1-beta", "1.3.0-beta"));
+        assert!(is_newer_version("v1.3.1-beta", "1.3.0-beta"));
+        assert!(is_newer_version("1.4.0-beta", "1.3.1-beta"));
+        assert!(!is_newer_version("1.3.1-beta", "1.3.1-beta"));
+        assert!(!is_newer_version("1.3.0-beta", "1.3.1-beta"));
+        assert!(!is_newer_version("1.3.1", "1.3.1-beta"));
     }
 }
