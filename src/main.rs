@@ -204,7 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (aw, pw) = (app_weak.clone(), popout_weak.clone());
             move || {
                 if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
-                    crate::ui::gpu_video::refresh(&a, &p);
+                    crate::ui::gpu_video::refresh(&a, Some(&p));
                 }
             }
         };
@@ -254,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (aw, pw) = (app_weak.clone(), popout_weak.clone());
         app.on_stream_viewport_changed(move |x, y, w, h| {
             if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
-                crate::ui::gpu_video::viewport_changed(&a, &p, x, y, w, h);
+                crate::ui::gpu_video::viewport_changed(&a, Some(&p), x, y, w, h);
             }
         });
     }
@@ -342,7 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             ui.window().request_redraw();
             if let Some(pop_win) = popout_weak_init.upgrade() {
-                crate::ui::gpu_video::install(&ui, &pop_win);
+                crate::ui::gpu_video::install(&ui, Some(&pop_win));
             }
         }
     });
@@ -626,7 +626,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 i_slint_backend_winit::redraw_whole_window(pop_win.window());
                 // Shown and restored now (showing a hidden window brings no resize event).
                 screen_capture::set_popout_has_area(true);
-                crate::ui::gpu_video::refresh(&ui, &pop_win);
+                crate::ui::gpu_video::refresh(&ui, Some(&pop_win));
             }
         }
     });
@@ -938,7 +938,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_remote_stream_frame(frame.clone());
                                 ui.set_remote_stream_fps(rx_fps_str.clone().into());
                                 if let Some(pop) = pop_w2.upgrade() {
-                                    crate::ui::gpu_video::refresh(&ui, &pop);
+                                    crate::ui::gpu_video::refresh(&ui, Some(&pop));
                                 }
 
                                 // Garantir que o participante na lista de voz esteja marcado como streaming
@@ -1036,7 +1036,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         if let Some(pop) = pop_w2.upgrade() {
-                            crate::ui::gpu_video::refresh(&ui, &pop);
+                            crate::ui::gpu_video::refresh(&ui, Some(&pop));
                         }
                     }
                 });

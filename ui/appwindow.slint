@@ -3516,7 +3516,6 @@ export component AppWindow inherits Window {
         gpu_selection_available: root.gpu_selection_available;
         stream_capture_status: root.stream_capture_status;
         use-light-theme: root.use-light-theme;
-        theme_mode_name: root.theme_mode_name;
         video_capture_options: root.video_capture_options;
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
@@ -3553,7 +3552,6 @@ export component AppWindow inherits Window {
         reset_keybind(arg0) => { root.reset_keybind(arg0); }
         select_video_encoder(arg0) => { root.select_video_encoder(arg0); }
         toggle_theme => { root.toggle_theme(); }
-        select_theme_mode(arg0) => { root.select_theme_mode(arg0); }
         select_video_capture_backend(arg0) => { root.select_video_capture_backend(arg0); }
         select_audio_loopback_backend(arg0) => { root.select_audio_loopback_backend(arg0); }
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }

@@ -1163,11 +1163,6 @@ pub async fn connect_voice_gateway(
                                                                     info!("Stream de saída encerrado (sessão expirada).");
                                                                     return;
                                                                 }
-                                                                if !stream_healthy.load(Ordering::SeqCst) {
-                                                                    warn!("⚠️ Stream de áudio de saída (Speaker) reportou falha do backend de áudio! Reiniciando automaticamente...");
-                                                                    std::thread::sleep(std::time::Duration::from_millis(200));
-                                                                    break; // Sai do loop interno, dropa o stream com erro e o while externo reconstrói e reinicia!
-                                                                }
                                                                 let new_target = get_selected_output_device_store().lock().unwrap().clone();
                                                                 if new_target != current_target_dev {
                                                                     info!("🔄 Dispositivo de saída alterado de '{}' para '{}' durante a chamada! Reconfigurando alto-falante...", current_target_dev, new_target);
