@@ -4545,6 +4545,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match event {
                 GatewayEvent::VoiceDisconnected => {
                     sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
+                    // Native Go Live viewers and SSRC maps belong to the call that
+                    // just ended (also when another client displaces us).
+                    gateway::clear_watched_streams();
+                    crate::native_video::clear_video_ssrcs();
                     let app_w = app_weak.clone();
                     let sm_disc = Arc::clone(&sm_gw_inner);
                     *active_mic_disc.lock().unwrap() = None;

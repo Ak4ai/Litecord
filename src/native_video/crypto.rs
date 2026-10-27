@@ -77,6 +77,46 @@ fn strip_padding(plain: &mut Vec<u8>, header: &RtpHeader) {
     }
 }
 
+/// Protects an RTCP feedback packet with the connection transport key
+/// (`*_rtpsize` modes).
+///
+/// The 8-byte RTCP header (version/type/length/sender SSRC) stays clear and is
+/// authenticated as associated data; the report/FCI bytes are encrypted and the
+/// 4-byte nonce counter is appended, exactly like RTP.  `counter` must be unique
+/// per key on this connection.
+pub fn protect_rtcp(key: &[u8], mode: TransportMode, packet: &[u8], counter: u32) -> Option<Vec<u8>> {
+    if key.len() != 32 || packet.len() < 8 {
+        return None;
+    }
+    let (aad, body) = packet.split_at(8);
+    let suffix = counter.to_be_bytes();
+
+    let ciphertext = match mode {
+        TransportMode::Aes256Gcm => {
+            let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+            let mut nonce = [0u8; 12];
+            nonce[0..4].copy_from_slice(&suffix);
+            cipher
+                .encrypt(Nonce::from_slice(&nonce), Payload { msg: body, aad })
+                .ok()?
+        }
+        TransportMode::XChaCha20Poly1305 => {
+            let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
+            let mut nonce = [0u8; 24];
+            nonce[20..24].copy_from_slice(&suffix);
+            cipher
+                .encrypt(XNonce::from_slice(&nonce), Payload { msg: body, aad })
+                .ok()?
+        }
+    };
+
+    let mut out = Vec::with_capacity(packet.len() + 20);
+    out.extend_from_slice(aad);
+    out.extend_from_slice(&ciphertext);
+    out.extend_from_slice(&suffix);
+    Some(out)
+}
+
 /// Tries to decrypt one RTP datagram and returns the H.264 payload.
 ///
 /// `packet` still contains the 4-byte nonce suffix.  `header` is the parsed
@@ -170,6 +210,28 @@ mod tests {
         out.append(&mut ciphertext);
         out.extend_from_slice(&suffix);
         out
+    }
+
+    #[test]
+    fn rtcp_keeps_its_header_clear_and_round_trips() {
+        let key = [3u8; 32];
+        let pli = super::super::rtcp::build_pli(11, 22);
+        let wire = protect_rtcp(&key, TransportMode::Aes256Gcm, &pli, 0x8000_0001).unwrap();
+
+        // RTCP header (sender SSRC included) stays readable on the wire.
+        assert_eq!(&wire[..8], &pli[..8]);
+        assert_eq!(&wire[wire.len() - 4..], &0x8000_0001u32.to_be_bytes());
+
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        let mut nonce = [0u8; 12];
+        nonce[0..4].copy_from_slice(&0x8000_0001u32.to_be_bytes());
+        let clear = cipher
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload { msg: &wire[8..wire.len() - 4], aad: &wire[..8] },
+            )
+            .unwrap();
+        assert_eq!(clear, &pli[8..]);
     }
 
     #[test]

@@ -32,6 +32,17 @@ pub type FrameCallback =
 
 static FRAME_CALLBACK: Mutex<Option<FrameCallback>> = Mutex::new(None);
 
+/// Starting nonce for outbound RTCP on a **receive-only** connection (Go Live),
+/// which has no audio sender sharing the key.  The parent connection instead
+/// shares the audio counter, so both stay on one sequence.
+pub fn new_rtcp_counter() -> Arc<std::sync::atomic::AtomicU32> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    Arc::new(std::sync::atomic::AtomicU32::new(0x8000_0000 | (nanos & 0x3fff_ffff)))
+}
+
 /// Installs the UI frame sink.  `main` points this at the existing stream
 /// preview/popout code, so native and `LTPV` frames share one renderer.
 pub fn set_frame_callback(callback: FrameCallback) {

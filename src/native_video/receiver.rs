@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ use davey::{DaveSession, MediaType};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::net::UdpSocket;
 
-use super::crypto::{decrypt_payload, TransportMode};
+use super::crypto::{decrypt_payload, protect_rtcp, TransportMode};
 use super::h264::H264Depacketizer;
 use super::jitter::JitterBuffer;
 use super::{emit_frame, rtcp, rtp, user_for_video_ssrc};
@@ -47,6 +48,10 @@ pub struct NativeVideoContext {
     pub target: Option<SocketAddr>,
     /// Local SSRC used as RTCP sender SSRC.
     pub sender_ssrc: u32,
+    /// Nonce counter for outgoing RTCP.  On the parent connection this is the
+    /// same atomic as the audio sender, so one sequence covers every packet
+    /// encrypted with that key.
+    pub rtcp_counter: Arc<AtomicU32>,
 }
 
 pub struct NativeVideoSession {
@@ -274,11 +279,33 @@ impl NativeVideoSession {
             return;
         }
         self.last_pli.insert(ssrc, now);
+        self.send_rtcp(ctx, rtcp::build_pli(ctx.sender_ssrc, ssrc));
+    }
+
+    /// Sends one RTCP packet, transport-encrypted with the connection key when
+    /// it is available (the SFU ignores plaintext feedback).
+    fn send_rtcp(&self, ctx: &NativeVideoContext, packet: Vec<u8>) {
         let (Some(socket), Some(target)) = (&ctx.socket, ctx.target) else {
             return;
         };
-        let packet = rtcp::build_pli(ctx.sender_ssrc, ssrc);
-        let _ = socket.try_send_to(&packet, target);
+        let key = ctx
+            .secret_key
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        let wire = match key {
+            Some(key) => {
+                let mode = ctx
+                    .mode
+                    .lock()
+                    .map(|guard| TransportMode::from_name(&guard))
+                    .unwrap_or(TransportMode::Aes256Gcm);
+                let counter = ctx.rtcp_counter.fetch_add(1, Ordering::Relaxed);
+                protect_rtcp(&key, mode, &packet, counter).unwrap_or(packet)
+            }
+            None => packet,
+        };
+        let _ = socket.try_send_to(&wire, target);
     }
 
     fn send_nack(&mut self, ctx: &NativeVideoContext, ssrc: u32, missing: &[u16]) {
@@ -291,11 +318,8 @@ impl NativeVideoSession {
             return;
         }
         self.last_nack.insert(ssrc, now);
-        let (Some(socket), Some(target)) = (&ctx.socket, ctx.target) else {
-            return;
-        };
         if let Some(packet) = rtcp::build_nack(ctx.sender_ssrc, ssrc, missing) {
-            let _ = socket.try_send_to(&packet, target);
+            self.send_rtcp(ctx, packet);
         }
     }
 
@@ -365,6 +389,7 @@ mod tests {
             socket: None,
             target: None,
             sender_ssrc: 0,
+            rtcp_counter: Arc::new(AtomicU32::new(0)),
         }
     }
 

@@ -390,6 +390,12 @@ pub async fn connect_voice_gateway(
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
                                                 let native_target: Option<std::net::SocketAddr> = target_addr.parse().ok();
+                                                // One outbound nonce counter for every packet on this
+                                                // connection (audio RTP and RTCP feedback), as the
+                                                // `*_rtpsize` modes expect.  Each sender takes its value
+                                                // with fetch_add, so no nonce is ever reused.
+                                                let outbound_nonce = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                                                let outbound_nonce_rx = Arc::clone(&outbound_nonce);
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
@@ -414,6 +420,7 @@ pub async fn connect_voice_gateway(
                                                         socket: Some(Arc::clone(&socket_rx)),
                                                         target: native_target,
                                                         sender_ssrc: my_ssrc,
+                                                        rtcp_counter: outbound_nonce_rx,
                                                     };
                                                     let mut native_session = crate::native_video::NativeVideoSession::new();
                                                     let mut last_native_tick = std::time::Instant::now();
@@ -1265,12 +1272,12 @@ pub async fn connect_voice_gateway(
                                                 info!("Loop principal de áudio de saída encerrado.");
                                             });
 
+                                                let outbound_nonce_audio = Arc::clone(&outbound_nonce);
                                                 tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();
                                                 let mut voice_proc = crate::audio::dsp::VoiceProcessor::new();
                                                 let mut seq: u16 = 0;
                                                 let mut timestamp: u32 = 0;
-                                                let mut nonce_cnt: u32 = 0;
                                                 let mut opus_out = vec![0u8; 1000];
                                                 let mut speaking_loop_counter: u32 = 0;
 
@@ -1440,7 +1447,8 @@ pub async fn connect_voice_gateway(
                                                     set_self_speaking(!is_muted && (has_audio || speech_hangover_frames > 0));
 
                                                     seq = seq.wrapping_add(1);
-                                                    nonce_cnt = nonce_cnt.wrapping_add(1);
+                                                    // Shares the connection counter with RTCP feedback.
+                                                    let nonce_cnt = outbound_nonce_audio.fetch_add(1, Ordering::Relaxed);
 
                                                     let mut audio_header = [0u8; 12];
                                                     audio_header[0] = 0x80; // RTP Version 2

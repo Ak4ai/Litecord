@@ -495,6 +495,7 @@ fn spawn_video_receiver(
             socket: Some(Arc::clone(&socket)),
             target,
             sender_ssrc,
+            rtcp_counter: super::new_rtcp_counter(),
         };
         let mut session = NativeVideoSession::new();
         let mut buffer = vec![0u8; 2048];
