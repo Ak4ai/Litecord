@@ -22,7 +22,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::receiver::{NativeVideoContext, NativeVideoSession};
-use super::{handle_video_state, media_sink_wants, unregister_user_video};
+use super::{handle_video_state, media_sink_wants};
 
 type VoiceSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
