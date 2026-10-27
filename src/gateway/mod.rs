@@ -2,6 +2,7 @@
 
 pub mod types;
 pub mod formatting;
+pub mod channel_names;
 pub mod client;
 pub mod voice;
 

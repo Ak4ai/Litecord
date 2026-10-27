@@ -36,6 +36,9 @@ const RING: usize = 4;
 /// returned with the next call).
 #[cfg(target_os = "windows")]
 const OUTPUT_WAIT: Duration = Duration::from_millis(12);
+/// A frame that takes longer than this to hand to the encoder is logged with its parts.
+#[cfg(target_os = "windows")]
+const SLOW_FRAME: Duration = Duration::from_millis(50);
 
 #[cfg(target_os = "windows")]
 pub struct WmfGpuEncoder {
@@ -62,6 +65,9 @@ pub struct WmfGpuEncoder {
     /// Finished pictures, one access unit each, handed out one per call: a picture that
     /// comes late must not be glued to the next one (receivers would drop one of them).
     ready: std::collections::VecDeque<Vec<u8>>,
+    /// Time spent in ProcessInput and in waiting for the picture, for the slow-frame log.
+    input_us: u64,
+    wait_us: u64,
 }
 
 #[cfg(target_os = "windows")]
@@ -258,6 +264,8 @@ impl WmfGpuEncoder {
             needs_keyframe: true,
             colour: if bt709 { (1, 1, 1) } else { (6, 6, 6) },
             ready: std::collections::VecDeque::new(),
+            input_us: 0,
+            wait_us: 0,
         })
     }
 
@@ -378,16 +386,29 @@ impl WmfGpuEncoder {
     /// Encodes an NV12 texture of the encoder device and size: a GPU copy into the
     /// encoder textures (it reads them asynchronously), nothing through the CPU.
     pub fn encode_texture(&mut self, texture: &ID3D11Texture2D) -> std::result::Result<Vec<u8>, String> {
+        let start = Instant::now();
         unsafe {
             self.drain_events();
+            let drained = start.elapsed();
             if self.need_input == 0 {
+                if drained > SLOW_FRAME {
+                    warn!("🐢 [WMF GPU ENGINE] Quadro lento: {:.1} ms só esperando o codificador liberar entrada (em processamento: {})",
+                        drained.as_secs_f64() * 1e3, self.in_flight);
+                }
                 return Ok(self.next_output().unwrap_or_default());
             }
             let tex = self.ring[self.ring_pos].clone();
             self.ring_pos = (self.ring_pos + 1) % RING;
             self.context.CopyResource(&tex, texture);
+            let copied = start.elapsed();
             if !self.submit(&tex) {
                 return Err("ProcessInput failed".into());
+            }
+            let total = start.elapsed();
+            if total > SLOW_FRAME {
+                warn!("🐢 [WMF GPU ENGINE] Quadro lento: {:.1} ms (eventos {:.1} | cópia {:.1} | ProcessInput {:.1} | espera da saída {:.1} ms, em processamento: {})",
+                    total.as_secs_f64() * 1e3, drained.as_secs_f64() * 1e3, (copied - drained).as_secs_f64() * 1e3,
+                    self.input_us as f64 / 1e3, self.wait_us as f64 / 1e3, self.in_flight);
             }
         }
         Ok(self.next_output().unwrap_or_default())
@@ -413,9 +434,11 @@ impl WmfGpuEncoder {
             let _ = self.codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
             self.needs_keyframe = false;
         }
+        let input_start = Instant::now();
         if self.mft.ProcessInput(0, &sample, 0).is_err() {
             return false;
         }
+        self.input_us = input_start.elapsed().as_micros() as u64;
         self.need_input -= 1;
         self.in_flight += 1;
         self.frame_count += 1;
@@ -427,6 +450,7 @@ impl WmfGpuEncoder {
                 std::thread::sleep(Duration::from_micros(500));
             }
         }
+        self.wait_us = start.elapsed().as_micros() as u64;
         true
     }
 }

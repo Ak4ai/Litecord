@@ -61,12 +61,24 @@ const HANDLED_EVENTS: &[&str] = &[
     "CALL_DELETE",
 ];
 
+/// Events that change what the user may see in a server. They only drop the server's
+/// cached permissions, so just the ids are read.
+const PERMISSION_EVENTS: &[&str] = &[
+    "GUILD_UPDATE",
+    "GUILD_ROLE_CREATE",
+    "GUILD_ROLE_UPDATE",
+    "GUILD_ROLE_DELETE",
+    "GUILD_MEMBER_UPDATE",
+];
+
 #[derive(Debug, PartialEq, Eq)]
 struct Peek {
     op: u64,
     seq: Option<i64>,
     /// Worth parsing whole: a non-dispatch op, or a dispatch event in HANDLED_EVENTS.
     wanted: bool,
+    /// One of PERMISSION_EVENTS.
+    permissions: bool,
 }
 
 /// Reads only `op`, `s` and `t` of a gateway message; the payload is skipped, not built.
@@ -81,7 +93,42 @@ fn peek(text: &str) -> Option<Peek> {
     }
     let h: Head = serde_json::from_str(text).ok()?;
     let wanted = h.op != 0 || h.t.as_deref().is_some_and(|t| HANDLED_EVENTS.contains(&t));
-    Some(Peek { op: h.op, seq: h.s, wanted })
+    let permissions = h.op == 0 && h.t.as_deref().is_some_and(|t| PERMISSION_EVENTS.contains(&t));
+    Some(Peek { op: h.op, seq: h.s, wanted, permissions })
+}
+
+/// The server whose permissions a PERMISSION_EVENTS event changes. Updates of other
+/// members do not change the user's.
+fn permission_change(text: &str, my_user_id: u64) -> Option<String> {
+    use std::borrow::Cow;
+    #[derive(serde::Deserialize)]
+    struct Event<'a> {
+        #[serde(borrow)]
+        t: Cow<'a, str>,
+        #[serde(borrow)]
+        d: Data<'a>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Data<'a> {
+        #[serde(default, borrow)]
+        id: Option<Cow<'a, str>>,
+        #[serde(default, borrow)]
+        guild_id: Option<Cow<'a, str>>,
+        #[serde(default, borrow)]
+        user: Option<User<'a>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct User<'a> {
+        #[serde(borrow)]
+        id: Cow<'a, str>,
+    }
+    let e: Event = serde_json::from_str(text).ok()?;
+    let guild = match e.t.as_ref() {
+        "GUILD_UPDATE" => e.d.id,
+        "GUILD_MEMBER_UPDATE" => e.d.user.filter(|u| u.id.parse() == Ok(my_user_id)).and(e.d.guild_id),
+        _ => e.d.guild_id,
+    };
+    guild.map(Cow::into_owned)
 }
 
 /// The resume URL READY gives, with the query the first connection used.
@@ -301,6 +348,11 @@ impl GatewayClient {
                                 let Some(head) = peek(&text) else { continue };
                                 if let Some(s) = head.seq {
                                     last_seq_arc.store(s, Ordering::Relaxed);
+                                }
+                                if head.permissions {
+                                    if let Some(guild_id) = permission_change(&text, crate::gateway::get_my_user_id()) {
+                                        crate::channel_permissions::forget(&guild_id);
+                                    }
                                 }
                                 if !head.wanted {
                                     continue;
@@ -1067,18 +1119,34 @@ mod tests {
     fn only_events_the_app_uses_are_parsed_whole_but_every_sequence_counts() {
         // Presence and typing are most of what a big account receives: skipped.
         let presence = r#"{"t":"PRESENCE_UPDATE","s":42,"op":0,"d":{"user":{"id":"1"},"status":"online","activities":[{"name":"x"}]}}"#;
-        assert_eq!(peek(presence), Some(Peek { op: 0, seq: Some(42), wanted: false }));
+        assert_eq!(peek(presence), Some(Peek { op: 0, seq: Some(42), wanted: false, permissions: false }));
         // Fields in any order, nested objects named like the head fields.
         let msg = r#"{"op":0,"d":{"t":"x","s":1,"op":9,"content":"hi"},"s":43,"t":"MESSAGE_CREATE"}"#;
-        assert_eq!(peek(msg), Some(Peek { op: 0, seq: Some(43), wanted: true }));
+        assert_eq!(peek(msg), Some(Peek { op: 0, seq: Some(43), wanted: true, permissions: false }));
         for t in HANDLED_EVENTS {
             let ev = format!(r#"{{"op":0,"s":1,"t":"{t}","d":{{}}}}"#);
             assert!(peek(&ev).unwrap().wanted, "{t}");
         }
         // Everything that is not a dispatch (hello, ack, reconnect...) is parsed.
-        assert_eq!(peek(r#"{"op":11,"d":null,"s":null,"t":null}"#), Some(Peek { op: 11, seq: None, wanted: true }));
-        assert_eq!(peek(r#"{"op":10,"d":{"heartbeat_interval":41250}}"#), Some(Peek { op: 10, seq: None, wanted: true }));
+        assert_eq!(peek(r#"{"op":11,"d":null,"s":null,"t":null}"#), Some(Peek { op: 11, seq: None, wanted: true, permissions: false }));
+        assert_eq!(peek(r#"{"op":10,"d":{"heartbeat_interval":41250}}"#), Some(Peek { op: 10, seq: None, wanted: true, permissions: false }));
         assert_eq!(peek("not json"), None);
+    }
+
+    #[test]
+    fn role_server_and_own_member_changes_name_the_server_to_check_again() {
+        let role = r#"{"op":0,"s":5,"t":"GUILD_ROLE_UPDATE","d":{"guild_id":"10","role":{"id":"3","permissions":"0"}}}"#;
+        assert!(peek(role).unwrap().permissions);
+        assert!(!peek(role).unwrap().wanted, "only the ids are read");
+        assert_eq!(permission_change(role, 7).as_deref(), Some("10"));
+        let guild = r#"{"op":0,"s":6,"t":"GUILD_UPDATE","d":{"id":"11","owner_id":"7","roles":[]}}"#;
+        assert_eq!(permission_change(guild, 7).as_deref(), Some("11"));
+        let mine = r#"{"op":0,"s":7,"t":"GUILD_MEMBER_UPDATE","d":{"guild_id":"12","roles":["3"],"user":{"id":"7"}}}"#;
+        assert_eq!(permission_change(mine, 7).as_deref(), Some("12"));
+        let other = r#"{"op":0,"s":8,"t":"GUILD_MEMBER_UPDATE","d":{"guild_id":"12","roles":["3"],"user":{"id":"8"}}}"#;
+        assert_eq!(permission_change(other, 7), None);
+        let presence = r#"{"t":"PRESENCE_UPDATE","s":42,"op":0,"d":{"guild_id":"10"}}"#;
+        assert!(!peek(presence).unwrap().permissions);
     }
 
     #[test]

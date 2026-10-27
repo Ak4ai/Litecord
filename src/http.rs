@@ -50,19 +50,41 @@ impl DiscordHttpClient {
         }
     }
 
+    /// The server list is fetched once at startup and nothing fetches it again, so a
+    /// passing Discord error (a 5xx, a dropped connection) used to leave the sidebar
+    /// empty for the whole session. Those are retried with a growing pause; any other
+    /// status, such as a refused token, is returned at once.
     pub async fn get_user_guilds(&self) -> Result<Vec<serde_json::Value>, String> {
+        const RETRY_DELAYS_MS: [u64; 3] = [1_000, 3_000, 8_000];
+        let mut attempt = 0;
+        loop {
+            let (result, transient) = self.get_user_guilds_once().await;
+            match result {
+                Ok(guilds) => return Ok(guilds),
+                Err(e) if transient && attempt < RETRY_DELAYS_MS.len() => {
+                    warn!("Lista de servidores falhou ({}), tentando de novo em {} ms", e, RETRY_DELAYS_MS[attempt]);
+                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn get_user_guilds_once(&self) -> (Result<Vec<serde_json::Value>, String>, bool) {
         let url = "https://discord.com/api/v10/users/@me/guilds";
         match self.client.get(url).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
                     if let Ok(guilds) = resp.json::<Vec<serde_json::Value>>().await {
-                        return Ok(guilds);
+                        return (Ok(guilds), false);
                     }
                 }
-                Err(format!("Status HTTP {}", status))
+                let transient = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                (Err(format!("Status HTTP {}", status)), transient)
             }
-            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+            Err(e) => (Err(format!("Erro HTTP: {:?}", e)), true),
         }
     }
 
@@ -115,36 +137,25 @@ impl DiscordHttpClient {
     }
 
     pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
-        static PERMISSIONS_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, crate::channel_permissions::ChannelPermissions)>>> = std::sync::OnceLock::new();
-        let cache = PERMISSIONS_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-        if let Ok(guard) = cache.lock() {
-            if let Some((inserted, perms)) = guard.get(guild_id) {
-                // Cache permissions for 5 minutes per guild to eliminate redundant REST calls
-                if inserted.elapsed() < std::time::Duration::from_secs(300) {
-                    return Ok(perms.clone());
-                }
-            }
+        if let Some(permissions) = crate::channel_permissions::cached(guild_id) {
+            return Ok(permissions);
         }
-
-        let user_id = {
-            let my_uid = crate::gateway::get_my_user_id();
-            if my_uid != 0 {
-                my_uid.to_string()
-            } else {
+        // The gateway already said who the user is; asking again cost a round trip.
+        let user_id = match crate::gateway::get_my_user_id() {
+            0 => {
                 let user = self.get_current_user().await?;
                 user["id"].as_str().ok_or("Missing current user id")?.to_string()
             }
+            id => id.to_string(),
         };
         let guild_url = format!("https://discord.com/api/v10/guilds/{}", guild_id);
         let member_url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
         let (guild, member) = tokio::try_join!(
             self.get_permission_data(&guild_url), self.get_permission_data(&member_url)
         )?;
-        let perms = crate::channel_permissions::ChannelPermissions::new(&guild, &member, &user_id)?;
-        if let Ok(mut guard) = cache.lock() {
-            guard.insert(guild_id.to_string(), (std::time::Instant::now(), perms.clone()));
-        }
-        Ok(perms)
+        let permissions = crate::channel_permissions::ChannelPermissions::new(&guild, &member, &user_id)?;
+        crate::channel_permissions::remember(&permissions);
+        Ok(permissions)
     }
 
     async fn get_permission_data(&self, url: &str) -> Result<serde_json::Value, String> {
@@ -155,24 +166,6 @@ impl DiscordHttpClient {
         response.json().await.map_err(|e| e.to_string())
     }
 
-    pub async fn get_forum_threads_active(&self, channel_id: &str) -> Result<Vec<serde_json::Value>, String> {
-        let url = format!("https://discord.com/api/v10/channels/{}/threads/active", channel_id);
-        match self.client.get(&url).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    if let Ok(obj) = resp.json::<serde_json::Value>().await {
-                        if let Some(threads) = obj.get("threads").and_then(|t| t.as_array()) {
-                            return Ok(threads.clone());
-                        }
-                    }
-                }
-                Err(format!("Status HTTP {}", status))
-            }
-            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
-        }
-    }
-
     pub async fn get_channel_messages(&self, channel_id: &str) -> Result<Vec<serde_json::Value>, String> {
         let url = format!("https://discord.com/api/v10/channels/{}/messages?limit=30", channel_id);
         match self.client.get(&url).send().await {
@@ -180,65 +173,7 @@ impl DiscordHttpClient {
                 let status = resp.status();
                 if status.is_success() {
                     if let Ok(msgs) = resp.json::<Vec<serde_json::Value>>().await {
-                        if !msgs.is_empty() {
-                            return Ok(msgs);
-                        }
-                    }
-                }
-                // Fallback for Forum channels (Type 15) which do not have direct messages but have active threads
-                if status.as_u16() == 400 || status.is_success() {
-                    if let Ok(threads) = self.get_forum_threads_active(channel_id).await {
-                        if !threads.is_empty() {
-                            let futures: Vec<_> = threads.iter().take(15).map(|th| {
-                                let tid = th["id"].as_str().unwrap_or("").to_string();
-                                let tname = th["name"].as_str().unwrap_or("Oferta / Post").to_string();
-                                let total_msgs = th.get("message_count").and_then(|m| m.as_u64()).unwrap_or(0);
-                                let client = self.client.clone();
-                                let channel_id = channel_id.to_string();
-                                async move {
-                                    // Fetch the original post's first message to get real embeds and links
-                                    let msg_url = format!("https://discord.com/api/v10/channels/{}/messages?limit=1", tid);
-                                    let mut real_msg: Option<serde_json::Value> = None;
-                                    if let Ok(resp_th) = client.get(&msg_url).send().await {
-                                        if resp_th.status().is_success() {
-                                            if let Ok(mut th_msgs) = resp_th.json::<Vec<serde_json::Value>>().await {
-                                                if !th_msgs.is_empty() {
-                                                    real_msg = Some(th_msgs.remove(0));
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if let Some(mut m) = real_msg {
-                                        let cur_content = m["content"].as_str().unwrap_or("");
-                                        let new_content = if cur_content.is_empty() {
-                                            format!("📌 **{}**", tname)
-                                        } else {
-                                            format!("📌 **{}**\n{}", tname, cur_content)
-                                        };
-                                        m["content"] = serde_json::Value::String(new_content);
-                                        m
-                                    } else {
-                                        serde_json::json!({
-                                            "id": tid,
-                                            "channel_id": channel_id,
-                                            "author": {
-                                                "id": "forum_bot",
-                                                "username": "🎮 Oferta",
-                                                "global_name": "🎮 Oferta",
-                                                "avatar": null
-                                            },
-                                            "content": format!("📌 **{}**\n💬 {} respostas nesta oferta.", tname, total_msgs),
-                                            "type": 0,
-                                            "timestamp": chrono::Utc::now().to_rfc3339()
-                                        })
-                                    }
-                                }
-                            }).collect();
-
-                            let synth_msgs = futures_util::future::join_all(futures).await;
-                            return Ok(synth_msgs);
-                        }
+                        return Ok(msgs);
                     }
                 }
                 Err(format!("Status HTTP {}", status))
@@ -326,6 +261,17 @@ impl DiscordHttpClient {
                 Err(err)
             }
         }
+    }
+
+    /// A scheduled event of a server the user is in, with its interested count.
+    pub async fn get_scheduled_event(&self, guild_id: &str, event_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{guild_id}/scheduled-events/{event_id}?with_user_count=true");
+        let resp = self.client.get(&url).send().await.map_err(|e| format!("Erro HTTP: {:?}", e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("Status HTTP {}", status));
+        }
+        resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON: {:?}", e))
     }
 
     pub async fn get_user_profile(&self, user_id: &str) -> Result<serde_json::Value, String> {

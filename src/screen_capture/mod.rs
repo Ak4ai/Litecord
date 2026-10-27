@@ -13,6 +13,7 @@ pub mod web_share;
 pub mod watch;
 pub mod stream_audio;
 pub mod mpv_player;
+pub mod gpu_encode_worker;
 #[cfg(windows)]
 pub mod gpu_tx;
 #[cfg(windows)]

@@ -25,6 +25,38 @@ pub(super) async fn connect(base: &str, room: &str, token: &str, key: &[u8; 32])
         _ => Err("Web sharing server refused this stream".into()),
     }
 }
+/// Keeps the stream registered: a dropped signaling connection (a worker restart or
+/// deploy, a network change) registers the same room again, so the link keeps working.
+/// Viewers already watching are not affected, since their media does not pass through it.
+pub(super) async fn serve(mut ws: Socket, base: &str, room: &str, token: &str, key: [u8; 32],
+    commands: mpsc::Sender<Command>, mut stop: watch::Receiver<bool>) -> Result<(), String> {
+    loop {
+        let lost = match run(ws, key, commands.clone(), stop.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
+        };
+        // `lost` asks for a new link: shown only if registering again gives up.
+        warn!("[WEB SHARE] Signaling connection lost; registering the stream again");
+        let started = Instant::now();
+        let mut wait = Duration::from_secs(1);
+        ws = loop {
+            tokio::select! {
+                _ = stop.changed() => return Ok(()),
+                _ = tokio::time::sleep(wait) => {},
+            }
+            match connect(base, room, token, &key).await {
+                Ok(ws) => break ws,
+                // The old registration can linger a moment (409) after a drop.
+                Err(e) if started.elapsed() < Duration::from_secs(120) => {
+                    log::debug!("[WEB SHARE] reconnect: {e}");
+                    wait = (wait * 2).min(Duration::from_secs(10));
+                }
+                Err(_) => return Err(lost),
+            }
+        };
+        info!("[WEB SHARE] Stream registered again after {:.1} s", started.elapsed().as_secs_f64());
+    }
+}
 pub(super) async fn run(mut ws: Socket, key: [u8; 32], commands: mpsc::Sender<Command>, mut stop: watch::Receiver<bool>) -> Result<(), String> {
     let mut ping = tokio::time::interval(Duration::from_secs(40));
     loop {

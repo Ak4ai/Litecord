@@ -1,6 +1,8 @@
 //! Channel visibility only; Discord remains authoritative for every operation.
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const VIEW_CHANNEL: u64 = 1 << 10;
 const ADMINISTRATOR: u64 = 1 << 3;
@@ -84,6 +86,34 @@ impl ChannelPermissions {
     }
 }
 
+/// Servers whose permissions are kept, the last ones opened.
+const CACHED_SERVERS: usize = 8;
+/// A safety net: role and member changes already drop an entry as they arrive.
+const CACHED_FOR: Duration = Duration::from_secs(300);
+
+static CACHE: Mutex<VecDeque<(Instant, ChannelPermissions)>> = Mutex::new(VecDeque::new());
+
+/// Permissions computed when the server was opened recently, so going back to it does not
+/// fetch the whole server (roles, emojis, stickers) and the member again.
+pub fn cached(guild_id: &str) -> Option<ChannelPermissions> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.iter()
+        .find(|(at, p)| p.guild_id == guild_id && at.elapsed() < CACHED_FOR)
+        .map(|(_, p)| p.clone())
+}
+
+pub fn remember(permissions: &ChannelPermissions) {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|(_, p)| p.guild_id != permissions.guild_id);
+    cache.push_front((Instant::now(), permissions.clone()));
+    cache.truncate(CACHED_SERVERS);
+}
+
+/// Roles, the server or the user's own membership changed.
+pub fn forget(guild_id: &str) {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, p)| p.guild_id != guild_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +135,23 @@ mod tests {
     }
     fn channel(overwrites: Vec<Value>) -> Value {
         json!({"permission_overwrites":overwrites})
+    }
+
+    fn server(id: &str) -> ChannelPermissions {
+        ChannelPermissions::new(&json!({"id":id, "owner_id":"o", "roles":[{"id":id, "permissions":"0"}]}), &json!({"roles":[]}), "me").unwrap()
+    }
+
+    #[test]
+    fn cache_keeps_the_last_servers_and_forgets_on_request() {
+        for i in 0..CACHED_SERVERS + 2 {
+            remember(&server(&format!("cache-{i}")));
+        }
+        assert!(cached("cache-0").is_none() && cached("cache-1").is_none(), "the oldest go first");
+        assert!(cached(&format!("cache-{}", CACHED_SERVERS + 1)).is_some());
+        remember(&server("cache-2"));
+        assert_eq!(CACHE.lock().unwrap().iter().filter(|(_, p)| p.guild_id == "cache-2").count(), 1, "no duplicates");
+        forget("cache-2");
+        assert!(cached("cache-2").is_none());
     }
 
     #[test]

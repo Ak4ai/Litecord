@@ -320,12 +320,13 @@ impl ScreenCaptureManager {
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 }
                 crate::cpu_profiler::set_current_thread_name("screen-capture-tx");
+                crate::utils::thread_priority::raise_current_thread();
                 *TX_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current());
 
                 // Created with the first CPU picture: when the GPU path works, never.
                 let mut h264_encoder: Option<Box<dyn crate::encoder::VideoEncoder>> = None;
                 #[cfg(windows)]
-                let mut gpu_encoder: Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)> = None;
+                let mut gpu_encoder: Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)> = None;
                 #[cfg(windows)]
                 let mut gpu_frame: Option<super::gpu_tx::GpuFrame> = None;
 
@@ -790,6 +791,19 @@ impl ScreenCaptureManager {
                 let mut total_net_us = 0u128;
                 let mut total_blt_us = 0u128;
                 let mut total_pix_us = 0u128;
+                // Pacing: how long the waits between frames asked for and actually took, and
+                // the slowest loop turn, to tell a slow encoder from late wake-ups.
+                let mut total_park_asked_us = 0u128;
+                let mut total_park_us = 0u128;
+                let mut max_turn_us = 0u128;
+                // Pictures the capture delivered (the loop re-encodes the last one otherwise).
+                let mut new_captures = 0u32;
+                // A picture arrived since the last encode, when the last one arrived, and
+                // when the last encode was.
+                let mut fresh_picture = false;
+                let mut last_fresh = Instant::now();
+                let mut last_encode = Instant::now() - STILL_REPEAT_EVERY;
+                let mut turn_start = Instant::now();
                 let mut last_local_preview = Instant::now() - Duration::from_secs(1);
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
                 let mut last_idr = Instant::now() - Duration::from_secs(10);
@@ -861,6 +875,9 @@ impl ScreenCaptureManager {
                     #[cfg(windows)]
                     if let Some(f) = super::gpu_tx::take_latest() {
                         gpu_frame = Some(f);
+                        new_captures += 1;
+                        fresh_picture = true;
+                        last_fresh = Instant::now();
                     }
                     #[cfg(windows)]
                     if let Some((device, w, h)) = super::gpu_tx::take_new_device() {
@@ -873,6 +890,9 @@ impl ScreenCaptureManager {
 
                     // Drena quadros novos da GPU para sempre ter o frame mais atualizado
                     while let Ok(new_frame) = rx_frame.try_recv() {
+                        new_captures += 1;
+                        fresh_picture = true;
+                        last_fresh = Instant::now();
                         if let Some((old_buf, _, _, _, _)) = latest_cached_frame.replace(new_frame) {
                             let _ = tx_recycle.try_send(old_buf);
                         }
@@ -912,6 +932,8 @@ impl ScreenCaptureManager {
                         let sleep_dur = (next_tick - now).min(frame_target_interval);
                         // Woken early when a viewer arrives (wake_tx), instead of a full idle tick.
                         std::thread::park_timeout(sleep_dur);
+                        total_park_asked_us += sleep_dur.as_micros();
+                        total_park_us += now.elapsed().as_micros();
                     }
                     next_tick += frame_target_interval;
                     if now > next_tick + frame_target_interval * 2 {
@@ -1011,17 +1033,33 @@ impl ScreenCaptureManager {
                         info!("👀 [ASSISTIR SOB DEMANDA] {}", if watched { "Alguém começou a assistir: codificando." } else { "Ninguém assistindo: codificação pausada." });
                     }
 
+                    // A still screen is not encoded again on every tick: a repeat goes out
+                    // every STILL_REPEAT_EVERY, and anything new or a keyframe at once.
+                    // While pictures keep coming, a tick the capture missed is still
+                    // filled with a repeat, so the pace stays even.
+                    let encode_now = fresh_picture
+                        || last_fresh.elapsed() < STILL_REPEAT_EVERY
+                        || last_encode.elapsed() >= STILL_REPEAT_EVERY
+                        || KEYFRAME_REQUESTED.load(Ordering::Relaxed);
+                    if watched && encode_now {
+                        fresh_picture = false;
+                        last_encode = Instant::now();
+                    }
                     let enc_start = Instant::now();
                     let frame_bytes_opt = if !watched {
                         None
                     } else if gpu_path {
                         #[cfg(windows)]
                         {
-                            encode_on_gpu(&mut gpu_encoder, gpu_frame.as_ref(), target_fps as u32)
+                            if encode_now {
+                                encode_on_gpu(&mut gpu_encoder, gpu_frame.as_ref(), target_fps as u32)
+                            } else {
+                                finished_on_gpu(&mut gpu_encoder)
+                            }
                         }
                         #[cfg(not(windows))]
                         None
-                    } else if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame {
+                    } else if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| encode_now) {
                         let enc = h264_encoder.get_or_insert_with(|| crate::encoder::create_best_encoder(target_fps as u32, camera_index.is_none()));
                         let target_bitrate = REQUESTED_BITRATE_BPS.load(Ordering::Relaxed);
                         if enc.get_bitrate_bps() != target_bitrate {
@@ -1130,6 +1168,12 @@ impl ScreenCaptureManager {
                     }
 
                     tx_frame_count += 1;
+                    let turn_us = turn_start.elapsed().as_micros();
+                    turn_start = Instant::now();
+                    max_turn_us = max_turn_us.max(turn_us);
+                    if watched && turn_us > 100_000 {
+                        warn!("🐢 [TX] Volta do laço de envio levou {:.1} ms (codificação {:.1} ms)", turn_us as f64 / 1e3, enc_dur as f64 / 1e3);
+                    }
                     if last_tx_stats.elapsed() >= Duration::from_secs(1) {
                         let elapsed_s = last_tx_stats.elapsed().as_secs_f64();
                         let fps = (tx_frame_count as f64) / elapsed_s;
@@ -1144,8 +1188,13 @@ impl ScreenCaptureManager {
                         let _avg_pix_ms = (total_pix_us as f64) / n / 1000.0;
                         let cur_mbps = (REQUESTED_BITRATE_BPS.load(Ordering::Relaxed) as f64) / 1_000_000.0;
 
-                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms",
-                            fps, target_fps, cur_mbps, avg_enc_ms, avg_preview_ms, avg_crypt_ms, avg_fec_ms, avg_net_ms);
+                        info!("📊 [DETALHAMENTO DE CPU & GPU (TX)] FPS: {:.1}/{} | Bitrate: {:.2} Mbps | Encode: {:.2}ms | UI Preview: {:.2}ms | Cripto E2EE: {:.2}ms | FEC: {:.2}ms | Rede UDP: {:.2}ms | Espera: {:.2}/{:.2}ms | Pior volta: {:.1}ms | Capturas novas: {}",
+                            fps, target_fps, cur_mbps, avg_enc_ms, avg_preview_ms, avg_crypt_ms, avg_fec_ms, avg_net_ms,
+                            total_park_us as f64 / n / 1000.0, total_park_asked_us as f64 / n / 1000.0, max_turn_us as f64 / 1000.0, new_captures);
+                        new_captures = 0;
+                        total_park_us = 0;
+                        total_park_asked_us = 0;
+                        max_turn_us = 0;
 
                         tx_frame_count = 0;
                         total_encode_us = 0;
@@ -2436,6 +2485,11 @@ impl ScreenCaptureManager {
 
 /// Capture and send pace while nobody watches: the local preview's rate.
 pub(super) const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(250);
+/// With nothing new on screen, how often the last picture is sent again (10 per second).
+/// Encoding the same picture on every tick cost a core ~10% on a still screen for
+/// nothing; Sunshine also lowers the rate of repeats. Native viewers drop a stream after
+/// 2.5 s without frames, so repeats cannot stop altogether.
+const STILL_REPEAT_EVERY: Duration = Duration::from_millis(100);
 
 /// The stream's send thread, woken when a viewer arrives.
 static TX_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
@@ -2456,24 +2510,22 @@ pub(super) fn tx_watched() -> bool {
     TX_WATCHED.load(Ordering::Relaxed)
 }
 
-/// Encodes the newest GPU picture with the texture encoder of its device (created on
-/// first use). Any failure sends the rest of the stream back to the CPU path.
+/// How long the send thread waits for the picture it just handed to the encoder thread
+/// (usually a few milliseconds). A slower encoder does not hold the loop up: its picture
+/// comes out with a later turn.
 #[cfg(windows)]
-fn encode_on_gpu(
-    encoder: &mut Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)>,
-    frame: Option<&super::gpu_tx::GpuFrame>,
-    fps: u32,
-) -> Option<Vec<u8>> {
-    let f = frame?;
-    if !open_gpu_encoder(encoder, &f.device, f.width, f.height, fps) {
-        return None;
-    }
-    let (_, enc) = encoder.as_mut()?;
-    enc.set_bitrate(REQUESTED_BITRATE_BPS.load(Ordering::Relaxed));
-    if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) {
-        enc.force_idr();
-    }
-    match enc.encode_texture(&f.texture) {
+const ENCODED_WAIT: Duration = Duration::from_millis(8);
+
+/// A picture the encoder finished after its turn, without handing it a new one.
+#[cfg(windows)]
+fn finished_on_gpu(encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>) -> Option<Vec<u8>> {
+    gpu_output(encoder, Duration::ZERO)
+}
+
+/// The encoder's next picture within `wait`; on a failure, back to the CPU path.
+#[cfg(windows)]
+fn gpu_output(encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>, wait: Duration) -> Option<Vec<u8>> {
+    match encoder.as_ref()?.1.next_output(wait)? {
         Ok(bytes) => {
             super::gpu_tx::confirm();
             Some(bytes)
@@ -2486,12 +2538,34 @@ fn encode_on_gpu(
     }
 }
 
+/// Hands the newest GPU picture to the encoder thread of its device (created on first
+/// use) and returns the oldest finished one, if any. Any failure sends the rest of the
+/// stream back to the CPU path.
+#[cfg(windows)]
+fn encode_on_gpu(
+    encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>,
+    frame: Option<&super::gpu_tx::GpuFrame>,
+    fps: u32,
+) -> Option<Vec<u8>> {
+    let f = frame?;
+    if !open_gpu_encoder(encoder, &f.device, f.width, f.height, fps) {
+        return None;
+    }
+    let (_, enc) = encoder.as_mut()?;
+    enc.set_bitrate(REQUESTED_BITRATE_BPS.load(Ordering::Relaxed));
+    if KEYFRAME_REQUESTED.swap(false, Ordering::Relaxed) {
+        enc.force_idr();
+    }
+    enc.submit(f);
+    gpu_output(encoder, ENCODED_WAIT)
+}
+
 /// Opens the texture encoder of `device` unless it is open already. Opening Quick Sync
 /// takes over half a second, so this runs as soon as the capture knows its device rather
 /// than when the first viewer arrives. False (and the CPU path) when it cannot open.
 #[cfg(windows)]
 fn open_gpu_encoder(
-    encoder: &mut Option<(usize, Box<dyn crate::encoder::GpuVideoEncoder>)>,
+    encoder: &mut Option<(usize, super::gpu_encode_worker::GpuEncodeWorker)>,
     device: &::windows::Win32::Graphics::Direct3D11::ID3D11Device,
     width: u32,
     height: u32,
@@ -2505,7 +2579,7 @@ fn open_gpu_encoder(
     let vendor = super::gpu_tx::vendor_of(device).unwrap_or(0);
     match crate::encoder::create_gpu_encoder(device, vendor, width, height, fps, REQUESTED_BITRATE_BPS.load(Ordering::Relaxed)) {
         Ok(e) => {
-            *encoder = Some((key, e));
+            *encoder = Some((key, super::gpu_encode_worker::GpuEncodeWorker::new(e)));
             true
         }
         Err(e) => {

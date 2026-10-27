@@ -15,7 +15,7 @@ use crate::ui::message_grouping::{apply_message_metadata, regroup_messages};
 use crate::auth::vault::*;
 use crate::utils::updater;
 use crate::utils::{avatar_cache, emoji_cache};
-use slint::{Image, Model};
+use slint::{ComponentHandle, Image, Model};
 
 #[derive(Clone, Debug, Default)]
 pub struct RawGuildItem {
@@ -126,7 +126,7 @@ pub async fn fetch_and_populate_guilds(
                         let mut has_image = false;
                         let mut icon_image = Image::default();
                         if let Some(ref path_str) = raw.icon_path {
-                            if let Some(img) = load_rounded_guild_icon(path_str) {
+                            if let Some(img) = load_rounded_guild_icon(path_str, ui.window().scale_factor()) {
                                 has_image = true;
                                 icon_image = img;
                             }
@@ -180,7 +180,7 @@ pub async fn fetch_and_populate_guilds(
                                     let gid = item.id.to_string();
                                     let icon_path = cache_dir.join(format!("{}.png", gid));
                                     if icon_path.exists() {
-                                        if let Some(img) = load_rounded_guild_icon(&icon_path.to_string_lossy()) {
+                                        if let Some(img) = load_rounded_guild_icon(&icon_path.to_string_lossy(), ui.window().scale_factor()) {
                                             item.has_image = true;
                                             item.icon_image = img;
                                         }
@@ -449,6 +449,7 @@ pub async fn fetch_and_populate_channels(
     // Update channels in guilds_map
     if let Some(g_data) = guilds_map.lock().unwrap().get_mut(guild_id) {
         g_data.channels = channels_data.clone();
+        gateway::channel_names::remember(guild_id, channels_data.iter().map(|c| (c.id.as_str(), c.name.as_str())));
     }
 
     if channels_differ || cached.is_empty() {
@@ -552,6 +553,13 @@ async fn open_first_readable_channel(
             return (!current.is_empty()).then_some(current);
         }
         if readable {
+            let (app_w, name) = (app_weak.clone(), text_ch.name.clone());
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    ui.set_active_channel_name(crate::utils::styled_text::plain_display_name(name.trim_start_matches('#').trim()).as_ref().into());
+                    ui.set_active_channel_id(ch_id.into());
+                }
+            });
             request_chat_scroll_to_bottom(app_weak.clone());
             return Some(current);
         }
@@ -714,7 +722,7 @@ pub async fn fetch_and_populate_dms(
 
                 ui_channels.push(ChannelItem {
                     id: ch_id.into(),
-                    name: ch_name.into(),
+                    name: crate::utils::styled_text::plain_display_name(&ch_name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: false,
@@ -727,6 +735,7 @@ pub async fn fetch_and_populate_dms(
                     is_collapsed: false,
                     has_separator: false,
                     unread_count: unread_dm_count,
+                    ..Default::default()
                 });
             }
 
@@ -774,7 +783,7 @@ pub async fn fetch_and_populate_dms(
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w_name.upgrade() {
                         ui.set_active_channel_id(cid_top.into());
-                        ui.set_active_channel_name(target_name.into());
+                        ui.set_active_channel_name(crate::utils::styled_text::plain_display_name(&target_name).as_ref().into());
                         let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_updated));
                         ui.set_channels(model.into());
                         ui.set_total_dm_unread_count(remaining);
@@ -905,6 +914,7 @@ pub async fn load_messages_for_channel(
                     };
                     regroup_messages(&mut ui_msgs);
                     avatar_cache::get_avatar_cache().hydrate(&mut ui_msgs, &app_weak);
+                    crate::ui::invite_cards::hydrate(&mut ui_msgs, &app_weak);
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
                     ui.set_messages(model.into());
 
@@ -979,6 +989,7 @@ pub async fn try_login_with_candidates(
         let http = DiscordHttpClient::new(token_str.clone());
         match http.get_current_user().await {
             Ok(user_info) => {
+                crate::ui::invite_cards::set_session_client(http.clone());
                 let username = user_info["username"].as_str().unwrap_or("User");
                 let user_id = user_info["id"].as_str().unwrap_or("");
                 let global_name = user_info["global_name"].as_str().unwrap_or(username);
@@ -1112,8 +1123,18 @@ pub fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
 
 /// Server icon with its corners already rounded (radius = a third of the side, the 16 px
 /// of the 48 px tile), so it looks the same on the software renderer.
-fn load_rounded_guild_icon(path: &str) -> Option<Image> {
-    let mut rgba = image::open(path).ok()?.to_rgba8();
+/// It is resized here, once and with a smooth filter, to the tile's size in physical
+/// pixels: the software renderer would otherwise shrink the full-size icon on every
+/// frame without smoothing, which made the edges jagged. It also keeps less in memory.
+fn load_rounded_guild_icon(path: &str, scale_factor: f32) -> Option<Image> {
+    const TILE_LOGICAL_PX: f32 = 48.0;
+    let side = (TILE_LOGICAL_PX * scale_factor.clamp(1.0, 4.0)).round() as u32;
+    let decoded = image::open(path).ok()?;
+    let mut rgba = if decoded.width() > side || decoded.height() > side {
+        decoded.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8()
+    } else {
+        decoded.to_rgba8()
+    };
     let (w, h) = rgba.dimensions();
     crate::utils::image_shape::round_corners(&mut rgba, w, h, w.min(h) as f32 / 3.0);
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h);

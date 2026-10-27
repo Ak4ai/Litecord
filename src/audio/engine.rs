@@ -283,6 +283,19 @@ pub struct MicCapture {
 
 pub fn start_mic_capture(device_name: String, level_tx: mpsc::Sender<f32>) -> MicCapture {
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::mic_synth() {
+        info!("🧪 [TEST MIC] Tom sintético no lugar do microfone.");
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gen_stop = Arc::clone(&stop);
+        let _ = std::thread::Builder::new().name("mic-synth".into())
+            .spawn(move || crate::utils::test_hooks::run_synth_mic(gen_stop));
+        let _ = std::thread::Builder::new().name("mic-capture-owner".into()).spawn(move || {
+            let _ = stop_rx.recv();
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        return MicCapture { _stop: stop_tx };
+    }
     let spawned = std::thread::Builder::new().name("mic-capture-owner".into()).spawn(move || {
         let stream = open_mic_stream(device_name, level_tx);
         if stream.is_none() {

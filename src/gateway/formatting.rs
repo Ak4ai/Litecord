@@ -19,7 +19,7 @@ pub fn clean_discord_whitespace(input: &str) -> String {
                 // skip
             }
             _ => {
-                out.push(c);
+                out.push(crate::utils::styled_text::plain_letter(c).unwrap_or(c));
             }
         }
     }
@@ -221,7 +221,7 @@ fn apply_inline_markdown(input: &str) -> String {
         }
     });
     // <#CHANNEL_ID> — channel mentions
-    s = regex_replace_simple(&s, "<#", ">", |_inner| "#canal".to_string());
+    s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
 
     // <:name:ID> — custom emoji
     s = regex_replace_simple(&s, "<a:", ">", |inner| {
@@ -381,7 +381,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let author_obj = &m["author"];
     let name = author_obj["global_name"].as_str()
         .unwrap_or_else(|| author_obj["username"].as_str().unwrap_or("Unknown"));
-    name.to_string()
+    crate::utils::styled_text::plain_display_name(name).into_owned()
 }
 
 pub fn is_emoji_char(c: char) -> bool {
@@ -509,7 +509,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         return lines;
     }
 
-    let cleaned = clean_discord_whitespace(input);
+    let cleaned = clean_discord_whitespace(&super::channel_names::link_channel_mentions(input));
 
     for raw_line in cleaned.split('\n') {
         let trimmed_line = raw_line.trim_start();
@@ -608,7 +608,8 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                         let after_label = &after_bracket[bracket_end + 1..];
                         if after_label.starts_with('(') {
                             if let Some(paren_end) = after_label.find(')') {
-                                let url = &after_label[1..paren_end];
+                                // `[label](<url>)` is Discord's link without an embed preview.
+                                let url = after_label[1..paren_end].trim().trim_start_matches('<').trim_end_matches('>');
                                 if url.starts_with("http") {
                                     let mut next_rem = &after_label[paren_end + 1..];
                                     let is_bold_wrapped = before.ends_with("**") && next_rem.starts_with("**");
@@ -788,7 +789,18 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                     }
 
                     if raw_url.len() > 8 {
-                        if !before.is_empty() {
+                        // `<https://…>` (spaces allowed inside) is a link without a preview:
+                        // the brackets are markup, not text.
+                        let mut before = before;
+                        let mut after_url = &rem[first_idx + raw_url.len()..];
+                        if let (Some(b), Some(a)) = (
+                            before.trim_end().strip_suffix('<'),
+                            after_url.trim_start().strip_prefix('>'),
+                        ) {
+                            before = b;
+                            after_url = a;
+                        }
+                        if !before.trim().is_empty() {
                             line_blocks.push(MessageBlockData {
                                 text: parse_discord_markdown(before),
                                 is_link: false,
@@ -817,7 +829,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: raw_url.to_string(),
                             });
                         }
-                        rem = &rem[first_idx + raw_url.len()..];
+                        rem = after_url;
                     } else {
                         let slice_len = first_idx + 4;
                         line_blocks.push(MessageBlockData {
@@ -866,11 +878,42 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
         }
 
         if !line_blocks.is_empty() {
-            lines.push(MessageLineData { blocks: line_blocks });
+            push_line_split_long_text(line_blocks, &mut lines);
         }
     }
 
     lines
+}
+
+/// Slint has no inline text flow: a mixed line is a HorizontalLayout, and a long
+/// word-wrapped Text squeezed between links collapses to one letter per row.
+/// Long text blocks of a mixed line therefore get a row of their own, where they
+/// wrap at full width; short text stays inline with its links and emojis.
+fn push_line_split_long_text(blocks: Vec<MessageBlockData>, lines: &mut Vec<MessageLineData>) {
+    const INLINE_TEXT_MAX_CHARS: usize = 40;
+
+    if blocks.len() <= 1 {
+        lines.push(MessageLineData { blocks });
+        return;
+    }
+
+    let mut row: Vec<MessageBlockData> = Vec::new();
+    for block in blocks {
+        let is_plain_text = !block.is_link && !block.is_command && !block.is_emoji;
+        if is_plain_text && block.text.chars().count() > INLINE_TEXT_MAX_CHARS {
+            if !row.is_empty() {
+                lines.push(MessageLineData { blocks: std::mem::take(&mut row) });
+            }
+            let mut block = block;
+            block.text = block.text.trim().to_string();
+            lines.push(MessageLineData { blocks: vec![block] });
+        } else {
+            row.push(block);
+        }
+    }
+    if !row.is_empty() {
+        lines.push(MessageLineData { blocks: row });
+    }
 }
 
 pub fn format_decimal_color(color_val: &Value) -> String {
@@ -1593,6 +1636,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn styled_letters_in_messages_and_authors_become_plain() {
+        assert_eq!(clean_discord_whitespace("➡ 𝗙𝘂𝗹𝗹 𝗪𝗮𝗹𝗸𝘁𝗵𝗿𝗼𝘂𝗴𝗵 ━━ 𝟭𝟬𝟬%"), "➡ Full Walkthrough ━━ 100%");
+        assert_eq!(format_discord_author(&json!({ "author": { "global_name": "𝗗𝗿𝗼𝗽𝗶𝗻𝘅" } })), "Dropinx");
+    }
+
+    #[test]
     fn test_strikethrough_combining() {
         let input = "~~hello~~";
         let output = apply_inline_markdown(input);
@@ -1743,5 +1792,48 @@ mod tests {
         assert!(links.iter().any(|l| l.label.contains("Ouvir Mensagem de Voz")));
         assert!(attachments.iter().any(|a| a.is_image && a.url.contains("game-banner.png")));
     }
-}
 
+
+    #[test]
+    fn angle_bracket_links_become_clickable_links() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("• [Watch the talk](<https://youtu.be/abc>)", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://youtu.be/abc");
+        let blocks = &lines[0].blocks;
+        assert!(blocks.iter().any(|b| b.is_link && b.text == "Watch the talk"));
+        assert!(blocks.iter().all(|b| !b.text.contains("](<") && !b.text.contains(">)")));
+    }
+
+    #[test]
+    fn long_text_between_links_gets_its_own_row() {
+        let mut links = Vec::new();
+        let input = "[Godotfest](<https://godotfest.com>) talking about how to build a community on Discord and evolve it. [Grab a ticket here](<https://tickets.godotfest.com>) to get a discount!";
+        let lines = parse_text_into_lines(input, &mut links);
+        assert_eq!(links.len(), 2);
+        for line in &lines {
+            if line.blocks.len() > 1 {
+                assert!(line.blocks.iter().all(|b| b.is_link || b.text.chars().count() <= 40));
+            }
+        }
+        assert!(lines.iter().any(|l| l.blocks.len() == 1 && l.blocks[0].text.starts_with("talking about")));
+    }
+
+    #[test]
+    fn bare_links_in_angle_brackets_drop_the_brackets() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("Clean Code - < http://amzn.to/2tC >", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "http://amzn.to/2tC");
+        let text: String = lines[0].blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(!text.contains('<') && !text.contains('>'), "{text}");
+    }
+
+    #[test]
+    fn short_text_stays_inline_with_its_link() {
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines("When: soon | [RSVP now](https://example.com)", &mut links);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].blocks.len(), 2);
+    }
+}

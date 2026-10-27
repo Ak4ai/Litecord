@@ -25,7 +25,7 @@ Only the latest release and the current `main` branch receive official security 
    - Tokens are atomically erased from disk and memory when the user logs out.
 3. **Direct Discord Connection (No Proxies)**:
    - Litecord connects directly to official Discord API and Gateway endpoints (`gateway.discord.gg`, `discord.com`).
-   - No intermediary servers, third-party proxies, analytics, telemetry, or remote tracking scripts exist.
+   - No third-party proxies, analytics, telemetry, or remote tracking scripts exist. The only other servers are Litecord's own signaling worker, which introduces screen-sharing peers and carries no media, and GitHub, for updates.
 4. **End-to-End Encrypted Voice & Video (E2EE)**:
    - Voice and video streams utilize hardware-accelerated **AES-256-GCM** with per-room session key derivation and support for Discord's **DAVE / MLS (RFC 9420)** end-to-end voice encryption.
 5. **Path Traversal & Shell Injection Defense**:

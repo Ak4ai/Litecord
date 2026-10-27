@@ -308,6 +308,7 @@ pub fn start(req: Request) -> bool {
         .name("gpu-capture".into())
         .spawn(move || {
             crate::cpu_profiler::set_current_thread_name("gpu-capture");
+            crate::utils::thread_priority::raise_current_thread();
             let device = match create_device(&adapter) {
                 Ok(d) => d,
                 Err(e) => {
@@ -321,6 +322,7 @@ pub fn start(req: Request) -> bool {
                     let _ = mt.SetMultithreadProtected(true);
                 }
             }
+            raise_gpu_priority(&device, &gpu.name);
             if worker_cancelled.load(Ordering::Acquire) || !req.is_running.load(Ordering::Relaxed) { return; }
             let mut sink = Sink::new(&req, &device, worker_cancelled);
             if req.hwnd == 0 && drives_monitor {
@@ -357,6 +359,23 @@ pub fn start(req: Request) -> bool {
     ready
 }
 
+/// Asks Windows to give this device's GPU work (the capture, the conversion and the encoder
+/// all run on it) a higher priority. Windows only uses it to order this process's own work;
+/// against a game's work, the process's scheduling class counts, and raising that one to
+/// above normal or high made no measurable difference while a game kept the GPU at 100%.
+/// The highest levels need the "increase scheduling priority" privilege, so lower ones are
+/// tried in turn.
+fn raise_gpu_priority(device: &ID3D11Device, gpu: &str) {
+    let Ok(dxgi) = device.cast::<IDXGIDevice>() else { return };
+    for level in [7, 4, 1] {
+        if unsafe { dxgi.SetGPUThreadPriority(level) }.is_ok() {
+            info!("⚡ [CAPTURA GPU] Prioridade de agendamento da {} elevada para {}", gpu, level);
+            return;
+        }
+    }
+    info!("ℹ️ [CAPTURA GPU] Windows não aceitou elevar a prioridade de agendamento da {}", gpu);
+}
+
 /// After this long without a reason to capture, the capture stops asking for frames.
 const IDLE_CLOSE_AFTER: Duration = Duration::from_secs(1);
 
@@ -372,6 +391,38 @@ fn duplicate(
     unsafe { output.DuplicateOutput(device) }
 }
 
+/// How long the capture waits for the screen to change before the send thread repeats the
+/// last picture.
+const ACQUIRE_WAIT: Duration = Duration::from_millis(20);
+/// Between two asks for a frame. Each ask costs a call into the driver, so asking every
+/// millisecond kept a core 5% busy on a still screen; a frame lasts 16.7 ms at 60 FPS,
+/// and one found up to 4 ms late still goes out with the next one sent.
+const ACQUIRE_POLL: Duration = Duration::from_millis(4);
+
+/// `AcquireNextFrame`, waiting up to `wait` for a new frame without sitting inside the call.
+///
+/// The call holds the lock of the multithread-protected device for as long as it waits
+/// (Sunshine documents the same), and the send thread's encoder uses this device: a wait
+/// inside the call made its copies and `ProcessInput` wait up to the whole timeout, which
+/// showed as 12-20 ms "slow frames" whenever the screen changed less often than the
+/// stream's pace. Asking without a timeout and sleeping between asks leaves the lock free.
+fn acquire_frame(
+    dup: &IDXGIOutputDuplication,
+    info: &mut DXGI_OUTDUPL_FRAME_INFO,
+    resource: &mut Option<IDXGIResource>,
+    wait: Duration,
+) -> windows::core::Result<()> {
+    let start = Instant::now();
+    loop {
+        match unsafe { dup.AcquireNextFrame(0, info, resource) } {
+            Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT && start.elapsed() < wait => {
+                std::thread::sleep(ACQUIRE_POLL);
+            }
+            other => return other,
+        }
+    }
+}
+
 fn run_duplication(
     dup: IDXGIOutputDuplication,
     device: &ID3D11Device,
@@ -379,10 +430,21 @@ fn run_duplication(
     sink: &mut Sink,
     req: &Request,
 ) {
+    // The waits between asks for a frame are a few ms, not a 15.6 ms timer tick.
+    let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
     let mut duplication = Some(dup);
     let frame_interval = Duration::from_nanos(1_000_000_000 / req.fps.max(1));
+    let mut was_watched = false;
     while req.is_running.load(Ordering::Relaxed) && !sink.cancelled.load(Ordering::Acquire) {
         let start = Instant::now();
+        // Someone started watching: duplicate again, since a new duplication's first frame
+        // is the whole screen. The open one only reports changes, and a still screen (a
+        // paused game, a document) would leave the new viewer without any picture.
+        let watched = super::manager::tx_watched();
+        if watched && !was_watched {
+            duplication = None;
+        }
+        was_watched = watched;
         // Nobody watching and no preview shown: no frames asked for (the duplication stays
         // open, so the next one comes at once when they are wanted again).
         if !frames_wanted() {
@@ -399,7 +461,7 @@ fn run_duplication(
         let dup = duplication.as_ref().unwrap();
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource = None;
-        match unsafe { dup.AcquireNextFrame(20, &mut info, &mut resource) } {
+        match acquire_frame(dup, &mut info, &mut resource, ACQUIRE_WAIT) {
             Ok(()) => {
                 if let Some(tex) = resource.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
                     sink.deliver(&tex);
@@ -510,8 +572,19 @@ fn run_wgc(
         // preview (Litecord hidden behind a game), the session is closed, and opened again
         // when someone watches or the preview shows.
         let mut unwanted_since: Option<Instant> = None;
+        let mut was_watched = false;
         while req.is_running.load(Ordering::Relaxed) && !cancelled.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(100));
+            // Someone started watching: a new session sends the current picture at once,
+            // while the open one only sends changes (a still screen sends nothing).
+            let watched = super::manager::tx_watched();
+            if watched && !was_watched {
+                if let Some((pool, session)) = live.take() {
+                    let _ = session.Close();
+                    let _ = pool.Close();
+                }
+            }
+            was_watched = watched;
             if frames_wanted() {
                 unwanted_since = None;
                 if live.is_none() {

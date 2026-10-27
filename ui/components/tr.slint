@@ -6,6 +6,10 @@ export global Tr {
     in-out property <string> web_share_connecting: "Connecting…";
     in-out property <string> web_share_copy: "Copy link";
     in-out property <string> web_share_copied: "Link copied";
+    in-out property <string> web_share_title: "Watch on the web";
+    in-out property <string> web_share_hint: "Anyone with this link can watch in a browser, up to 3 at a time.";
+    in-out property <string> web_share_watching: "watching";
+    in-out property <string> close: "Close";
     in-out property <string> qr_generate: "Generate QR";
     in-out property <string> qr_regenerate: "Re-generate QR Code";
     in-out property <string> preview_reduced: "Reduced preview to save resources";
@@ -130,8 +134,8 @@ export global Tr {
     in-out property <string> stealer_immunity_desc: "Unauthorized scripts and malware cannot steal your session because the cryptographic key lives in the Windows kernel.";
     in-out property <string> dave_title: "Official Discord Voice (DAVE Protocol)";
     in-out property <string> dave_desc: "End-to-end encrypted voice communication with Discord's official voice servers, with no intermediaries.";
-    in-out property <string> zero_intermediaries: "Zero Intermediaries";
-    in-out property <string> zero_intermediaries_desc: "Connections are 100% direct to the Discord API. There are no third-party servers or built-in telemetry.";
+    in-out property <string> zero_intermediaries: "No telemetry";
+    in-out property <string> zero_intermediaries_desc: "Chat and calls go straight to Discord. Litecord's own server only puts screen-share participants in touch (the video goes directly between them, encrypted), and GitHub is checked for updates. No usage data is sent anywhere.";
     in-out property <string> proxy_mode: "Proxy Connection Mode";
     in-out property <string> proxy_address: "Proxy Address and Authentication";
     in-out property <string> proxy_host: "Server / Host IP:";
@@ -232,4 +236,18 @@ export global Tr {
     in-out property <string> time_ago: "{} ago";
     in-out property <string> time_soon: "in a moment";
     in-out property <string> time_just_now: "just now";
+    in-out property <string> settings_group_calls: "CALLS";
+    in-out property <string> settings_group_app: "APP";
+    in-out property <string> settings_tab_appearance: "Appearance and language";
+    in-out property <string> settings_tab_about: "Privacy and about";
+    in-out property <string> settings_advanced: "Advanced";
+    in-out property <string> settings_advanced_desc: "Change these only if the stream freezes or goes black. Automatic tries each option and falls back to the next one.";
+    in-out property <string> settings_privacy_title: "How your data is protected";
+    in-out property <string> invite_join: "Join";
+    in-out property <string> invite_loading: "Loading invite…";
+    in-out property <string> invite_online: "{} online";
+    in-out property <string> invite_members: "{} members";
+    in-out property <string> event_view: "View event";
+    in-out property <string> event_live: "Happening now";
+    in-out property <string> event_interested: "{} interested";
 }

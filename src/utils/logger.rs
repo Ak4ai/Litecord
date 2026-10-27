@@ -40,12 +40,15 @@ impl log::Log for AppLogger {
                 log::Level::Trace => "TRACE",
             };
 
-            let console_msg = format!("[{} {} {}] {}\n", time_str, level_str, record.target(), record.args());
             let file_msg = format!("[{} {} {}] {}\n", time_str, plain_level, record.target(), record.args());
 
-            // 1. Output to attached console
-            print!("{}", console_msg);
-            let _ = std::io::stdout().flush();
+            // 1. Output to the attached console, never on the caller's thread: a console
+            // paused by a selection, or a pipe nobody reads, would block every thread
+            // that logs (UI, voice, stream) until it drains.
+            if let Some(console) = console() {
+                let console_msg = format!("[{} {} {}] {}\n", time_str, level_str, record.target(), record.args());
+                let _ = console.try_send(console_msg);
+            }
 
             // 2. Persist to log file without file-open overhead on hot path
             if let Ok(mut guard) = self.file.lock() {
@@ -58,13 +61,52 @@ impl log::Log for AppLogger {
 
     fn flush(&self) {
         use std::io::Write;
-        let _ = std::io::stdout().flush();
         if let Ok(mut guard) = self.file.lock() {
             if let Some(ref mut f) = *guard {
                 let _ = f.flush();
             }
         }
     }
+}
+
+/// Lines waiting for the console; when it stops taking them, new ones are dropped.
+const CONSOLE_BACKLOG: usize = 256;
+
+/// The console writer, or None when the process has no standard output (the usual
+/// Windows launch, without a terminal).
+fn console() -> Option<&'static std::sync::mpsc::SyncSender<String>> {
+    static CONSOLE: std::sync::OnceLock<Option<std::sync::mpsc::SyncSender<String>>> = std::sync::OnceLock::new();
+    CONSOLE.get_or_init(|| {
+        if !has_stdout() {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(CONSOLE_BACKLOG);
+        std::thread::Builder::new()
+            .name("console-log".into())
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                for line in rx {
+                    let _ = out.write_all(line.as_bytes());
+                    let _ = out.flush();
+                }
+            })
+            .ok()?;
+        Some(tx)
+    }).as_ref()
+}
+
+#[cfg(windows)]
+fn has_stdout() -> bool {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+    let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    !handle.is_null() && handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+}
+
+#[cfg(not(windows))]
+fn has_stdout() -> bool {
+    true
 }
 
 pub fn init_logger() {

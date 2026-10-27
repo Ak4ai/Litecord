@@ -30,8 +30,15 @@ fn main() {
     println!("cargo:rustc-env=LITECORD_GIT_HASH={}", git_hash);
     println!("cargo:rustc-env=LITECORD_GIT_DIRTY={}", if git_dirty { "true" } else { "false" });
     println!("cargo:rustc-env=LITECORD_GIT_BRANCH={}", git_branch);
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/index");
+    // Rerun only when the checked-out commit changes: HEAD (branch switch) and the
+    // branch ref (new commit). Watching .git/index re-ran this script, and so
+    // recompiled the crate, on every `git add`. The dirty flag is therefore taken
+    // at the last rebuild, which is exact for builds made from a clean tree.
+    // The git dir is resolved through git so this also holds in worktrees, where
+    // `.git` is a file and watching a path under it would rerun on every build.
+    for path in git_paths_to_watch() {
+        println!("cargo:rerun-if-changed={}", path);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -45,4 +52,30 @@ fn main() {
             println!("cargo:warning=winres icon compilation failed: {:?}", e);
         }
     }
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git").args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+fn git_paths_to_watch() -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(head) = git_output(&["rev-parse", "--path-format=absolute", "--git-path", "HEAD"]) {
+        paths.push(head);
+    }
+    if let Some(branch_ref) = git_output(&["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(ref_file) = git_output(&["rev-parse", "--path-format=absolute", "--git-path", &branch_ref]) {
+            paths.push(ref_file);
+        }
+        // Refs move into packed-refs after `git gc`.
+        if let Some(packed) = git_output(&["rev-parse", "--path-format=absolute", "--git-path", "packed-refs"]) {
+            paths.push(packed);
+        }
+    }
+    paths
 }

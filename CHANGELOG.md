@@ -5,6 +5,45 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.1-beta] - 2026-10-26
+
+**Em resumo:** transmissões que não engasgam em notebooks com duas placas de vídeo nem com espectadores no celular, voz que se recupera sozinha quando o dispositivo de áudio, a sinalização ou a criptografia DAVE falham, uma tela de configurações nova, janela que reabre onde ficou, cards de convite e de evento no chat, e muitas correções de interface vindas de contribuidores. Parado, o Litecord continua em ~40 MB e 0,2% de CPU com a janela aberta.
+
+**In English:** streams no longer stutter on laptops with two GPUs or for phone viewers; voice recovers by itself when the audio device, signaling or DAVE encryption fail; a new settings window; the main window reopens where it was left; invite and event cards in chat; and many interface fixes from contributors. Thanks to @stickyfran, @starzynhobr and @PedroZamecki for their contributions.
+
+### 🔄 Atualizações
+- **O aviso de atualização não aparecia para versões que só mudam o último número**: "1.3.1-beta" era lido como 1.3.0, porque a parte "1-beta" não virava número. Por isso esta versão é publicada como `v1.3.1`, que a 1.3.0 reconhece.
+
+### 🎙️ Voz e chamadas
+- **O áudio recebido não para mais de tocar** (#64). A saída de áudio é recriada quando o dispositivo dá erro ou para de pedir som (recupera em ~3 s); um grupo DAVE quebrado é refeito depois de falhas repetidas (no máximo uma vez a cada 10 s); e a chamada não tenta mais reconectar quando o Discord a encerra de vez.
+- **Áudio sem DAVE durante a passagem da chamada para a versão 0 do protocolo**: quem já mudou de versão era descartado como falha de decifragem. Como faz a libdave, esses pacotes tocam desde o aviso da mudança até 10 s depois de o DAVE voltar; fora disso continuam recusados. Baseado na #65 de @stickyfran.
+- **Processamento de voz opcional** (supressão de ruído RNNoise, cancelamento de eco e ganho automático), desligado por padrão. Contribuição de @stickyfran (#41).
+- O log do console é escrito por uma thread própria: um console pausado ou com texto selecionado travava o app inteiro.
+
+### 📡 Transmissão
+- **Sem engasgos em notebooks híbridos**: com a outra GPU ocupada, o Quick Sync travava porque a captura esperava dentro do `AcquireNextFrame` segurando o dispositivo. A captura agora consulta a cada 4 ms sem esperar, a codificação tem thread própria (um quadro lento é descartado em vez de congelar o envio) e as threads da transmissão rodam um nível acima do normal. Com a RTX a 100% e a CPU cheia, o Automático segura ~57–60 FPS.
+- **Espectadores pela web (principalmente no celular)** perdiam ~28% dos pacotes com o buffer de envio padrão; agora 4 MB de envio, fila para o que o socket recusar e reenvio em ordem.
+- A transmissão pela web sobrevive a quedas da sinalização (até 2 min) e a quedas curtas de conexão do espectador (15 s); a página continua tocando enquanto a mídia chega.
+- Tela parada é repetida 10 vezes por segundo em vez de a cada volta do envio, e o primeiro espectador recebe uma imagem completa mesmo com a tela parada.
+- **Compartilhar na web abre uma janela** com o link, copiar, encerrar e fechar, no lugar do botão de copiar na barra superior.
+
+### 🪟 Janela e interface
+- **A janela reabre onde ficou**: posição, tamanho e estado maximizado são guardados (uma vez, 1 s depois de parar de mover, ou ao fechar ou ir para a bandeja). Maximizada, o botão de fechar funciona no canto da tela. Baseado na #44 de @stickyfran.
+- **Tela de configurações nova**, com navegação agrupada, uma coluna por página e a explicação embaixo de cada opção. Contribuição de @starzynhobr (#59).
+- Uma família de fonte e tamanhos inteiros (#47), sombra do Windows na janela sem moldura (#53), lista de canais com largura ajustável (#57), emoji colorido no começo do nome do canal (#58), ícones de servidor suaves no renderizador por CPU (#51), nomes de canal com letras "decoradas" sem quadrados (#48). Contribuições de @starzynhobr.
+- A tela de Privacidade dizia que não havia nenhum servidor além do Discord; agora diz que o servidor do Litecord só põe em contato quem participa de uma transmissão e que o GitHub é consultado para atualizações.
+- No Linux, a janela informa `app_id` no Wayland e `WM_CLASS` no X11, evitando ícones duplicados na barra de tarefas. Contribuição de @stickyfran (#45).
+- **Atalhos com botões do mouse no Linux**. Contribuição de @PedroZamecki (#43).
+
+### 💬 Chat e servidores
+- **Cards de convite de servidor e de evento** no chat, com ícone, capa, membros online e botão de entrar. Contribuição de @starzynhobr (#54, #55); o cache guarda os últimos 32 códigos com as imagens já no tamanho do card e esvazia na bandeja.
+- **Mensagens encaminhadas**, banners de mídia, mensagens de voz e os demais tipos de mensagem do Discord. Contribuição de @stickyfran (#62).
+- Menções de canal com o nome real e clicáveis (#56), links `[texto](<url>)` e `<url>` e texto que quebrava letra por letra (#46), separadores de dia que mudam com o idioma (#50) e nova tentativa da lista de servidores quando o Discord falha por um momento (#52). Contribuições de @starzynhobr.
+- **Abrir um servidor já visitado ficou mais rápido**: as permissões dos últimos 8 servidores ficam guardadas por até 5 min e são descartadas quando cargos ou o próprio membro mudam; a lista de canais é conferida em ~390 ms em vez de ~530 ms. Baseado na #61 de @stickyfran.
+- **Letras estilizadas (𝗥𝗨𝗟𝗘𝗦, 𝘋𝘪𝘤𝘢𝘴) aparecem nas mensagens, nos embeds, nos nomes de autores e nos canais que começam com emoji**; antes ficavam em branco.
+- A rolagem da lista de servidores não cai mais para ~26 FPS com o mouse sobre ela.
+- O `build.rs` só roda de novo quando o commit muda (#49, @starzynhobr).
+
 ## [v1.3.0-beta] - 2026-10-20 — Leveza para quem joga (#27)
 
 > **Atualização obrigatória.** As transmissões passam a ser enviadas só para quem pede para assistir, com uma chave sorteada a cada transmissão (protocolo 3). Versões anteriores não conseguem assistir nem ser assistidas por esta, então o servidor de sinalização passa a pedir a atualização.
