@@ -132,53 +132,91 @@ pub fn pop_speaker_reference(out: &mut [f32]) -> usize {
     get_aec_speaker_ring().pop_samples(out)
 }
 
-/// Fractional phase resampler that prevents micro-stutter and audio drift
+/// Fractional phase resampler using 4-point Cubic Hermite (Catmull-Rom) interpolation.
+/// Preserves high-frequency vocal brilliance (3 kHz – 8 kHz) without linear interpolation HF roll-off,
+/// while eliminating micro-stutter and audio drift.
 #[derive(Debug, Default)]
 pub struct PhaseResampler {
     phase: f64,
-    last_sample: f32,
+    hist: [f32; 4],
+    initialized: bool,
 }
 
 impl PhaseResampler {
     pub fn new() -> Self {
         Self {
             phase: 0.0,
-            last_sample: 0.0,
+            hist: [0.0; 4],
+            initialized: false,
         }
     }
 
+    #[inline(always)]
+    fn cubic_hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
+        let c0 = y1;
+        let c1 = 0.5 * (y2 - y0);
+        let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        ((c3 * t + c2) * t + c1) * t + c0
+    }
+
     pub fn resample(&mut self, input: &[f32], src_rate: u32, dst_rate: u32, output: &mut Vec<f32>) {
-        if src_rate == dst_rate || src_rate == 0 {
+        if src_rate == dst_rate || src_rate == 0 || dst_rate == 0 {
             output.extend_from_slice(input);
             return;
         }
+        if input.is_empty() {
+            return;
+        }
 
-        let ratio = dst_rate as f64 / src_rate as f64;
-        let step = 1.0 / ratio;
+        if !self.initialized {
+            let first = input[0];
+            self.hist = [first, first, first, first];
+            self.initialized = true;
+        }
 
-        let mut curr_phase = self.phase;
+        let step = src_rate as f64 / dst_rate as f64;
         let in_len = input.len();
+        let mut curr_phase = self.phase;
+
+        let sample_at = |idx: isize, hist: &[f32; 4], buf: &[f32]| -> f32 {
+            if idx < 0 {
+                let h_idx = (4 + idx).clamp(0, 3) as usize;
+                hist[h_idx]
+            } else if (idx as usize) < buf.len() {
+                buf[idx as usize]
+            } else {
+                *buf.last().unwrap_or(&0.0)
+            }
+        };
 
         while curr_phase < in_len as f64 {
-            let idx = curr_phase as usize;
-            let frac = (curr_phase - idx as f64) as f32;
+            let base = curr_phase.floor() as isize;
+            let frac = (curr_phase - base as f64) as f32;
 
-            let s0 = if idx == 0 {
-                self.last_sample
-            } else {
-                input[idx - 1]
-            };
-            let s1 = input[idx];
+            let y0 = sample_at(base - 1, &self.hist, input);
+            let y1 = sample_at(base, &self.hist, input);
+            let y2 = sample_at(base + 1, &self.hist, input);
+            let y3 = sample_at(base + 2, &self.hist, input);
 
-            let sample = s0 * (1.0 - frac) + s1 * frac;
+            let sample = Self::cubic_hermite(y0, y1, y2, y3, frac);
             output.push(sample.clamp(-1.0, 1.0));
 
             curr_phase += step;
         }
 
         self.phase = curr_phase - in_len as f64;
-        if let Some(&last) = input.last() {
-            self.last_sample = last;
+
+        // Update 4-sample history from the end of `input`
+        if in_len >= 4 {
+            self.hist.copy_from_slice(&input[in_len - 4..]);
+        } else {
+            for &s in input {
+                self.hist[0] = self.hist[1];
+                self.hist[1] = self.hist[2];
+                self.hist[2] = self.hist[3];
+                self.hist[3] = s;
+            }
         }
     }
 }
@@ -383,17 +421,21 @@ pub struct VoiceProcessor {
     // Advanced Transient & Neural Gate state
     neural_gate_gain: f32,
     sub_block_energy_floor: f32,
-    _consecutive_muted_frames: usize,
+    speech_hangover_frames: usize,
 }
 
 impl VoiceProcessor {
     pub fn new() -> Self {
         let mut denoiser = nnnoiseless::DenoiseState::new();
-        // Pre-warm the recurrent GRU states of RNNoise with silent frames in correct S16 scale
+        // Pre-warm the recurrent GRU states of RNNoise with a tiny S16 LSB dither (-110 dBFS)
+        // so `nnnoiseless` internal biquad filter states never decay into x86 subnormal/denormal FPU traps!
         let mut silence = [0.0f32; DENOISE_CHUNK_SIZE];
+        for (i, s) in silence.iter_mut().enumerate() {
+            *s = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+        }
         let mut dummy_out = [0.0f32; DENOISE_CHUNK_SIZE];
         for _ in 0..10 {
-            denoiser.process_frame(&mut dummy_out, &mut silence);
+            denoiser.process_frame(&mut dummy_out, &silence);
         }
 
         Self {
@@ -411,7 +453,7 @@ impl VoiceProcessor {
             agc_current_gain: 1.0,
             neural_gate_gain: 1.0,
             sub_block_energy_floor: 0.005,
-            _consecutive_muted_frames: 0,
+            speech_hangover_frames: 0,
         }
     }
 
@@ -593,12 +635,14 @@ impl VoiceProcessor {
         let mut s16_out = [0.0f32; DENOISE_CHUNK_SIZE];
 
         for i in 0..DENOISE_CHUNK_SIZE {
-            s16_in[i] = (frame[i] * 32768.0).clamp(-32768.0, 32767.0);
+            let dither = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+            s16_in[i] = (frame[i] * 32768.0 + dither).clamp(-32768.0, 32767.0);
         }
         let vad1 = self.denoiser.process_frame(&mut s16_out, &s16_in);
 
         for i in 0..DENOISE_CHUNK_SIZE {
-            s16_in[i] = (frame[DENOISE_CHUNK_SIZE + i] * 32768.0).clamp(-32768.0, 32767.0);
+            let dither = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+            s16_in[i] = (frame[DENOISE_CHUNK_SIZE + i] * 32768.0 + dither).clamp(-32768.0, 32767.0);
         }
         let vad2 = self.denoiser.process_frame(&mut s16_out, &s16_in);
 
@@ -613,7 +657,8 @@ impl VoiceProcessor {
 
         // First 480 samples (10ms)
         for i in 0..DENOISE_CHUNK_SIZE {
-            s16_in[i] = (frame[i] * 32768.0).clamp(-32768.0, 32767.0);
+            let dither = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+            s16_in[i] = (frame[i] * 32768.0 + dither).clamp(-32768.0, 32767.0);
         }
         let vad1 = self.denoiser.process_frame(&mut s16_out, &s16_in);
         for i in 0..DENOISE_CHUNK_SIZE {
@@ -624,7 +669,8 @@ impl VoiceProcessor {
 
         // Second 480 samples (10ms)
         for i in 0..DENOISE_CHUNK_SIZE {
-            s16_in[i] = (frame[DENOISE_CHUNK_SIZE + i] * 32768.0).clamp(-32768.0, 32767.0);
+            let dither = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+            s16_in[i] = (frame[DENOISE_CHUNK_SIZE + i] * 32768.0 + dither).clamp(-32768.0, 32767.0);
         }
         let vad2 = self.denoiser.process_frame(&mut s16_out, &s16_in);
         for i in 0..DENOISE_CHUNK_SIZE {
@@ -636,14 +682,16 @@ impl VoiceProcessor {
     }
 
     /// Applies Advanced Noise Suppression (Krisp-grade non-stationary and mechanical keyboard click elimination)
-    /// Combines full-depth RNNoise + 2ms sub-block transient suppression + Neural Voice Gate
+    /// Combines full-depth RNNoise + 2ms sub-block transient suppression + Neural Voice Gate with Speech Hangover
+    /// so unvoiced consonants/fricatives ("s", "f", "c", "t") retain full high-frequency brightness.
     fn apply_advanced_suppression(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) -> f32 {
         let mut s16_in = [0.0f32; DENOISE_CHUNK_SIZE];
         let mut s16_out = [0.0f32; DENOISE_CHUNK_SIZE];
 
-        // 1. Full-depth RNNoise with S16 scaling
+        // 1. Full-depth RNNoise with S16 scaling (plus 0.01 S16 LSB anti-denormal dither to prevent x86 FPU traps)
         for i in 0..DENOISE_CHUNK_SIZE {
-            s16_in[i] = (frame[i] * 32768.0).clamp(-32768.0, 32767.0);
+            let dither = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+            s16_in[i] = (frame[i] * 32768.0 + dither).clamp(-32768.0, 32767.0);
         }
         let vad1 = self.denoiser.process_frame(&mut s16_out, &s16_in);
         for i in 0..DENOISE_CHUNK_SIZE {
@@ -651,7 +699,8 @@ impl VoiceProcessor {
         }
 
         for i in 0..DENOISE_CHUNK_SIZE {
-            s16_in[i] = (frame[DENOISE_CHUNK_SIZE + i] * 32768.0).clamp(-32768.0, 32767.0);
+            let dither = if i & 1 == 0 { 1e-2 } else { -1e-2 };
+            s16_in[i] = (frame[DENOISE_CHUNK_SIZE + i] * 32768.0 + dither).clamp(-32768.0, 32767.0);
         }
         let vad2 = self.denoiser.process_frame(&mut s16_out, &s16_in);
         for i in 0..DENOISE_CHUNK_SIZE {
@@ -660,9 +709,18 @@ impl VoiceProcessor {
 
         let vad_prob = (vad1 + vad2) * 0.5;
 
+        // Track active speech hangover (8 frames = 160ms) so unvoiced consonants/fricatives
+        // ("s", "f", "t", "ch") inside or at the end of words are never treated as noise clicks!
+        if vad_prob >= 0.45 {
+            self.speech_hangover_frames = 8;
+        } else if self.speech_hangover_frames > 0 {
+            self.speech_hangover_frames -= 1;
+        }
+        let in_speech = vad_prob >= 0.40 || self.speech_hangover_frames > 0;
+
         // 2. High-Frequency Transient Percussive Click Suppressor (Keyboard & Mouse clicks)
-        // Mechanical keyboard clicks are short impulsive bursts (2ms..6ms) with low vocal periodic pitch.
-        // We evaluate 10 sub-blocks of 96 samples (2ms each)
+        // Mechanical keyboard clicks are short impulsive bursts (2ms..6ms) with high peak-to-RMS crest factor
+        // occurring outside of active speech.
         const SUB_BLOCK_SIZE: usize = 96;
         for sub_chunk in frame.chunks_exact_mut(SUB_BLOCK_SIZE) {
             let mut sub_sq = 0.0f32;
@@ -674,12 +732,14 @@ impl VoiceProcessor {
             }
             let sub_rms = (sub_sq / SUB_BLOCK_SIZE as f32).sqrt();
 
-            // Track smooth background noise floor
-            self.sub_block_energy_floor = self.sub_block_energy_floor * 0.98 + sub_rms * 0.02;
+            // Track smooth background noise floor when not in active speech
+            if !in_speech {
+                self.sub_block_energy_floor = self.sub_block_energy_floor * 0.98 + sub_rms * 0.02;
+            }
 
-            // Transient detection: High crest ratio (> 4.5x) or sudden burst while vad_prob < 0.40
-            let is_transient = (max_abs / (self.sub_block_energy_floor + 1e-4) > 4.5 || sub_rms > 0.015)
-                && vad_prob < 0.40;
+            // Transient detection: sharp impulsive spike relative to background floor AND strictly outside speech
+            let crest_over_floor = max_abs / (self.sub_block_energy_floor + 1e-4);
+            let is_transient = !in_speech && vad_prob < 0.30 && (crest_over_floor > 4.5 || sub_rms > self.sub_block_energy_floor * 3.5);
 
             if is_transient {
                 // Surgically attenuate the impulsive mechanical click
@@ -690,15 +750,16 @@ impl VoiceProcessor {
             }
         }
 
-        // 3. Neural Voice Gate with Fast Attack (2ms ramp) and Smooth Release (120ms)
-        // Target gate gain: 1.0 when human voice is verified (vad_prob >= 0.45); down to -32dB (0.025) on silence/typing
-        let target_gate = if vad_prob >= 0.45 {
+        // 3. Neural Voice Gate with Fast Attack (2ms ramp), 160ms Speech Hangover, and Smooth Release
+        // Target gate gain: 1.0 during verified speech or hangover (preserving unvoiced consonants and natural vocal brightness);
+        // down to -32dB (0.025) on silence/typing.
+        let target_gate = if in_speech {
             1.0f32
         } else if vad_prob <= 0.15 {
             0.025f32
         } else {
-            // Smooth linear crossfade in uncertain zone [0.15, 0.45]
-            0.025 + (vad_prob - 0.15) / 0.30 * 0.975
+            // Smooth linear crossfade in uncertain zone [0.15, 0.40]
+            0.025 + (vad_prob - 0.15) / 0.25 * 0.975
         };
 
         let start_gain = self.neural_gate_gain;

@@ -797,10 +797,10 @@ pub async fn connect_voice_gateway(
                                                             info!("🔊 Dispositivo de saída de áudio disponível novamente.");
                                                         }
 
-                                                        let config = match device.default_output_config() {
-                                                            Ok(c) => c,
-                                                            Err(e) => {
-                                                                warn!("Falha ao obter config de saída: {:?}", e);
+                                                        let config = match crate::audio::engine::select_preferred_48khz_config(&device, false) {
+                                                            Some(c) => c,
+                                                            None => {
+                                                                warn!("Falha ao obter config de saída para o dispositivo");
                                                                 std::thread::sleep(std::time::Duration::from_millis(500));
                                                                 continue;
                                                             }
