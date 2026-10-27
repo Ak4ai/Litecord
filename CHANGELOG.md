@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **In English:** streams no longer stutter on laptops with two GPUs or for phone viewers; voice recovers by itself when the audio device, signaling or DAVE encryption fail; a new settings window; the main window reopens where it was left; invite and event cards in chat; and many interface fixes from contributors. Thanks to @stickyfran, @starzynhobr and @PedroZamecki for their contributions.
 
+### 🔄 Atualizações
+- **O aviso de atualização não aparecia para versões que só mudam o último número**: "1.3.1-beta" era lido como 1.3.0, porque a parte "1-beta" não virava número. Por isso esta versão é publicada como `v1.3.1`, que a 1.3.0 reconhece.
+
 ### 🎙️ Voz e chamadas
 - **O áudio recebido não para mais de tocar** (#64). A saída de áudio é recriada quando o dispositivo dá erro ou para de pedir som (recupera em ~3 s); um grupo DAVE quebrado é refeito depois de falhas repetidas (no máximo uma vez a cada 10 s); e a chamada não tenta mais reconectar quando o Discord a encerra de vez.
 - **Áudio sem DAVE durante a passagem da chamada para a versão 0 do protocolo**: quem já mudou de versão era descartado como falha de decifragem. Como faz a libdave, esses pacotes tocam desde o aviso da mudança até 10 s depois de o DAVE voltar; fora disso continuam recusados. Baseado na #65 de @stickyfran.
