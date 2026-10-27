@@ -612,6 +612,8 @@ export component AppWindow inherits Window {
     callback stream_viewport_changed(length, length, length, length);
     in-out property <bool> is_stream_fullscreen: false;
     in-out property <string> focused_stream_uid: "";
+    // Hides every participant that is not sharing video, leaving the stream area.
+    in-out property <bool> voice_members_collapsed: false;
     in-out property <string> tr_start_screen_share: Tr.start_stream;
     in-out property <string> tr_stop_screen_share: Tr.stop_stream;
     in-out property <string> tr_watching_stream: Tr.watching_stream;
@@ -1497,6 +1499,36 @@ export component AppWindow inherits Window {
 
                             Rectangle { horizontal-stretch: 1; }
 
+                            // Collapse / expand the voice member list
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_members_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: root.voice_members_collapsed ? @image-url("../assets/chevron-down.svg") : @image-url("../assets/chevron-up.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: AppTheme.text-strong;
+                                                image-fit: contain;
+                                            }
+                                        }
+                                    }
+
+                                    btn_members_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.voice_members_collapsed = !root.voice_members_collapsed; }
+                                    }
+                                }
+                            }
+
                             VerticalLayout {
                                 alignment: center;
 
@@ -1770,6 +1802,11 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
+                                    property <bool> show_participant: !root.voice_members_collapsed
+                                        || p.is_streaming
+                                        || (p.is_self && root.is_screen_sharing)
+                                        || root.focused_stream_uid == p.user_id
+                                        || (root.active_stream_user_id != "" && root.active_stream_user_id == p.user_id);
                                     property <bool> is_streaming_attached: (p.is_self && root.is_screen_sharing)
                                         ? (!p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self")
                                         : (root.has_active_stream && (p.is_streaming || root.active_stream_user_id == p.user_id || root.active_stream_user_id == "") && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
@@ -1781,11 +1818,14 @@ export component AppWindow inherits Window {
                                         }
                                     }
 
-                                    height: is_streaming_attached
-                                        ? (is_this_stream_focused
-                                            ? Math.max(360px, voice_stage_container.height - 52px)
-                                            : Math.max(200px, Math.min(280px, (voice_stage_container.height - 80px) * 0.5)))
-                                        : 76px;
+                                    height: !show_participant
+                                        ? 0px
+                                        : (is_streaming_attached
+                                            ? (is_this_stream_focused
+                                                ? Math.max(360px, voice_stage_container.height - 52px)
+                                                : Math.max(200px, Math.min(280px, (voice_stage_container.height - 80px) * 0.5)))
+                                            : 76px);
+                                    clip: true;
                                     animate height { duration: 200ms; }
                                     background: transparent;
 
@@ -2128,6 +2168,38 @@ export component AppWindow inherits Window {
                                                                     root.focused_stream_uid = "";
                                                                 } else {
                                                                     root.focused_stream_uid = (p.is_self && root.is_screen_sharing) ? "self" : p.user_id;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Fullscreen (whole window)
+                                                    if (stream_top_bar.width >= 190px): Rectangle {
+                                                        width: 28px;
+                                                        height: 24px;
+                                                        border-radius: 4px;
+                                                        background: card_full_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
+
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: @image-url("../assets/chrome-maximize.svg");
+                                                                    width: 10px;
+                                                                    height: 10px;
+                                                                    colorize: root.is_stream_fullscreen ? AppTheme.accent : AppTheme.text-on-accent;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        card_full_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.focused_stream_uid = (p.is_self && root.is_screen_sharing) ? "self" : p.user_id;
+                                                                if !root.is_stream_fullscreen {
+                                                                    root.toggle_stream_fullscreen();
                                                                 }
                                                             }
                                                         }
@@ -5519,6 +5591,106 @@ export component AppWindow inherits Window {
                     ic_reject_ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.reject_call(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Fullscreen stream view ───────────────────────────────────────────────────
+    // Covers the whole window; the Rust side also asks winit for real (borderless)
+    // fullscreen, so this works the same on X11, Wayland, Windows and macOS.
+    if root.is_stream_fullscreen && root.has_active_stream && root.is_in_voice: Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        background: #000000;
+
+        property <bool> showing_self: root.is_screen_sharing
+            && (root.focused_stream_uid == "self" || root.active_stream_user_id == "self");
+
+        // Esc leaves fullscreen; Rust restores the window through the same callback.
+        fs_focus := FocusScope {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.toggle_stream_fullscreen();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Image {
+            width: 100%;
+            height: 100%;
+            source: showing_self ? root.active_stream_frame : root.remote_stream_frame;
+            image-fit: contain;
+        }
+
+        // Exit bar
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 44px;
+            background: AppTheme.surface-media-overlay-strong;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 12px;
+                spacing: 8px;
+
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.active_stream_user;
+                        color: AppTheme.text-strong;
+                        font-size: TypeScale.title;
+                        font-weight: 700;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.remote_stream_fps;
+                        color: AppTheme.text-muted;
+                        font-size: TypeScale.caption;
+                        font-weight: 600;
+                    }
+                }
+
+                Rectangle {
+                    width: 34px;
+                    height: 28px;
+                    border-radius: 4px;
+                    background: fs_exit_ta.has-hover ? AppTheme.danger : AppTheme.backdrop;
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-restore.svg");
+                                width: 12px;
+                                height: 12px;
+                                colorize: AppTheme.text-on-accent;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+
+                    fs_exit_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle_stream_fullscreen(); }
                     }
                 }
             }

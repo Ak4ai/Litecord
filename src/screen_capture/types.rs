@@ -149,6 +149,23 @@ pub static ON_STREAM_STATE_CB: Mutex<Option<Arc<dyn Fn(u64, bool) + Send + Sync 
 pub static SIGNALING_FORCE_WAKE: AtomicBool = AtomicBool::new(false);
 pub static SIGNALING_OUT_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>>> = Mutex::new(None);
 pub static PEER_STREAMING_STATES: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
+/// `user_id` -> (`self_stream`, `self_video`) from voice state events.  Cached so
+/// joining a channel can subscribe to streams that were already running.
+pub static VOICE_STREAM_FLAGS: Mutex<Option<HashMap<u64, (bool, bool)>>> = Mutex::new(None);
+
+pub fn set_user_stream_flags(uid: u64, self_stream: bool, self_video: bool) {
+    if let Ok(mut lock) = VOICE_STREAM_FLAGS.lock() {
+        lock.get_or_insert_with(HashMap::new).insert(uid, (self_stream, self_video));
+    }
+}
+
+pub fn get_user_stream_flags(uid: u64) -> (bool, bool) {
+    VOICE_STREAM_FLAGS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|map| map.get(&uid).copied()))
+        .unwrap_or((false, false))
+}
 
 /// The peer announced (over signaling or P2P) that it is streaming.
 pub fn peer_is_streaming(uid: u64) -> bool {

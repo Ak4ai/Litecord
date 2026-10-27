@@ -10,6 +10,7 @@ pub mod http;
 pub mod channel_permissions;
 pub mod encoder;
 pub mod screen_capture;
+pub mod native_video;
 #[cfg(feature = "automation")]
 mod automation;
 
@@ -117,13 +118,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
         std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
+    let configure_window = |ui: &AppWindow| {
+        if let Some(saved) = video_settings::get_window_geometry() {
+            ui.window().set_size(slint::LogicalSize::new(
+                saved.width as f32,
+                saved.height as f32,
+            ));
+            #[cfg(not(target_os = "linux"))]
+            if let (Some(x), Some(y)) = (saved.x, saved.y) {
+                ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+            }
+            if saved.maximized {
+                ui.window().set_maximized(true);
+                ui.set_is_maximized(true);
+            }
+        }
+    };
+
     let app = match AppWindow::new() {
         Ok(app) => {
+            configure_window(&app);
             info!("🖥️ Exibindo janela principal (app.show())...");
             if let Err(e) = app.show() {
                 log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
                 std::env::set_var("SLINT_BACKEND", "software");
                 let sw_app = AppWindow::new()?;
+                configure_window(&sw_app);
                 sw_app.show()?;
                 info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
                 sw_app
@@ -136,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
             std::env::set_var("SLINT_BACKEND", "software");
             let sw_app = AppWindow::new()?;
+            configure_window(&sw_app);
             sw_app.show()?;
             info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
             sw_app
@@ -903,11 +924,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
     let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
 
-    screen_manager.start_receiver(
-        {
-            let app_w = app_weak_rx.clone();
-            let pop_w = pop_w_rx.clone();
-            move |uid, uname, quality, pixel_buf| {
+    let deliver_stream_frame: Arc<dyn Fn(u64, String, String, SharedPixelBuffer<Rgba8Pixel>) + Send + Sync> = {
+        let app_w = app_weak_rx.clone();
+        let pop_w = pop_w_rx.clone();
+        Arc::new(move |uid, uname, quality, pixel_buf| {
                 *latest_rx_frame_cb.lock().unwrap() = Some((uid, uname, quality, pixel_buf));
                 if !is_rx_ui_pending_cb.swap(true, Ordering::AcqRel) {
                     let app_w2 = app_w.clone();
@@ -984,7 +1004,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pending_flag.store(false, Ordering::Release);
                     }
                 }
-            }
+            })
+    };
+    // Native Discord camera / Go Live frames go through the same renderer,
+    // popout and fullscreen path as the LTPV frames.
+    crate::native_video::set_frame_callback(Arc::clone(&deliver_stream_frame));
+    screen_manager.start_receiver(
+        {
+            let deliver = Arc::clone(&deliver_stream_frame);
+            move |uid, uname, quality, pixel_buf| deliver(uid, uname, quality, pixel_buf)
         },
         {
             let app_w = app_weak_rx.clone();
@@ -1042,6 +1070,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             if ui.get_focused_stream_uid() == uid_str.as_str() || uid == 0 {
                                 ui.set_focused_stream_uid("".into());
+                            }
+                            if ui.get_is_stream_fullscreen() && (cur_act_id == uid_str || uid == 0) {
+                                ui.set_is_stream_fullscreen(false);
+                                let window = ui.window();
+                                let _ = window.with_winit_window(|w| w.set_fullscreen(None));
                             }
                             let cur_model = ui.get_voice_participants();
                             for i in 0..cur_model.row_count() {
@@ -1389,8 +1422,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_fs = app_weak.clone();
     app.on_toggle_stream_fullscreen(move || {
         if let Some(ui) = app_weak_fs.upgrade() {
-            let cur = ui.get_is_stream_fullscreen();
-            ui.set_is_stream_fullscreen(!cur);
+            let next = !ui.get_is_stream_fullscreen();
+            ui.set_is_stream_fullscreen(next);
+            // Ask the window manager for real fullscreen (borderless). The Slint
+            // overlay already covers the app, so a failure here is cosmetic.
+            let window = ui.window();
+            let _ = window.with_winit_window(|w| {
+                w.set_fullscreen(if next {
+                    Some(winit::window::Fullscreen::Borderless(None))
+                } else {
+                    None
+                });
+            });
         }
     });
 
@@ -2542,6 +2585,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
         screen_capture::watch::clear_wanted();
+        // Native Discord viewers and SSRC maps belong to the call that just ended.
+        gateway::clear_watched_streams();
+        crate::native_video::clear_video_ssrcs();
         // Do this even if the window has gone away: the next call starts with fresh audio.
         if let Ok(mut queues) = gateway::get_speaker_pcm_queues().lock() {
             queues.clear();
@@ -2553,6 +2599,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);
             ui.set_is_voice_focused(false);
+            if ui.get_is_stream_fullscreen() {
+                ui.set_is_stream_fullscreen(false);
+                let window = ui.window();
+                let _ = window.with_winit_window(|w| w.set_fullscreen(None));
+            }
             ui.set_current_voice_channel("".into());
             ui.set_is_in_dm_call(false); // também encerra chamada DM se estava ativa
             ui.set_is_screen_sharing(false);

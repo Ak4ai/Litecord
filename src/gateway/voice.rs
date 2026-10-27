@@ -25,18 +25,7 @@ const VOICE_QUEUE_LIMIT: usize = 28800;
 const VOICE_PREBUFFER_SAMPLES: usize = 1920;
 const VOICE_RESET_INACTIVE_CALLBACKS: u32 = 3;
 
-static WATCH_STREAM_TX: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>> = std::sync::Mutex::new(None);
-
-/// Instructs the active Voice Gateway session to watch another user's stream (Opcode 20)
-pub fn watch_stream(stream_key: &str) {
-    if let Ok(guard) = WATCH_STREAM_TX.lock() {
-        if let Some(tx) = guard.as_ref() {
-            let _ = tx.send(stream_key.to_string());
-        }
-    }
-}
-
-async fn connect_voice_ws(
+pub(crate) async fn connect_voice_ws(
     voice_url: &str,
 ) -> Result<
     (
@@ -119,7 +108,7 @@ pub async fn connect_voice_gateway(
     let voice_url = if clean_endpoint.starts_with("wss://") || clean_endpoint.starts_with("ws://") {
         clean_endpoint.to_string()
     } else {
-        format!("wss://{}/?v=4", clean_endpoint)
+        format!("wss://{}/?v=9", clean_endpoint)
     };
     info!("Conectando à Discord Voice Gateway: {}...", voice_url);
 
@@ -152,27 +141,6 @@ pub async fn connect_voice_gateway(
                 let (write, mut read) = ws_stream.split();
                 let write_arc = Arc::new(Mutex::new(write));
 
-                // Channel for watching video streams (Opcode 20 Stream Watch)
-                let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                if let Ok(mut guard) = WATCH_STREAM_TX.lock() {
-                    *guard = Some(watch_tx.clone());
-                }
-
-                let write_arc_watch = Arc::clone(&write_arc);
-                tokio::spawn(async move {
-                    while let Some(stream_key) = watch_rx.recv().await {
-                        let watch_payload = serde_json::json!({
-                            "op": 20,
-                            "d": {
-                                "stream_key": stream_key
-                            }
-                        });
-                        info!("🎬 [VOICE GATEWAY] Enviando OP 20 (Stream Watch) para stream_key: {}", stream_key);
-                        let mut w = write_arc_watch.lock().await;
-                        let _ = w.send(Message::Text(watch_payload.to_string().into())).await;
-                    }
-                });
-
                 let guild_id = guild_id.to_string();
                 let user_id = user_id.to_string();
                 let session_id = session_id.to_string();
@@ -182,6 +150,11 @@ pub async fn connect_voice_gateway(
                 let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
                 let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
                 let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+                let native_mode: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new("aead_aes256_gcm_rtpsize".to_string()));
+                // Video SSRCs announced on this (parent) connection, so op 15 can be
+                // re-sent once the session description is complete.
+                let native_wants: Arc<std::sync::Mutex<std::collections::HashSet<u32>>> =
+                    Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
                 // Create DAVE (Discord Audio/Video E2EE) session using the davey crate
                 let uid_num: u64 = user_id.parse().unwrap_or(0);
@@ -219,11 +192,14 @@ pub async fn connect_voice_gateway(
                                         "op": 0,
                                         "d": {
                                             "server_id": guild_id,
+                                            "channel_id": channel_id,
                                             "user_id": user_id,
                                             "session_id": session_id,
                                             "token": token,
-                                            "video": false,
-                                            "streams": [],
+                                            "video": true,
+                                            "streams": [
+                                                { "type": "video", "rid": "100", "quality": 100 }
+                                            ],
                                             "max_dave_protocol_version": 1
                                         }
                                     });
@@ -273,6 +249,7 @@ pub async fn connect_voice_gateway(
                                     } else {
                                         "aead_aes256_gcm_rtpsize".to_string()
                                     };
+                                    *native_mode.lock().unwrap() = selected_mode.clone();
 
                                     info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
 
@@ -307,6 +284,7 @@ pub async fn connect_voice_gateway(
                                         let dave_flow_audio = Arc::clone(&dave_flow);
                                         let dave_sender_audio = Arc::clone(&saved_external_sender);
                                         let ssrc_to_userid_audio = Arc::clone(&ssrc_to_userid);
+                                        let native_mode_audio = Arc::clone(&native_mode);
                                         let self_mute_rx = Arc::clone(&self_mute_state);
 
                                         tokio::spawn(async move {
@@ -379,7 +357,13 @@ pub async fn connect_voice_gateway(
                                                             "address": my_pub_ip,
                                                             "port": my_pub_port,
                                                             "mode": selected_mode
-                                                        }
+                                                        },
+                                                        "codecs": [
+                                                            { "name": "opus", "type": "audio", "priority": 1000, "payload_type": 120 },
+                                                            { "name": "H264", "type": "video", "priority": 1000,
+                                                              "payload_type": 103, "rtx_payload_type": 104,
+                                                              "encode": true, "decode": true }
+                                                        ]
                                                     }
                                                 });
 
@@ -401,9 +385,11 @@ pub async fn connect_voice_gateway(
                                                 let dave_sender_rx = Arc::clone(&dave_sender_audio);
                                                 let write_rx = Arc::clone(&write_arc_proto);
                                                 let ssrc_to_userid_rx = Arc::clone(&ssrc_to_userid_audio);
+                                                let native_mode_rx = Arc::clone(&native_mode_audio);
                                                 let speaker_queues_rx = get_speaker_pcm_queues();
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
+                                                let native_target: Option<std::net::SocketAddr> = target_addr.parse().ok();
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
@@ -416,6 +402,21 @@ pub async fn connect_voice_gateway(
                                                     let mut dave_decrypt_fail_cnt = 0u64;
                                                     let mut dave_plaintext_cnt = 0u64;
                                                     let mut _dave_not_ready_cnt = 0u64;
+
+                                                    // Native Discord video (camera) shares this UDP socket and
+                                                    // the parent DAVE session.  Non-Opus packets go here.
+                                                    let native_ctx = crate::native_video::NativeVideoContext {
+                                                        secret_key: Arc::clone(&secret_key_rx),
+                                                        mode: Arc::clone(&native_mode_rx),
+                                                        dave: Arc::clone(&dave_session_rx),
+                                                        ssrc_to_uid: Arc::clone(&ssrc_to_userid_rx),
+                                                        stream_owner: None,
+                                                        socket: Some(Arc::clone(&socket_rx)),
+                                                        target: native_target,
+                                                        sender_ssrc: my_ssrc,
+                                                    };
+                                                    let mut native_session = crate::native_video::NativeVideoSession::new();
+                                                    let mut last_native_tick = std::time::Instant::now();
 
                                                     info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
 
@@ -430,7 +431,16 @@ pub async fn connect_voice_gateway(
                                                                 let version = (pkt[0] >> 6) & 0x3;
                                                                 if version != 2 { continue; }
                                                                 let pt = pkt[1] & 0x7F;
-                                                                if pt != 120 { continue; } // Strictly allow ONLY Opus Audio packets (Payload Type 120)
+                                                                if pt != 120 {
+                                                                    // Video (H264) and RTCP share this socket with Opus;
+                                                                    // the native receiver ignores audio and unknown SSRCs.
+                                                                    native_session.ingest(&native_ctx, pkt);
+                                                                    if last_native_tick.elapsed() >= Duration::from_secs(1) {
+                                                                        native_session.tick(&native_ctx);
+                                                                        last_native_tick = std::time::Instant::now();
+                                                                    }
+                                                                    continue;
+                                                                }
 
                                                                 let ssrc_recv = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
                                                                 if ssrc_recv == my_ssrc { continue; }
@@ -744,7 +754,13 @@ pub async fn connect_voice_gateway(
                                                             Ok(Err(e)) => {
                                                                 warn!("Erro socket.recv_from: {:?}", e);
                                                             }
-                                                            Err(_) => { /* timeout 100ms, keep looping */ }
+                                                            Err(_) => {
+                                                                // timeout 100ms, keep looping
+                                                                if last_native_tick.elapsed() >= Duration::from_secs(1) {
+                                                                    native_session.tick(&native_ctx);
+                                                                    last_native_tick = std::time::Instant::now();
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     info!("Loop de recepção de voz (ID={}) encerrado.", rx_session_id);
@@ -1551,8 +1567,26 @@ pub async fn connect_voice_gateway(
                                     });
 
                                     info!("Enviando OP 5 Speaking para a Voice Gateway...");
-                                    let mut w = write_arc.lock().await;
-                                    let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
+                                    {
+                                        let mut w = write_arc.lock().await;
+                                        let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
+                                    }
+
+                                    // Video state may have arrived before the session was
+                                    // established; subscribe again now that it is.
+                                    let wants: Vec<u32> = native_wants
+                                        .lock()
+                                        .map(|set| set.iter().copied().collect())
+                                        .unwrap_or_default();
+                                    if !wants.is_empty() {
+                                        let payload = serde_json::json!({
+                                            "op": 15,
+                                            "d": crate::native_video::media_sink_wants(&wants)
+                                        });
+                                        let mut w = write_arc.lock().await;
+                                        let _ = w.send(Message::Text(payload.to_string().into())).await;
+                                        info!("🎥 [NATIVE VIDEO] OP 15 reenviado após Session Description: {:?}", wants);
+                                    }
                                 }
                                  5 => {
                                      // Voice Opcode 5: Speaking notification from another user
@@ -1572,31 +1606,68 @@ pub async fn connect_voice_gateway(
                                      // Voice Opcode 6: Heartbeat ACK!
                                      info!("Voice Gateway Heartbeat ACK (Opcode 6) recebido!");
                                  }
-                                 11 | 12 => {
-                                     // Voice Opcode 11/12: User Joined / Client Connect
-                                     if let Some(arr) = val["d"]["user_ids"].as_array() {
-                                         for v in arr {
-                                             if let Some(uid_str) = v.as_str() {
-                                                 if let Ok(uid) = uid_str.parse::<u64>() {
-                                                     let ssrc = (uid & 0xFFFFFFFF) as u32;
-                                                     register_voice_participant(ssrc, uid);
-                                                     info!("Voice Gateway OP 11/12 (user_ids): Registrado participante User ID {}", uid);
-                                                 }
-                                             }
-                                         }
-                                     }
-                                     let s_ssrc = val["d"]["audio_ssrc"].as_u64().or_else(|| val["d"]["ssrc"].as_u64()).unwrap_or(0) as u32;
-                                     let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
-                                         s.parse().unwrap_or(0)
-                                     } else {
-                                         val["d"]["user_id"].as_u64().unwrap_or(0)
-                                     };
-                                     if s_ssrc > 0 && u_id > 0 {
-                                         ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
-                                         register_voice_participant(s_ssrc, u_id);
-                                         info!("Voice Gateway OP 11/12: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
-                                     }
-                                 }
+                                 11 => {
+                                    // Voice Opcode 11: Clients Connect (user ids only).
+                                    if let Some(arr) = val["d"]["user_ids"].as_array() {
+                                        for v in arr {
+                                            if let Some(uid_str) = v.as_str() {
+                                                if let Ok(uid) = uid_str.parse::<u64>() {
+                                                    let ssrc = (uid & 0xFFFFFFFF) as u32;
+                                                    register_voice_participant(ssrc, uid);
+                                                    info!("Voice Gateway OP 11 (user_ids): Registrado participante User ID {}", uid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let s_ssrc = val["d"]["audio_ssrc"].as_u64().or_else(|| val["d"]["ssrc"].as_u64()).unwrap_or(0) as u32;
+                                    let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        val["d"]["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    if s_ssrc > 0 && u_id > 0 {
+                                        ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
+                                        register_voice_participant(s_ssrc, u_id);
+                                        info!("Voice Gateway OP 11: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
+                                    }
+                                }
+                                12 => {
+                                    // Voice Opcode 12: Video state (camera SSRCs + Go Live streams).
+                                    let wants = crate::native_video::handle_video_state(
+                                        &val["d"],
+                                        0,
+                                        false,
+                                        &ssrc_to_userid,
+                                    );
+                                    if !wants.is_empty() {
+                                        if let Ok(mut set) = native_wants.lock() {
+                                            set.extend(wants.iter().copied());
+                                        }
+                                        let payload = serde_json::json!({
+                                            "op": 15,
+                                            "d": crate::native_video::media_sink_wants(&wants)
+                                        });
+                                        let mut w = write_arc.lock().await;
+                                        let _ = w.send(Message::Text(payload.to_string().into())).await;
+                                        info!("🎥 [NATIVE VIDEO] OP 12: assinando video SSRCs {:?} via OP 15", wants);
+                                    }
+                                }
+                                13 => {
+                                    // Voice Opcode 13: Client Disconnect.
+                                    let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        val["d"]["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    if u_id > 0 {
+                                        crate::native_video::unregister_user_video(u_id);
+                                        if let Ok(mut map) = ssrc_to_userid.lock() {
+                                            map.retain(|_, uid| *uid != u_id);
+                                        }
+                                        crate::screen_capture::types::set_peer_streaming(u_id, false);
+                                        info!("🎥 [NATIVE VIDEO] OP 13: usuário {} desconectado do canal de voz", u_id);
+                                    }
+                                }
                                 18 => {
                                     // DAVE Opcode 18: DAVE_PREPARE_TRANSITION (Sent for all active voice channel participants)
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
