@@ -538,7 +538,7 @@ async fn open_first_readable_channel(
             let (app_w, name) = (app_weak.clone(), text_ch.name.clone());
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
-                    ui.set_active_channel_name(name.trim_start_matches('#').trim().into());
+                    ui.set_active_channel_name(crate::utils::styled_text::plain_display_name(name.trim_start_matches('#').trim()).as_ref().into());
                     ui.set_active_channel_id(ch_id.into());
                 }
             });
@@ -750,7 +750,7 @@ pub async fn fetch_and_populate_dms(
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w_name.upgrade() {
                         ui.set_active_channel_id(cid_top.into());
-                        ui.set_active_channel_name(target_name.into());
+                        ui.set_active_channel_name(crate::utils::styled_text::plain_display_name(&target_name).as_ref().into());
                         let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_updated));
                         ui.set_channels(model.into());
                         ui.set_total_dm_unread_count(remaining);

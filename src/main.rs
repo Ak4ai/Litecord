@@ -2575,7 +2575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(tch) = target_text_ch {
                 *active_channel_leave.lock().unwrap() = tch.id.clone();
-                let clean_name = tch.name.trim_start_matches('#').trim().to_string();
+                let clean_name = crate::utils::styled_text::plain_display_name(tch.name.trim_start_matches('#').trim()).into_owned();
                 let tch_id = tch.id.clone();
                 ui.set_active_channel_name(clean_name.into());
                 ui.set_active_channel_id(tch_id.clone().into());
@@ -3926,8 +3926,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
                 ui.set_messages(model.into());
             } else {
-                let clean_name = ch_name.trim_start_matches('#').trim();
-                ui.set_active_channel_name(clean_name.into());
+                let clean_name = crate::utils::styled_text::plain_display_name(ch_name.trim_start_matches('#').trim());
+                ui.set_active_channel_name(clean_name.as_ref().into());
                 ui.set_active_channel_id(ch_id.clone().into());
                 ui.set_is_voice_focused(false);
                 request_chat_scroll_to_bottom(app_weak_chan_select.clone());

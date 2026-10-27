@@ -19,7 +19,7 @@ pub fn clean_discord_whitespace(input: &str) -> String {
                 // skip
             }
             _ => {
-                out.push(c);
+                out.push(crate::utils::styled_text::plain_letter(c).unwrap_or(c));
             }
         }
     }
@@ -381,7 +381,7 @@ pub fn format_discord_author(m: &Value) -> String {
     let author_obj = &m["author"];
     let name = author_obj["global_name"].as_str()
         .unwrap_or_else(|| author_obj["username"].as_str().unwrap_or("Unknown"));
-    name.to_string()
+    crate::utils::styled_text::plain_display_name(name).into_owned()
 }
 
 pub fn is_emoji_char(c: char) -> bool {
@@ -1621,6 +1621,12 @@ pub fn format_discord_message(m: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn styled_letters_in_messages_and_authors_become_plain() {
+        assert_eq!(clean_discord_whitespace("➡ 𝗙𝘂𝗹𝗹 𝗪𝗮𝗹𝗸𝘁𝗵𝗿𝗼𝘂𝗴𝗵 ━━ 𝟭𝟬𝟬%"), "➡ Full Walkthrough ━━ 100%");
+        assert_eq!(format_discord_author(&json!({ "author": { "global_name": "𝗗𝗿𝗼𝗽𝗶𝗻𝘅" } })), "Dropinx");
+    }
 
     #[test]
     fn test_strikethrough_combining() {

@@ -1043,7 +1043,7 @@ pub fn build_ui_channels(
                 is_collapsed,
                 has_separator,
                 unread_count: 0,
-                ..crate::ui::helpers::channel_emoji_fields(&ch.name)
+                ..crate::ui::helpers::channel_emoji_fields(&crate::utils::styled_text::plain_display_name(&ch.name))
             });
         } else {
             if let Some(ref pid) = ch.parent_id {
@@ -1072,7 +1072,7 @@ pub fn build_ui_channels(
                 is_collapsed: false,
                 has_separator: false,
                 unread_count: 0,
-                ..crate::ui::helpers::channel_emoji_fields(&ch.name)
+                ..crate::ui::helpers::channel_emoji_fields(&crate::utils::styled_text::plain_display_name(&ch.name))
             });
 
             for (user_id, name) in voice_participants {

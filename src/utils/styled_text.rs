@@ -1,8 +1,9 @@
 //! Servers often decorate channel and category names with "fancy text":
 //! letters from the Unicode Mathematical Alphanumeric Symbols block (𝙶𝚊𝚖𝚎, 𝘋𝘪𝘤𝘢𝘴).
 //! Neither the bundled Inter nor the renderer's fallback has those glyphs, so
-//! they showed up as empty boxes. They are mapped back to the plain letters
-//! they stand for, which Inter renders; everything else is left untouched.
+//! they showed up as empty boxes or blanks. Channel names, author names and the
+//! text of messages and embeds map them back to the plain letters they stand for,
+//! which Inter renders; everything else is left untouched.
 
 use std::borrow::Cow;
 
@@ -13,7 +14,8 @@ const MATH_DOTLESS_J: u32 = 0x1D6A5;
 const MATH_DIGITS_START: u32 = 0x1D7CE;
 const MATH_DIGITS_END: u32 = 0x1D7FF;
 
-fn plain_letter(c: char) -> Option<char> {
+/// The plain letter or digit a styled one stands for.
+pub fn plain_letter(c: char) -> Option<char> {
     let cp = c as u32;
     match cp {
         // 13 styles of 52 letters each: A-Z then a-z.
@@ -61,6 +63,8 @@ mod tests {
         assert_eq!(plain_display_name("𝘋𝘪𝘤𝘢𝘴"), "Dicas");
         assert_eq!(plain_display_name("𝐁𝐨𝐥𝐝 𝟏𝟐𝟑"), "Bold 123");
         assert_eq!(plain_display_name("𝑃𝑙𝑎𝑛𝑐𝑘 ℎ"), "Planck h");
+        assert_eq!(plain_display_name("📜-𝗥𝗨𝗟𝗘𝗦"), "📜-RULES");
+        assert_eq!(plain_display_name("♡ ━━━ 𝗔𝗥𝗖𝗛𝗜𝗩𝗘𝗗 ━━━ ♡"), "♡ ━━━ ARCHIVED ━━━ ♡");
     }
 
     #[test]
