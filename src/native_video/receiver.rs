@@ -310,12 +310,27 @@ impl NativeVideoSession {
     }
 }
 
+/// The two bytes DAVE appends to every encrypted frame.  Their presence means
+/// the payload is ciphertext: showing it as plaintext would feed garbage to the
+/// decoder (and could briefly paint noise on screen).
+const DAVE_MARKER: [u8; 2] = [0xFA, 0xFA];
+
+fn has_dave_marker(frame: &[u8]) -> bool {
+    frame.ends_with(&DAVE_MARKER)
+}
+
 fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<u8>> {
     let mut guard = ctx.dave.lock().unwrap_or_else(|e| e.into_inner());
     let Some(session) = guard.as_mut() else {
+        // No DAVE group at all: media is plain text.
         return Some(frame.to_vec());
     };
     if !session.is_ready() {
+        // The group is still forming.  Frames marked as encrypted cannot be
+        // shown yet; unencrypted ones (the usual transition window) can.
+        if has_dave_marker(frame) {
+            return None;
+        }
         return Some(frame.to_vec());
     }
 
@@ -325,12 +340,54 @@ fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<
             // During the transition to plaintext, frames are not encrypted.
             // The DAVE magic tail marks a frame that must not be displayed in
             // clear text.
-            if frame.ends_with(&[0xFA, 0xFA]) {
+            if has_dave_marker(frame) {
                 log::trace!("[DAVE VIDEO] Falha ao decifrar vídeo do usuário {}: {:?}", uid, error);
                 None
             } else {
                 Some(frame.to_vec())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU16;
+
+    fn context(dave: Option<DaveSession>) -> NativeVideoContext {
+        NativeVideoContext {
+            secret_key: Arc::new(Mutex::new(None)),
+            mode: Arc::new(Mutex::new("aead_aes256_gcm_rtpsize".to_string())),
+            dave: Arc::new(Mutex::new(dave)),
+            ssrc_to_uid: Arc::new(Mutex::new(HashMap::new())),
+            stream_owner: None,
+            socket: None,
+            target: None,
+            sender_ssrc: 0,
+        }
+    }
+
+    fn frame(tail: &[u8]) -> Vec<u8> {
+        let mut out = vec![0, 0, 0, 1, 0x65, 0x88];
+        out.extend_from_slice(tail);
+        out
+    }
+
+    #[test]
+    fn without_dave_every_frame_is_plaintext() {
+        let ctx = context(None);
+        assert_eq!(decrypt_dave(&ctx, 1, &frame(&[])), Some(frame(&[])));
+        assert_eq!(decrypt_dave(&ctx, 1, &frame(&DAVE_MARKER)), Some(frame(&DAVE_MARKER)));
+    }
+
+    #[test]
+    fn frames_with_the_dave_tail_are_dropped_until_the_group_is_ready() {
+        let session = DaveSession::new(NonZeroU16::MIN, 1, 1, None).expect("DAVE session");
+        assert!(!session.is_ready());
+        let ctx = context(Some(session));
+
+        assert_eq!(decrypt_dave(&ctx, 2, &frame(&DAVE_MARKER)), None);
+        assert_eq!(decrypt_dave(&ctx, 2, &frame(&[])), Some(frame(&[])));
     }
 }
