@@ -508,7 +508,7 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
     let lang = i18n::load_persisted_language_config();
     let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
         i18n::Language::English => (
-            "Advanced Suppression (\"Crispado ;)\")",
+            "Advanced Suppression",
             "Ideal for gaming & typing: blocks mechanical keyboards, pets, house noise & fans. (Avoid for musical instruments).",
             "Standard (RNNoise)",
             "For quiet rooms with steady hum (PC fans, AC). Preserves voice warmth, but does not block keyboard clicks.",
@@ -516,7 +516,7 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
             "Pure unprocessed audio. Recommended for singing, playing guitar, and musical instruments."
         ),
         i18n::Language::Spanish => (
-            "Supresión avanzada (\"Crispado ;)\")",
+            "Supresión avanzada",
             "Ideal para gaming y llamadas: bloquea teclados mecánicos, mascotas, ruidos de casa y ventiladores. (Evitar para música).",
             "Estándar (RNNoise)",
             "Para ambientes tranquilos con zumbido constante (ventilador, AC). Mantiene voz natural, no quita teclas.",
@@ -524,7 +524,7 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
             "Audio puro sin filtros ni cortes. Recomendado para cantar, tocar guitarra y transmitir instrumentos musicales."
         ),
         _ => (
-            "Supressão Avançada (\"Crispado ;)\")",
+            "Supressão Avançada",
             "Ideal para jogos e digitação: bloqueia teclado mecânico, pets, ruídos domésticos e ventoinhas. (Evitar para música).",
             "Padrão (RNNoise)",
             "Para ambientes calmos com ruído contínuo (ventoinha, AC). Mantém voz natural, mas não remove teclas.",

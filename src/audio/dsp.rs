@@ -681,7 +681,7 @@ impl VoiceProcessor {
         (vad1 + vad2) * 0.5
     }
 
-    /// Applies Advanced Noise Suppression (Krisp-grade non-stationary and mechanical keyboard click elimination)
+    /// Applies Advanced Noise Suppression (Deep neural non-stationary and mechanical keyboard click elimination)
     /// Combines full-depth RNNoise + 2ms sub-block transient suppression + Neural Voice Gate with Speech Hangover
     /// so unvoiced consonants/fricatives ("s", "f", "c", "t") retain full high-frequency brightness.
     fn apply_advanced_suppression(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) -> f32 {
