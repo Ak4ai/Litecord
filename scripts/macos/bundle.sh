@@ -8,7 +8,7 @@
 #
 # The bare binary (cargo run) works without a bundle; usage strings are
 # not enforced there, so this script is only needed for the .app flow.
-# Phase 3 extends this script with the icon, LSMinimumSystemVersion,
+# Phase 3 extends this script with LSMinimumSystemVersion,
 # Developer ID signing, and notarization.
 #
 # Usage: scripts/macos/bundle.sh [path-to-binary]   (default: target/release/litecord)
@@ -24,6 +24,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/litecord"
 cp scripts/macos/Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp assets/litecord.icns "$APP/Contents/Resources/"
 
 codesign --force -s - "$APP"
 

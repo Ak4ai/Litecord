@@ -8,6 +8,8 @@
 	<string>com.litecord.app</string>
 	<key>CFBundleName</key>
 	<string>Litecord</string>
+	<key>CFBundleIconFile</key>
+	<string>litecord.icns</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Litecord uses the microphone to transmit your voice in voice channels.</string>
 	<key>NSCameraUsageDescription</key>
