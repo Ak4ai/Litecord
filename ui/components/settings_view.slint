@@ -1400,12 +1400,14 @@ export component SettingsView inherits Rectangle {
                                                         spacing: 4px;
 
                                                         for opt in root.noise_suppression_options: Rectangle {
-                                                            height: 40px;
+                                                            min-height: 46px;
                                                             background: opt.is_selected ? AppTheme.interactive-hover : (opt_ns_ta.has-hover ? AppTheme.surface-sidebar : transparent);
                                                             border-radius: 6px;
                                                             animate background { duration: 120ms; }
 
                                                             HorizontalLayout {
+                                                                padding-top: 4px;
+                                                                padding-bottom: 4px;
                                                                 padding-left: 10px;
                                                                 padding-right: 12px;
                                                                 spacing: 10px;
@@ -1435,6 +1437,7 @@ export component SettingsView inherits Rectangle {
                                                                         text: opt.desc;
                                                                         color: opt.is_selected ? AppTheme.text-muted : AppTheme.text-subtle;
                                                                         font-size: 10px;
+                                                                        wrap: word-wrap;
                                                                     }
                                                                 }
 
