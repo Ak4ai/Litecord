@@ -7,7 +7,7 @@ use std::num::NonZeroU16;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio::net::UdpSocket;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{client_async_tls, connect_async, tungstenite::protocol::Message, tungstenite::client::IntoClientRequest};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use log::{info, error, warn};
@@ -36,6 +36,75 @@ pub fn watch_stream(stream_key: &str) {
     }
 }
 
+async fn connect_voice_ws(
+    voice_url: &str,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    let mut request = voice_url.into_client_request()?;
+    let domain = request.uri().host().ok_or(tokio_tungstenite::tungstenite::error::Error::Url(
+        tokio_tungstenite::tungstenite::error::UrlError::NoHostName,
+    ))?.to_string();
+    let port = request.uri().port_u16().unwrap_or(443);
+
+    let headers = request.headers_mut();
+    headers.insert(
+        tokio_tungstenite::tungstenite::http::header::USER_AGENT,
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.98 Chrome/134.0.6998.36 Electron/35.0.0 Safari/537.36"
+            .parse()
+            .map_err(|_| tokio_tungstenite::tungstenite::error::Error::Url(tokio_tungstenite::tungstenite::error::UrlError::UnsupportedUrlScheme))?,
+    );
+    headers.insert(
+        tokio_tungstenite::tungstenite::http::header::ORIGIN,
+        "https://discord.com"
+            .parse()
+            .map_err(|_| tokio_tungstenite::tungstenite::error::Error::Url(tokio_tungstenite::tungstenite::error::UrlError::UnsupportedUrlScheme))?,
+    );
+
+    let mut addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((domain.as_str(), port))
+        .await
+        .map_err(tokio_tungstenite::tungstenite::Error::Io)?
+        .collect();
+
+    // Prioritize IPv4 first to prevent hanging when system/router drops outbound IPv6 packets
+    addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+
+    let mut last_err = None;
+    let mut tcp_stream = None;
+    for addr in addrs {
+        info!("🔌 [VOICE GATEWAY TCP] Conectando ao endereço IP: {}...", addr);
+        match tokio::time::timeout(Duration::from_millis(1500), tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => {
+                let _ = stream.set_nodelay(true);
+                info!("✅ [VOICE GATEWAY TCP] Conectado via TCP com sucesso a {}!", addr);
+                tcp_stream = Some(stream);
+                break;
+            }
+            Ok(Err(e)) => {
+                warn!("⚠️ [VOICE GATEWAY TCP] Falha ao conectar a {}: {:?}", addr, e);
+                last_err = Some(e);
+            }
+            Err(_) => {
+                warn!("⏱️ [VOICE GATEWAY TCP] Timeout (1.5s) ao conectar a {} (possível rota IPv6 quebrada)", addr);
+                last_err = Some(std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out"));
+            }
+        }
+    }
+
+    let stream = match tcp_stream {
+        Some(s) => s,
+        None => return Err(tokio_tungstenite::tungstenite::Error::Io(
+            last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "No address found")),
+        )),
+    };
+
+    client_async_tls(request, stream).await
+}
+
 pub async fn connect_voice_gateway(
     raw_endpoint: &str,
     guild_id: &str,
@@ -52,10 +121,10 @@ pub async fn connect_voice_gateway(
     } else {
         format!("wss://{}/?v=4", clean_endpoint)
     };
-    info!("Conectando Ã  Discord Voice Gateway: {}...", voice_url);
+    info!("Conectando à Discord Voice Gateway: {}...", voice_url);
 
     let my_session_id = CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst) + 1;
-    info!("Iniciando nova sessÃ£o de voz ID={}", my_session_id);
+    info!("Iniciando nova sessão de voz ID={}", my_session_id);
     let cid_num: u64 = channel_id.parse().unwrap_or(0);
     set_my_voice_channel_id(cid_num);
 
@@ -75,7 +144,7 @@ pub async fn connect_voice_gateway(
         }
         is_first_connect = false;
 
-        match connect_async(&voice_url).await {
+        match connect_voice_ws(&voice_url).await {
             Ok((ws_stream, _)) => {
                 info!("Conexão WebSocket com Voice Gateway estabelecida!");
                 crate::screen_capture::invalidate_cached_stun_address();
