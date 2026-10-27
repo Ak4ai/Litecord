@@ -210,10 +210,10 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (Beta 1.3.0)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (Beta 1.3.0)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux AppImage (Beta 1.3.0 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
-| **🐧 Linux Standalone (Beta 1.3.0)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (Beta 1.3.1)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (Beta 1.3.1)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux AppImage (Beta 1.3.1 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
+| **🐧 Linux Standalone (Beta 1.3.1)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ### 🚀 Running the AppImage on Linux
 ```bash
@@ -316,9 +316,9 @@ Litecord is built to be a **simple, clean, and ultra-lightweight interface for g
 | Contributor | Role / Contributions | Impact |
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Project Creator & Lead Maintainer (Core architecture, Slint UI, Audio Pipeline, Ducking Engine, Security) | **100% (Core)** |
-| [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering, Slint UI modularization, grouped chat messages with day separators & persistent avatars) | **PR #22, #23, #26** |
-| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Community Contributor (Rich bot messages, polls & markdown, Discord server order with drag-and-drop reordering, Discord-style user bar, faster server switching, quiet speech preservation & Linux voice buffers) | **PR #36, #37, #38, #39, #40** |
-| [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Community Contributor (Mouse buttons as mute/deafen shortcuts) | **PR #31** |
+| [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering, Slint UI modularization, grouped chat messages with day separators & persistent avatars, settings window redesign, invite & event cards, channel mentions, resizable channel list, type scale, window shadow) | **PR #22, #23, #26, #46–#59** |
+| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Community Contributor (Rich bot messages, polls & markdown, Discord server order with drag-and-drop reordering, Discord-style user bar, faster server switching, quiet speech preservation & Linux voice buffers, optional voice processing, forwarded messages, window position memory, permission cache, DAVE downgrade audio, Linux app id) | **PR #36–#41, #44, #45, #61, #62, #65** |
+| [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Community Contributor (Mouse buttons as mute/deafen shortcuts, on Windows and Linux) | **PR #31, #43** |
 | **Bug hunters & testers** | [@SabinoRotondi](https://github.com/SabinoRotondi) (frame-time stability that drove the 1.3.0 lightness work, mute hotkey), [@linuxmobile](https://github.com/linuxmobile) (client identity audit), [@3941](https://github.com/3941) (Nobara/Fedora install & AppImage), [@SirWalkerCZ](https://github.com/SirWalkerCZ) (localization), [@begadmoh1](https://github.com/begadmoh1) (DMs, profile pictures), [@kazam0180](https://github.com/kazam0180) (AnyLinux AppImage), [@mirkohubtv](https://github.com/mirkohubtv) (proxy support), [@ProbablyM-S](https://github.com/ProbablyM-S) (Linux build) | **Issues #1, #19–#21, #24, #25, #27–#30** |
 | *Your Name Here* | *Submit a Pull Request to be credited here!* | *%* |
 

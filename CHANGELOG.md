@@ -5,7 +5,7 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.3.1-beta] - não lançado
+## [v1.3.1-beta] - 2026-10-26
 
 **Em resumo:** transmissões que não engasgam em notebooks com duas placas de vídeo nem com espectadores no celular, voz que se recupera sozinha quando o dispositivo de áudio, a sinalização ou a criptografia DAVE falham, uma tela de configurações nova, janela que reabre onde ficou, cards de convite e de evento no chat, e muitas correções de interface vindas de contribuidores. Parado, o Litecord continua em ~40 MB e 0,2% de CPU com a janela aberta.
 

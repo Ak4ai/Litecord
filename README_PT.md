@@ -73,11 +73,11 @@
 ## 📦 Downloads & Instalação
 
 ### 🪟 Windows (10 / 11 x64)
-- **Instalador Oficial (Beta 1.3.0)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
-- **Versão Portátil (Beta 1.3.0)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
+- **Instalador Oficial (Beta 1.3.1)**: Baixe o `Litecord-Setup-x64.exe` na [Página de Releases](https://github.com/Ak4ai/Litecord/releases).
+- **Versão Portátil (Beta 1.3.1)**: Baixe o `litecord-windows-x64-portable.zip`, extraia e execute `litecord.exe` direto.
 
 ### 🐧 Linux
-- **AppImage Universal AnyLinux (Recomendado - Beta 1.3.0)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
+- **AppImage Universal AnyLinux (Recomendado - Beta 1.3.1)**: Baixe `Litecord-x86_64.AppImage`, dê permissão de execução (`chmod +x Litecord-x86_64.AppImage`) e execute (`./Litecord-x86_64.AppImage`). Funciona em qualquer distro!
 - **Instalação Rápida em 1 Comando**:
 ```bash
 curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
@@ -133,9 +133,9 @@ Litecord/
 | Contribuidor | Função / Contribuições | Impacto |
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Criador & Mantenedor Líder (Arquitetura central, UI Slint, Áudio, Ducking, Segurança, DMs) | **100% (Core)** |
-| [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Contribuidor da Comunidade (Sistema de tema claro, lista de participantes em canais de voz, filtro de permissões, modularização Slint, mensagens agrupadas com separadores de dia e avatares persistentes) | **PR #22, #23, #26** |
-| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Contribuidor da Comunidade (Mensagens de bots, enquetes e markdown, ordem dos servidores do Discord com reordenação por arraste, barra do usuário no estilo do Discord, troca de servidor mais rápida, preservação de falas baixas e buffers de voz no Linux) | **PR #36, #37, #38, #39, #40** |
-| [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Contribuidor da Comunidade (Botões do mouse como atalho de mutar/ensurdecer) | **PR #31** |
+| [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Contribuidor da Comunidade (Sistema de tema claro, lista de participantes em canais de voz, filtro de permissões, modularização Slint, mensagens agrupadas com separadores de dia e avatares persistentes, nova tela de configurações, cards de convite e de evento, menções de canal, lista de canais ajustável, escala de fontes, sombra da janela) | **PR #22, #23, #26, #46–#59** |
+| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Contribuidor da Comunidade (Mensagens de bots, enquetes e markdown, ordem dos servidores do Discord com reordenação por arraste, barra do usuário no estilo do Discord, troca de servidor mais rápida, preservação de falas baixas e buffers de voz no Linux, processamento de voz opcional, mensagens encaminhadas, janela que lembra onde ficou, cache de permissões, áudio durante a saída do DAVE, app id no Linux) | **PR #36–#41, #44, #45, #61, #62, #65** |
+| [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Contribuidor da Comunidade (Botões do mouse como atalho de mutar/ensurdecer, no Windows e no Linux) | **PR #31, #43** |
 | **Caçadores de bugs e testadores** | [@SabinoRotondi](https://github.com/SabinoRotondi) (estabilidade de FPS que motivou o trabalho de leveza da 1.3.0, atalho de mutar), [@linuxmobile](https://github.com/linuxmobile) (auditoria da identidade do cliente), [@3941](https://github.com/3941) (instalação no Nobara/Fedora e AppImage), [@SirWalkerCZ](https://github.com/SirWalkerCZ) (traduções), [@begadmoh1](https://github.com/begadmoh1) (DMs, fotos de perfil), [@kazam0180](https://github.com/kazam0180) (AppImage AnyLinux), [@mirkohubtv](https://github.com/mirkohubtv) (suporte a proxy), [@ProbablyM-S](https://github.com/ProbablyM-S) (build no Linux) | **Issues #1, #19–#21, #24, #25, #27–#30** |
 | *Seu Nome Aqui* | *Envie um Pull Request para ser creditado aqui!* | *%* |
 
