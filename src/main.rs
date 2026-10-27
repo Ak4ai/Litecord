@@ -56,6 +56,18 @@ fn browser_open_command() -> &'static str {
 fn browser_open_command() -> &'static str {
     "xdg-open"
 }
+
+/// Whether the startup path may re-enable native window decorations on the
+/// freshly created winit window (the explicit `set_decorations(true)` call).
+///
+/// This exists solely for the WSLg workaround (commit d754dd3): on WSLg/X11
+/// the top-level desktop presentation needs the explicit decoration request.
+/// Windows and macOS keep Slint's `no-frame: true` self-drawn chrome — the
+/// override must not fire there, or the native titlebar draws on top of the
+/// app's own titlebar.
+pub(crate) fn startup_native_decorations_wanted() -> bool {
+    cfg!(target_os = "linux")
+}
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -347,8 +359,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                #[cfg(not(target_os = "windows"))]
-                {
+                // WSLg/X11 needs the explicit decoration request for instant
+                // desktop presentation (commit d754dd3); Windows and macOS
+                // keep Slint's `no-frame` self-drawn chrome.
+                if startup_native_decorations_wanted() {
                     winit_win.set_decorations(true);
                 }
             });
@@ -4865,6 +4879,20 @@ mod tests {
     #[test]
     fn browser_open_command_is_xdg_open_off_macos() {
         assert_eq!(crate::browser_open_command(), "xdg-open");
+    }
+
+    /// Slint's `no-frame: true` chrome is authoritative on Windows and macOS;
+    /// only Linux keeps the WSLg override that re-enables native decorations
+    /// at startup (commit d754dd3). On macOS the override must be off, or the
+    /// native titlebar doubles the app's own titlebar.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn startup_native_decorations_are_linux_only() {
+        assert_eq!(
+            crate::startup_native_decorations_wanted(),
+            cfg!(target_os = "linux"),
+            "the explicit native-decoration startup override (WSLg workaround) must apply to Linux only; Windows and macOS keep Slint's no-frame chrome",
+        );
     }
 }
 
