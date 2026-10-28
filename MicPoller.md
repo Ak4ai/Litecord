@@ -4,7 +4,8 @@
 > **Componente:** stream de **salida** de voz (altavoz) en Linux — `cpal 0.15.3` → ALSA → PipeWire
 > **Commit auditado:** `d8149a0` (`fix(voice): rebuild the voice session when the media path dies`), rama `build/unified-local-release`
 > **Fecha:** 2026-10-28
-> **Estado:** **propuesta / auditoría**. Nada de lo descrito en la sección 8 está implementado todavía.
+> **Estado:** **Fase 0 implementada** (2026-10-28, sin commitear todavía al momento de escribir esto). El altavoz usa **2048 frames por defecto** (4 × 512, ~42,6 ms); el micrófono sigue intacto en 960. Falta el A/B real con vídeo para fijar el valor definitivo.
+> **Auditoría externa:** aprobada con 5 correcciones, todas aplicadas (ver §17).
 > **Autor:** sesión de diagnóstico de voz (audio + reconexión)
 
 ---
@@ -25,8 +26,8 @@ Este documento reúne todo el contexto necesario para auditar una propuesta conc
 
 ## 1. Resumen ejecutivo
 
-- **Qué se propone:** que el stream de salida en Linux use un buffer ALSA mayor (empezando por `Fixed(1920)` = 40 ms y terminando, si hace falta, en `Fixed(3840)` = 80 ms), manteniendo el micrófono exactamente como está (`Fixed(960)`).
-- **Por qué:** el buffer actual son 20 ms con periodos efectivos de 5,33 ms (medido, ver §3.5). Cualquier pausa de planificación de más de 20 ms en el hilo de audio puede provocar un xrun y dejar el PCM en `POLLERR`, que cpal 0.15.3 no recupera.
+- **Qué se implementó (fase 0):** el stream de salida en Linux acepta `LITECORD_VOICE_OUT_FRAMES`; por defecto usa `Fixed(2048)` (4 periodos exactos de 512 frames, ~42,6 ms de anillo), `0` selecciona `BufferSize::Default` y el micrófono sigue exactamente como estaba (`Fixed(960)`).
+- **Por qué:** el buffer anterior eran 20 ms con periodos efectivos de 5,33 ms (medido, ver §3.5). Cualquier pausa de planificación de más de 20 ms en el hilo de audio podía provocar un xrun y dejar el PCM en `POLLERR`, que cpal 0.15.3 no recupera.
 - **Por qué solo el altavoz:** la ruta de micrófono/transmisión (captura → DSP → Opus 960 muestras → LTPV/DAVE) está validada por el usuario (“cuando se escucha, se escucha perfecto”) y no debe tocarse. Además, el buffer del micrófono no participa en el problema observado.
 - **Cómo se validará:** primero instrumentación + override por variable de entorno (fase 0, sin cambio de comportamiento), luego A/B real con 960/1920/3840/Default midiendo `POLLERR` y huecos audibles (fase 1), y solo después se fija el valor ganador (fase 2).
 - **Riesgo principal:** +10 a +40 ms de latencia de reproducción y la necesidad de ajustar el prebuffer de jitter (1920 muestras = 40 ms) si el callback pasa a 20 ms.
@@ -49,7 +50,7 @@ Este documento reúne todo el contexto necesario para auditar una propuesta conc
 - El framing de 960 muestras del codificador Opus (`src/gateway/voice.rs:1600`, `1720`).
 - DSP/AEC/HPF/denoiser y la cola de micrófono.
 - La ruta de transmisión LTPV/DAVE y la negociación de cifrado.
-- Windows y macOS (el cambio es `#[cfg(target_os = "linux")]`; en el resto se sigue usando el buffer por defecto del driver).
+- Windows y macOS en el **tamaño del buffer** (el override sigue siendo `#[cfg(target_os = "linux")]` y esas plataformas usan el default del driver). El prebuffer dinámico de §8.4 sí es universal porque es aritmética, no configuración de driver.
 - El pipeline de vídeo (los `DECODER RX ... frame(s) descartado(s)` son otro problema, ver §5.4).
 
 ---
@@ -305,42 +306,25 @@ Si el sink entra en `SUSPENDED` (silencio prolongado) o cambia de perfil, el PCM
 
 ## 8. Propuesta
 
-### 8.1 Fase 0 — Instrumentación y override (sin cambiar comportamiento)
+### 8.1 Fase 0 — Implementada (override + instrumentación)
 
-Objetivo: poder medir y comparar **sin recompilar** y sin alterar el comportamiento por defecto.
+Objetivo: medir y comparar sin recompilar, con un default ya más holgado.
 
-1. Nuevo helper solo para salida:
-   ```rust
-   // src/audio/engine.rs
-   #[cfg(target_os = "linux")]
-   pub(crate) fn linux_voice_output_config(
-       device: &cpal::Device,
-       config: &cpal::SupportedStreamConfig,
-   ) -> cpal::StreamConfig {
-       let frames = std::env::var("LITECORD_VOICE_OUT_FRAMES")
-           .ok()
-           .and_then(|v| v.parse::<u32>().ok())
-           .unwrap_or(960);          // ← default: comportamiento actual, idéntico
-       voice_config_with_frames(device, config, frames, false)
-   }
-   ```
-   `voice_config_with_frames` es el cuerpo actual de `linux_voice_stream_config` parametrizado por `frames` (misma lógica de clamp + probe + fallback a `Default`).
+1. `src/audio/engine.rs`:
+   - `voice_output_frames()` lee `LITECORD_VOICE_OUT_FRAMES` **una vez por stream**: `0` → `None` → `BufferSize::Default`; valores `< 256` → warning y default; inválidos → warning y default; el resultado se recorta a `SupportedBufferSize::Range`.
+   - `DEFAULT_VOICE_OUT_FRAMES = 2048` (4 periodos exactos de 512 frames, ~42,6 ms).
+   - `linux_voice_output_config()` es el único camino del altavoz.
+   - `linux_voice_stream_config()` quedó solo para el micrófono (`input = true`) con su `voice_buffer_frames` de siempre (960 a 48 kHz).
+   - `voice_config_with_frames()` concentra el probe + fallback a `Default` que ya existía.
 
-2. `linux_voice_stream_config(..., input = true)` **no se toca** (el micrófono sigue con 960).
+2. `src/gateway/voice.rs`:
+   - `let mut first_tick = true;` local a cada closure (F32 e I16): loguea el primer callback de **cada** stream, incluido el que se recrea tras un fallo.
+   - prebuffer dinámico universal y umbral de inactividad en muestras (§8.4).
+   - `output_err_count` se refleja en `📊 [VOICE DIAG]` como `SPK ... errors=N` (acumulado de la sesión, sobrevive a los rebuilds).
 
-3. En el callback, un log único por stream (para saber qué negoció ALSA de verdad):
-   ```rust
-   if ticks_f32.load(Relaxed) == 1 {
-       let frames = output.len() / out_channels.max(1);
-       info!("🔊 Speaker callback: {} frames ({:.2} ms) @ {} Hz",
-             frames, frames as f64 * 1000.0 / out_sample_rate as f64, out_sample_rate);
-   }
-   ```
-   (mismo añadido en la rama I16).
+3. Corrección aplicada a la propuesta original (§9): el log del primer tick usa un `bool` local en vez de `load() == 1`, así no depende del valor del atómico y vuelve a salir tras cada recreación.
 
-4. Reutilizar el contador `output_err_count` que ya existe para reportar en el diagnóstico `📊 [VOICE DIAG]` el total de `POLLERR` de la sesión (hoy solo se usa para limitar el log). Así el A/B se lee de una línea.
-
-**Resultado esperado de la fase 0:** cero cambios audibles y cero cambios de comportamiento; solo datos.
+**Resultado:** el default ya no es el de 20 ms (decisión del usuario tras la auditoría); `LITECORD_VOICE_OUT_FRAMES=960` reproduce exactamente el comportamiento anterior.
 
 ### 8.2 Fase 1 — A/B en llamadas reales
 
@@ -348,10 +332,14 @@ Cuatro valores, mismo binario, solo reiniciando con distinta variable:
 
 | Variante | `LITECORD_VOICE_OUT_FRAMES` | Periodo pedido | Anillo | Callback esperado | Latencia añadida aprox. |
 |---|---|---|---|---|---|
-| A (actual) | `960` (o sin var) | 240 → 256 | 20 ms | 5,33 ms | — |
-| B | `1920` | 480 | 40 ms | 10 ms | +10–20 ms |
-| C | `3840` | 960 | 80 ms | 20 ms | +30–40 ms |
+| A (línea base) | `960` | 240 → 256 | 20 ms | 5,33 ms | — |
+| B (nuevo default) | `2048` (o sin var) | 512 | 42,6 ms | 10,66 ms | +10–20 ms |
+| B2 | `1920` | 480 → 512 | 40 ms (3,75 periodos) | 10,66 ms | +10–20 ms |
+| C | `4096` | 1024 | 85,3 ms | 21,33 ms | +30–45 ms |
+| C2 | `3840` | 960 | 80 ms (3,75 periodos) | 21,33 ms | +30–45 ms |
 | D | `0` (= `Default`) | 25 ms | 100 ms | ~25 ms | +40–60 ms |
+
+Las variantes potenciadas de dos (2048/4096) son las preferidas para PipeWire: piden un quantum exacto de 512/1024 y el anillo queda dividido en 4 periodos enteros. Las de 1920/3840 se conservan en la tabla porque el override las permite y sirven para falsificar H4 (el anillo de 960 no era múltiplo de 256).
 
 Protocolo por variante: una llamada de ≥ 15 min con alguien hablando y un stream de vídeo reproduciéndose (la carga que dispara el fallo), y anotar:
 
@@ -369,22 +357,32 @@ Según el resultado, dejar como constante el valor ganador (probablemente 1920 s
 
 Si el callback pasa a 20 ms (variante C/D), el prebuffer actual de **40 ms** son solo 2 callbacks. Si el decodificador se retrasa >40 ms, la cola se vacía a mitad de callback y el código aplica el camino de “decay” (fade), lo que se oiría como microcortes aunque el dispositivo esté sano.
 
-Propuesta: prebuffer proporcional al callback, **solo en Linux** para no cambiar Windows:
+Implementado: prebuffer proporcional al callback, **sin `cfg(target_os = "linux")`**. La regla es una salvaguarda matemática universal: si un driver USB de Windows/macOS también entrega bloques de 1024 frames, necesita el mismo margen.
 
 ```rust
 // dentro del callback, después de calcular `frames`
-#[cfg(target_os = "linux")]
 let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);   // 3 callbacks de margen
-#[cfg(not(target_os = "linux"))]
-let prebuffer = VOICE_PREBUFFER_SAMPLES;                    // sin cambios
 ...
 } else if q.len() >= prebuffer {
 ```
 
-Con `frames = 256` (hoy): `max(1920, 768) = 1920` → **sin cambio**.
-Con `frames = 960` (80 ms): `max(1920, 2880) = 2880` (60 ms) → margen correcto.
+Con `frames = 256` (línea base): `max(1920, 768) = 1920` → **sin cambio**.
+Con `frames = 512` (default nuevo): `max(1920, 1536) = 1920` (40 ms) → sin cambio.
+Con `frames = 1024` (4096): `max(1920, 3072) = 3072` (64 ms) → margen correcto.
 
-`VOICE_RESET_INACTIVE_CALLBACKS = 3` también es sensible al tamaño del callback (3 callbacks = 15 ms hoy; 60 ms con 20 ms). No es crítico, pero conviene revisarlo en la fase 2 si el inicio de habla se siente perezoso.
+El umbral de inactividad se cambió de callbacks a muestras para que no dependa del tamaño del periodo:
+
+```rust
+const VOICE_RESET_INACTIVE_SAMPLES: u64 = 2_880;   // 60 ms a 48 kHz
+const VOICE_FORGET_SSRC_SAMPLES: u64 = 38_400;    // 800 ms a 48 kHz
+
+let silence = inactive_samples.entry(ssrc).or_insert(0);
+*silence += frames as u64;                        // frames = muestras por canal del callback
+if *silence > VOICE_RESET_INACTIVE_SAMPLES { /* exige re-prebuffer */ }
+if *silence > VOICE_FORGET_SSRC_SAMPLES { /* olvida el SSRC */ }
+```
+
+Con 256 frames el reset cae en el callback 12 (≈61 ms); el umbral original eran 4 callbacks vacíos (≈21 ms), así que el nuevo es más conservador. La auditoría lo pidió así para que un jitter de red de 25 ms no reinicie el prebuffer en mitad de una sílaba. Si el inicio de habla se siente lento, se puede bajar a 40 ms (1920 muestras) sin tocar el resto.
 
 ### 8.5 Qué NO cambia en la propuesta
 
@@ -396,51 +394,43 @@ Con `frames = 960` (80 ms): `max(1920, 2880) = 2880` (60 ms) → margen correcto
 
 ---
 
-## 9. Diff propuesto (fase 0 + fase 2, resumido)
+## 9. Diff aplicado (resumen)
 
-```diff
---- a/src/audio/engine.rs
-+++ b/src/audio/engine.rs
-@@
- pub(crate) fn linux_voice_stream_config(
-     device: &cpal::Device, config: &cpal::SupportedStreamConfig, input: bool,
- ) -> cpal::StreamConfig {
-+    // Entrada: sin cambios (960). Salida: margen configurable.
-+    let frames = if input {
-+        voice_buffer_frames(config.sample_rate().0, config.buffer_size())
-+    } else {
-+        voice_output_frames()
-+    };
-+    voice_config_with_frames(device, config, frames, input)
- }
-+
-+#[cfg(target_os = "linux")]
-+fn voice_output_frames() -> u32 {
-+    std::env::var("LITECORD_VOICE_OUT_FRAMES").ok()
-+        .and_then(|v| v.parse::<u32>().ok())
-+        .filter(|v| *v >= 256)
-+        .unwrap_or(960)          // fase 0: idéntico a hoy; fase 2: valor ganador
-+}
+`src/audio/engine.rs` — separación micrófono/altavoz:
+
+```rust
+// Altavoz: default 2048, override por entorno, 0 = BufferSize::Default.
+let frames = voice_output_frames(config.buffer_size());   // Option<u32>
+voice_config_with_frames(device, config, frames, false)
+
+// Micrófono: sin cambios.
+let frames = voice_buffer_frames(config.sample_rate().0, config.buffer_size());
+voice_config_with_frames(device, config, Some(frames), true)
 ```
 
-```diff
---- a/src/gateway/voice.rs
-+++ b/src/gateway/voice.rs
-@@
-                                                             device.build_output_stream(
-                                                                 &stream_config,
-                                                                 move |output: &mut [f32], _| {
-                                                                     ticks_f32.fetch_add(1, Ordering::Relaxed);
-+                                                                    if ticks_f32.load(Ordering::Relaxed) == 1 {
-+                                                                        let f = output.len() / out_channels.max(1);
-+                                                                        info!("🔊 Speaker callback: {} frames ({:.2} ms) @ {} Hz",
-+                                                                            f, f as f64 * 1000.0 / out_sample_rate as f64, out_sample_rate);
-+                                                                    }
+`src/gateway/voice.rs` — callback (idéntico en F32 e I16):
+
+```rust
+let mut first_tick = true;
+move |output: &mut [f32], _| {
+    ticks_f32.fetch_add(1, Ordering::Relaxed);
+    if first_tick {
+        first_tick = false;
+        let got = output.len() / out_channels.max(1);
+        info!("🔊 Speaker callback (F32): {} frames ({:.2} ms) @ {} Hz", ...);
+    }
+    ...
+    let frames = output.len() / out_channels.max(1);
+    let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
+    ...
+    let silence = inactive_samples.entry(ssrc).or_insert(0);
+    *silence += frames as u64;
+    if *silence > VOICE_RESET_INACTIVE_SAMPLES { /* re-prebuffer */ }
+    if *silence > VOICE_FORGET_SSRC_SAMPLES { /* olvidar SSRC */ }
+}
 ```
 
-Nota: el diff exacto debe respetar la indentación real del callback (está anidado muy profundo). Se recomienda extraer `voice_config_with_frames` sin cambiar la firma pública de `linux_voice_stream_config`, para que el micrófono y el loopback de test mic sigan usando exactamente el mismo camino.
-
----
+El diff exacto está en el commit de la fase 0 (mismo árbol de trabajo que este documento). No se tocó `start_mic_capture`, ni el framing Opus de 960 muestras, ni DSP/AEC.
 
 ## 10. Efectos secundarios y mitigaciones
 
@@ -448,7 +438,7 @@ Nota: el diff exacto debe respetar la indentación real del callback (está anid
 |---|---|---|
 | Latencia de reproducción | +10–40 ms según variante | Empezar por 1920; 3840 solo si 1920 no basta |
 | Menos callbacks/s | 187 → 94 (1920) → 47 (3840) | Menos CPU y menos probabilidad de llegar tarde (positivo) |
-| Prebuffer insuficiente con callbacks grandes | Vacíos a mitad de callback | Prebuffer dinámico Linux-only (§8.4) |
+| Prebuffer insuficiente con callbacks grandes | Vacíos a mitad de callback | Prebuffer dinámico universal (§8.4) |
 | `aec_ref` más grande por callback | +3,8 KB por 20 ms | Aceptable; el anillo AEC ya está dimensionado (§8.5) |
 | Inicio de habla más perezoso | +15–40 ms | Revisar `VOICE_RESET_INACTIVE_CALLBACKS` si se nota |
 | El probe acepta y luego falla | Igual que hoy | El watchdog ya reconstruye; la fase 0 no lo cambia |
@@ -590,12 +580,56 @@ Con `OUTPUT_STALL = 2 s` y `OUTPUT_STALL_AFTER_ERROR = 400 ms` (`voice.rs:2615-2
 
 ---
 
-## 16. Decisión pendiente
+## 16. Decisión y resultado de la auditoría
 
-El documento no aplica cambios. Para avanzar hace falta una de estas tres decisiones:
+**Decisión:** aprobada la opción 1 (fase 0) **con default 2048 desde el primer arranque**, a petición del usuario. La auditoría externa validó las cuatro premisas (cpal 0.15.3, geometría 960/256, `POLLERR` sin `prepare()`, medición de 187,5 callbacks/s) y dejó cinco correcciones, todas aplicadas:
 
-1. **Aprobar fase 0** (instrumentación + override) y medir el A/B con el usuario.
-2. **Ir directo a la variante B** (`Fixed(1920)` + prebuffer dinámico) aceptando +10–20 ms de latencia.
-3. **Dejarlo como está** y convivir con los cortes ocasionales, confiando en el rebuild de ~1 s.
+| # | Hallazgo | Estado |
+|---|---|---|
+| 1 | `LITECORD_VOICE_OUT_FRAMES=0` caía en 960 en vez de `BufferSize::Default` | Corregido: `0` → `None` → `BufferSize::Default` sin probe |
+| 2 | 1920/3840 siguen dando 3,75 periodos tras el redondeo de PipeWire | Corregido: default 2048 y variante 4096 (4 × 512 / 4 × 1024); 1920/3840 quedan como override de control |
+| 3 | `VOICE_RESET_INACTIVE_CALLBACKS = 3` es sensible al tamaño del callback | Corregido: umbral en muestras (`2_880` / `38_400`) |
+| 4 | El AEC puede quedarse fuera de su ventana de retardo con buffers de 80 ms | **Pendiente de medir en el A/B** (ver §17) |
+| 5 | El log del primer tick con `load() == 1` no sale tras recrear el stream | Corregido: `bool` local por closure |
 
-La recomendación del autor es la **opción 1**: es reversible, no cambia el audio por defecto y produce la evidencia que falta para elegir entre B, C y D sin adivinar.
+## 17. Implementación, A/B y riesgos residuales
+
+### 17.1 Valores finales
+
+| Qué | Valor | Dónde |
+|---|---|---|
+| Default del altavoz | `2048` frames (4 × 512, ~42,6 ms) | `engine.rs` |
+| Override | `LITECORD_VOICE_OUT_FRAMES` (`0` = driver default; mínimo 256) | `engine.rs` |
+| Micrófono | `960` frames (sin cambios) | `engine.rs:voice_buffer_frames` |
+| Prebuffer de jitter | `max(1920, frames * 3)` | `voice.rs` |
+| Reset de inactividad | `2_880` muestras (60 ms) | `voice.rs` |
+| Olvido de SSRC | `38_400` muestras (800 ms) | `voice.rs` |
+| Diagnóstico | `SPK ... errors=N` acumulado | `voice.rs` |
+
+### 17.2 Protocolo A/B recomendado
+
+1. Sin variable (2048) durante 15–20 min con vídeo activo.
+2. `LITECORD_VOICE_OUT_FRAMES=4096` en otra sesión.
+3. `LITECORD_VOICE_OUT_FRAMES=1920` como control (misma geometría que la propuesta original).
+4. `LITECORD_VOICE_OUT_FRAMES=0` para medir el default de cpal (25/100 ms).
+
+Por sesión, anotar:
+
+```bash
+grep -c 'alsa::poll'           ~/litecord_app.log   # iteraciones del bucle, no cortes
+grep -c 'recriando o stream'   ~/litecord_app.log   # cortes reales
+grep 'Speaker callback'        ~/litecord_app.log | tail -3
+grep 'VOICE DIAG'              ~/litecord_app.log | tail -3   # errors=N
+```
+
+Criterio de aceptación: 0 recreaciones por `POLLERR` en 20 min con vídeo (la línea base era 1 cada ~22 s), sin huecos audibles y con el AEC cancelando igual que antes.
+
+### 17.3 Riesgo residual: AEC
+
+`push_speaker_reference()` empuja el bloque que se acaba de mezclar. Con un anillo de 42,6 ms el bloque sale del altavoz ~20 ms más tarde que antes, y con 85 ms ~60 ms más tarde. El anillo lock-free no se desborda (es agnóstico al tamaño del lote), pero el algoritmo de cancelación tiene una ventana de búsqueda finita. **Qué mirar en el A/B:** con el micrófono abierto y sin auriculares, comprobar que el eco de la voz remota sigue cancelándose en 2048 y en 4096. Si 4096 degrada el AEC, el ganador es 2048 aunque no elimine el 100 % de los `POLLERR`.
+
+### 17.4 Qué queda fuera
+
+- Fijar el valor ganador (fase 2) y retirar o mantener la variable de entorno: depende del A/B.
+- Prioridad RT para el hilo de audio (`SCHED_FIFO`): sigue siendo la alternativa si 2048 no basta.
+- El pipeline de vídeo (`DECODER RX ... frame(s) descartado(s)`) es un problema aparte.
