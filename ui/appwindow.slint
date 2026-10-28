@@ -1874,6 +1874,13 @@ export component AppWindow inherits Window {
                                             border-color: p.is_speaking ? AppTheme.success : ((p.is_self && root.is_screen_sharing) ? AppTheme.accent : AppTheme.border-subtle);
                                         }
 
+                                        // Discord behaviour: clicking the stream focuses it (larger).
+                                        // The top bar is declared after this, so its buttons still win.
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.focus_stream(p.user_id); }
+                                        }
+
                                         // Top Overlay Bar (Left: Live badge, username, mute, prio | Right: Popout, Fullscreen)
                                         stream_top_bar := Rectangle {
                                             x: 8px;
@@ -2450,13 +2457,12 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
-                                                     // Live Badge if streaming while card is audio-only/hidden
+                                                     // Discord-style LIVE badge: solid red, next to the name,
+                                                     // and the way to open the stream when it is hidden.
                                                      if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
                                                          horizontal-stretch: 0;
-                                                         background: AppTheme.danger-subtle;
+                                                         background: live_badge_ta.has-hover ? AppTheme.danger-action-hover : AppTheme.danger-action;
                                                          border-radius: 4px;
-                                                         border-width: 1px;
-                                                         border-color: AppTheme.danger;
                                                          height: 16px;
                                                          HorizontalLayout {
                                                              padding-left: 6px;
@@ -2465,19 +2471,24 @@ export component AppWindow inherits Window {
                                                              VerticalLayout {
                                                                  alignment: center;
                                                                  Rectangle {
-                                                                     width: 4px;
-                                                                     height: 4px;
-                                                                     border-radius: 2px;
-                                                                     background: AppTheme.danger;
+                                                                     width: 5px;
+                                                                     height: 5px;
+                                                                     border-radius: 3px;
+                                                                     background: AppTheme.solid-white;
                                                                  }
                                                              }
                                                              Text {
                                                                  text: Tr.live_badge;
-                                                                 color: AppTheme.danger;
+                                                                 color: AppTheme.text-on-accent;
                                                                  font-size: TypeScale.micro;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
                                                              }
+                                                         }
+
+                                                         live_badge_ta := TouchArea {
+                                                             mouse-cursor: pointer;
+                                                             clicked => { root.unhide_stream(p.user_id); }
                                                          }
                                                      }
 
@@ -2547,48 +2558,6 @@ export component AppWindow inherits Window {
                                                           }
                                                       }
 
-                                                     // The space between the badges and the button below.
-                                                     Rectangle { horizontal-stretch: 1; }
-
-                                                     // Top-right button that shows the stream (ONLY visible while the user streams).
-                                                     // Someone else's stream arrives only after Watch: nothing is received before.
-                                                     if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
-                                                         width: p.is_self ? 26px : watch_label.preferred-width + 34px;
-                                                         height: 22px;
-                                                         border-radius: 4px;
-                                                         background: unhide_stream_ta.has-hover ? AppTheme.accent : (p.is_self ? AppTheme.interactive-hover : AppTheme.accent);
-
-                                                         VerticalLayout {
-                                                             alignment: center;
-                                                             HorizontalLayout {
-                                                                 alignment: center;
-                                                                 spacing: 6px;
-                                                                 Image {
-                                                                     source: @image-url("../assets/window.svg");
-                                                                     width: 12px;
-                                                                     height: 12px;
-                                                                     colorize: AppTheme.text-on-accent;
-                                                                     image-fit: contain;
-                                                                 }
-                                                                 watch_label := Text {
-                                                                     visible: !p.is_self;
-                                                                     width: p.is_self ? 0px : self.preferred-width;
-                                                                     text: Tr.watch_stream;
-                                                                     color: AppTheme.text-on-accent;
-                                                                     font-size: TypeScale.caption;
-                                                                     font-weight: 700;
-                                                                     vertical-alignment: center;
-                                                                 }
-                                                             }
-                                                         }
-
-                                                         unhide_stream_ta := TouchArea {
-                                                             mouse-cursor: pointer;
-                                                             clicked => {
-                                                                 root.unhide_stream(p.user_id);
-                                                             }
-                                                         }
-                                                     }
                                                  }
 
                                                  // Row 2: Controls vs Self Info
