@@ -252,14 +252,21 @@ pub async fn connect_voice_gateway(
                                     let voice_ip = val["d"]["ip"].as_str().unwrap_or("").to_string();
                                     let voice_port = val["d"]["port"].as_u64().unwrap_or(0) as u16;
 
-                                    let selected_mode = if let Some(modes) = val["d"]["modes"].as_array() {
-                                        modes.iter()
-                                            .find_map(|m| m.as_str())
-                                            .unwrap_or("aead_aes256_gcm_rtpsize")
-                                            .to_string()
-                                    } else {
+                                    // Pick a mode the audio sender actually implements. The
+                                    // list order is not a contract; choosing the first entry
+                                    // blindly sends audio with the wrong cipher when Discord
+                                    // offers XChaCha first.
+                                    let offered_modes: Vec<&str> = val["d"]["modes"].as_array()
+                                        .map(|modes| modes.iter().filter_map(|m| m.as_str()).collect())
+                                        .unwrap_or_default();
+                                    let selected_mode = if offered_modes.is_empty() || offered_modes.contains(&"aead_aes256_gcm_rtpsize") {
                                         "aead_aes256_gcm_rtpsize".to_string()
+                                    } else {
+                                        offered_modes[0].to_string()
                                     };
+                                    if selected_mode != "aead_aes256_gcm_rtpsize" {
+                                        warn!("⚠️ [VOICE] O servidor só ofereceu o modo '{}'; o áudio usa AES-256-GCM.", selected_mode);
+                                    }
                                     *native_mode.lock().unwrap() = selected_mode.clone();
 
                                     info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
@@ -1611,6 +1618,14 @@ pub async fn connect_voice_gateway(
                                     let ssrc = *active_ssrc.lock().unwrap();
                                     info!("ðŸŽ‰ VOICE GATEWAY OPCODE 4 SESSION DESCRIPTION RECEBIDO! SessÃ£o de Voz Ativada com Sucesso!");
 
+                                    // The Session Description repeats the negotiated mode; keep
+                                    // the decryption side in sync in case it differs from op 2.
+                                    if let Some(mode) = val["d"]["mode"].as_str() {
+                                        *native_mode.lock().unwrap() = mode.to_string();
+                                        if mode != "aead_aes256_gcm_rtpsize" {
+                                            warn!("⚠️ [VOICE] Session Description confirmou o modo '{}'; o áudio usa AES-256-GCM.", mode);
+                                        }
+                                    }
                                     if let Some(key_arr) = val["d"]["secret_key"].as_array() {
                                         let key_bytes: Vec<u8> = key_arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
                                         if key_bytes.len() == 32 {
