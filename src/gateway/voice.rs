@@ -166,6 +166,14 @@ pub async fn connect_voice_gateway(
                 ));
                 let saved_external_sender: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
                 let dave_flow = Arc::new(DaveFlow::new());
+                let voice_diag = Arc::new(VoiceDiag::default());
+                spawn_voice_diagnostics(
+                    Arc::clone(&voice_diag),
+                    Arc::clone(&dave_session),
+                    Arc::clone(&self_mute_state),
+                    my_session_id,
+                    channel_id_str.clone(),
+                );
 
                 // Read loop: wait for Opcode 8 HELLO from Voice Gateway before sending Opcode 0 Identify!
                 while let Some(msg_result) = read.next().await {
@@ -252,6 +260,11 @@ pub async fn connect_voice_gateway(
                                     *native_mode.lock().unwrap() = selected_mode.clone();
 
                                     info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
+                                    voice_diag.set_session(format!(
+                                        "endpoint={}:{} mode={} ssrc={} modes={:?}",
+                                        voice_ip, voice_port, selected_mode, ssrc,
+                                        val["d"]["modes"].as_array().map(|m| m.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()).unwrap_or_default()
+                                    ));
 
                                     // Synthesize Join Voice Chime (523.25Hz C5 -> 659.25Hz E5) to test local audio playback
                                     let mut chime_samples = Vec::new();
@@ -286,6 +299,7 @@ pub async fn connect_voice_gateway(
                                         let ssrc_to_userid_audio = Arc::clone(&ssrc_to_userid);
                                         let native_mode_audio = Arc::clone(&native_mode);
                                         let self_mute_rx = Arc::clone(&self_mute_state);
+                                        let diag_audio = Arc::clone(&voice_diag);
 
                                         tokio::spawn(async move {
                                             let socket = match UdpSocket::bind("0.0.0.0:0").await {
@@ -396,6 +410,7 @@ pub async fn connect_voice_gateway(
                                                 // with fetch_add, so no nonce is ever reused.
                                                 let outbound_nonce = Arc::new(std::sync::atomic::AtomicU32::new(0));
                                                 let outbound_nonce_rx = Arc::clone(&outbound_nonce);
+                                                let diag_rx = Arc::clone(&diag_audio);
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
@@ -451,6 +466,7 @@ pub async fn connect_voice_gateway(
 
                                                                 let ssrc_recv = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
                                                                 if ssrc_recv == my_ssrc { continue; }
+                                                                diag_rx.rx_packets.fetch_add(1, Ordering::Relaxed);
 
                                                                 if detected_ssrcs.insert(ssrc_recv) {
                                                                     info!("🎙️ NOVO SSRC DE VOZ REMOTO RECEBIDO! SSRC={} de {}", ssrc_recv, addr);
@@ -530,6 +546,7 @@ pub async fn connect_voice_gateway(
 
                                                                         let (decrypted_raw, ext_skip) = match decrypted_opt {
                                                                             Some(res) => {
+                                                                                diag_rx.rx_decrypt_ok.fetch_add(1, Ordering::Relaxed);
                                                                                 static LOGGED_SUCCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                                                                                 if !LOGGED_SUCCESS.swap(true, std::sync::atomic::Ordering::Relaxed) {
                                                                                     info!("🎉 Descriptografia AES-GCM BEM-SUCEDIDA para SSRC {}! ext_skip={} bytes", ssrc_recv, res.1);
@@ -538,6 +555,7 @@ pub async fn connect_voice_gateway(
                                                                             },
                                                                             None => {
                                                                                 decrypt_err_cnt += 1;
+                                                                                diag_rx.rx_decrypt_fail.fetch_add(1, Ordering::Relaxed);
                                                                                 if decrypt_err_cnt % 50 == 1 {
                                                                                     warn!("Descriptografia AES-GCM falhou para SSRC {}: len={} has_ext={} cc={} base_len={} ext_words={} header={:02X?} nonce={:02X?}",
                                                                                         ssrc_recv, len, has_ext, cc, base_header_len, ext_len_words, &pkt[..16.min(len)], nonce_bytes_rx);
@@ -597,6 +615,7 @@ pub async fn connect_voice_gateway(
                                                                                     match res {
                                                                                         Ok(d) => {
                                                                                             dave_flow_rx.failures.store(0, Ordering::Relaxed);
+                                                                                            diag_rx.rx_dave_ok.fetch_add(1, Ordering::Relaxed);
                                                                                             (d, true)
                                                                                         }
                                                                                         Err(_) if !has_dave_magic && dave_flow_rx.plaintext_allowed() => {
@@ -616,7 +635,9 @@ pub async fn connect_voice_gateway(
                                                                                                     ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
                                                                                             }
                                                                                             let has_dave_magic = transport_payload.len() >= 4 && transport_payload.ends_with(&[0xFA, 0xFA]);
+                                                                                            diag_rx.rx_dave_fail.fetch_add(1, Ordering::Relaxed);
                                                                                             if has_dave_magic {
+                                                                                                diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                                 (Vec::new(), false)
                                                                                             } else {
                                                                                                 (transport_payload.to_vec(), true)
@@ -626,6 +647,7 @@ pub async fn connect_voice_gateway(
                                                                                 } else {
                                                                                     _dave_not_ready_cnt += 1;
                                                                                     if has_dave_magic {
+                                                                                        diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                         (Vec::new(), false)
                                                                                     } else {
                                                                                         (transport_payload.to_vec(), true)
@@ -633,6 +655,7 @@ pub async fn connect_voice_gateway(
                                                                                 }
                                                                             } else {
                                                                                 if has_dave_magic {
+                                                                                    diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                     (Vec::new(), false)
                                                                                 } else {
                                                                                     (transport_payload.to_vec(), true)
@@ -737,6 +760,11 @@ pub async fn connect_voice_gateway(
                                                                         if decode_success && decoded_count > 0 {
                                                                             register_voice_participant(ssrc_recv, sender_user_id);
                                                                             let total_samples = decoded_count * pkt_channels;
+                                                                            diag_rx.rx_decode_ok.fetch_add(1, Ordering::Relaxed);
+                                                                            diag_rx.rx_samples.fetch_add(total_samples as u64, Ordering::Relaxed);
+                                                                            for &s in pcm_out_buf[..total_samples].iter() {
+                                                                                VoiceDiag::note_peak(&diag_rx.rx_peak_milli, s);
+                                                                            }
                                                                             let dump_vec = decoded_voice_pairs(&pcm_out_buf[..total_samples], pkt_channels);
                                                                                     ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
 
@@ -750,6 +778,7 @@ pub async fn connect_voice_gateway(
                                                                                         push_voice_frame(q, &plc_pairs, &dump_vec);
                                                                                     }
                                                                                 } else if !opus_data.is_empty() {
+                                                                                    diag_rx.rx_decode_fail.fetch_add(1, Ordering::Relaxed);
                                                                                     opus_err_cnt += 1;
                                                                                     if opus_err_cnt % 50 == 1 {
                                                                                         warn!("📊 [MÉTRICA DE ERRO] Opus decode falhou para SSRC {} (Erros={})", ssrc_recv, opus_err_cnt);
@@ -775,6 +804,7 @@ pub async fn connect_voice_gateway(
 
                                                 let speaker_queues_out = get_speaker_pcm_queues();
                                                 let ssrc_to_userid_speaker = Arc::clone(&ssrc_to_userid_audio);
+                                                let diag_out = Arc::clone(&diag_audio);
                                                 let out_session_id = my_session_id;
                                                 std::thread::spawn(move || {
                                                     use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
@@ -857,10 +887,12 @@ pub async fn connect_voice_gateway(
                                                             let broken_f32 = Arc::clone(&output_broken);
                                                             let sq_f32 = Arc::clone(&sq);
                                                             let ssrc_to_userid_f32 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let diag_f32 = Arc::clone(&diag_out);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [f32], _| {
                                                                     ticks_f32.fetch_add(1, Ordering::Relaxed);
+                                                                    diag_f32.speaker_ticks.fetch_add(1, Ordering::Relaxed);
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
                                                                         output.fill(0.0);
@@ -1020,6 +1052,9 @@ pub async fn connect_voice_gateway(
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
+                                                                    for &s in output.iter() {
+                                                                        VoiceDiag::note_peak(&diag_f32.speaker_peak_milli, s);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     crate::utils::test_hooks::voice_played_f32(output);
                                                                 },
@@ -1035,10 +1070,12 @@ pub async fn connect_voice_gateway(
                                                             let broken_i16 = Arc::clone(&output_broken);
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let diag_i16 = Arc::clone(&diag_out);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [i16], _| {
                                                                     ticks_i16.fetch_add(1, Ordering::Relaxed);
+                                                                    diag_i16.speaker_ticks.fetch_add(1, Ordering::Relaxed);
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
                                                                         output.fill(0);
@@ -1192,6 +1229,9 @@ pub async fn connect_voice_gateway(
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
+                                                                    for &s in output.iter() {
+                                                                        VoiceDiag::note_peak(&diag_i16.speaker_peak_milli, s as f32 / 32768.0);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     crate::utils::test_hooks::voice_played_i16(output);
                                                                 },
@@ -1217,6 +1257,7 @@ pub async fn connect_voice_gateway(
                                                                 continue;
                                                             }
                                                             info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
+                                                            diag_out.speaker_started.store(true, Ordering::Relaxed);
                                                             #[cfg(feature = "automation")]
                                                             crate::utils::test_hooks::voice_output_started();
                                                             // Keep stream alive until voice session ends OR user selects another output device!
@@ -1273,6 +1314,7 @@ pub async fn connect_voice_gateway(
                                             });
 
                                                 let outbound_nonce_audio = Arc::clone(&outbound_nonce);
+                                                let diag_tx = Arc::clone(&diag_audio);
                                                 tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();
                                                 let mut voice_proc = crate::audio::dsp::VoiceProcessor::new();
@@ -1337,6 +1379,9 @@ pub async fn connect_voice_gateway(
                                                     } else {
                                                         next_frame().await
                                                     };
+                                                    if !had_mic_frame {
+                                                        diag_tx.tx_mic_empty.fetch_add(1, Ordering::Relaxed);
+                                                    }
                                                     if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
                                                         info!("Sessão de voz antiga (ID={}) encerrada, saindo do loop UDP!", my_session_id);
                                                         break;
@@ -1419,6 +1464,9 @@ pub async fn connect_voice_gateway(
                                                                 }
                                                             }
                                                         }
+                                                    }
+                                                    for &s in pcm_frame.iter() {
+                                                        VoiceDiag::note_peak(&diag_tx.tx_peak_milli, s);
                                                     }
 
                                                     let is_silence_packet = if has_audio {
@@ -1523,6 +1571,13 @@ pub async fn connect_voice_gateway(
                                                                 if let Err(_) = socket.send_to(&rtp_pkt, &target_addr).await {
                                                                     break;
                                                                 }
+                                                                diag_tx.tx_frames.fetch_add(1, Ordering::Relaxed);
+                                                                if has_audio {
+                                                                    diag_tx.tx_voice_frames.fetch_add(1, Ordering::Relaxed);
+                                                                }
+                                                                if dave_enc_ok {
+                                                                    diag_tx.tx_dave_ok.fetch_add(1, Ordering::Relaxed);
+                                                                }
                                                                 #[cfg(feature = "automation")]
                                                                 crate::utils::test_hooks::voice_sent(!is_silence_packet, !had_mic_frame);
 
@@ -1561,8 +1616,22 @@ pub async fn connect_voice_gateway(
                                             fixed.copy_from_slice(&key_bytes);
                                             *get_voice_secret_key_store().lock().unwrap() = Some(fixed);
                                             *secret_key_arc.lock().unwrap() = Some(key_bytes);
+                                            voice_diag.ready.store(true, Ordering::Relaxed);
+                                        } else {
+                                            warn!("⚠️ [VOICE] Session Description trouxe uma chave de {} bytes (esperado 32): o áudio NÃO pode ser enviado.", key_bytes.len());
                                         }
+                                    } else {
+                                        warn!("⚠️ [VOICE] Session Description SEM secret_key: o áudio NÃO pode ser enviado.");
                                     }
+                                    voice_diag.set_session(format!(
+                                        "{} | op4 mode={} audio={:?} video={:?} dave_version={:?} media_session={:?}",
+                                        voice_diag.session_text(),
+                                        val["d"]["mode"].as_str().unwrap_or("?"),
+                                        val["d"]["audio_codec"].as_str(),
+                                        val["d"]["video_codec"].as_str(),
+                                        val["d"]["dave_protocol_version"].as_u64(),
+                                        val["d"]["media_session_id"].as_u64(),
+                                    ));
 
                                     // Send Voice Opcode 5: Speaking
                                     let speaking_pkt = serde_json::json!({
@@ -2020,6 +2089,146 @@ type VoiceSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
+
+/// Counters that say, in one line, where a call is losing audio: the handshake,
+/// the DAVE group, transport decryption, Opus decode, the speaker or the microphone.
+#[derive(Default)]
+struct VoiceDiag {
+    /// Session Description (op 4) received: the transport is usable.
+    ready: std::sync::atomic::AtomicBool,
+    /// Mode, codecs, DAVE version and endpoint, filled from op 2 and op 4.
+    session: std::sync::Mutex<Option<String>>,
+    rx_packets: std::sync::atomic::AtomicU64,
+    rx_decrypt_ok: std::sync::atomic::AtomicU64,
+    rx_decrypt_fail: std::sync::atomic::AtomicU64,
+    rx_dave_ok: std::sync::atomic::AtomicU64,
+    rx_dave_fail: std::sync::atomic::AtomicU64,
+    rx_dave_dropped: std::sync::atomic::AtomicU64,
+    rx_decode_ok: std::sync::atomic::AtomicU64,
+    rx_decode_fail: std::sync::atomic::AtomicU64,
+    rx_samples: std::sync::atomic::AtomicU64,
+    rx_peak_milli: std::sync::atomic::AtomicU32,
+    tx_frames: std::sync::atomic::AtomicU64,
+    tx_voice_frames: std::sync::atomic::AtomicU64,
+    tx_dave_ok: std::sync::atomic::AtomicU64,
+    tx_mic_empty: std::sync::atomic::AtomicU64,
+    tx_peak_milli: std::sync::atomic::AtomicU32,
+    speaker_started: std::sync::atomic::AtomicBool,
+    speaker_ticks: std::sync::atomic::AtomicU64,
+    speaker_peak_milli: std::sync::atomic::AtomicU32,
+}
+
+impl VoiceDiag {
+    fn set_session(&self, text: String) {
+        if let Ok(mut slot) = self.session.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    fn session_text(&self) -> String {
+        self.session.lock().ok().and_then(|s| s.clone()).unwrap_or_else(|| "pending".to_string())
+    }
+
+    /// Highest absolute sample of an interval, in thousandths (integer max is atomic).
+    fn note_peak(cell: &std::sync::atomic::AtomicU32, sample: f32) {
+        let milli = (sample.abs().clamp(0.0, 1.0) * 1000.0) as u32;
+        cell.fetch_max(milli, Ordering::Relaxed);
+    }
+
+    fn take_peak(cell: &std::sync::atomic::AtomicU32) -> u32 {
+        cell.swap(0, Ordering::Relaxed)
+    }
+}
+
+/// Prints one diagnostic line every five seconds, and whenever DAVE becomes ready or
+/// stops being ready. It is the first thing to read when a call is silent.
+fn spawn_voice_diagnostics(
+    diag: Arc<VoiceDiag>,
+    dave_session: Arc<std::sync::Mutex<Option<DaveSession>>>,
+    self_mute: Arc<std::sync::Mutex<bool>>,
+    session_id: u64,
+    channel_id: String,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_dave: Option<(bool, usize)> = None;
+        let (mut p_rx, mut p_dec_ok, mut p_dec_fail, mut p_dave_ok, mut p_dave_fail,
+             mut p_dropped, mut p_decode_ok, mut p_decode_fail) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        let (mut p_tx, mut p_tx_voice, mut p_tx_dave, mut p_tx_empty) = (0u64, 0u64, 0u64, 0u64);
+
+        loop {
+            ticker.tick().await;
+            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != session_id { break; }
+
+            let dave_state = {
+                let guard = dave_session.lock().unwrap();
+                guard.as_ref().map(|s| (s.is_ready(), s.get_user_ids().map(|u| u.len()).unwrap_or(0)))
+            };
+            if let Some(state) = dave_state {
+                if last_dave != Some(state) {
+                    last_dave = Some(state);
+                    let details = {
+                        let guard = dave_session.lock().unwrap();
+                        guard.as_ref().map(|s| format!(
+                            "ready={} users={:?} epoch={:?} protocol={}",
+                            s.is_ready(), s.get_user_ids(), s.epoch().map(|e| e.as_u64()), s.protocol_version()
+                        )).unwrap_or_else(|| "no session".to_string())
+                    };
+                    info!("🔑 [DAVE STATE] {}", details);
+                }
+            }
+
+            let rx = diag.rx_packets.load(Ordering::Relaxed);
+            let dec_ok = diag.rx_decrypt_ok.load(Ordering::Relaxed);
+            let dec_fail = diag.rx_decrypt_fail.load(Ordering::Relaxed);
+            let dave_ok = diag.rx_dave_ok.load(Ordering::Relaxed);
+            let dave_fail = diag.rx_dave_fail.load(Ordering::Relaxed);
+            let dropped = diag.rx_dave_dropped.load(Ordering::Relaxed);
+            let decode_ok = diag.rx_decode_ok.load(Ordering::Relaxed);
+            let decode_fail = diag.rx_decode_fail.load(Ordering::Relaxed);
+            let tx = diag.tx_frames.load(Ordering::Relaxed);
+            let tx_voice = diag.tx_voice_frames.load(Ordering::Relaxed);
+            let tx_dave = diag.tx_dave_ok.load(Ordering::Relaxed);
+            let tx_empty = diag.tx_mic_empty.load(Ordering::Relaxed);
+
+            let muted = *self_mute.lock().unwrap();
+            let rx_peak = VoiceDiag::take_peak(&diag.rx_peak_milli);
+            let tx_peak = VoiceDiag::take_peak(&diag.tx_peak_milli);
+            let spk_peak = VoiceDiag::take_peak(&diag.speaker_peak_milli);
+            let mic_queue = get_mic_pcm_queue().lock().map(|q| q.len()).unwrap_or(0);
+
+            info!(
+                "📊 [VOICE DIAG ch={}] ready={} muted={} deaf={} | {} | DAVE={:?} | \
+                 RX +{} pkt (+{} ok / +{} fail) dave +{} ok / +{} fail / +{} dropped decode +{} ok / +{} fail peak={} | \
+                 TX +{} frames (+{} voice, +{} dave) mic_empty +{} peak={} | \
+                 SPK started={} ticks={} peak={} | mic_queue={}",
+                channel_id,
+                if diag.ready.load(Ordering::Relaxed) { "yes" } else { "no" },
+                if muted { "yes" } else { "no" },
+                if is_self_deaf() { "yes" } else { "no" },
+                diag.session_text(),
+                dave_state,
+                rx - p_rx, dec_ok - p_dec_ok, dec_fail - p_dec_fail,
+                dave_ok - p_dave_ok, dave_fail - p_dave_fail, dropped - p_dropped,
+                decode_ok - p_decode_ok, decode_fail - p_decode_fail,
+                rx_peak,
+                tx - p_tx, tx_voice - p_tx_voice, tx_dave - p_tx_dave, tx_empty - p_tx_empty,
+                tx_peak,
+                if diag.speaker_started.load(Ordering::Relaxed) { "yes" } else { "no" },
+                diag.speaker_ticks.load(Ordering::Relaxed),
+                spk_peak,
+                mic_queue,
+            );
+
+            p_rx = rx; p_dec_ok = dec_ok; p_dec_fail = dec_fail;
+            p_dave_ok = dave_ok; p_dave_fail = dave_fail; p_dropped = dropped;
+            p_decode_ok = decode_ok; p_decode_fail = decode_fail;
+            p_tx = tx; p_tx_voice = tx_voice; p_tx_dave = tx_dave; p_tx_empty = tx_empty;
+        }
+        info!("📊 [VOICE DIAG] resumo encerrado (sessão {}).", session_id);
+    });
+}
 
 /// DAVE bookkeeping shared by the gateway handler and the receiver.
 struct DaveFlow {
