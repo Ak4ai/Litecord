@@ -245,6 +245,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if matches!(ev, winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::Resized(_)) {
                 crate::ui::window_place::observe(&main_weak);
+                // On macOS `is_maximized()` is a mutating getter for borderless windows (winit
+                // re-applies the style mask to ask AppKit), which posts another window event and
+                // loops forever. The app tracks maximize state itself there, so don't query it.
+                #[cfg(not(target_os = "macos"))]
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
@@ -4454,8 +4458,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            let is_max = app_instance.window().is_maximized();
-            let next = !is_max;
+            // The UI property is the source of truth: on macOS querying winit's state is a
+            // mutating getter for borderless windows (see the window event handler above).
+            let next = !app_instance.get_is_maximized();
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);
         }
