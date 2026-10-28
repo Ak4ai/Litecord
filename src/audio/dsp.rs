@@ -222,44 +222,41 @@ impl PhaseResampler {
 }
 
 /// 2nd-order Butterworth High-Pass Filter (80Hz cutoff at 48kHz)
-/// Eliminates microphone desk thumps, low rumble, and electrical hum without affecting vocal formants
+/// Implemented using Direct Form II Transposed with double-precision (f64) internal state
+/// to eliminate low-frequency limit cycles and quantization noise near z = 1.
 #[derive(Debug, Clone, Copy)]
 pub struct BiquadHpf {
-    x1: f32,
-    x2: f32,
-    y1: f32,
-    y2: f32,
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
+    s1: f64,
+    s2: f64,
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
 }
 
 impl BiquadHpf {
     pub fn new_80hz_48khz() -> Self {
-        // Precomputed Butterworth 2nd-order HPF @ 80Hz, fs=48000Hz (Q = 0.7071)
+        // Precomputed Butterworth 2nd-order HPF @ 80Hz, fs=48000Hz (Q = 0.70710678)
+        // Calculated in double precision (f64) with Direct Form II Transposed
         Self {
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
-            b0: 0.985287,
-            b1: -1.970574,
-            b2: 0.985287,
-            a1: -1.970500,
-            a2: 0.970648,
+            s1: 0.0,
+            s2: 0.0,
+            b0: 0.9926225428,
+            b1: -1.9852450855,
+            b2: 0.9926225428,
+            a1: -1.9851906579,
+            a2: 0.9852995131,
         }
     }
 
     #[inline(always)]
     pub fn process_sample(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
-        self.x2 = self.x1;
-        self.x1 = x;
-        self.y2 = self.y1;
-        self.y1 = y;
-        y
+        let x64 = x as f64;
+        let y64 = self.b0 * x64 + self.s1;
+        self.s1 = self.b1 * x64 - self.a1 * y64 + self.s2;
+        self.s2 = self.b2 * x64 - self.a2 * y64;
+        y64 as f32
     }
 
     pub fn process_frame(&mut self, frame: &mut [f32; FRAME_SIZE_SAMPLES]) {
