@@ -363,6 +363,43 @@ pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
     participants
 }
 
+/// True while this member's decoded audio is above the same threshold the voice
+/// room uses for its level bars. Reads the speaker queues without blocking: the
+/// audio callback must never wait on the UI refresh.
+pub fn is_voice_user_speaking(user_id: u64) -> bool {
+    let my_uid = get_my_user_id();
+    if user_id == 999999 || (my_uid != 0 && user_id == my_uid) {
+        return is_self_speaking();
+    }
+
+    let store = get_active_voice_participants_store();
+    let ssrcs: Vec<u32> = match store.try_lock() {
+        Ok(map) => map.iter().filter(|(_, &uid)| uid == user_id).map(|(&ssrc, _)| ssrc).collect(),
+        Err(_) => return false,
+    };
+    if ssrcs.is_empty() {
+        return false;
+    }
+
+    let speaker_queues = get_speaker_pcm_queues();
+    let queues = match speaker_queues.try_lock() {
+        Ok(queues) => queues,
+        Err(_) => return false,
+    };
+    for ssrc in ssrcs {
+        let Some(q) = queues.get(&ssrc) else { continue };
+        let sample_cnt = q.len().min(480);
+        if sample_cnt == 0 { continue; }
+        let sum_sq: f32 = q.iter().take(sample_cnt).map(|&(l, r)| { let s = (l + r) * 0.5; s * s }).sum();
+        let rms = (sum_sq / sample_cnt as f32).sqrt();
+        let level = if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) };
+        if level > 0.03 {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn set_my_user_id(id: u64) {
     MY_USER_ID.store(id, Ordering::Relaxed);
 }

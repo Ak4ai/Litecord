@@ -1103,6 +1103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
                 ui.set_is_screen_sharing(false);
+                screen_capture::set_self_streaming(false);
                 ui.set_web_share_active(false);
                 ui.set_web_share_url("".into());
                 ui.set_web_share_viewers(0);
@@ -1209,6 +1210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
                 ui.set_is_screen_sharing(true);
+                screen_capture::set_self_streaming(true);
                 if video_settings::get_enable_self_preview_notice() {
                     ui.set_show_self_preview_notice(true);
                     let app_weak_notice = app_weak_ss.clone();
@@ -1949,8 +1951,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guilds_map_badges = Arc::clone(&guilds_map);
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
-        let mut last_fingerprint: Vec<(String, Vec<(u64, String)>)> = Vec::new();
+        // Fast enough for the speaking ring to track the voice; the fingerprint
+        // below still avoids touching the UI when nothing changed.
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+        let mut last_fingerprint: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::new();
         let mut last_gid = String::new();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -1972,10 +1976,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if let Some(chans) = channels_opt {
+                let my_uid = gateway::get_my_user_id();
                 let mut current_fingerprint = Vec::with_capacity(chans.len());
                 for ch in &chans {
                     let participants = if ch.is_voice {
                         gateway::get_voice_channel_participants(&ch.id)
+                            .into_iter()
+                            .map(|(uid, name)| {
+                                let is_self_member = uid == 999999 || (my_uid != 0 && uid == my_uid);
+                                let streaming = if is_self_member {
+                                    crate::screen_capture::is_self_streaming()
+                                } else {
+                                    crate::screen_capture::peer_is_streaming(uid)
+                                };
+                                (uid, name, gateway::is_voice_user_speaking(uid), streaming)
+                            })
+                            .collect()
                     } else {
                         Vec::new()
                     };
@@ -2003,6 +2019,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if old_c.voice_count != new_c.voice_count
                                             || old_c.name != new_c.name
                                             || old_c.id != new_c.id
+                                            || old_c.is_speaking != new_c.is_speaking
+                                            || old_c.is_streaming != new_c.is_streaming
                                         {
                                             cur_chans.set_row_data(i, new_c.clone());
                                         }
@@ -2607,6 +2625,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_current_voice_channel("".into());
             ui.set_is_in_dm_call(false); // também encerra chamada DM se estava ativa
             ui.set_is_screen_sharing(false);
+            screen_capture::set_self_streaming(false);
             ui.set_show_self_preview_notice(false);
             ui.set_web_share_active(false);
             ui.set_web_share_url("".into());
@@ -4574,6 +4593,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.set_is_in_voice(false);
                             ui.set_is_voice_connecting(false);
                             ui.set_is_screen_sharing(false);
+                            screen_capture::set_self_streaming(false);
                             ui.set_has_active_stream(false);
                             ui.set_popped_out_stream_uid("".into());
                             ui.set_voice_participants(slint::ModelRc::new(slint::VecModel::from(vec![])));

@@ -185,7 +185,11 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
         for i in 0..current.row_count() {
             let Some(old) = current.row_data(i) else { continue };
             let new = fresh_by_id[old.id.as_str()];
-            if old.voice_count != new.voice_count || old.name != new.name {
+            if old.voice_count != new.voice_count
+                || old.name != new.name
+                || old.is_speaking != new.is_speaking
+                || old.is_streaming != new.is_streaming
+            {
                 let mut row = new.clone();
                 row.unread_count = old.unread_count;
                 current.set_row_data(i, row);
@@ -1090,12 +1094,21 @@ pub fn build_ui_channels(
                     .take(2)
                     .flat_map(char::to_uppercase)
                     .collect();
+                let my_uid = gateway::get_my_user_id();
+                let is_self_member = user_id == 999999 || (my_uid != 0 && user_id == my_uid);
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
                     name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: true,
+                    is_speaking: gateway::is_voice_user_speaking(user_id),
+                    is_streaming: if is_self_member {
+                        crate::screen_capture::is_self_streaming()
+                    } else {
+                        crate::screen_capture::peer_is_streaming(user_id)
+                    },
+                    is_self_member,
                     parent_channel_id: ch.id.clone().into(),
                     avatar_text: avatar_text.into(),
                     avatar_slot: crate::utils::avatar_cache::get_avatar_cache().slot_for(&avatar_url),

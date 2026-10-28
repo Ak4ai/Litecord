@@ -172,6 +172,19 @@ pub fn peer_is_streaming(uid: u64) -> bool {
     PEER_STREAMING_STATES.lock().map(|g| g.as_ref().and_then(|m| m.get(&uid).copied()).unwrap_or(false)).unwrap_or(false)
 }
 
+/// Local screen share (Go Live / stream) state. The UI sets it when the share
+/// starts or stops so the sidebar can show our own LIVE badge, just like it does
+/// for the peers in `peer_is_streaming`.
+static SELF_STREAMING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_self_streaming(streaming: bool) {
+    SELF_STREAMING.store(streaming, Ordering::Relaxed);
+}
+
+pub fn is_self_streaming() -> bool {
+    SELF_STREAMING.load(Ordering::Relaxed)
+}
+
 pub fn set_peer_streaming(uid: u64, streaming: bool) {
     let changed = {
         let mut lock = PEER_STREAMING_STATES.lock().unwrap_or_else(|e| e.into_inner());
