@@ -105,10 +105,13 @@ pub async fn connect_voice_gateway(
     _event_tx: mpsc::Sender<GatewayEvent>,
 ) {
     let clean_endpoint = raw_endpoint.trim();
+    // The official client connects to the bare path (`wss://host:port/`) and lets the
+    // server pick the protocol version. Adding `?v=N` there risks a close with an
+    // unknown-version code, which leaves the call connected but completely silent.
     let voice_url = if clean_endpoint.starts_with("wss://") || clean_endpoint.starts_with("ws://") {
         clean_endpoint.to_string()
     } else {
-        format!("wss://{}/?v=9", clean_endpoint)
+        format!("wss://{}/", clean_endpoint)
     };
     info!("Conectando à Discord Voice Gateway: {}...", voice_url);
 
@@ -2153,6 +2156,8 @@ fn spawn_voice_diagnostics(
         let mut ticker = tokio::time::interval(Duration::from_secs(5));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_dave: Option<(bool, usize)> = None;
+        let started = std::time::Instant::now();
+        let (mut warned_rx, mut warned_dave, mut warned_mic) = (false, false, false);
         let (mut p_rx, mut p_dec_ok, mut p_dec_fail, mut p_dave_ok, mut p_dave_fail,
              mut p_dropped, mut p_decode_ok, mut p_decode_fail) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
         let (mut p_tx, mut p_tx_voice, mut p_tx_dave, mut p_tx_empty) = (0u64, 0u64, 0u64, 0u64);
@@ -2197,6 +2202,25 @@ fn spawn_voice_diagnostics(
             let tx_peak = VoiceDiag::take_peak(&diag.tx_peak_milli);
             let spk_peak = VoiceDiag::take_peak(&diag.speaker_peak_milli);
             let mic_queue = get_mic_pcm_queue().lock().map(|q| q.len()).unwrap_or(0);
+
+            if started.elapsed() >= Duration::from_secs(15) {
+                if !warned_rx && rx == 0 {
+                    warned_rx = true;
+                    warn!("🔇 [VOICE] 15 s na chamada e NENHUM pacote de áudio remoto chegou. \
+                           O gateway de voz pode ter caído: confira as linhas HELLO/READY/op 4 acima.");
+                }
+                if !warned_dave && matches!(dave_state, Some((false, _))) {
+                    warned_dave = true;
+                    warn!("🔑 [DAVE] O grupo de criptografia NÃO foi estabelecido (estado {:?}). \
+                           Com DAVE ativo isso deixa a chamada muda nos dois sentidos: \
+                           procure por 'Falha ao processar', 'Welcome' e 'Commit' acima.", dave_state);
+                }
+                if !warned_mic && tx > 0 && tx_voice == 0 {
+                    warned_mic = true;
+                    warn!("🎙️ [VOICE] 15 s enviando apenas silêncio (mic_queue={}, muted={}). \
+                           Verifique o dispositivo de entrada e o limiar de ativação por voz.", mic_queue, muted);
+                }
+            }
 
             info!(
                 "📊 [VOICE DIAG ch={}] ready={} muted={} deaf={} | {} | DAVE={:?} | \

@@ -160,14 +160,16 @@ pub async fn connect_stream_viewer(
 
 fn normalize_url(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
+    // Same URL shape as the official client: bare path, no version query. The
+    // server chooses the protocol and announces it in op 24 / op 4.
     if trimmed.starts_with("wss://") || trimmed.starts_with("ws://") {
         if trimmed.contains('?') {
-            format!("{trimmed}&v=9")
+            trimmed.to_string()
         } else {
-            format!("{trimmed}/?v=9")
+            format!("{trimmed}/")
         }
     } else {
-        format!("wss://{trimmed}/?v=9")
+        format!("wss://{trimmed}/")
     }
 }
 
