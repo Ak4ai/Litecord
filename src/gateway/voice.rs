@@ -25,6 +25,63 @@ const VOICE_QUEUE_LIMIT: usize = 28800;
 const VOICE_PREBUFFER_SAMPLES: usize = 1920;
 const VOICE_RESET_INACTIVE_CALLBACKS: u32 = 3;
 
+/// Last datagram received from the voice media server (ms since the UNIX epoch).
+/// Every packet counts, so this proves the UDP path is alive even when nobody is
+/// talking. A NAT rebind or an interface change leaves the WebSocket healthy while
+/// the media socket goes deaf forever, which is what this timestamp detects.
+pub static VOICE_LAST_UDP_RX_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Datagrams received in this process, used by the watchdog to tell a call that went
+/// from streaming audio to silence from one that was simply quiet.
+pub static VOICE_UDP_RX_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Last time a peer announced it started talking (voice op 5, speaking flag 1).
+pub static VOICE_LAST_PEER_SPEAKING_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Raised when the media path stays dead with other people in the call. The main
+/// gateway session has to be rebuilt: a UDP socket bound to the old address cannot
+/// be repaired from inside the voice connection.
+pub static VOICE_MEDIA_REJOIN_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// An automatic rebuild must not replay the join chime: Discord does not do it for
+/// internal reconnects and it would sound like the user rejoined the call.
+pub static VOICE_SUPPRESS_CHIME: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// A peer that started talking and produced no RTP for this long means the media
+/// path is dead right now.
+const VOICE_SPEAKING_WITHOUT_MEDIA_MS: u64 = 8_000;
+/// Sustained silence after a call that was streaming media. A quiet call never
+/// reaches this because no audio was flowing in the first place; a false positive
+/// here is harmless (it only happens when nobody is talking) and the chime is muted.
+const VOICE_MEDIA_LOST_AFTER_SILENCE_MS: u64 = 30_000;
+/// Grace period after the voice gateway is ready before the watchdog can fire.
+const VOICE_MEDIA_WARMUP: Duration = Duration::from_secs(15);
+
+pub(crate) fn voice_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn note_voice_udp_rx() {
+    VOICE_LAST_UDP_RX_MS.store(voice_now_ms(), Ordering::Relaxed);
+    VOICE_UDP_RX_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Source address the kernel would use to reach `ip:port` right now. When the machine
+/// changes network (Wi-Fi roam, VPN, new NAT binding) this value changes, and the UDP
+/// mapping the voice server knows about is dead even though the WebSocket survives.
+fn probe_local_source(ip: &str, port: u16) -> Option<std::net::SocketAddr> {
+    use std::net::{IpAddr, UdpSocket as StdUdpSocket};
+    let dest: IpAddr = ip.parse().ok()?;
+    let bind = if dest.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    let sock = StdUdpSocket::bind(bind).ok()?;
+    sock.connect((dest, port)).ok()?;
+    sock.local_addr().ok()
+}
+
 pub(crate) async fn connect_voice_ws(
     voice_url: &str,
 ) -> Result<
@@ -119,6 +176,7 @@ pub async fn connect_voice_gateway(
     info!("Iniciando nova sessão de voz ID={}", my_session_id);
     let cid_num: u64 = channel_id.parse().unwrap_or(0);
     set_my_voice_channel_id(cid_num);
+    set_my_voice_guild_id(guild_id);
 
     let mut is_first_connect = true;
     let mut final_close = false;
@@ -276,7 +334,85 @@ pub async fn connect_voice_gateway(
                                         val["d"]["modes"].as_array().map(|m| m.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()).unwrap_or_default()
                                     ));
 
+                                    // Media watchdog. A NAT rebind or an interface change can leave
+                                    // the WebSocket heartbeating happily while the UDP media path is
+                                    // dead: the call still looks connected but no audio arrives and,
+                                    // because the socket is bound to the old address, it can never
+                                    // recover on its own. Ask the main gateway for a clean rejoin.
+                                    note_voice_udp_rx();
+                                    let wd_session = my_session_id;
+                                    let wd_channel = channel_id.to_string();
+                                    let wd_my_ssrc = ssrc;
+                                    let wd_ip = voice_ip.clone();
+                                    let wd_port = voice_port;
+                                    let wd_source_at_ready = probe_local_source(&wd_ip, wd_port);
+                                    tokio::spawn(async move {
+                                        let armed_at = std::time::Instant::now();
+                                        // One sample every 5 s, last 60 s of traffic. A call that was
+                                        // streaming audio and then went silent is a dead media path; a
+                                        // call that was quiet all along is not.
+                                        let mut windows: VecDeque<bool> = VecDeque::with_capacity(12);
+                                        let mut last_count = VOICE_UDP_RX_COUNT.load(Ordering::Relaxed);
+                                        loop {
+                                            sleep(Duration::from_secs(5)).await;
+                                            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != wd_session { break; }
+                                            let count = VOICE_UDP_RX_COUNT.load(Ordering::Relaxed);
+                                            windows.push_back(count > last_count);
+                                            last_count = count;
+                                            while windows.len() > 12 { windows.pop_front(); }
+
+                                            if armed_at.elapsed() < VOICE_MEDIA_WARMUP { continue; }
+                                            // The local source address changed: the media mapping is dead
+                                            // from this instant, no need to wait for the silence timer.
+                                            if let (Some(before), Some(now)) = (wd_source_at_ready, probe_local_source(&wd_ip, wd_port)) {
+                                                if before.ip() != now.ip() {
+                                                    warn!("🎧 [VOICE] Endereço local mudou ({} -> {}); reconstruindo a sessão de voz...",
+                                                        before.ip(), now.ip());
+                                                    VOICE_SUPPRESS_CHIME.store(true, Ordering::SeqCst);
+                                                    VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+                                                    break;
+                                                }
+                                            }
+                                            if is_self_deaf() {
+                                                // Deafened: the server stops sending voice on purpose.
+                                                note_voice_udp_rx();
+                                                continue;
+                                            }
+                                            let remote_peers = get_active_voice_participants_store()
+                                                .lock()
+                                                .map(|m| m.keys().filter(|&&s| s != wd_my_ssrc && s != 999_999).count())
+                                                .unwrap_or(0);
+                                            let in_channel = get_voice_channel_participant_count(&wd_channel);
+                                            if remote_peers == 0 && in_channel <= 1 {
+                                                // Nobody else to listen to: silence is expected.
+                                                continue;
+                                            }
+
+                                            let now_ms = voice_now_ms();
+                                            let last_rx = VOICE_LAST_UDP_RX_MS.load(Ordering::Relaxed);
+                                            let silent_ms = now_ms.saturating_sub(last_rx);
+                                            // A peer announced it started talking over the (healthy)
+                                            // WebSocket and no RTP followed: the media path is dead.
+                                            let spoke = VOICE_LAST_PEER_SPEAKING_MS.load(Ordering::Relaxed);
+                                            let speaking_now = spoke > last_rx
+                                                && now_ms.saturating_sub(spoke) >= VOICE_SPEAKING_WITHOUT_MEDIA_MS;
+                                            // Media flowed until recently and then stopped for good.
+                                            let heard_recently = windows.iter().filter(|&&w| w).count() >= 6;
+                                            let trailing_silence = windows.iter().rev().take_while(|&&w| !w).count() >= 3;
+                                            if speaking_now
+                                                || (heard_recently && trailing_silence && silent_ms >= VOICE_MEDIA_LOST_AFTER_SILENCE_MS)
+                                            {
+                                                warn!("🎧 [VOICE] Sem áudio recebido há {}s com {} pessoa(s) no canal; reconstruindo a sessão de voz...",
+                                                    silent_ms / 1000, in_channel.max(remote_peers as i32));
+                                                VOICE_SUPPRESS_CHIME.store(true, Ordering::SeqCst);
+                                                VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+                                                break;
+                                            }
+                                        }
+                                    });
+
                                     // Synthesize Join Voice Chime (523.25Hz C5 -> 659.25Hz E5) to test local audio playback
+                                    if !VOICE_SUPPRESS_CHIME.swap(false, Ordering::SeqCst) {
                                     let mut chime_samples = Vec::new();
                                     let sr = 48000.0f32;
                                     for i in 0..(0.12 * sr) as usize {
@@ -298,6 +434,7 @@ pub async fn connect_voice_gateway(
                                         }
                                     }
                                     info!("🎵 Efeito sonoro de entrada no canal de voz injetado na fila dos alto-falantes!");
+                                    }
 
                                     // UDP IP Discovery & Opcode 1 Select Protocol Handshake
                                     if !voice_ip.is_empty() && voice_port > 0 {
@@ -456,6 +593,7 @@ pub async fn connect_voice_gateway(
                                                         if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != rx_session_id { break; }
                                                         match tokio::time::timeout(Duration::from_millis(100), socket_rx.recv_from(&mut recv_buf)).await {
                                                             Ok(Ok((len, addr))) => {
+                                                                note_voice_udp_rx();
                                                                 if len < 12 { continue; }
                                                                 let pkt = &recv_buf[..len];
                                                                 
@@ -881,6 +1019,9 @@ pub async fn connect_voice_gateway(
                                                     let mut ssrc_phases: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
+                                                    // Deafen silences the speaker by policy; on undeafen the queued
+                                                    // backlog is stale, so drop it and restart the pre-buffer.
+                                                    let mut was_deaf = is_self_deaf();
 
                                                     #[cfg(not(target_os = "linux"))]
                                                     let stream_config: cpal::StreamConfig = config.clone().into();
@@ -891,10 +1032,18 @@ pub async fn connect_voice_gateway(
                                                     // callback raises a flag; a stream that errors or goes quiet is rebuilt.
                                                     let output_ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
                                                     let output_broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                                    // ALSA through PipeWire reports transient POLLERR bursts while
+                                                    // the callbacks keep running; rebuilding on every one of them
+                                                    // cost seconds of silence. Only a stall rebuilds now, and the
+                                                    // error log is rate-limited instead of flooding the file.
+                                                    let output_err_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                                                    let output_err_last_log = Arc::new(std::sync::atomic::AtomicU64::new(0));
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
                                                             let ticks_f32 = Arc::clone(&output_ticks);
                                                             let broken_f32 = Arc::clone(&output_broken);
+                                                            let err_count_f32 = Arc::clone(&output_err_count);
+                                                            let err_log_f32 = Arc::clone(&output_err_last_log);
                                                             let sq_f32 = Arc::clone(&sq);
                                                             let ssrc_to_userid_f32 = Arc::clone(&ssrc_to_userid_spk);
                                                             let diag_f32 = Arc::clone(&diag_out);
@@ -908,13 +1057,26 @@ pub async fn connect_voice_gateway(
                                                                         output.fill(0.0);
                                                                         return;
                                                                     }
-                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                        for s in output.iter_mut() { *s = 0.0; }
+                                                                        return;
+                                                                    }
+                                                                    if is_self_deaf() {
+                                                                        was_deaf = true;
                                                                         for s in output.iter_mut() { *s = 0.0; }
                                                                         return;
                                                                     }
                                                                     for s in output.iter_mut() { *s = 0.0; }
 
                                                                     if let Ok(mut queues) = sq_f32.lock() {
+                                                                        if was_deaf {
+                                                                            was_deaf = false;
+                                                                            for q in queues.values_mut() { q.clear(); }
+                                                                            started_ssrcs.clear();
+                                                                            inactive_ticks.clear();
+                                                                            ssrc_phases.clear();
+                                                                            ssrc_histories.clear();
+                                                                        }
                                                                         let frames = output.len() / out_channels.max(1);
                                                                         let mut ready_ssrcs = Vec::new();
                                                                         let mut to_remove = Vec::new();
@@ -1069,7 +1231,12 @@ pub async fn connect_voice_gateway(
                                                                     crate::utils::test_hooks::voice_played_f32(output);
                                                                 },
                                                                 move |err| {
-                                                                    warn!("Erro no stream de saída F32: {:?}", err);
+                                                                    let total = err_count_f32.fetch_add(1, Ordering::Relaxed) + 1;
+                                                                    let now = voice_now_ms();
+                                                                    if now.saturating_sub(err_log_f32.load(Ordering::Relaxed)) >= 3_000 {
+                                                                        err_log_f32.store(now, Ordering::Relaxed);
+                                                                        warn!("Erro no stream de saída F32 (#{}): {:?}", total, err);
+                                                                    }
                                                                     broken_f32.store(true, Ordering::Relaxed);
                                                                 },
                                                                 None,
@@ -1078,6 +1245,8 @@ pub async fn connect_voice_gateway(
                                                         cpal::SampleFormat::I16 => {
                                                             let ticks_i16 = Arc::clone(&output_ticks);
                                                             let broken_i16 = Arc::clone(&output_broken);
+                                                            let err_count_i16 = Arc::clone(&output_err_count);
+                                                            let err_log_i16 = Arc::clone(&output_err_last_log);
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
                                                             let diag_i16 = Arc::clone(&diag_out);
@@ -1091,13 +1260,26 @@ pub async fn connect_voice_gateway(
                                                                         output.fill(0);
                                                                         return;
                                                                     }
-                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                        for s in output.iter_mut() { *s = 0; }
+                                                                        return;
+                                                                    }
+                                                                    if is_self_deaf() {
+                                                                        was_deaf = true;
                                                                         for s in output.iter_mut() { *s = 0; }
                                                                         return;
                                                                     }
                                                                     for s in output.iter_mut() { *s = 0; }
 
                                                                     if let Ok(mut queues) = sq_i16.lock() {
+                                                                        if was_deaf {
+                                                                            was_deaf = false;
+                                                                            for q in queues.values_mut() { q.clear(); }
+                                                                            started_ssrcs.clear();
+                                                                            inactive_ticks.clear();
+                                                                            ssrc_phases.clear();
+                                                                            ssrc_histories.clear();
+                                                                        }
                                                                         let frames = output.len() / out_channels.max(1);
                                                                         let mut ready_ssrcs = Vec::new();
                                                                         let mut to_remove = Vec::new();
@@ -1246,7 +1428,12 @@ pub async fn connect_voice_gateway(
                                                                     crate::utils::test_hooks::voice_played_i16(output);
                                                                 },
                                                                 move |err| {
-                                                                    warn!("Erro no stream de saída I16: {:?}", err);
+                                                                    let total = err_count_i16.fetch_add(1, Ordering::Relaxed) + 1;
+                                                                    let now = voice_now_ms();
+                                                                    if now.saturating_sub(err_log_i16.load(Ordering::Relaxed)) >= 3_000 {
+                                                                        err_log_i16.store(now, Ordering::Relaxed);
+                                                                        warn!("Erro no stream de saída I16 (#{}): {:?}", total, err);
+                                                                    }
                                                                     broken_i16.store(true, Ordering::Relaxed);
                                                                 },
                                                                 None,
@@ -1283,7 +1470,14 @@ pub async fn connect_voice_gateway(
                                                                     quiet_since = std::time::Instant::now();
                                                                 }
                                                                 let broken = output_broken.load(Ordering::Relaxed);
-                                                                if broken || quiet_since.elapsed() >= OUTPUT_STALL {
+                                                                // POLLERR alone does not mean the stream is gone: ALSA through
+                                                                // PipeWire reports bursts while the callback keeps producing
+                                                                // audio. A stall after an error is the real failure though, so
+                                                                // it is caught quickly instead of waiting the full timeout.
+                                                                let stalled = quiet_since.elapsed();
+                                                                if stalled >= OUTPUT_STALL
+                                                                    || (broken && stalled >= OUTPUT_STALL_AFTER_ERROR)
+                                                                {
                                                                     warn!("🔊 Saída de áudio {}: recriando o stream.",
                                                                         if broken { "com erro" } else { "parada" });
                                                                     let wait = next_no_device_wait(output_retry_wait);
@@ -1695,6 +1889,14 @@ pub async fn connect_voice_gateway(
                                          ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
                                          register_voice_participant(s_ssrc, u_id);
                                          info!("Voice Gateway OP 5: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
+                                         // Remember that a peer announced speech: if no RTP
+                                         // follows, the media path is dead while the control
+                                         // connection stayed healthy.
+                                         let speaking_flag = val["d"]["speaking"].as_u64().unwrap_or(0);
+                                         let my_ssrc = *active_ssrc.lock().unwrap();
+                                         if speaking_flag & 1 != 0 && s_ssrc != my_ssrc {
+                                             VOICE_LAST_PEER_SPEAKING_MS.store(voice_now_ms(), Ordering::Relaxed);
+                                         }
                                      }
                                  }
                                  6 => {
@@ -2060,12 +2262,14 @@ pub async fn connect_voice_gateway(
                 }
             }
 
-            set_is_connected_to_voice(false);
             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+                // Superseded by a newer session: it owns the global voice state now,
+                // so this task must not clear it (it may exit after the replacement
+                // is already up and running).
                 info!("Sessão de voz {} finalizada pelo usuário.", my_session_id);
-                clear_voice_participants();
                 break;
             }
+            set_is_connected_to_voice(false);
             if final_close {
                 clear_voice_participants();
                 break;
@@ -2409,6 +2613,9 @@ async fn dave_start_over(
 
 /// An output stream whose callback has not run for this long is rebuilt.
 const OUTPUT_STALL: std::time::Duration = std::time::Duration::from_secs(2);
+/// A stream that reported an error and stopped asking for audio is dead: no point
+/// waiting the full stall timeout while the call is silent.
+const OUTPUT_STALL_AFTER_ERROR: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Wait before looking for an output device again: 0.5 s, doubling up to 5 s.
 fn next_no_device_wait(previous: Option<Duration>) -> Duration {
