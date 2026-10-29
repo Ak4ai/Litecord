@@ -1,6 +1,0 @@
-[env]
-PKG_CONFIG_PATH = "/var/lib/flatpak/runtime/org.freedesktop.Sdk/x86_64/25.08/b90ed309cc1d505dea48b6a2121c5dcfac22868120eee643b0596d31f96b9bb8/files/lib/x86_64-linux-gnu/pkgconfig:/var/lib/flatpak/runtime/org.freedesktop.Sdk/x86_64/25.08/b90ed309cc1d505dea48b6a2121c5dcfac22868120eee643b0596d31f96b9bb8/files/share/pkgconfig:/usr/lib64/pkgconfig:/usr/share/pkgconfig"
-LIBRARY_PATH = "/var/home/henrique/.local/lib64:/var/lib/flatpak/runtime/org.freedesktop.Sdk/x86_64/25.08/b90ed309cc1d505dea48b6a2121c5dcfac22868120eee643b0596d31f96b9bb8/files/lib/x86_64-linux-gnu:/usr/lib64"
-
-
-
