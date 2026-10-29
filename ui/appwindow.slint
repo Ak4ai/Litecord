@@ -340,6 +340,7 @@ export component AppWindow inherits Window {
     // Chat Pagination Properties
     in-out property <bool> is_loading_older_messages: false;
     in-out property <bool> has_more_older_messages: false;
+    in-out property <bool> chat_is_at_bottom: false;
     in-out property <int> scroll_to_bottom_trigger: 0;
 
     public function scroll_chat_to_bottom() {
@@ -2899,6 +2900,9 @@ export component AppWindow inherits Window {
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
                         click_command(cmd) => {
                             root.click_command(cmd);
+                        }
+                        bottom_state_changed(flag) => {
+                            root.chat_is_at_bottom = flag;
                         }
                     }
 

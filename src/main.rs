@@ -4002,6 +4002,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let clean_name = crate::utils::styled_text::plain_display_name(ch_name.trim_start_matches('#').trim());
                 ui.set_active_channel_name(clean_name.as_ref().into());
                 ui.set_active_channel_id(ch_id.clone().into());
+                remember_last_channel(&gid, &ch_id);
                 ui.set_is_voice_focused(false);
                 request_chat_scroll_to_bottom(app_weak_chan_select.clone());
 
@@ -4202,6 +4203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_send_message(move |content: SharedString| {
         let content_str = content.to_string();
         let channel_id = active_channel_msg.lock().unwrap().clone();
+        invalidate_message_cache(&channel_id);
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
 
         if let Some(http) = http_opt {
@@ -4623,6 +4625,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageCreated { id, channel_id, author, author_id, created_at, avatar_url, is_bot, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, is_self } => {
+                    invalidate_message_cache(&channel_id);
                     // Deduplicação: ignora se esta mensagem já foi processada anteriormente
                     if !id.is_empty() && crate::ui::helpers::mark_msg_seen(&id) {
                         continue;
@@ -4753,6 +4756,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
+                    invalidate_message_cache(&channel_id);
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // Hidden: the open channel is refetched when the window comes back.
                     if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
@@ -4831,6 +4835,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageDeleted { id, channel_id } => {
+                    invalidate_message_cache(&channel_id);
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // Hidden: the open channel is refetched when the window comes back.
                     if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
