@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 
-use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 use log::{info, warn};
 
 use crate::{
@@ -82,7 +82,10 @@ pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::
 
 pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
     let _ = slint::invoke_from_event_loop(move || {
-        let delays = [15, 45, 100, 200, 400];
+        // Images and embeds change the height after the first layout, so keep pinning
+        // the chat to the bottom for a moment; a channel with pictures would otherwise
+        // stay at its oldest message the first time it is opened.
+        let delays = [15, 45, 100, 220, 500, 900, 1500];
         for delay in delays {
             let app_w = app_weak.clone();
             slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
@@ -92,6 +95,27 @@ pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
             });
         }
     });
+}
+
+static LAST_CHAT_PAINT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks that a channel batch was just painted in the chat.
+pub fn mark_chat_painted() {
+    LAST_CHAT_PAINT_MS.store(unix_millis(), Ordering::Relaxed);
+}
+
+/// True while a channel paint is recent: late model refreshes (images, emojis) may
+/// re-pin the chat even if a rebuild already reset the scroll position.
+pub fn chat_painted_within(max_age: std::time::Duration) -> bool {
+    let last = LAST_CHAT_PAINT_MS.load(Ordering::Relaxed);
+    last > 0 && unix_millis().saturating_sub(last) <= max_age.as_millis() as u64
 }
 
 pub fn parse_hex_color(hex: &str) -> slint::Color {
@@ -884,7 +908,7 @@ pub fn map_message_attachments(
 ) -> slint::ModelRc<MessageAttachment> {
     let att_cache = attachment_cache::get_attachment_cache();
     let slint_atts: Vec<MessageAttachment> = attachments.iter().map(|a| {
-        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full(&a.id, &a.filename) {
+        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full_for_ui(&a.id, &a.filename) {
             (true, img)
         } else {
             (false, slint::Image::default())
