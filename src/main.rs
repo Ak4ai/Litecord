@@ -1085,8 +1085,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_ss.upgrade() {
             let active = sm.is_active();
             if active {
-                info!("🛑 Encerrando transmissão de tela P2P...");
+                info!("🛑 Encerrando transmissão de tela...");
                 sm.stop();
+                gateway::delete_stream();
                 ui.set_is_screen_sharing(false);
                 screen_capture::set_self_streaming(false);
                 ui.set_web_share_active(false);
@@ -1121,6 +1122,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let my_uname = gateway::get_my_username();
                 let cid = gateway::get_my_voice_channel_id();
                 sm.set_context(cid, my_uid, &my_uname);
+                if cid != 0 {
+                    let gid = gateway::get_my_voice_guild_id();
+                    let gid_opt = if !gid.is_empty() && gid != "@me" { Some(gid) } else { None };
+                    info!("🚀 [DISCORD GO LIVE] Solicitando transmissão nativa no canal {} (guild={:?})...", cid, gid_opt);
+                    gateway::create_stream(gid_opt, cid);
+                }
 
                 let res_str = ui.get_stream_selected_res().to_string();
                 let res_val: i32 = match res_str.as_str() {
@@ -1134,7 +1141,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let source_tab = ui.get_stream_source_tab().to_string();
                 let (target_hwnd, screen_index, camera_index, include_audio) = if source_tab == "cameras" {
                     let cam_id_str = ui.get_stream_selected_camera_id().to_string();
-                    let cam_idx: Option<u32> = cam_id_str.parse().ok().or(Some(0));
+                    let cam_idx: Option<u32> = cam_id_str.parse().ok().or_else(|| {
+                        screen_capture::list_cameras().first().map(|c| c.index)
+                    }).or(Some(0));
                     (0, 0, cam_idx, false)
                 } else if source_tab == "windows" {
                     let hwnd: isize = ui.get_stream_selected_window_id().to_string().parse().unwrap_or(0);
@@ -1392,11 +1401,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_available_cameras(std::rc::Rc::new(slint::VecModel::from(ui_cameras)).into());
 
             ui.set_stream_selected_source_index(0);
+            ui.set_stream_selected_camera_id(first_cam_id.into());
             if ui.get_stream_source_tab() == "windows" {
                 ui.set_stream_selected_window_id(first_win_id.into());
                 ui.set_stream_include_audio(true);
             } else if ui.get_stream_source_tab() == "cameras" {
-                ui.set_stream_selected_camera_id(first_cam_id.into());
                 ui.set_stream_include_audio(false);
             } else {
                 ui.set_stream_selected_window_id("".into());
@@ -2590,6 +2599,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen_capture::watch::clear_wanted();
         // Native Discord viewers and SSRC maps belong to the call that just ended.
         gateway::clear_watched_streams();
+        gateway::delete_stream();
         crate::native_video::clear_video_ssrcs();
         // Do this even if the window has gone away: the next call starts with fresh audio.
         if let Ok(mut queues) = gateway::get_speaker_pcm_queues().lock() {
@@ -4963,8 +4973,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                GatewayEvent::GuildLoaded { .. } => {
-                    // Handled via HTTP REST instant fetching
+                GatewayEvent::GuildLoaded { guild } => {
+                    if let Ok(mut gmap) = guilds_map_inner.lock() {
+                        gmap.insert(guild.id.clone(), guild);
+                    }
                 }
                 GatewayEvent::IncomingCall { channel_id, caller_name } => {
                     // Chamada de DM recebida — mostrar painel de notificação com nome do amigo

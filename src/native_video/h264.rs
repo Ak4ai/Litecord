@@ -118,6 +118,128 @@ pub fn has_idr(frame: &[u8]) -> bool {
     false
 }
 
+/// Splits an Annex-B formatted H.264 stream into individual NAL units (omitting start codes).
+pub fn split_annex_b(frame: &[u8]) -> Vec<&[u8]> {
+    let mut nals = Vec::new();
+    let len = frame.len();
+    let mut i = 0;
+    let mut start = None;
+
+    while i + 2 < len {
+        if frame[i] == 0 && frame[i + 1] == 0 && (frame[i + 2] == 1 || (i + 3 < len && frame[i + 2] == 0 && frame[i + 3] == 1)) {
+            let prefix_len = if frame[i + 2] == 1 { 3 } else { 4 };
+            if let Some(s) = start {
+                if i > s {
+                    nals.push(&frame[s..i]);
+                }
+            }
+            start = Some(i + prefix_len);
+            i += prefix_len;
+        } else {
+            i += 1;
+        }
+    }
+    if let Some(s) = start {
+        if s < len {
+            nals.push(&frame[s..len]);
+        }
+    }
+    nals
+}
+
+/// Packetizes Annex B H.264 frames into RFC 6184 RTP packets.
+pub struct H264Packetizer {
+    sequence: u16,
+    ssrc: u32,
+    payload_type: u8,
+    mtu: usize,
+}
+
+impl H264Packetizer {
+    pub fn new(ssrc: u32, payload_type: u8) -> Self {
+        let seq = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0) & 0xFFFF) as u16;
+        Self {
+            sequence: seq,
+            ssrc,
+            payload_type,
+            mtu: 1180,
+        }
+    }
+
+    /// Packetizes an Annex-B frame into a series of `([u8; 12], Vec<u8>)` (header, payload).
+    pub fn packetize(&mut self, frame: &[u8], pts_ms: u64) -> Vec<([u8; 12], Vec<u8>)> {
+        let nals = split_annex_b(frame);
+        if nals.is_empty() {
+            return Vec::new();
+        }
+
+        let timestamp = (pts_ms.wrapping_mul(90)) as u32;
+        let mut packets = Vec::new();
+        let total_nals = nals.len();
+
+        for (nal_idx, nal) in nals.into_iter().enumerate() {
+            if nal.is_empty() {
+                continue;
+            }
+            let is_last_nal = nal_idx + 1 == total_nals;
+
+            if nal.len() <= self.mtu {
+                // Single NAL unit packet
+                let marker = is_last_nal;
+                self.sequence = self.sequence.wrapping_add(1);
+                let header = build_rtp_header(marker, self.payload_type, self.sequence, timestamp, self.ssrc);
+                packets.push((header, nal.to_vec()));
+            } else {
+                // FU-A fragmentation
+                let nal_header = nal[0];
+                let nal_data = &nal[1..];
+                let fu_indicator = (nal_header & 0xE0) | 28;
+                let chunk_size = self.mtu - 2;
+                let total_chunks = (nal_data.len() + chunk_size - 1) / chunk_size;
+
+                for c_idx in 0..total_chunks {
+                    let start = c_idx * chunk_size;
+                    let end = (start + chunk_size).min(nal_data.len());
+                    let is_first = c_idx == 0;
+                    let is_last_chunk = c_idx + 1 == total_chunks;
+                    let marker = is_last_nal && is_last_chunk;
+
+                    let mut fu_header = nal_header & 0x1F;
+                    if is_first {
+                        fu_header |= 0x80; // S bit
+                    }
+                    if is_last_chunk {
+                        fu_header |= 0x40; // E bit
+                    }
+
+                    let mut payload = Vec::with_capacity(2 + (end - start));
+                    payload.push(fu_indicator);
+                    payload.push(fu_header);
+                    payload.extend_from_slice(&nal_data[start..end]);
+
+                    self.sequence = self.sequence.wrapping_add(1);
+                    let header = build_rtp_header(marker, self.payload_type, self.sequence, timestamp, self.ssrc);
+                    packets.push((header, payload));
+                }
+            }
+        }
+        packets
+    }
+}
+
+fn build_rtp_header(marker: bool, pt: u8, seq: u16, ts: u32, ssrc: u32) -> [u8; 12] {
+    let mut h = [0u8; 12];
+    h[0] = 0x80;
+    h[1] = if marker { 0x80 | (pt & 0x7F) } else { pt & 0x7F };
+    h[2..4].copy_from_slice(&seq.to_be_bytes());
+    h[4..8].copy_from_slice(&ts.to_be_bytes());
+    h[8..12].copy_from_slice(&ssrc.to_be_bytes());
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

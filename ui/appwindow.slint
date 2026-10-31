@@ -1459,6 +1459,18 @@ export component AppWindow inherits Window {
                 toggle_deafen => { root.toggle_deafen(); }
                 open_settings => { root.open_settings(); }
                 toggle_user_menu => { root.show_user_menu = !root.show_user_menu; }
+                is_screen_sharing: root.is_screen_sharing;
+                open_stream_modal => {
+                    root.stream_source_tab = "screens";
+                    root.open_stream_modal();
+                }
+                open_camera_modal => {
+                    root.stream_source_tab = "cameras";
+                    root.open_stream_modal();
+                }
+                toggle_screen_share => {
+                    root.toggle_screen_share();
+                }
             }
 
             // 3. Main Content View (Text Chat OR Voice Room View)
@@ -1542,13 +1554,59 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            // Camera Button
                             VerticalLayout {
                                 alignment: center;
 
                                 Rectangle {
                                     height: 32px;
                                     border-radius: 4px;
-                                    background: btn_share_ta.pressed ? (root.is_screen_sharing ? AppTheme.danger-deep : AppTheme.surface-pressed) : (btn_share_ta.has-hover ? (root.is_screen_sharing ? AppTheme.danger-medium : AppTheme.separator) : (root.is_screen_sharing ? AppTheme.danger-action : AppTheme.surface-chat));
+                                    background: btn_cam_header_ta.pressed ? #16a34a : (btn_cam_header_ta.has-hover ? #22c55e : AppTheme.surface-chat);
+                                    animate background { duration: 120ms; }
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/camera.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: btn_cam_header_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: Tr.camera;
+                                            color: btn_cam_header_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong;
+                                            font-size: TypeScale.body;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    btn_cam_header_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.stream_source_tab = "cameras";
+                                            root.open_stream_modal();
+                                        }
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_share_ta.pressed ? (root.is_screen_sharing ? AppTheme.danger-deep : #ea580c) : (btn_share_ta.has-hover ? (root.is_screen_sharing ? AppTheme.danger-medium : #f97316) : (root.is_screen_sharing ? AppTheme.danger-action : AppTheme.surface-chat));
                                     animate background { duration: 120ms; }
 
                                     HorizontalLayout {
@@ -1563,14 +1621,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/monitor.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
+                                                colorize: (root.is_screen_sharing || btn_share_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong);
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
-                                            color: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
+                                            color: (root.is_screen_sharing || btn_share_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong);
                                             font-size: TypeScale.body;
                                             font-weight: 600;
                                             vertical-alignment: center;

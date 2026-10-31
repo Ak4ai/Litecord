@@ -117,10 +117,75 @@ pub fn protect_rtcp(key: &[u8], mode: TransportMode, packet: &[u8], counter: u32
     Some(out)
 }
 
+/// Protects an outbound RTP packet with the connection transport key (`*_rtpsize` modes).
+///
+/// The 12-byte RTP header stays clear and is authenticated as associated data;
+/// the payload is encrypted and the 4-byte nonce counter is appended.
+pub fn protect_rtp(
+    key: &[u8],
+    mode: TransportMode,
+    header: &[u8; 12],
+    payload: &[u8],
+    counter: u32,
+) -> Option<Vec<u8>> {
+    if key.len() != 32 {
+        return None;
+    }
+    let suffix = counter.to_be_bytes();
+
+    let ciphertext = match mode {
+        TransportMode::Aes256Gcm => {
+            let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+            let mut nonce = [0u8; 12];
+            nonce[0..4].copy_from_slice(&suffix);
+            cipher
+                .encrypt(Nonce::from_slice(&nonce), Payload { msg: payload, aad: header.as_slice() })
+                .ok()?
+        }
+        TransportMode::XChaCha20Poly1305 => {
+            let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
+            let mut nonce = [0u8; 24];
+            nonce[20..24].copy_from_slice(&suffix);
+            cipher
+                .encrypt(XNonce::from_slice(&nonce), Payload { msg: payload, aad: header.as_slice() })
+                .ok()?
+        }
+    };
+
+    let mut out = Vec::with_capacity(12 + ciphertext.len() + 4);
+    out.extend_from_slice(header);
+    out.extend_from_slice(&ciphertext);
+    out.extend_from_slice(&suffix);
+    Some(out)
+}
+
+#[derive(Clone, Copy)]
+struct CachedLayout {
+    candidate_idx: usize,
+    nonce_idx: usize,
+}
+
+static SSRC_CRYPTO_CACHE: std::sync::Mutex<Option<std::collections::HashMap<u32, CachedLayout>>> = std::sync::Mutex::new(None);
+
+fn get_cached_layout(ssrc: u32) -> Option<CachedLayout> {
+    SSRC_CRYPTO_CACHE.lock().ok()?.as_ref()?.get(&ssrc).copied()
+}
+
+fn set_cached_layout(ssrc: u32, layout: CachedLayout) {
+    if let Ok(mut lock) = SSRC_CRYPTO_CACHE.lock() {
+        let map = lock.get_or_insert_with(std::collections::HashMap::new);
+        if map.len() > 128 {
+            map.clear();
+        }
+        map.insert(ssrc, layout);
+    }
+}
+
 /// Tries to decrypt one RTP datagram and returns the H.264 payload.
 ///
 /// `packet` still contains the 4-byte nonce suffix.  `header` is the parsed
-/// cleartext header of the same packet.
+/// cleartext header of the same packet. Uses cached SSRC layouts to avoid
+/// up to 24 trial decryptions per incoming video frame.
 pub fn decrypt_payload(
     key: &[u8],
     mode: TransportMode,
@@ -151,18 +216,43 @@ pub fn decrypt_payload(
         &[(header.header_len, 0)]
     };
 
+    let cached = get_cached_layout(header.ssrc);
+
     match mode {
         TransportMode::Aes256Gcm => {
             let cipher = Aes256Gcm::new_from_slice(key).ok()?;
-            for &(aad_len, skip) in candidates {
+            let nonces = aes_nonces(&suffix);
+
+            // Fast path: try cached candidate and nonce index first
+            if let Some(c) = cached {
+                if c.candidate_idx < candidates.len() && c.nonce_idx < nonces.len() {
+                    let (aad_len, skip) = candidates[c.candidate_idx];
+                    if aad_len < ciphertext_end {
+                        let aad = &packet[..aad_len];
+                        let ciphertext = &packet[aad_len..ciphertext_end];
+                        let nonce = &nonces[c.nonce_idx];
+                        if let Ok(mut plain) = cipher.decrypt(Nonce::from_slice(nonce), Payload { msg: ciphertext, aad }) {
+                            if plain.len() >= skip {
+                                plain.drain(..skip);
+                                strip_padding(&mut plain, header);
+                                return Some(plain);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Slow path: find matching layout and cache it for future packets
+            for (c_idx, &(aad_len, skip)) in candidates.iter().enumerate() {
                 if aad_len >= ciphertext_end {
                     continue;
                 }
                 let aad = &packet[..aad_len];
                 let ciphertext = &packet[aad_len..ciphertext_end];
-                for nonce in aes_nonces(&suffix) {
-                    if let Ok(mut plain) = cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: ciphertext, aad }) {
+                for (n_idx, nonce) in nonces.iter().enumerate() {
+                    if let Ok(mut plain) = cipher.decrypt(Nonce::from_slice(nonce), Payload { msg: ciphertext, aad }) {
                         if plain.len() >= skip {
+                            set_cached_layout(header.ssrc, CachedLayout { candidate_idx: c_idx, nonce_idx: n_idx });
                             plain.drain(..skip);
                             strip_padding(&mut plain, header);
                             return Some(plain);
@@ -174,15 +264,38 @@ pub fn decrypt_payload(
         }
         TransportMode::XChaCha20Poly1305 => {
             let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
-            for &(aad_len, skip) in candidates {
+            let nonces = xchacha_nonces(&suffix);
+
+            // Fast path: try cached candidate and nonce index first
+            if let Some(c) = cached {
+                if c.candidate_idx < candidates.len() && c.nonce_idx < nonces.len() {
+                    let (aad_len, skip) = candidates[c.candidate_idx];
+                    if aad_len < ciphertext_end {
+                        let aad = &packet[..aad_len];
+                        let ciphertext = &packet[aad_len..ciphertext_end];
+                        let nonce = &nonces[c.nonce_idx];
+                        if let Ok(mut plain) = cipher.decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad }) {
+                            if plain.len() >= skip {
+                                plain.drain(..skip);
+                                strip_padding(&mut plain, header);
+                                return Some(plain);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Slow path: find matching layout and cache it for future packets
+            for (c_idx, &(aad_len, skip)) in candidates.iter().enumerate() {
                 if aad_len >= ciphertext_end {
                     continue;
                 }
                 let aad = &packet[..aad_len];
                 let ciphertext = &packet[aad_len..ciphertext_end];
-                for nonce in xchacha_nonces(&suffix) {
-                    if let Ok(mut plain) = cipher.decrypt(XNonce::from_slice(&nonce), Payload { msg: ciphertext, aad }) {
+                for (n_idx, nonce) in nonces.iter().enumerate() {
+                    if let Ok(mut plain) = cipher.decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad }) {
                         if plain.len() >= skip {
+                            set_cached_layout(header.ssrc, CachedLayout { candidate_idx: c_idx, nonce_idx: n_idx });
                             plain.drain(..skip);
                             strip_padding(&mut plain, header);
                             return Some(plain);

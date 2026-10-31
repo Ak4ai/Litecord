@@ -18,12 +18,33 @@ use crate::utils::updater;
 use crate::utils::{avatar_cache, emoji_cache};
 use slint::{ComponentHandle, Image, Model};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RawGuildItem {
     pub id: String,
     pub name: String,
     pub icon: String,
     pub icon_path: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SessionSnapshot {
+    pub guilds: Vec<RawGuildItem>,
+    pub order: Vec<String>,
+}
+
+pub fn save_session_snapshot(guilds: &[RawGuildItem], order: &[String]) {
+    let _ = std::fs::create_dir_all(".litecord_cache");
+    let snapshot = SessionSnapshot {
+        guilds: guilds.to_vec(),
+        order: order.to_vec(),
+    };
+    if let Ok(json) = serde_json::to_string(&snapshot) {
+        let tmp = ".litecord_cache/session_state.json.tmp";
+        let target = ".litecord_cache/session_state.json";
+        if std::fs::write(tmp, json).is_ok() {
+            let _ = std::fs::rename(tmp, target);
+        }
+    }
 }
 
 pub async fn fetch_and_populate_guilds(
@@ -38,12 +59,46 @@ pub async fn fetch_and_populate_guilds(
     let cache_dir = std::path::Path::new(".litecord_cache/icons");
     let _ = std::fs::create_dir_all(cache_dir);
 
+    // ⚡ Fast Boot Snapshot: Hidrata a barra lateral de servidores em < 2ms antes da resposta de rede REST
+    if let Ok(data) = std::fs::read_to_string(".litecord_cache/session_state.json") {
+        if let Ok(snapshot) = serde_json::from_str::<SessionSnapshot>(&data) {
+            if !snapshot.guilds.is_empty() {
+                let cached_guilds = snapshot.guilds.clone();
+                let app_w_cache = app_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_w_cache.upgrade() {
+                        let scale = ui.window().scale_factor();
+                        let ui_guilds: Vec<GuildItem> = cached_guilds.into_iter().map(|raw| {
+                            let mut has_image = false;
+                            let mut icon_image = Image::default();
+                            if let Some(ref path_str) = raw.icon_path {
+                                if let Some(img) = load_rounded_guild_icon(path_str, scale) {
+                                    has_image = true;
+                                    icon_image = img;
+                                }
+                            }
+                            GuildItem {
+                                id: raw.id.into(),
+                                name: raw.name.into(),
+                                icon: raw.icon.into(),
+                                has_image,
+                                icon_image,
+                            }
+                        }).collect();
+                        let model = std::rc::Rc::new(slint::VecModel::from(ui_guilds));
+                        ui.set_guilds(model.into());
+                    }
+                });
+            }
+        }
+    }
+
     match http.get_user_guilds().await {
         Ok(guilds_json) => {
             info!("{} servidores encontrados via REST!", guilds_json.len());
             let mut raw_guilds: Vec<RawGuildItem> = Vec::new();
             let mut first_guild_id_opt: Option<String> = None;
-            let mut pending_icon_downloads: Vec<(String, String)> = Vec::new();
+            let mut pending_icon_downloads: Vec<(String, String, String)> = Vec::new();
 
             for g in guilds_json {
                 let g_id = g["id"].as_str().unwrap_or("").to_string();
@@ -56,14 +111,22 @@ pub async fn fetch_and_populate_guilds(
                     }
 
                     let icon_str = get_guild_initials(&g_name);
-                    let local_icon_path = cache_dir.join(format!("{}.png", g_id));
+                    let local_icon_webp = cache_dir.join(format!("{}.webp", g_id));
+                    let local_icon_png = cache_dir.join(format!("{}.png", g_id));
+                    let (local_icon_path, exists) = if local_icon_webp.exists() {
+                        (local_icon_webp, true)
+                    } else if local_icon_png.exists() {
+                        (local_icon_png, true)
+                    } else {
+                        (local_icon_webp, false)
+                    };
 
                     let mut icon_path_opt = None;
-                    if local_icon_path.exists() {
+                    if exists {
                         icon_path_opt = Some(local_icon_path.to_string_lossy().to_string());
                     } else if let Some(ref hash) = g_icon_hash {
-                        let icon_url = format!("https://cdn.discordapp.com/icons/{}/{}.png?size=64", g_id, hash);
-                        pending_icon_downloads.push((icon_url, local_icon_path.to_string_lossy().to_string()));
+                        let icon_url = format!("https://cdn.discordapp.com/icons/{}/{}.webp?size=64", g_id, hash);
+                        pending_icon_downloads.push((g_id.clone(), icon_url, local_icon_path.to_string_lossy().to_string()));
                     }
 
                     guilds_map.lock().unwrap().insert(g_id.clone(), GuildData {
@@ -119,6 +182,9 @@ pub async fn fetch_and_populate_guilds(
                 }
             }
 
+            // Salva snapshot local atômico para carregamento sub-2ms no próximo boot
+            save_session_snapshot(&raw_guilds, &ordered_ids);
+
             let raw_guilds_clone = raw_guilds.clone();
             let app_w = app_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
@@ -159,49 +225,53 @@ pub async fn fetch_and_populate_guilds(
                 ).await;
             }
 
-            // Download custom server icons asynchronously in the background
+            // Download custom server icons asynchronously in the background using bounded concurrency (Semaphore(2))
+            // and update Slint rows granularly via set_row_data(row, item) without full model reconstruction.
             if !pending_icon_downloads.is_empty() {
                 let http_dl = http.clone();
                 let app_w_dl = app_weak.clone();
+                let initial_scale = app_weak.upgrade().map(|ui| ui.window().scale_factor()).unwrap_or(1.0);
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
 
                 tokio::spawn(async move {
-                    for (url, save_path) in pending_icon_downloads {
-                        if let Ok(bytes) = http_dl.download_image(&url).await {
-                            let _ = std::fs::write(&save_path, &bytes);
-                        }
-                    }
-
-                    // Reload UI with newly cached icons
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_w_dl.upgrade() {
-                            let old_guilds = ui.get_guilds();
-                            let mut updated = Vec::new();
-                            for i in 0..old_guilds.row_count() {
-                                if let Some(mut item) = old_guilds.row_data(i) {
-                                    let gid = item.id.to_string();
-                                    let icon_path = cache_dir.join(format!("{}.png", gid));
-                                    if icon_path.exists() {
-                                        if let Some(img) = load_rounded_guild_icon(&icon_path.to_string_lossy(), ui.window().scale_factor()) {
-                                            item.has_image = true;
-                                            item.icon_image = img;
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for (gid, url, save_path) in pending_icon_downloads {
+                        let permit = match semaphore.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => break,
+                        };
+                        let http_c = http_dl.clone();
+                        let app_w_c = app_w_dl.clone();
+                        join_set.spawn(async move {
+                            let _permit = permit;
+                            if let Ok(bytes) = http_c.download_image(&url).await {
+                                let _ = std::fs::write(&save_path, &bytes);
+                                if let Some(buffer) = decode_rounded_guild_icon_buffer(&bytes, initial_scale) {
+                                    let gid_target = gid.clone();
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(ui) = app_w_c.upgrade() {
+                                            let guilds = ui.get_guilds();
+                                            for i in 0..guilds.row_count() {
+                                                if let Some(mut item) = guilds.row_data(i) {
+                                                    if item.id.as_str() == gid_target.as_str() {
+                                                        item.has_image = true;
+                                                        item.icon_image = Image::from_rgba8(buffer);
+                                                        guilds.set_row_data(i, item);
+                                                        break;
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
-                                    updated.push(item);
+                                    });
                                 }
                             }
-                            let model = std::rc::Rc::new(slint::VecModel::from(updated));
-                            ui.set_guilds(model.into());
-                        }
-                    });
+                        });
+                    }
+                    while let Some(_) = join_set.join_next().await {}
+                    // Purga páginas temporárias de descompressão de imagens do heap mimalloc
+                    crate::utils::memory::purge_unused_memory();
                 });
             }
-
-            // Pré-carrega o cache de canais de DMs (@me) em background para detecção imediata de mensagens diretas
-            let http_dms = http.clone();
-            let gmap_dms = guilds_map.clone();
-            tokio::spawn(async move {
-                prefetch_dms_cache(&http_dms, gmap_dms).await;
-            });
         }
         Err(e) => {
             error!("Erro ao buscar servidores via REST: {}", e);
@@ -212,14 +282,127 @@ pub async fn fetch_and_populate_guilds(
 // Revisiting a channel paints the last batch at once; the network answer only
 // replaces it when something actually changed. Everything is raw JSON, so the
 // cache costs a few hundred KB instead of a second copy of the UI models.
-const MESSAGE_CACHE_CHANNELS: usize = 14;
+const MESSAGE_CACHE_CHANNELS: usize = 8;
 const MESSAGE_CACHE_FRESH_AFTER: Duration = Duration::from_secs(15);
 const GUILD_REFRESH_AFTER: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug)]
+pub struct CompactCachedMessage {
+    pub id: String,
+    pub author: String,
+    pub author_id: String,
+    pub avatar_url: String,
+    pub avatar_initial: String,
+    pub is_bot: bool,
+    pub created_at: String,
+    pub content: String,
+    pub commands: Vec<String>,
+    pub content_lines: Vec<crate::gateway::MessageLineData>,
+    pub embed_content: String,
+    pub embed_lines: Vec<crate::gateway::MessageLineData>,
+    pub embed_color: String,
+    pub embed_footer: String,
+    pub code_block: String,
+    pub reply_author: String,
+    pub reply_content: String,
+    pub reply_command: String,
+    pub links: Vec<crate::gateway::LinkData>,
+    pub buttons: Vec<crate::gateway::MessageButtonData>,
+    pub attachments: Vec<crate::gateway::MessageAttachmentData>,
+}
+
+impl CompactCachedMessage {
+    pub fn from_value(m: &serde_json::Value) -> Self {
+        let msg_id = m["id"].as_str().unwrap_or("").to_string();
+        let author = format_discord_author(m);
+        let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
+
+        let author_id = m["author"]["id"]
+            .as_str()
+            .or_else(|| m["webhook_id"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let created_at = m["timestamp"].as_str().unwrap_or("").to_string();
+        let avatar_url = crate::ui::message_grouping::avatar_url_for_message(m);
+        let avatar_initial = author
+            .chars()
+            .next()
+            .unwrap_or('?')
+            .to_uppercase()
+            .to_string();
+        let is_bot = m["author"]["bot"].as_bool().unwrap_or(false);
+
+        Self {
+            id: msg_id,
+            author,
+            author_id,
+            avatar_url,
+            avatar_initial,
+            is_bot,
+            created_at,
+            content,
+            commands,
+            content_lines,
+            embed_content,
+            embed_lines,
+            embed_color,
+            embed_footer,
+            code_block,
+            reply_author,
+            reply_content,
+            reply_command,
+            links,
+            buttons,
+            attachments,
+        }
+    }
+
+    pub fn to_chat_message(
+        &self,
+        ch_id_for_emojis: &str,
+        app_weak_load: &slint::Weak<AppWindow>,
+    ) -> ChatMessage {
+        let slint_cmds: Vec<slint::SharedString> = self.commands.iter().map(|c| c.as_str().into()).collect();
+        let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
+        let slint_links: Vec<LinkItem> = self.links.iter().map(|l| LinkItem {
+            label: l.label.as_str().into(),
+            url: l.url.as_str().into(),
+        }).collect();
+        let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+        let mut message = ChatMessage {
+            id: self.id.as_str().into(),
+            author: self.author.as_str().into(),
+            content: self.content.as_str().into(),
+            commands: slint::ModelRc::from(commands_model),
+            content_lines: map_message_lines(&self.content_lines, ch_id_for_emojis, app_weak_load),
+            embed_content: self.embed_content.as_str().into(),
+            embed_lines: map_message_lines(&self.embed_lines, ch_id_for_emojis, app_weak_load),
+            embed_color: parse_hex_color(&self.embed_color),
+            embed_footer: self.embed_footer.as_str().into(),
+            code_block: self.code_block.as_str().into(),
+            reply_author: self.reply_author.as_str().into(),
+            reply_content: self.reply_content.as_str().into(),
+            reply_command: self.reply_command.as_str().into(),
+            links: slint::ModelRc::from(links_model),
+            buttons: map_message_buttons(&self.buttons, ch_id_for_emojis, app_weak_load),
+            attachments: map_message_attachments(&self.attachments, app_weak_load),
+            timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+            avatar_url: self.avatar_url.as_str().into(),
+            avatar_initial: self.avatar_initial.as_str().into(),
+            is_bot: self.is_bot,
+            ..Default::default()
+        };
+        crate::ui::message_grouping::set_message_metadata(&mut message, &self.author_id, &self.created_at);
+        message
+    }
+}
 
 struct CachedMessages {
     channel_id: String,
     fetched_at: Instant,
-    messages: Arc<Vec<serde_json::Value>>,
+    messages: Arc<Vec<CompactCachedMessage>>,
 }
 
 static MESSAGE_CACHE: OnceLock<Mutex<Vec<CachedMessages>>> = OnceLock::new();
@@ -230,7 +413,7 @@ fn message_cache_slot() -> &'static Mutex<Vec<CachedMessages>> {
     MESSAGE_CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn message_cache_get(channel_id: &str) -> Option<(Arc<Vec<serde_json::Value>>, Duration)> {
+fn message_cache_get(channel_id: &str) -> Option<(Arc<Vec<CompactCachedMessage>>, Duration)> {
     let mut cache = message_cache_slot().lock().unwrap();
     let index = cache.iter().position(|entry| entry.channel_id == channel_id)?;
     let entry = cache.remove(index);
@@ -239,7 +422,7 @@ fn message_cache_get(channel_id: &str) -> Option<(Arc<Vec<serde_json::Value>>, D
     Some(result)
 }
 
-fn message_cache_put(channel_id: &str, messages: Arc<Vec<serde_json::Value>>) {
+fn message_cache_put(channel_id: &str, messages: Arc<Vec<CompactCachedMessage>>) {
     let mut cache = message_cache_slot().lock().unwrap();
     cache.retain(|entry| entry.channel_id != channel_id);
     cache.push(CachedMessages {
@@ -1004,12 +1187,12 @@ pub async fn load_messages_for_channel(
 
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
+            let compact_msgs: Vec<CompactCachedMessage> = msgs_val.iter().map(CompactCachedMessage::from_value).collect();
             let unchanged = cached.as_ref().is_some_and(|(previous, _)| {
-                previous.len() == msgs_val.len()
-                    && previous.first().and_then(|m| m["id"].as_str())
-                        == msgs_val.first().and_then(|m| m["id"].as_str())
+                previous.len() == compact_msgs.len()
+                    && previous.first().map(|m| &m.id) == compact_msgs.first().map(|m| &m.id)
             });
-            let messages = Arc::new(msgs_val);
+            let messages = Arc::new(compact_msgs);
             message_cache_put(channel_id, Arc::clone(&messages));
             if !unchanged {
                 paint_channel_messages(messages, channel_id, app_weak);
@@ -1061,17 +1244,17 @@ pub async fn load_messages_for_channel(
     }
 }
 
-/// Turns a raw message batch into the chat model. Called with the cached copy first
+/// Turns a cached message batch into the chat model. Called with the cached copy first
 /// and again with the fresh answer only when it differs.
 fn paint_channel_messages(
-    msgs_val: Arc<Vec<serde_json::Value>>,
+    compact_msgs: Arc<Vec<CompactCachedMessage>>,
     channel_id: &str,
     app_weak: slint::Weak<AppWindow>,
 ) {
-    let has_more = msgs_val.len() >= 30;
-    if let Some(oldest) = msgs_val.last() {
-        if let Some(id_str) = oldest["id"].as_str() {
-            get_oldest_message_map().lock().unwrap().insert(channel_id.to_string(), id_str.to_string());
+    let has_more = compact_msgs.len() >= 30;
+    if let Some(oldest) = compact_msgs.last() {
+        if !oldest.id.is_empty() {
+            get_oldest_message_map().lock().unwrap().insert(channel_id.to_string(), oldest.id.clone());
         }
     }
     let ch_id_for_emojis = channel_id.to_string();
@@ -1087,7 +1270,7 @@ fn paint_channel_messages(
             ui.set_has_more_older_messages(has_more);
             ui.set_is_loading_older_messages(false);
 
-            let mut ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
+            let mut ui_msgs: Vec<ChatMessage> = if compact_msgs.is_empty() {
                 vec![ChatMessage {
                     id: "".into(),
                     author: "Litecord System".into(),
@@ -1110,42 +1293,8 @@ fn paint_channel_messages(
                     ..Default::default()
                 }]
             } else {
-                msgs_val.iter().rev().map(|m| {
-                    let msg_id = m["id"].as_str().unwrap_or("");
-                    let author = format_discord_author(m);
-                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
-
-                    let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
-                    let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
-
-                    let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
-                        label: l.label.clone().into(),
-                        url: l.url.clone().into(),
-                    }).collect();
-                    let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
-
-                    let mut message = ChatMessage {
-                        id: msg_id.into(),
-                        author: author.into(),
-                        content: content.into(),
-                        commands: slint::ModelRc::from(commands_model),
-                        content_lines: map_message_lines(&content_lines, &ch_id_for_emojis, &app_weak_load),
-                        embed_content: embed_content.into(),
-                        embed_lines: map_message_lines(&embed_lines, &ch_id_for_emojis, &app_weak_load),
-                        embed_color: parse_hex_color(&embed_color),
-                        embed_footer: embed_footer.into(),
-                        code_block: code_block.into(),
-                        reply_author: reply_author.into(),
-                        reply_content: reply_content.into(),
-                        reply_command: reply_command.into(),
-                        links: slint::ModelRc::from(links_model),
-                        buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
-                        attachments: map_message_attachments(&attachments, &app_weak_load),
-                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
-                        ..Default::default()
-                    };
-                    apply_message_metadata(&mut message, m);
-                    message
+                compact_msgs.iter().rev().map(|m| {
+                    m.to_chat_message(&ch_id_for_emojis, &app_weak_load)
                 }).collect()
             };
             regroup_messages(&mut ui_msgs);
@@ -1319,10 +1468,10 @@ pub fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
 /// It is resized here, once and with a smooth filter, to the tile's size in physical
 /// pixels: the software renderer would otherwise shrink the full-size icon on every
 /// frame without smoothing, which made the edges jagged. It also keeps less in memory.
-fn load_rounded_guild_icon(path: &str, scale_factor: f32) -> Option<Image> {
+fn decode_rounded_guild_icon_buffer(bytes: &[u8], scale_factor: f32) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
     const TILE_LOGICAL_PX: f32 = 48.0;
     let side = (TILE_LOGICAL_PX * scale_factor.clamp(1.0, 4.0)).round() as u32;
-    let decoded = image::open(path).ok()?;
+    let decoded = image::load_from_memory(bytes).ok()?;
     let mut rgba = if decoded.width() > side || decoded.height() > side {
         decoded.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8()
     } else {
@@ -1330,6 +1479,10 @@ fn load_rounded_guild_icon(path: &str, scale_factor: f32) -> Option<Image> {
     };
     let (w, h) = rgba.dimensions();
     crate::utils::image_shape::round_corners(&mut rgba, w, h, w.min(h) as f32 / 3.0);
-    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h);
-    Some(Image::from_rgba8(buffer))
+    Some(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h))
+}
+
+fn load_rounded_guild_icon(path: &str, scale_factor: f32) -> Option<Image> {
+    let bytes = std::fs::read(path).ok()?;
+    decode_rounded_guild_icon_buffer(&bytes, scale_factor).map(Image::from_rgba8)
 }

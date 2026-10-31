@@ -17,7 +17,10 @@ pub mod jitter;
 pub mod receiver;
 pub mod rtp;
 pub mod rtcp;
+pub mod sender;
 pub mod stream;
+
+pub use sender::{is_broadcasting, offer_outbound_frame, stop_sender};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

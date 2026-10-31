@@ -15,6 +15,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce
 };
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use opus_rs::{OpusEncoder, OpusDecoder, Application};
 use davey::{DaveSession, ProposalsOperationType, MediaType};
 
@@ -216,7 +217,8 @@ pub async fn connect_voice_gateway(
                 let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
                 let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
                 let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
-                let native_mode: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new("aead_aes256_gcm_rtpsize".to_string()));
+                let native_mode: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new("aead_xchacha20_poly1305_rtpsize".to_string()));
+                let voice_hb_acked: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 // Video SSRCs announced on this (parent) connection, so op 15 can be
                 // re-sent once the session description is complete.
                 let native_wants: Arc<std::sync::Mutex<std::collections::HashSet<u32>>> =
@@ -289,10 +291,15 @@ pub async fn connect_voice_gateway(
 
                                     // 2. Spawn Voice Heartbeat loop (Opcode 3 with epoch timestamp)
                                     let write_hb = Arc::clone(&write_arc);
+                                    let voice_hb_acked_loop = Arc::clone(&voice_hb_acked);
                                     tokio::spawn(async move {
                                         loop {
                                             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id { break; }
                                             sleep(Duration::from_millis(heartbeat_interval)).await;
+                                            if !voice_hb_acked_loop.swap(false, Ordering::SeqCst) {
+                                                warn!("⚠️ [VOICE] Servidor de voz não respondeu ao Heartbeat anterior (falta Opcode 6 ACK). Reconectando!");
+                                                break;
+                                            }
                                             let t_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                                             let hb = serde_json::json!({ "op": 3, "d": t_now });
                                             let mut w = write_hb.lock().await;
@@ -315,21 +322,19 @@ pub async fn connect_voice_gateway(
                                     let voice_ip = val["d"]["ip"].as_str().unwrap_or("").to_string();
                                     let voice_port = val["d"]["port"].as_u64().unwrap_or(0) as u16;
 
-                                    // Pick a mode the audio sender actually implements. The
-                                    // list order is not a contract; choosing the first entry
-                                    // blindly sends audio with the wrong cipher when Discord
-                                    // offers XChaCha first.
+                                    // Seleciona o melhor modo de criptografia oferecido (prioriza XChaCha20Poly1305 ou AES-256-GCM)
                                     let offered_modes: Vec<&str> = val["d"]["modes"].as_array()
                                         .map(|modes| modes.iter().filter_map(|m| m.as_str()).collect())
                                         .unwrap_or_default();
-                                    let selected_mode = if offered_modes.is_empty() || offered_modes.contains(&"aead_aes256_gcm_rtpsize") {
+                                    let selected_mode = if offered_modes.contains(&"aead_xchacha20_poly1305_rtpsize") {
+                                        "aead_xchacha20_poly1305_rtpsize".to_string()
+                                    } else if offered_modes.contains(&"aead_aes256_gcm_rtpsize") {
                                         "aead_aes256_gcm_rtpsize".to_string()
-                                    } else {
+                                    } else if !offered_modes.is_empty() {
                                         offered_modes[0].to_string()
+                                    } else {
+                                        "aead_aes256_gcm_rtpsize".to_string()
                                     };
-                                    if selected_mode != "aead_aes256_gcm_rtpsize" {
-                                        warn!("⚠️ [VOICE] O servidor só ofereceu o modo '{}'; o áudio usa AES-256-GCM.", selected_mode);
-                                    }
                                     *native_mode.lock().unwrap() = selected_mode.clone();
 
                                     info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
@@ -575,6 +580,7 @@ pub async fn connect_voice_gateway(
                                                     let mut dave_decrypt_fail_cnt = 0u64;
                                                     let mut dave_plaintext_cnt = 0u64;
                                                     let mut _dave_not_ready_cnt = 0u64;
+                                                    let mut voice_layout_cache: HashMap<u32, (usize, usize)> = HashMap::new();
 
                                                     // Native Discord video (camera) shares this UDP socket and
                                                     // the parent DAVE session.  Non-Opus packets go here.
@@ -656,46 +662,114 @@ pub async fn connect_voice_gateway(
                                                                 let nonce_u32_le = u32::from_le_bytes(nonce_bytes_rx);
                                                                 let nonce_u32_be = u32::from_be_bytes(nonce_bytes_rx);
 
-                                                                let mut n1 = [0u8; 12]; n1[0..4].copy_from_slice(&nonce_bytes_rx);
-                                                                let mut n2 = [0u8; 12]; n2[8..12].copy_from_slice(&nonce_bytes_rx);
-                                                                let mut n3 = [0u8; 12]; n3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
-                                                                let mut n4 = [0u8; 12]; n4[8..12].copy_from_slice(&nonce_u32_le.to_be_bytes());
-                                                                let mut n5 = [0u8; 12]; n5[0..4].copy_from_slice(&nonce_u32_be.to_le_bytes());
-                                                                let mut n6 = [0u8; 12]; n6[8..12].copy_from_slice(&nonce_u32_be.to_le_bytes());
-
-                                                                let nonce_candidates = [&n1, &n2, &n3, &n4, &n5, &n6];
-
                                                                 let key_opt = secret_key_rx.lock().unwrap().clone();
                                                                 if let Some(key_bytes) = key_opt {
-                                                                    if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
-                                                                        let candidates: &[(usize, usize)] = if has_ext {
-                                                                            &[
-                                                                                (base_header_len + 4, ext_bytes_len),
-                                                                                (base_header_len + 4 + ext_bytes_len, 0),
-                                                                                (base_header_len, ext_bytes_len + 4),
-                                                                                (base_header_len, 0),
-                                                                            ]
-                                                                        } else {
-                                                                            &[(base_header_len, 0)]
-                                                                        };
+                                                                    let cur_rx_mode = native_mode_rx.lock().unwrap().clone();
+                                                                    let is_xchacha = cur_rx_mode.to_ascii_lowercase().contains("xchacha");
 
-                                                                        let mut decrypted_opt: Option<(Vec<u8>, usize)> = None;
+                                                                    let candidates: &[(usize, usize)] = if has_ext {
+                                                                        &[
+                                                                            (base_header_len + 4, ext_bytes_len),
+                                                                            (base_header_len + 4 + ext_bytes_len, 0),
+                                                                            (base_header_len, ext_bytes_len + 4),
+                                                                            (base_header_len, 0),
+                                                                        ]
+                                                                    } else {
+                                                                        &[(base_header_len, 0)]
+                                                                    };
 
-                                                                        'try_decrypt: for &(test_aad_len, test_ext_len) in candidates {
-                                                                            if test_aad_len >= ciphertext_end { continue; }
-                                                                            let header = &pkt[..test_aad_len];
-                                                                            let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                    let mut decrypted_opt: Option<(Vec<u8>, usize)> = None;
+                                                                    let cached_layout = voice_layout_cache.get(&ssrc_recv).copied();
 
-                                                                            for &nonce_cand in &nonce_candidates {
-                                                                                let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
-                                                                                if let Ok(dec) = cipher.decrypt(Nonce::from_slice(nonce_cand), payload) {
-                                                                                    if dec.len() >= test_ext_len {
-                                                                                        decrypted_opt = Some((dec, test_ext_len));
-                                                                                        break 'try_decrypt;
+                                                                    if is_xchacha {
+                                                                        if let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&key_bytes) {
+                                                                            let mut xn1 = [0u8; 24]; xn1[0..4].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut xn2 = [0u8; 24]; xn2[20..24].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut xn3 = [0u8; 24]; xn3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let mut xn4 = [0u8; 24]; xn4[20..24].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let x_nonces = [&xn1, &xn2, &xn3, &xn4];
+
+                                                                            // Fast path com layout em cache
+                                                                            if let Some((c_idx, n_idx)) = cached_layout {
+                                                                                if c_idx < candidates.len() && n_idx < x_nonces.len() {
+                                                                                    let (test_aad_len, test_ext_len) = candidates[c_idx];
+                                                                                    if test_aad_len < ciphertext_end {
+                                                                                        let header = &pkt[..test_aad_len];
+                                                                                        let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(XNonce::from_slice(x_nonces[n_idx]), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+
+                                                                            if decrypted_opt.is_none() {
+                                                                                'x_search: for (c_idx, &(test_aad_len, test_ext_len)) in candidates.iter().enumerate() {
+                                                                                    if test_aad_len >= ciphertext_end { continue; }
+                                                                                    let header = &pkt[..test_aad_len];
+                                                                                    let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                    for (n_idx, &nonce_cand) in x_nonces.iter().enumerate() {
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(XNonce::from_slice(nonce_cand), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                voice_layout_cache.insert(ssrc_recv, (c_idx, n_idx));
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                                break 'x_search;
+                                                                                            }
+                                                                                        }
                                                                                     }
                                                                                 }
                                                                             }
                                                                         }
+                                                                } else {
+                                                                        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
+                                                                            let mut n1 = [0u8; 12]; n1[0..4].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut n2 = [0u8; 12]; n2[8..12].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut n3 = [0u8; 12]; n3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let mut n4 = [0u8; 12]; n4[8..12].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let mut n5 = [0u8; 12]; n5[0..4].copy_from_slice(&nonce_u32_be.to_le_bytes());
+                                                                            let mut n6 = [0u8; 12]; n6[8..12].copy_from_slice(&nonce_u32_be.to_le_bytes());
+                                                                            let aes_nonces = [&n1, &n2, &n3, &n4, &n5, &n6];
+
+                                                                            // Fast path com layout em cache
+                                                                            if let Some((c_idx, n_idx)) = cached_layout {
+                                                                                if c_idx < candidates.len() && n_idx < aes_nonces.len() {
+                                                                                    let (test_aad_len, test_ext_len) = candidates[c_idx];
+                                                                                    if test_aad_len < ciphertext_end {
+                                                                                        let header = &pkt[..test_aad_len];
+                                                                                        let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(Nonce::from_slice(aes_nonces[n_idx]), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+
+                                                                            if decrypted_opt.is_none() {
+                                                                                'aes_search: for (c_idx, &(test_aad_len, test_ext_len)) in candidates.iter().enumerate() {
+                                                                                    if test_aad_len >= ciphertext_end { continue; }
+                                                                                    let header = &pkt[..test_aad_len];
+                                                                                    let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                    for (n_idx, &nonce_cand) in aes_nonces.iter().enumerate() {
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(Nonce::from_slice(nonce_cand), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                voice_layout_cache.insert(ssrc_recv, (c_idx, n_idx));
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                                break 'aes_search;
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
 
                                                                         let (decrypted_raw, ext_skip) = match decrypted_opt {
                                                                             Some(res) => {
@@ -938,7 +1012,6 @@ pub async fn connect_voice_gateway(
                                                                                     }
                                                                                 }
                                                                             }
-                                                                        }
                                                             }
                                                             Ok(Err(e)) => {
                                                                 warn!("Erro socket.recv_from: {:?}", e);
@@ -1054,6 +1127,10 @@ pub async fn connect_voice_gateway(
                                                             let diag_f32 = Arc::clone(&diag_out);
                                                             let diag_err_f32 = Arc::clone(&diag_out);
                                                             let mut first_tick = true;
+                                                            let mut ready_ssrcs = Vec::with_capacity(32);
+                                                            let mut to_remove = Vec::with_capacity(8);
+                                                            let mut ssrc_vol_map = std::collections::HashMap::with_capacity(32);
+                                                            let mut aec_ref = Vec::with_capacity(1024);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [f32], _| {
@@ -1094,8 +1171,8 @@ pub async fn connect_voice_gateway(
                                                                         // Keep at least three callbacks buffered: a fixed 40 ms would drain
                                                                         // mid-callback once ALSA hands out larger blocks, chopping syllables.
                                                                         let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
-                                                                        let mut ready_ssrcs = Vec::new();
-                                                                        let mut to_remove = Vec::new();
+                                                                        ready_ssrcs.clear();
+                                                                        to_remove.clear();
 
                                                                         for (&ssrc, q) in queues.iter() {
                                                                             if q.is_empty() {
@@ -1128,7 +1205,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
-                                                                        for ssrc in to_remove {
+                                                                        for &ssrc in &to_remove {
                                                                             queues.remove(&ssrc);
                                                                             started_ssrcs.remove(&ssrc);
                                                                             inactive_samples.remove(&ssrc);
@@ -1138,7 +1215,7 @@ pub async fn connect_voice_gateway(
 
                                                                         if ready_ssrcs.is_empty() { return; }
 
-                                                                        let mut ssrc_vol_map = std::collections::HashMap::new();
+                                                                        ssrc_vol_map.clear();
                                                                         let mut max_active_priority = 0i32;
                                                                         let active_spk_store = get_active_voice_participants_store();
                                                                         let active_spk_map = active_spk_store.lock().ok();
@@ -1169,7 +1246,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
-                                                                        let mut aec_ref = Vec::with_capacity(frames);
+                                                                        aec_ref.clear();
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
@@ -1343,7 +1420,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
-                                                                        for ssrc in to_remove {
+                                                                        for &ssrc in &to_remove {
                                                                             queues.remove(&ssrc);
                                                                             started_ssrcs.remove(&ssrc);
                                                                             inactive_samples.remove(&ssrc);
@@ -1548,6 +1625,7 @@ pub async fn connect_voice_gateway(
 
                                                 let outbound_nonce_audio = Arc::clone(&outbound_nonce);
                                                 let diag_tx = Arc::clone(&diag_audio);
+                                                let native_mode_tx = Arc::clone(&native_mode_audio);
                                                 tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();
                                                 let mut voice_proc = crate::audio::dsp::VoiceProcessor::new();
@@ -1781,25 +1859,42 @@ pub async fn connect_voice_gateway(
                                                     let opus_payload: &[u8] = if let Some(ref v) = dave_encrypted { v } else { opus_bytes };
 
                                                     if let Some(key_bytes) = key_opt {
-                                                        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
-                                                            // 12-byte AES-GCM Nonce for aead_aes256_gcm_rtpsize:
-                                                            let mut nonce_bytes = [0u8; 12];
-                                                            nonce_bytes[0..4].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                        let cur_mode = native_mode_tx.lock().unwrap().clone();
+                                                        let is_xchacha = cur_mode.to_ascii_lowercase().contains("xchacha");
+                                                        let cipher_res = if is_xchacha {
+                                                            if let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&key_bytes) {
+                                                                let mut nonce_bytes = [0u8; 24];
+                                                                nonce_bytes[20..24].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                                let nonce = XNonce::from_slice(&nonce_bytes);
+                                                                let payload = Payload {
+                                                                    msg: opus_payload,
+                                                                    aad: &audio_header,
+                                                                };
+                                                                cipher.encrypt(nonce, payload).ok()
+                                                            } else {
+                                                                None
+                                                            }
+                                                        } else {
+                                                            if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
+                                                                let mut nonce_bytes = [0u8; 12];
+                                                                nonce_bytes[0..4].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                                let nonce = Nonce::from_slice(&nonce_bytes);
+                                                                let payload = Payload {
+                                                                    msg: opus_payload,
+                                                                    aad: &audio_header,
+                                                                };
+                                                                cipher.encrypt(nonce, payload).ok()
+                                                            } else {
+                                                                None
+                                                            }
+                                                        };
 
-                                                            let nonce = Nonce::from_slice(&nonce_bytes);
-
-                                                            // Encrypt the (DAVE-encrypted) Opus payload with transport AES-256-GCM
-                                                            let payload = Payload {
-                                                                msg: opus_payload,
-                                                                aad: &audio_header,
-                                                            };
-
-                                                            if let Ok(ciphertext) = cipher.encrypt(nonce, payload) {
-                                                                let mut rtp_pkt = Vec::with_capacity(12 + ciphertext.len() + 4);
-                                                                rtp_pkt.extend_from_slice(&audio_header);
-                                                                rtp_pkt.extend_from_slice(&ciphertext);
-                                                                // Append 4-byte nonce counter as suffix (rtpsize format)
-                                                                rtp_pkt.extend_from_slice(&nonce_cnt.to_be_bytes());
+                                                        if let Some(ciphertext) = cipher_res {
+                                                            let mut rtp_pkt = Vec::with_capacity(12 + ciphertext.len() + 4);
+                                                            rtp_pkt.extend_from_slice(&audio_header);
+                                                            rtp_pkt.extend_from_slice(&ciphertext);
+                                                            // Append 4-byte nonce counter as suffix (rtpsize format)
+                                                            rtp_pkt.extend_from_slice(&nonce_cnt.to_be_bytes());
 
                                                                 if let Err(_) = socket.send_to(&rtp_pkt, &target_addr).await {
                                                                     break;
@@ -1831,9 +1926,8 @@ pub async fn connect_voice_gateway(
                                                             }
                                                         }
                                                     }
-                                                }
+                                                });
                                             });
-                                        });
                                     }
                                 }
                                 4 => {
@@ -1930,6 +2024,7 @@ pub async fn connect_voice_gateway(
                                  }
                                  6 => {
                                      // Voice Opcode 6: Heartbeat ACK!
+                                     voice_hb_acked.store(true, Ordering::SeqCst);
                                      info!("Voice Gateway Heartbeat ACK (Opcode 6) recebido!");
                                  }
                                  11 => {

@@ -123,11 +123,24 @@ pub fn apply_proxy_to_builder(mut builder: reqwest::ClientBuilder) -> reqwest::C
     builder
 }
 
+static SHARED_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+/// Retorna uma referência estática a um `reqwest::Client` reutilizável com pool TLS persistente
+pub fn shared_http_client() -> &'static reqwest::Client {
+    SHARED_HTTP_CLIENT.get_or_init(|| {
+        let builder = reqwest::Client::builder()
+            .user_agent(crate::utils::client_identity::user_agent())
+            .timeout(std::time::Duration::from_secs(12))
+            .connect_timeout(std::time::Duration::from_secs(8))
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(10);
+        apply_proxy_to_builder(builder).build().unwrap_or_default()
+    })
+}
+
 /// Constrói um `reqwest::Client` genérico com o proxy e user-agent configurados
 pub fn build_generic_http_client() -> reqwest::Client {
-    let builder = reqwest::Client::builder()
-        .user_agent(crate::utils::client_identity::user_agent());
-    apply_proxy_to_builder(builder).build().unwrap_or_default()
+    shared_http_client().clone()
 }
 
 /// Testa a conexão do proxy tentando bater na API pública do Discord

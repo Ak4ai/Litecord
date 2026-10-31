@@ -70,12 +70,19 @@ pub fn stop_stream_viewer(stream_key: &str) {
     }
 }
 
-/// Cancels every Go Live viewer (left the voice call).
+/// Cancels an outbound stream sender (stopped broadcasting, call ended).
+pub fn stop_stream_sender(stream_key: &str) {
+    stop_stream_viewer(stream_key);
+    super::sender::stop_sender(stream_key);
+}
+
+/// Cancels every Go Live viewer and sender (left the voice call).
 pub fn stop_all_stream_viewers() {
     NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut map) = generations().lock() {
         map.clear();
     }
+    super::sender::stop_sender("");
 }
 
 /// Whether a Go Live viewer is currently connected for `uid`.
@@ -616,4 +623,226 @@ async fn handle_dave_binary(
         _ => {}
     }
     Ok(())
+}
+
+/// Connects to a Go Live stream RTC server as the transmitter (broadcaster).
+pub async fn connect_stream_sender(
+    endpoint: String,
+    token: String,
+    server_id: String,
+    channel_id: String,
+    session_id: String,
+    user_id: u64,
+    stream_key: String,
+) {
+    let generation = begin_generation(&stream_key);
+    let url = normalize_url(&endpoint);
+
+    log::info!("🎬 [GO LIVE TX] Conectando como EMISSOR a {} key={}", url, stream_key);
+
+    let (ws, _) = match crate::gateway::voice::connect_voice_ws(&url).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            log::warn!("🎬 [GO LIVE TX] Falha ao conectar WebSocket: {:?}", e);
+            return;
+        }
+    };
+
+    let (write, mut read) = ws.split();
+    let write = Arc::new(AsyncMutex::new(write));
+    let mut sender_ssrc = 0u32;
+    let mut video_ssrc = 0u32;
+    let mut rtx_ssrc = 0u32;
+    let mut mode_str = "aead_aes256_gcm_rtpsize".to_string();
+    let mut socket: Option<Arc<UdpSocket>> = None;
+    let mut target: Option<SocketAddr> = None;
+    let mut read_timeout = Duration::from_secs(60);
+
+    while is_current(&stream_key, generation) {
+        let msg = match tokio::time::timeout(read_timeout, read.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => break,
+        };
+
+        match msg {
+            Message::Text(text) => {
+                let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                let op = value["op"].as_u64().unwrap_or(99);
+                match op {
+                    8 => {
+                        let interval = value["d"]["heartbeat_interval"].as_f64().unwrap_or(41250.0);
+                        let heartbeat = (interval * 0.75).max(1000.0) as u64;
+                        read_timeout = Duration::from_millis(heartbeat.saturating_mul(2).saturating_add(5000));
+                        let identify = json!({
+                            "op": 0,
+                            "d": {
+                                "server_id": server_id,
+                                "channel_id": channel_id,
+                                "user_id": user_id.to_string(),
+                                "session_id": session_id,
+                                "token": token,
+                                "video": true,
+                                "streams": [
+                                    { "type": "screen", "rid": "100", "quality": 100 }
+                                ],
+                                "max_dave_protocol_version": 0
+                            }
+                        });
+                        if let Err(e) = send_text(&write, identify).await {
+                            log::warn!("🎬 [GO LIVE TX] Falha no Identify: {:?}", e);
+                            break;
+                        }
+
+                        let write_hb = Arc::clone(&write);
+                        let key = stream_key.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                sleep(Duration::from_millis(heartbeat)).await;
+                                if !is_current(&key, generation) {
+                                    break;
+                                }
+                                let t = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64;
+                                let mut sink = write_hb.lock().await;
+                                if sink.send(Message::Text(json!({ "op": 3, "d": t }).to_string().into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                    2 => {
+                        sender_ssrc = value["d"]["ssrc"].as_u64().unwrap_or(0) as u32;
+                        video_ssrc = value["d"]["streams"]
+                            .as_array()
+                            .and_then(|arr| arr.first())
+                            .and_then(|s| s["ssrc"].as_u64())
+                            .map(|s| s as u32)
+                            .unwrap_or(sender_ssrc.saturating_add(1));
+                        rtx_ssrc = value["d"]["streams"]
+                            .as_array()
+                            .and_then(|arr| arr.first())
+                            .and_then(|s| s["rtx_ssrc"].as_u64())
+                            .map(|s| s as u32)
+                            .unwrap_or(video_ssrc.saturating_add(1));
+
+                        let ip = value["d"]["ip"].as_str().unwrap_or("").to_string();
+                        let port = value["d"]["port"].as_u64().unwrap_or(0) as u16;
+                        if let Some(modes) = value["d"]["modes"].as_array() {
+                            if let Some(selected) = modes.iter().find_map(|m| m.as_str()) {
+                                mode_str = selected.to_string();
+                            }
+                        }
+                        if ip.is_empty() || port == 0 {
+                            log::warn!("🎬 [GO LIVE TX] Ready sem IP/porta");
+                            break;
+                        }
+
+                        let udp = match UdpSocket::bind("0.0.0.0:0").await {
+                            Ok(u) => Arc::new(u),
+                            Err(e) => {
+                                log::warn!("🎬 [GO LIVE TX] Falha no UDP bind: {:?}", e);
+                                break;
+                            }
+                        };
+                        let discovered = discover_public_address(&udp, sender_ssrc, &ip, port).await;
+                        let (pub_ip, pub_port) = discovered
+                            .unwrap_or_else(|| (ip.clone(), udp.local_addr().map(|a| a.port()).unwrap_or(0)));
+                        target = format!("{ip}:{port}").parse().ok();
+                        socket = Some(Arc::clone(&udp));
+
+                        let select = json!({
+                            "op": 1,
+                            "d": {
+                                "protocol": "udp",
+                                "data": {
+                                    "address": pub_ip,
+                                    "port": pub_port,
+                                    "mode": mode_str.clone()
+                                },
+                                "codecs": [
+                                    { "name": "opus", "type": "audio", "priority": 1000, "payload_type": 120 },
+                                    { "name": "H264", "type": "video", "priority": 1000,
+                                      "payload_type": 103, "rtx_payload_type": 104,
+                                      "encode": true, "decode": false }
+                                ]
+                            }
+                        });
+                        let _ = send_text(&write, select).await;
+                    }
+                    4 => {
+                        let mut secret_key_bytes = Vec::new();
+                        if let Some(keys) = value["d"]["secret_key"].as_array() {
+                            secret_key_bytes = keys.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
+                        }
+                        if secret_key_bytes.len() != 32 {
+                            log::warn!("🎬 [GO LIVE TX] Secret key inválida (len={})", secret_key_bytes.len());
+                            break;
+                        }
+
+                        // Opcode 5 Speaking
+                        let speaking = json!({
+                            "op": 5,
+                            "d": {
+                                "speaking": 1,
+                                "delay": 0,
+                                "ssrc": video_ssrc
+                            }
+                        });
+                        let _ = send_text(&write, speaking).await;
+
+                        // Opcode 12 Video
+                        let video = json!({
+                            "op": 12,
+                            "d": {
+                                "audio_ssrc": sender_ssrc,
+                                "video_ssrc": video_ssrc,
+                                "rtx_ssrc": rtx_ssrc,
+                                "streams": [
+                                    {
+                                        "type": "screen",
+                                        "rid": "100",
+                                        "ssrc": video_ssrc,
+                                        "active": true,
+                                        "quality": 100,
+                                        "rtx_ssrc": rtx_ssrc,
+                                        "max_bitrate": 8000000,
+                                        "max_framerate": 60,
+                                        "max_resolution": {
+                                            "type": "fixed",
+                                            "width": 1280,
+                                            "height": 720
+                                        }
+                                    }
+                                ]
+                            }
+                        });
+                        let _ = send_text(&write, video).await;
+
+                        if let (Some(udp), Some(target_addr)) = (socket.as_ref(), target) {
+                            let mode = super::crypto::TransportMode::from_name(&mode_str);
+                            super::sender::start_sender(
+                                Arc::clone(udp),
+                                target_addr,
+                                secret_key_bytes,
+                                mode,
+                                video_ssrc,
+                                stream_key.clone(),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    super::sender::stop_sender(&stream_key);
+    end_generation(&stream_key, generation);
+    log::info!("🛑 [GO LIVE TX] Conexão emissora encerrada key={}", stream_key);
 }

@@ -49,7 +49,7 @@ fn pool_set(slot: usize, url: &str, image: slint::Image) {
 }
 
 struct MemoryAvatar {
-    rgba: Vec<u8>,
+    buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     last_used: u64,
 }
 
@@ -64,17 +64,17 @@ impl MemoryStore {
         self.clock = self.clock.wrapping_add(1);
         let avatar = self.entries.get_mut(url)?;
         avatar.last_used = self.clock;
-        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-            &avatar.rgba,
-            AVATAR_SIZE,
-            AVATAR_SIZE,
-        );
-        Some(slint::Image::from_rgba8(buffer))
+        Some(slint::Image::from_rgba8(avatar.buffer.clone()))
     }
 
     fn insert(&mut self, url: String, mut rgba: Vec<u8>) {
         // Avatars are always shown as circles; see image_shape for why the pixels are cut.
         crate::utils::image_shape::round_corners(&mut rgba, AVATAR_SIZE, AVATAR_SIZE, AVATAR_SIZE as f32 / 2.0);
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            &rgba,
+            AVATAR_SIZE,
+            AVATAR_SIZE,
+        );
         self.clock = self.clock.wrapping_add(1);
         if !self.entries.contains_key(&url) && self.entries.len() >= MAX_MEMORY_AVATARS {
             if let Some(oldest) = self
@@ -89,7 +89,7 @@ impl MemoryStore {
         self.entries.insert(
             url,
             MemoryAvatar {
-                rgba,
+                buffer,
                 last_used: self.clock,
             },
         );
@@ -365,12 +365,8 @@ impl AvatarCache {
             let mut downloaded = false;
 
             if pixels.is_none() {
-                let client = crate::utils::apply_proxy_to_builder(
-                    reqwest::Client::builder().timeout(Duration::from_secs(6)),
-                )
-                .build();
-                if let Ok(client) = client {
-                    if let Ok(mut response) = client.get(&url).send().await {
+                let client = crate::utils::network_settings::shared_http_client();
+                if let Ok(mut response) = client.get(&url).send().await {
                         if response.status().is_success()
                             && response.content_length().unwrap_or(0) <= MAX_DOWNLOAD_BYTES as u64
                         {
@@ -399,7 +395,6 @@ impl AvatarCache {
                             }
                         }
                     }
-                }
             }
 
             if let Some(rgba) = pixels {

@@ -362,6 +362,13 @@ pub fn list_cameras() -> Vec<CameraItemInfo> {
     let mut result = Vec::new();
     if let Ok(devs) = cameras::devices() {
         for (i, dev) in devs.into_iter().enumerate() {
+            // Filtrar nodos de hardware sin formatos válidos (p. ej. nodos de metadatos V4L2 en Linux)
+            if let Ok(caps) = cameras::probe(&dev) {
+                if caps.formats.is_empty() {
+                    log::debug!("📷 [CAMERAS] Ignorando dispositivo '{}' (sin formatos de vídeo reportados)", dev.name);
+                    continue;
+                }
+            }
             let name = dev.name.clone();
             result.push(CameraItemInfo {
                 id: format!("{}", i),

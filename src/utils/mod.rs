@@ -20,6 +20,7 @@ pub mod hardware_monitor;
 pub mod client_identity;
 pub mod window_state;
 pub mod styled_text;
+pub mod memory;
 #[cfg(feature = "automation")]
 pub mod test_hooks;
 
@@ -37,4 +38,5 @@ pub use gpu_encoder::*;
 pub use network_settings::*;
 pub use hardware_monitor::*;
 pub use window_state::*;
+pub use memory::*;
 

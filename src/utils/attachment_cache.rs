@@ -7,12 +7,10 @@ use slint::Model;
 
 #[derive(Clone)]
 struct DecodedImage {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
+    buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
 }
 
-const MAX_FULL_CACHE_BYTES: usize = 36 * 1024 * 1024; // 36 MB budget for decoded image textures
+const MAX_FULL_CACHE_BYTES: usize = 16 * 1024 * 1024; // 16 MB budget for decoded image textures
 
 #[derive(Clone)]
 struct CacheEntry {
@@ -50,7 +48,7 @@ impl MemoryFullStore {
 
     fn insert(&mut self, key: String, image: DecodedImage) {
         self.clock = self.clock.wrapping_add(1);
-        let size_bytes = image.rgba.len();
+        let size_bytes = (image.buffer.width() * image.buffer.height() * 4) as usize;
 
         // Evict least-recently-used images until we are within budget
         while self.total_bytes + size_bytes > MAX_FULL_CACHE_BYTES && !self.entries.is_empty() {
@@ -131,56 +129,44 @@ fn flush_attachment_updates(app_weak: slint::Weak<crate::AppWindow>) {
         return;
     };
     let cache = get_attachment_cache();
-    let keep_bottom = ui.get_chat_is_at_bottom()
-        || crate::ui::helpers::chat_painted_within(std::time::Duration::from_secs(6));
-    let current: Vec<crate::ChatMessage> = ui.get_messages().iter().collect();
-    let mut updated = Vec::with_capacity(current.len());
-    let mut any_changed = false;
+    let messages = ui.get_messages();
+    let row_count = messages.row_count();
 
-    for mut message in current {
-        let attachments: Vec<crate::MessageAttachment> = message.attachments.iter().collect();
-        let mut changed = false;
-        let mut rewritten = Vec::with_capacity(attachments.len());
-        for mut attachment in attachments {
-            if ids.contains(attachment.id.as_str()) {
-                if let Some(image) = cache.get_full_for_ui(&attachment.id, &attachment.filename) {
-                    let size = image.size();
-                    attachment.full_img = image;
-                    attachment.is_downloaded = true;
-                    attachment.is_loading = false;
-                    if attachment.width <= 0 {
-                        attachment.width = size.width as i32;
+    for row_idx in 0..row_count {
+        if let Some(mut message) = messages.row_data(row_idx) {
+            let attachments: Vec<crate::MessageAttachment> = message.attachments.iter().collect();
+            let mut changed = false;
+            let mut rewritten = Vec::with_capacity(attachments.len());
+            for mut attachment in attachments {
+                if ids.contains(attachment.id.as_str()) {
+                    if let Some(image) = cache.get_full_for_ui(&attachment.id, &attachment.filename) {
+                        let size = image.size();
+                        attachment.full_img = image;
+                        attachment.is_downloaded = true;
+                        attachment.is_loading = false;
+                        if attachment.width <= 0 {
+                            attachment.width = size.width as i32;
+                        }
+                        if attachment.height <= 0 {
+                            attachment.height = size.height as i32;
+                        }
+                        changed = true;
+                    } else if let Some(preview) = cache.get_preview(&attachment.id) {
+                        attachment.preview_img = preview;
+                        changed = true;
                     }
-                    if attachment.height <= 0 {
-                        attachment.height = size.height as i32;
-                    }
-                    changed = true;
-                } else if let Some(preview) = cache.get_preview(&attachment.id) {
-                    attachment.preview_img = preview;
-                    changed = true;
                 }
+                rewritten.push(attachment);
             }
-            rewritten.push(attachment);
-        }
-        if changed {
-            message.attachments = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(rewritten)));
-            any_changed = true;
-        }
-        updated.push(message);
-    }
-
-    if any_changed {
-        ui.set_messages(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated))));
-        if keep_bottom {
-            // While pictures are still arriving, every batch resets the scroll of the
-            // rebuilt model; keep the chat pinned instead of jumping to the top.
-            crate::ui::helpers::mark_chat_painted();
-            crate::ui::helpers::request_chat_scroll_to_bottom(app_weak);
+            if changed {
+                message.attachments = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(rewritten)));
+                messages.set_row_data(row_idx, message);
+            }
         }
     }
 }
 
-const UI_IMAGE_CACHE_BYTES: usize = 28 * 1024 * 1024;
+const UI_IMAGE_CACHE_BYTES: usize = 12 * 1024 * 1024;
 
 #[derive(Default)]
 struct UiImageCache {
@@ -282,12 +268,7 @@ impl AttachmentCache {
 
         if let Ok(guard) = self.preview_cache.lock() {
             if let Some(dec) = guard.get(att_id) {
-                let pixel_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                    &dec.rgba,
-                    dec.width,
-                    dec.height,
-                );
-                return Some(slint::Image::from_rgba8(pixel_buffer));
+                return Some(slint::Image::from_rgba8(dec.buffer.clone()));
             }
         }
         None
@@ -302,13 +283,7 @@ impl AttachmentCache {
         // 1. In memory
         if let Ok(mut guard) = self.full_cache.lock() {
             if let Some(dec) = guard.get(att_id) {
-                return Some(slint::Image::from_rgba8(
-                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                        &dec.rgba,
-                        dec.width,
-                        dec.height,
-                    ),
-                ));
+                return Some(slint::Image::from_rgba8(dec.buffer.clone()));
             }
         }
 
@@ -318,13 +293,7 @@ impl AttachmentCache {
         if file_path.exists() {
             if let Ok(bytes) = std::fs::read(&file_path) {
                 if let Some(dec) = decode_bytes_to_rgba(&bytes) {
-                    let image = slint::Image::from_rgba8(
-                        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                            &dec.rgba,
-                            dec.width,
-                            dec.height,
-                        ),
-                    );
+                    let image = slint::Image::from_rgba8(dec.buffer.clone());
                     if let Ok(mut guard) = self.full_cache.lock() {
                         guard.insert(att_id.to_string(), dec);
                     }
@@ -381,24 +350,19 @@ impl AttachmentCache {
         };
 
         tokio::spawn(async move {
-            let builder = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(4));
-            let client = crate::utils::apply_proxy_to_builder(builder).build();
-
-            if let Ok(client) = client {
-                if let Ok(resp) = client.get(&thumb_url).send().await {
-                    if resp.status().is_success() {
-                        if let Ok(bytes) = resp.bytes().await {
-                            if let Some(dec) = decode_bytes_to_minecraft_pixel_art(&bytes) {
-                                if let Ok(mut guard) = cache_arc.preview_cache.lock() {
-                                    if guard.len() >= 30 {
-                                        guard.clear();
-                                    }
-                                    guard.insert(id_str.clone(), dec);
+            let client = crate::utils::network_settings::shared_http_client();
+            if let Ok(resp) = client.get(&thumb_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        if let Some(dec) = decode_bytes_to_minecraft_pixel_art(&bytes) {
+                            if let Ok(mut guard) = cache_arc.preview_cache.lock() {
+                                if guard.len() >= 30 {
+                                    guard.clear();
                                 }
-
-                                queue_attachment_update(&id_str, app_weak.clone());
+                                guard.insert(id_str.clone(), dec);
                             }
+
+                            queue_attachment_update(&id_str, app_weak.clone());
                         }
                     }
                 }
@@ -430,23 +394,18 @@ impl AttachmentCache {
         let url_str = url.to_string();
 
         tokio::spawn(async move {
-            let builder = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30));
-            let client = crate::utils::apply_proxy_to_builder(builder).build();
+            let client = crate::utils::network_settings::shared_http_client();
+            if let Ok(resp) = client.get(&url_str).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        // Save to %TEMP%
+                        let _ = std::fs::write(&file_path, &bytes);
 
-            if let Ok(client) = client {
-                if let Ok(resp) = client.get(&url_str).send().await {
-                    if resp.status().is_success() {
-                        if let Ok(bytes) = resp.bytes().await {
-                            // Save to %TEMP%
-                            let _ = std::fs::write(&file_path, &bytes);
-
-                            if let Some(dec) = decode_bytes_to_rgba(&bytes) {
-                                if let Ok(mut guard) = cache_arc.full_cache.lock() {
-                                    guard.insert(id_str.clone(), dec);
-                                }
-                                queue_attachment_update(&id_str, app_weak.clone());
+                        if let Some(dec) = decode_bytes_to_rgba(&bytes) {
+                            if let Ok(mut guard) = cache_arc.full_cache.lock() {
+                                guard.insert(id_str.clone(), dec);
                             }
+                            queue_attachment_update(&id_str, app_weak.clone());
                         }
                     }
                 }
@@ -473,11 +432,12 @@ fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedImage> {
         };
         let rgba = fitted.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Some(DecodedImage {
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            rgba.as_raw(),
             width,
             height,
-            rgba: rgba.into_raw(),
-        })
+        );
+        Some(DecodedImage { buffer })
     } else {
         None
     }
@@ -496,11 +456,12 @@ fn decode_bytes_to_minecraft_pixel_art(bytes: &[u8]) -> Option<DecodedImage> {
         
         let rgba = chunky.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Some(DecodedImage {
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            rgba.as_raw(),
             width,
             height,
-            rgba: rgba.into_raw(),
-        })
+        );
+        Some(DecodedImage { buffer })
     } else {
         None
     }

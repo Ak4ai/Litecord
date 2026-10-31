@@ -634,8 +634,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             url: String::new(),
                                             command_name: String::new(),
                                         });
-                                        lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
-                                        is_first_block = true;
+                                        is_first_block = false;
                                     }
                                     let display_label = if label.is_empty() {
                                         url.to_string()
@@ -647,6 +646,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                             l
                                         }
                                     };
+                                    is_first_block = false;
                                     line_blocks.push(MessageBlockData {
                                         text: display_label.clone(),
                                         is_link: true,
@@ -656,8 +656,6 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                         url: url.to_string(),
                                         command_name: String::new(),
                                     });
-                                    lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
-                                    is_first_block = true;
                                     if !links.iter().any(|l| l.url == url) {
                                         links.push(LinkData {
                                             label: display_label,
@@ -810,7 +808,6 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                                 url: String::new(),
                                 command_name: String::new(),
                             });
-                            lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
                         }
                         line_blocks.push(MessageBlockData {
                             text: raw_url.to_string(),
@@ -821,8 +818,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             url: raw_url.to_string(),
                             command_name: String::new(),
                         });
-                        lines.push(MessageLineData { blocks: std::mem::take(&mut line_blocks) });
-                        is_first_block = true;
+                        is_first_block = false;
                         if !links.iter().any(|l| l.url == raw_url) {
                             links.push(LinkData {
                                 label: raw_url.to_string(),

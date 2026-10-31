@@ -53,9 +53,13 @@ export component ChannelSidebar inherits Rectangle {
     in property <string> user_avatar_initials;
     in property <bool> user_avatar_has_image;
     in property <image> user_avatar_img;
+    in property <bool> is_screen_sharing: false;
     callback select_channel(string);
     callback toggle_category(string);
     callback leave_voice();
+    callback open_stream_modal();
+    callback open_camera_modal();
+    callback toggle_screen_share();
     callback toggle_user_menu();
     callback toggle_mute();
     callback toggle_deafen();
@@ -479,6 +483,72 @@ export component ChannelSidebar inherits Rectangle {
                 }
 
                 Rectangle { horizontal-stretch: 1; }
+
+                // Webcam Button
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: btn_webcam_sidebar_ta.has-hover ? #86efac : AppTheme.border-on-accent-muted;
+                        background: btn_webcam_sidebar_ta.pressed ? #16a34a : (btn_webcam_sidebar_ta.has-hover ? #22c55e : AppTheme.surface-translucent);
+                        animate background { duration: 120ms; }
+                        animate border-color { duration: 120ms; }
+
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 16px;
+                            height: 16px;
+                            source: @image-url("../../assets/camera.svg");
+                            colorize: AppTheme.text-on-accent;
+                            image-fit: contain;
+                        }
+
+                        btn_webcam_sidebar_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open_camera_modal(); }
+                        }
+                    }
+                }
+
+                // Stream / Screen Share Button
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: btn_stream_sidebar_ta.has-hover ? (root.is_screen_sharing ? #fca5a5 : #fdba74) : AppTheme.border-on-accent-muted;
+                        background: root.is_screen_sharing ? (btn_stream_sidebar_ta.pressed ? AppTheme.danger-pressed : (btn_stream_sidebar_ta.has-hover ? AppTheme.danger-bright : AppTheme.danger-action)) : (btn_stream_sidebar_ta.pressed ? #ea580c : (btn_stream_sidebar_ta.has-hover ? #f97316 : AppTheme.surface-translucent));
+                        animate background { duration: 120ms; }
+                        animate border-color { duration: 120ms; }
+
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 16px;
+                            height: 16px;
+                            source: @image-url("../../assets/monitor.svg");
+                            colorize: AppTheme.text-on-accent;
+                            image-fit: contain;
+                        }
+
+                        btn_stream_sidebar_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if root.is_screen_sharing {
+                                    root.toggle_screen_share();
+                                } else {
+                                    root.open_stream_modal();
+                                }
+                            }
+                        }
+                    }
+                }
 
                 VerticalLayout {
                     alignment: center;
