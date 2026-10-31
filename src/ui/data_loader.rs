@@ -289,6 +289,13 @@ fn guild_refresh_is_recent(guild_id: &str) -> bool {
         .is_some_and(|at| at.elapsed() < GUILD_REFRESH_AFTER)
 }
 
+/// Forces the next visit to this server to hit REST instead of the 60 s shortcut.
+pub fn mark_guild_stale(guild_id: &str) {
+    if let Ok(mut map) = GUILD_REFRESHED_AT.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        map.remove(guild_id);
+    }
+}
+
 fn mark_guild_refreshed(guild_id: &str) {
     if let Ok(mut map) = GUILD_REFRESHED_AT
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -344,6 +351,9 @@ pub async fn fetch_and_populate_channels(
                 preferred.as_deref(),
             )
             .await;
+            if let Some(permissions) = crate::channel_permissions::cached(guild_id) {
+                crate::ui::onboarding::maybe_show(http, app_weak.clone(), guild_id, &g_name, &permissions);
+            }
             return;
         }
     }
@@ -410,6 +420,8 @@ pub async fn fetch_and_populate_channels(
             ui.set_titlebar_error("".into());
         }
     });
+
+    crate::ui::onboarding::maybe_show(http, app_weak.clone(), guild_id, &g_name, &permissions);
 
     pub struct RawChan {
         id: String,
