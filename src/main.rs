@@ -3960,7 +3960,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mute Button Toggle Callback
     let cmd_tx_mute = Arc::clone(&cmd_tx_store);
     let active_guild_mute = Arc::clone(&active_guild_id);
-    let active_channel_mute = Arc::clone(&active_channel_id);
     let app_weak_mute = app_weak.clone();
 
     app.on_toggle_mute(move || {
@@ -3973,17 +3972,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound_effects::UiSound::Unmute
             });
 
-            let gid = active_guild_mute.lock().unwrap().clone();
-            let cid = active_channel_mute.lock().unwrap().clone();
             let deafened = ui.get_is_deafened();
+            // Always address the channel and guild we are actually in voice with:
+            // using the ones open in the UI sends the mute somewhere else and tears
+            // the running voice session down.
+            let voice_cid = gateway::get_my_voice_channel_id();
+            let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+            let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+            let gid = if in_voice { gateway::get_my_voice_guild_id() } else { active_guild_mute.lock().unwrap().clone() };
 
-            if let Some(cmd_tx_guard) = cmd_tx_mute.lock().unwrap().as_ref() {
-                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
-                    channel_id: Some(cid),
-                    self_mute: new_muted,
-                    self_deaf: deafened,
-                });
+            if !cid.is_empty() {
+                if let Some(cmd_tx_guard) = cmd_tx_mute.lock().unwrap().as_ref() {
+                    let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                        guild_id: gid,
+                        channel_id: Some(cid),
+                        self_mute: new_muted,
+                        self_deaf: deafened,
+                    });
+                }
             }
         }
     });
@@ -3991,7 +3997,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deafen Button Toggle Callback
     let cmd_tx_deafen = Arc::clone(&cmd_tx_store);
     let active_guild_deafen = Arc::clone(&active_guild_id);
-    let active_channel_deafen = Arc::clone(&active_channel_id);
     let app_weak_deafen = app_weak.clone();
 
     app.on_toggle_deafen(move || {
@@ -4005,17 +4010,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound_effects::UiSound::Undeafen
             });
 
-            let gid = active_guild_deafen.lock().unwrap().clone();
-            let cid = active_channel_deafen.lock().unwrap().clone();
             let muted = ui.get_is_muted();
+            let voice_cid = gateway::get_my_voice_channel_id();
+            let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+            let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+            let gid = if in_voice { gateway::get_my_voice_guild_id() } else { active_guild_deafen.lock().unwrap().clone() };
 
-            if let Some(cmd_tx_guard) = cmd_tx_deafen.lock().unwrap().as_ref() {
-                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
-                    channel_id: Some(cid),
-                    self_mute: muted,
-                    self_deaf: new_deafened,
-                });
+            if !cid.is_empty() {
+                if let Some(cmd_tx_guard) = cmd_tx_deafen.lock().unwrap().as_ref() {
+                    let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                        guild_id: gid,
+                        channel_id: Some(cid),
+                        self_mute: muted,
+                        self_deaf: new_deafened,
+                    });
+                }
             }
         }
     });
@@ -4024,12 +4033,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_kb_mute = app_weak.clone();
     let cmd_tx_kb_mute = Arc::clone(&cmd_tx_store);
     let active_guild_kb_mute = Arc::clone(&active_guild_id);
-    let active_channel_kb_mute = Arc::clone(&active_channel_id);
 
     let app_weak_kb_deaf = app_weak.clone();
     let cmd_tx_kb_deaf = Arc::clone(&cmd_tx_store);
     let active_guild_kb_deaf = Arc::clone(&active_guild_id);
-    let active_channel_kb_deaf = Arc::clone(&active_channel_id);
 
     let app_weak_kb_rec = app_weak.clone();
 
@@ -4038,7 +4045,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w = app_weak_kb_mute.clone();
             let cmd_tx = Arc::clone(&cmd_tx_kb_mute);
             let agid = Arc::clone(&active_guild_kb_mute);
-            let acid = Arc::clone(&active_channel_kb_mute);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let new_muted = !ui.get_is_muted();
@@ -4049,17 +4055,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sound_effects::UiSound::Unmute
                     });
 
-                    let gid = agid.lock().unwrap().clone();
-                    let cid = acid.lock().unwrap().clone();
                     let deafened = ui.get_is_deafened();
+                    let voice_cid = gateway::get_my_voice_channel_id();
+                    let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+                    let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+                    let gid = if in_voice { gateway::get_my_voice_guild_id() } else { agid.lock().unwrap().clone() };
 
-                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
-                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                            guild_id: gid,
-                            channel_id: Some(cid),
-                            self_mute: new_muted,
-                            self_deaf: deafened,
-                        });
+                    if !cid.is_empty() {
+                        if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                                guild_id: gid,
+                                channel_id: Some(cid),
+                                self_mute: new_muted,
+                                self_deaf: deafened,
+                            });
+                        }
                     }
                 }
             });
@@ -4068,7 +4078,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w = app_weak_kb_deaf.clone();
             let cmd_tx = Arc::clone(&cmd_tx_kb_deaf);
             let agid = Arc::clone(&active_guild_kb_deaf);
-            let acid = Arc::clone(&active_channel_kb_deaf);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let new_deafened = !ui.get_is_deafened();
@@ -4080,17 +4089,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sound_effects::UiSound::Undeafen
                     });
 
-                    let gid = agid.lock().unwrap().clone();
-                    let cid = acid.lock().unwrap().clone();
                     let muted = ui.get_is_muted();
+                    let voice_cid = gateway::get_my_voice_channel_id();
+                    let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+                    let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+                    let gid = if in_voice { gateway::get_my_voice_guild_id() } else { agid.lock().unwrap().clone() };
 
-                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
-                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                            guild_id: gid,
-                            channel_id: Some(cid),
-                            self_mute: muted,
-                            self_deaf: new_deafened,
-                        });
+                    if !cid.is_empty() {
+                        if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                                guild_id: gid,
+                                channel_id: Some(cid),
+                                self_mute: muted,
+                                self_deaf: new_deafened,
+                            });
+                        }
                     }
                 }
             });
