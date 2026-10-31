@@ -71,9 +71,20 @@ pub fn start_sender(
 
     let stream_start = Instant::now();
     let nonce_counter = Arc::new(AtomicU32::new(1));
+    let total_packets = Arc::new(AtomicU32::new(0));
+    let total_octets = Arc::new(AtomicU32::new(0));
+
     let socket_send = Arc::clone(&socket);
+    let socket_send_rtcp = Arc::clone(&socket);
     let socket_recv = Arc::clone(&socket);
     let stream_key_clone = stream_key.clone();
+
+    let total_packets_rtp = Arc::clone(&total_packets);
+    let total_octets_rtp = Arc::clone(&total_octets);
+    let total_packets_rtcp = Arc::clone(&total_packets);
+    let total_octets_rtcp = Arc::clone(&total_octets);
+    let nonce_counter_rtcp = Arc::clone(&nonce_counter);
+    let key_rtcp = key.clone();
 
     // 1. Outbound Video RTP Worker Task
     tokio::spawn(async move {
@@ -94,6 +105,8 @@ pub fn start_sender(
 
             for (header, payload) in packets {
                 let cnt = nonce_counter.fetch_add(1, Ordering::Relaxed);
+                total_packets_rtp.fetch_add(1, Ordering::Relaxed);
+                total_octets_rtp.fetch_add(payload.len() as u32, Ordering::Relaxed);
                 if let Some(encrypted) = protect_rtp(&key, mode, &header, &payload, cnt) {
                     if let Err(e) = socket_send.send_to(&encrypted, target_addr).await {
                         warn!("⚠️ [GO LIVE TX] Falha ao enviar pacote RTP: {:?}", e);
@@ -111,6 +124,40 @@ pub fn start_sender(
             }
         }
         info!("🛑 [GO LIVE TX] Worker de envio de vídeo finalizado.");
+    });
+
+    // 2. Periodic RTCP Sender Report Task (RFC 3550 / Discord lip-sync & clock sync keepalive)
+    tokio::spawn(async move {
+        while IS_BROADCASTING.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            if !IS_BROADCASTING.load(Ordering::Relaxed) {
+                break;
+            }
+            let now = std::time::SystemTime::now();
+            let unix_dur = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let ntp_secs = (unix_dur.as_secs() + 2_208_988_800) as u32;
+            let ntp_frac = ((unix_dur.subsec_nanos() as u64 * (1u64 << 32)) / 1_000_000_000) as u32;
+            let pts_ms = stream_start.elapsed().as_millis() as u64;
+            let rtp_ts = (pts_ms * 90) as u32;
+            let pkt_cnt = total_packets_rtcp.load(Ordering::Relaxed);
+            let oct_cnt = total_octets_rtcp.load(Ordering::Relaxed);
+
+            let mut sr = [0u8; 28];
+            sr[0] = 0x80; // V=2, P=0, RC=0
+            sr[1] = 200;  // PT=200 (Sender Report)
+            sr[2..4].copy_from_slice(&6u16.to_be_bytes()); // length in 32-bit words - 1 = 6
+            sr[4..8].copy_from_slice(&video_ssrc.to_be_bytes());
+            sr[8..12].copy_from_slice(&ntp_secs.to_be_bytes());
+            sr[12..16].copy_from_slice(&ntp_frac.to_be_bytes());
+            sr[16..20].copy_from_slice(&rtp_ts.to_be_bytes());
+            sr[20..24].copy_from_slice(&pkt_cnt.to_be_bytes());
+            sr[24..28].copy_from_slice(&oct_cnt.to_be_bytes());
+
+            let cnt = nonce_counter_rtcp.fetch_add(1, Ordering::Relaxed);
+            if let Some(encrypted_sr) = protect_rtcp(&key_rtcp, mode, &sr, cnt) {
+                let _ = socket_send_rtcp.send_to(&encrypted_sr, target_addr).await;
+            }
+        }
     });
 
     // 2. Inbound RTCP Receiver Task (Handling PLI/FIR requests from Discord)

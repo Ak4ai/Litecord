@@ -103,7 +103,7 @@ pub fn protect_rtcp(key: &[u8], mode: TransportMode, packet: &[u8], counter: u32
         TransportMode::XChaCha20Poly1305 => {
             let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
             let mut nonce = [0u8; 24];
-            nonce[20..24].copy_from_slice(&suffix);
+            nonce[0..4].copy_from_slice(&suffix);
             cipher
                 .encrypt(XNonce::from_slice(&nonce), Payload { msg: body, aad })
                 .ok()?
@@ -145,7 +145,7 @@ pub fn protect_rtp(
         TransportMode::XChaCha20Poly1305 => {
             let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
             let mut nonce = [0u8; 24];
-            nonce[20..24].copy_from_slice(&suffix);
+            nonce[0..4].copy_from_slice(&suffix);
             cipher
                 .encrypt(XNonce::from_slice(&nonce), Payload { msg: payload, aad: header.as_slice() })
                 .ok()?

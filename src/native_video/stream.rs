@@ -732,7 +732,12 @@ pub async fn connect_stream_sender(
                         let ip = value["d"]["ip"].as_str().unwrap_or("").to_string();
                         let port = value["d"]["port"].as_u64().unwrap_or(0) as u16;
                         if let Some(modes) = value["d"]["modes"].as_array() {
-                            if let Some(selected) = modes.iter().find_map(|m| m.as_str()) {
+                            let available_modes: Vec<&str> = modes.iter().filter_map(|m| m.as_str()).collect();
+                            if available_modes.contains(&"aead_aes256_gcm_rtpsize") {
+                                mode_str = "aead_aes256_gcm_rtpsize".to_string();
+                            } else if available_modes.contains(&"aead_xchacha20_poly1305_rtpsize") {
+                                mode_str = "aead_xchacha20_poly1305_rtpsize".to_string();
+                            } else if let Some(&selected) = available_modes.first() {
                                 mode_str = selected.to_string();
                             }
                         }
@@ -821,6 +826,16 @@ pub async fn connect_stream_sender(
                             }
                         });
                         let _ = send_text(&write, video).await;
+
+                        // Opcode 22 Unpause Video Stream
+                        let unpause = json!({
+                            "op": 22,
+                            "d": {
+                                "video_ssrc": video_ssrc,
+                                "paused": false
+                            }
+                        });
+                        let _ = send_text(&write, unpause).await;
 
                         if let (Some(udp), Some(target_addr)) = (socket.as_ref(), target) {
                             let mode = super::crypto::TransportMode::from_name(&mode_str);

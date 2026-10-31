@@ -148,7 +148,7 @@ pub fn set_stream_paused(paused: bool) {
 ///
 /// The gateway only sends `VOICE_STATE_UPDATE` when something changes, so a Go
 /// Live started before we joined would otherwise never be watched.
-pub fn resubscribe_channel_streams(channel_id: &str, guild_id: Option<&str>) {
+pub fn resubscribe_channel_streams(channel_id: &str, _guild_id: Option<&str>) {
     if channel_id.is_empty() {
         return;
     }
@@ -168,19 +168,9 @@ pub fn resubscribe_channel_streams(channel_id: &str, guild_id: Option<&str>) {
         if !(self_stream || self_video) {
             continue;
         }
-        crate::screen_capture::watch::set_wanted(uid, true);
+        // Do NOT automatically watch or hijack screen on join: streams remain on-demand
         crate::screen_capture::types::mark_stream_started(uid);
         crate::screen_capture::types::set_peer_streaming(uid, true);
-        if self_stream {
-            let key = match guild_id {
-                Some(gid) if !gid.is_empty() && gid != "@me" => {
-                    format!("guild:{}:{}:{}", gid, channel_id, uid)
-                }
-                _ => format!("call:{}:{}", channel_id, uid),
-            };
-            info!("🎬 [GATEWAY] Stream já em andamento ao entrar no canal: {}", key);
-            watch_stream(&key);
-        }
     }
 }
 
@@ -1488,25 +1478,16 @@ impl GatewayClient {
                                 crate::screen_capture::types::set_user_stream_flags(event_uid, self_stream, self_video);
                                 let is_streaming = self_stream || self_video;
                                 if is_streaming {
-                                    // Native Discord video (camera share or Go Live) is shown
-                                    // as soon as it exists: mark it wanted before the UI
-                                    // state callback decides whether to hide it.
-                                    crate::screen_capture::watch::set_wanted(event_uid, true);
                                     crate::screen_capture::types::mark_stream_started(event_uid);
                                 }
                                 crate::screen_capture::types::set_peer_streaming(event_uid, is_streaming);
                                 if let Some(cid) = event_chan.as_deref() {
-                                    // Go Live keys differ for guilds and DM calls; the old
-                                    // code always used the guild form, which never matches a
-                                    // call and therefore never subscribed to anything.
                                     let stream_key = match v["d"]["guild_id"].as_str() {
                                         Some(gid) => format!("guild:{}:{}:{}", gid, cid, event_uid),
                                         None => format!("call:{}:{}", cid, event_uid),
                                     };
-                                    if self_stream {
-                                        crate::gateway::watch_stream(&stream_key);
-                                    } else {
-                                        // Go Live ended (or was never on): stop viewing it.
+                                    if !self_stream {
+                                        // Go Live ended: stop viewing it.
                                         crate::gateway::unwatch_stream(&stream_key);
                                     }
                                 }

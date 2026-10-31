@@ -926,7 +926,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
                             // The stop may have been handled while this frame was waiting
                             // for the UI thread; showing it would re-open a dead stream.
-                            if screen_capture::is_stream_recently_stopped(uid) {
+                            // Only deliver if user explicitly wants to watch this stream.
+                            if screen_capture::is_stream_recently_stopped(uid) || !screen_capture::watch::is_wanted(uid) {
                                 return;
                             }
                             let uid_str = uid.to_string();
@@ -1451,11 +1452,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uid = uid_str.to_string();
         info!("👁️ Ocultando stream de vídeo do usuário {}", uid);
         hidden_streams_hide.lock().unwrap().insert(uid.clone());
+        let uid_num: u64 = uid.parse().unwrap_or(0);
         // Hiding someone's stream stops receiving it (the sender stops sending to us).
-        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), false);
+        screen_capture::watch::set_wanted(uid_num, false);
+
+        // Cancel stream subscription on Discord gateway
+        let cid = gateway::get_my_voice_channel_id();
+        let gid = gateway::get_my_voice_guild_id();
+        if cid != 0 && uid_num != 0 {
+            let stream_key = if !gid.is_empty() && gid != "@me" {
+                format!("guild:{}:{}:{}", gid, cid, uid_num)
+            } else {
+                format!("call:{}:{}", cid, uid_num)
+            };
+            info!("🎬 [GATEWAY] Cancelando visualização de stream: {}", stream_key);
+            gateway::unwatch_stream(&stream_key);
+        }
+
         if let Some(ui) = app_weak_hide.upgrade() {
             if ui.get_focused_stream_uid() == uid.as_str() {
                 ui.set_focused_stream_uid("".into());
+            }
+            if ui.get_active_stream_user_id() == uid.as_str() {
+                ui.set_has_active_stream(false);
+                ui.set_active_stream_user_id("".into());
+                ui.set_remote_stream_frame(Image::default());
             }
             let cur_model = ui.get_voice_participants();
             for i in 0..cur_model.row_count() {
@@ -1478,9 +1499,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uid = uid_str.to_string();
         info!("👁️ Reexibindo stream de vídeo do usuário {}", uid);
         hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
+        let uid_num: u64 = uid.parse().unwrap_or(0);
         // Watch: ask the sender for the stream.
-        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), true);
+        screen_capture::watch::set_wanted(uid_num, true);
+
+        // Subscribe to stream on Discord gateway
+        let cid = gateway::get_my_voice_channel_id();
+        let gid = gateway::get_my_voice_guild_id();
+        if cid != 0 && uid_num != 0 {
+            let stream_key = if !gid.is_empty() && gid != "@me" {
+                format!("guild:{}:{}:{}", gid, cid, uid_num)
+            } else {
+                format!("call:{}:{}", cid, uid_num)
+            };
+            info!("🎬 [GATEWAY] Assistindo transmissão sob demanda: {}", stream_key);
+            gateway::watch_stream(&stream_key);
+        }
+
         if let Some(ui) = app_weak_unhide.upgrade() {
+            ui.set_has_active_stream(true);
+            ui.set_active_stream_user_id(uid.clone().into());
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
                 ui.set_is_popout_intangible(false);
@@ -1818,7 +1856,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ))
                     };
 
-                    let is_hidden = hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false);
+                    let is_hidden = if is_self {
+                        hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false)
+                    } else {
+                        !screen_capture::watch::is_wanted(user_id)
+                            || hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false)
+                    };
 
                     let avatar_user_id = if user_id == 999999 { my_user_id } else { user_id };
                     let avatar_url = gateway::get_user_avatar_url(avatar_user_id);
