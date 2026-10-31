@@ -1619,9 +1619,9 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "davey"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25028cc2ec8cd43138ca0d2c71d7f6019196238ebd6edea11dd35276fa85b860"
+checksum = "27466c95d1885cc506b29cec686a91ba7c472376cca09850d026cceb9c29a888"
 dependencies = [
  "aead",
  "aes",
