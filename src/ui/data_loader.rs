@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use log::{info, error};
 
@@ -208,6 +209,95 @@ pub async fn fetch_and_populate_guilds(
     }
 }
 
+// Revisiting a channel paints the last batch at once; the network answer only
+// replaces it when something actually changed. Everything is raw JSON, so the
+// cache costs a few hundred KB instead of a second copy of the UI models.
+const MESSAGE_CACHE_CHANNELS: usize = 14;
+const MESSAGE_CACHE_FRESH_AFTER: Duration = Duration::from_secs(15);
+const GUILD_REFRESH_AFTER: Duration = Duration::from_secs(60);
+
+struct CachedMessages {
+    channel_id: String,
+    fetched_at: Instant,
+    messages: Arc<Vec<serde_json::Value>>,
+}
+
+static MESSAGE_CACHE: OnceLock<Mutex<Vec<CachedMessages>>> = OnceLock::new();
+static LAST_CHANNEL_BY_GUILD: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static GUILD_REFRESHED_AT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn message_cache_slot() -> &'static Mutex<Vec<CachedMessages>> {
+    MESSAGE_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn message_cache_get(channel_id: &str) -> Option<(Arc<Vec<serde_json::Value>>, Duration)> {
+    let mut cache = message_cache_slot().lock().unwrap();
+    let index = cache.iter().position(|entry| entry.channel_id == channel_id)?;
+    let entry = cache.remove(index);
+    let result = (Arc::clone(&entry.messages), entry.fetched_at.elapsed());
+    cache.push(entry);
+    Some(result)
+}
+
+fn message_cache_put(channel_id: &str, messages: Arc<Vec<serde_json::Value>>) {
+    let mut cache = message_cache_slot().lock().unwrap();
+    cache.retain(|entry| entry.channel_id != channel_id);
+    cache.push(CachedMessages {
+        channel_id: channel_id.to_string(),
+        fetched_at: Instant::now(),
+        messages,
+    });
+    while cache.len() > MESSAGE_CACHE_CHANNELS {
+        cache.remove(0);
+    }
+}
+
+/// Drops a channel batch after a local edit or a gateway event changes it.
+pub fn invalidate_message_cache(channel_id: &str) {
+    if let Ok(mut cache) = message_cache_slot().lock() {
+        cache.retain(|entry| entry.channel_id != channel_id);
+    }
+}
+
+/// Remembers the channel the user was reading, so returning to a server reopens it.
+pub fn remember_last_channel(guild_id: &str, channel_id: &str) {
+    if guild_id.is_empty() || channel_id.is_empty() || guild_id == "@me" {
+        return;
+    }
+    if let Ok(mut map) = LAST_CHANNEL_BY_GUILD
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        map.insert(guild_id.to_string(), channel_id.to_string());
+    }
+}
+
+fn last_channel_for_guild(guild_id: &str) -> Option<String> {
+    LAST_CHANNEL_BY_GUILD
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|map| map.get(guild_id).cloned())
+}
+
+fn guild_refresh_is_recent(guild_id: &str) -> bool {
+    GUILD_REFRESHED_AT
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|map| map.get(guild_id).copied())
+        .is_some_and(|at| at.elapsed() < GUILD_REFRESH_AFTER)
+}
+
+fn mark_guild_refreshed(guild_id: &str) {
+    if let Ok(mut map) = GUILD_REFRESHED_AT
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        map.insert(guild_id.to_string(), Instant::now());
+    }
+}
+
 pub async fn fetch_and_populate_channels(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
@@ -239,8 +329,23 @@ pub async fn fetch_and_populate_channels(
     // A server visited before shows its channels and opens its chat at once; the REST
     // answers below only correct the list.
     let cached: Vec<ChannelData> = guilds_map.lock().unwrap().get(guild_id).map(|g| g.channels.clone()).unwrap_or_default();
+    let preferred = last_channel_for_guild(guild_id);
     if !cached.is_empty() {
         show_guild_channels(&app_weak, &active_guild_id, guild_id, &cached);
+        if guild_refresh_is_recent(guild_id) {
+            info!("Servidor {} visitado recentemente: abrindo pelo cache.", guild_id);
+            open_first_readable_channel(
+                http,
+                &app_weak,
+                &active_guild_id,
+                &active_channel_id,
+                guild_id,
+                &cached,
+                preferred.as_deref(),
+            )
+            .await;
+            return;
+        }
     }
 
     // Channels and permissions are fetched together, while the chat of the cached list loads.
@@ -249,7 +354,16 @@ pub async fn fetch_and_populate_channels(
             if cached.is_empty() {
                 None
             } else {
-                open_first_readable_channel(http, &app_weak, &active_guild_id, &active_channel_id, guild_id, &cached).await
+                open_first_readable_channel(
+                    http,
+                    &app_weak,
+                    &active_guild_id,
+                    &active_channel_id,
+                    guild_id,
+                    &cached,
+                    preferred.as_deref(),
+                )
+                .await
             }
         },
         async { tokio::join!(http.get_guild_channels(guild_id), http.get_channel_permissions(guild_id)) }
@@ -437,13 +551,19 @@ pub async fn fetch_and_populate_channels(
         });
     }
 
+    let channels_differ = cached.len() != channels_data.len()
+        || cached.iter().zip(channels_data.iter()).any(|(a, b)| a.id != b.id || a.name != b.name || a.position != b.position);
+    mark_guild_refreshed(guild_id);
+
     // Update channels in guilds_map
     if let Some(g_data) = guilds_map.lock().unwrap().get_mut(guild_id) {
         g_data.channels = channels_data.clone();
         gateway::channel_names::remember(guild_id, channels_data.iter().map(|c| (c.id.as_str(), c.name.as_str())));
     }
 
-    show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
+    if channels_differ || cached.is_empty() {
+        show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
+    }
 
     // Members and bot commands are not needed to read the chat: they load in the background.
     {
@@ -458,7 +578,17 @@ pub async fn fetch_and_populate_channels(
     if opened.as_ref().is_some_and(|id| channels_data.iter().any(|c| &c.id == id)) {
         return;
     }
-    let opened_now = open_first_readable_channel(http, &app_weak, &active_guild_id, &active_channel_id, guild_id, &channels_data).await.is_some();
+    let opened_now = open_first_readable_channel(
+        http,
+        &app_weak,
+        &active_guild_id,
+        &active_channel_id,
+        guild_id,
+        &channels_data,
+        last_channel_for_guild(guild_id).as_deref(),
+    )
+    .await
+    .is_some();
     if !opened_now && *active_guild_id.lock().unwrap() == guild_id {
         *active_channel_id.lock().unwrap() = String::new();
         let app_w_none = app_weak.clone();
@@ -512,8 +642,9 @@ fn show_guild_channels(app_weak: &slint::Weak<AppWindow>, active_guild_id: &Arc<
     });
 }
 
-/// Opens the first text channel of `channels` the account can read. Stops when the user
-/// moves to another server or opens a channel meanwhile. Returns the channel now open.
+/// Opens the text channel of `channels` the account can read, preferring `preferred`
+/// (the channel this server was left on). Stops when the user moves to another server
+/// or opens a channel meanwhile. Returns the channel now open.
 async fn open_first_readable_channel(
     http: &DiscordHttpClient,
     app_weak: &slint::Weak<AppWindow>,
@@ -521,8 +652,25 @@ async fn open_first_readable_channel(
     active_channel_id: &Arc<Mutex<String>>,
     guild_id: &str,
     channels: &[ChannelData],
+    preferred: Option<&str>,
 ) -> Option<String> {
-    for text_ch in channels.iter().filter(|c| !c.is_voice && !c.is_category) {
+    let mut ordered: Vec<&ChannelData> = Vec::with_capacity(channels.len());
+    if let Some(preferred) = preferred {
+        if let Some(found) = channels
+            .iter()
+            .find(|c| c.id == preferred && !c.is_voice && !c.is_category)
+        {
+            ordered.push(found);
+        }
+    }
+    for channel in channels.iter().filter(|c| !c.is_voice && !c.is_category) {
+        if ordered.iter().any(|chosen| chosen.id == channel.id) {
+            continue;
+        }
+        ordered.push(channel);
+    }
+
+    for text_ch in ordered {
         if *active_guild_id.lock().unwrap() != guild_id {
             return None;
         }
@@ -535,6 +683,7 @@ async fn open_first_readable_channel(
             return (!current.is_empty()).then_some(current);
         }
         if readable {
+            remember_last_channel(guild_id, &ch_id);
             let (app_w, name) = (app_weak.clone(), text_ch.name.clone());
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
@@ -801,95 +950,35 @@ pub async fn load_messages_for_channel(
 ) -> bool {
     info!("Carregando mensagens do canal {}...", channel_id);
     emoji_cache::get_emoji_cache().set_active_channel(channel_id);
-    let ch_id_for_emojis = channel_id.to_string();
-    let app_weak_load = app_weak.clone();
+    // Reopening a channel paints its last batch at once; REST only replaces it when
+    // something changed, so switching channels feels instant.
+    let cached = message_cache_get(channel_id);
+    if let Some((messages, age)) = cached.clone() {
+        paint_channel_messages(messages, channel_id, app_weak.clone());
+        if age < MESSAGE_CACHE_FRESH_AFTER {
+            info!("Canal {} restaurado do cache ({} ms).", channel_id, age.as_millis());
+            return true;
+        }
+    }
     match http.get_channel_messages(channel_id).await {
         Ok(msgs_val) => {
-            let has_more = msgs_val.len() >= 30;
-            if let Some(oldest) = msgs_val.last() {
-                if let Some(id_str) = oldest["id"].as_str() {
-                    get_oldest_message_map().lock().unwrap().insert(channel_id.to_string(), id_str.to_string());
-                }
-            }
-
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = app_weak.upgrade() {
-                    ui.set_has_more_older_messages(has_more);
-                    ui.set_is_loading_older_messages(false);
-
-                    let mut ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
-                        vec![ChatMessage {
-                            id: "".into(),
-                            author: "Litecord System".into(),
-                            content: "Este canal está vazio ou não possui mensagens recentes.".into(),
-                            commands: slint::ModelRc::default(),
-                            content_lines: slint::ModelRc::default(),
-                            embed_content: "".into(),
-                            embed_lines: slint::ModelRc::default(),
-                            embed_color: slint::Color::from_rgb_u8(88, 101, 242),
-                            embed_footer: "".into(),
-                            code_block: "".into(),
-                            reply_author: "".into(),
-                            reply_content: "".into(),
-                            reply_command: "".into(),
-                            links: slint::ModelRc::default(),
-                            buttons: slint::ModelRc::default(),
-                            attachments: slint::ModelRc::default(),
-                            timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
-                            show_header: true,
-                            ..Default::default()
-                        }]
-                    } else {
-                        msgs_val.iter().rev().map(|m| {
-                            let msg_id = m["id"].as_str().unwrap_or("");
-                            let author = format_discord_author(m);
-                            let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
-                            
-                            let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
-                            let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
-
-                            let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
-                                label: l.label.clone().into(),
-                                url: l.url.clone().into(),
-                            }).collect();
-                            let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
-
-                            let mut message = ChatMessage {
-                                id: msg_id.into(),
-                                author: author.into(),
-                                content: content.into(),
-                                commands: slint::ModelRc::from(commands_model),
-                                content_lines: map_message_lines(&content_lines, &ch_id_for_emojis, &app_weak_load),
-                                embed_content: embed_content.into(),
-                                embed_lines: map_message_lines(&embed_lines, &ch_id_for_emojis, &app_weak_load),
-                                embed_color: parse_hex_color(&embed_color),
-                                embed_footer: embed_footer.into(),
-                                code_block: code_block.into(),
-                                reply_author: reply_author.into(),
-                                reply_content: reply_content.into(),
-                                reply_command: reply_command.into(),
-                                links: slint::ModelRc::from(links_model),
-                                buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
-                                attachments: map_message_attachments(&attachments, &app_weak_load),
-                                timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
-                                ..Default::default()
-                            };
-                            apply_message_metadata(&mut message, m);
-                            message
-                        }).collect()
-                    };
-                    regroup_messages(&mut ui_msgs);
-                    avatar_cache::get_avatar_cache().hydrate(&mut ui_msgs, &app_weak);
-                    crate::ui::invite_cards::hydrate(&mut ui_msgs, &app_weak);
-                    let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
-                    ui.set_messages(model.into());
-
-                    request_chat_scroll_to_bottom(app_weak.clone());
-                }
+            let unchanged = cached.as_ref().is_some_and(|(previous, _)| {
+                previous.len() == msgs_val.len()
+                    && previous.first().and_then(|m| m["id"].as_str())
+                        == msgs_val.first().and_then(|m| m["id"].as_str())
             });
+            let messages = Arc::new(msgs_val);
+            message_cache_put(channel_id, Arc::clone(&messages));
+            if !unchanged {
+                paint_channel_messages(messages, channel_id, app_weak);
+            }
             true
         }
         Err(err) => {
+            if cached.is_some() {
+                info!("Canal {} mantido do cache: {}", channel_id, err);
+                return true;
+            }
             error!("Erro ao carregar mensagens do canal {}: {}", channel_id, err);
             let friendly_msg = if err.contains("403") || err.contains("Forbidden") {
                 "Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.".to_string()
@@ -930,8 +1019,104 @@ pub async fn load_messages_for_channel(
     }
 }
 
+/// Turns a raw message batch into the chat model. Called with the cached copy first
+/// and again with the fresh answer only when it differs.
+fn paint_channel_messages(
+    msgs_val: Arc<Vec<serde_json::Value>>,
+    channel_id: &str,
+    app_weak: slint::Weak<AppWindow>,
+) {
+    let has_more = msgs_val.len() >= 30;
+    if let Some(oldest) = msgs_val.last() {
+        if let Some(id_str) = oldest["id"].as_str() {
+            get_oldest_message_map().lock().unwrap().insert(channel_id.to_string(), id_str.to_string());
+        }
+    }
+    let ch_id_for_emojis = channel_id.to_string();
+    let app_weak_load = app_weak.clone();
+    let ch_id_current = channel_id.to_string();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_weak.upgrade() {
+            // The user may have opened another channel while this batch was loading.
+            let current = ui.get_active_channel_id();
+            if !current.is_empty() && current.as_str() != ch_id_current {
+                return;
+            }
+            ui.set_has_more_older_messages(has_more);
+            ui.set_is_loading_older_messages(false);
 
+            let mut ui_msgs: Vec<ChatMessage> = if msgs_val.is_empty() {
+                vec![ChatMessage {
+                    id: "".into(),
+                    author: "Litecord System".into(),
+                    content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                    commands: slint::ModelRc::default(),
+                    content_lines: slint::ModelRc::default(),
+                    embed_content: "".into(),
+                    embed_lines: slint::ModelRc::default(),
+                    embed_color: slint::Color::from_rgb_u8(88, 101, 242),
+                    embed_footer: "".into(),
+                    code_block: "".into(),
+                    reply_author: "".into(),
+                    reply_content: "".into(),
+                    reply_command: "".into(),
+                    links: slint::ModelRc::default(),
+                    buttons: slint::ModelRc::default(),
+                    attachments: slint::ModelRc::default(),
+                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                    show_header: true,
+                    ..Default::default()
+                }]
+            } else {
+                msgs_val.iter().rev().map(|m| {
+                    let msg_id = m["id"].as_str().unwrap_or("");
+                    let author = format_discord_author(m);
+                    let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(m);
 
+                    let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
+                    let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
+
+                    let slint_links: Vec<LinkItem> = links.iter().map(|l| LinkItem {
+                        label: l.label.clone().into(),
+                        url: l.url.clone().into(),
+                    }).collect();
+                    let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
+
+                    let mut message = ChatMessage {
+                        id: msg_id.into(),
+                        author: author.into(),
+                        content: content.into(),
+                        commands: slint::ModelRc::from(commands_model),
+                        content_lines: map_message_lines(&content_lines, &ch_id_for_emojis, &app_weak_load),
+                        embed_content: embed_content.into(),
+                        embed_lines: map_message_lines(&embed_lines, &ch_id_for_emojis, &app_weak_load),
+                        embed_color: parse_hex_color(&embed_color),
+                        embed_footer: embed_footer.into(),
+                        code_block: code_block.into(),
+                        reply_author: reply_author.into(),
+                        reply_content: reply_content.into(),
+                        reply_command: reply_command.into(),
+                        links: slint::ModelRc::from(links_model),
+                        buttons: map_message_buttons(&buttons, &ch_id_for_emojis, &app_weak_load),
+                        attachments: map_message_attachments(&attachments, &app_weak_load),
+                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                        ..Default::default()
+                    };
+                    apply_message_metadata(&mut message, m);
+                    message
+                }).collect()
+            };
+            regroup_messages(&mut ui_msgs);
+            avatar_cache::get_avatar_cache().hydrate(&mut ui_msgs, &app_weak);
+            crate::ui::invite_cards::hydrate(&mut ui_msgs, &app_weak);
+            let model = std::rc::Rc::new(slint::VecModel::from(ui_msgs));
+            ui.set_messages(model.into());
+            mark_chat_painted();
+
+            request_chat_scroll_to_bottom(app_weak.clone());
+        }
+    });
+}
 
 pub static COLLAPSED_CATEGORIES: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<String>>>> = std::sync::OnceLock::new();
 pub fn get_collapsed_categories() -> Arc<Mutex<std::collections::HashSet<String>>> {
