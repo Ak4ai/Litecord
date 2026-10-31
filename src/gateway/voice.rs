@@ -7,7 +7,7 @@ use std::num::NonZeroU16;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio::net::UdpSocket;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{client_async_tls, connect_async, tungstenite::protocol::Message, tungstenite::client::IntoClientRequest};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use log::{info, error, warn};
