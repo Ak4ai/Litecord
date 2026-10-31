@@ -7,6 +7,7 @@ import "../assets/fonts/Inter-Variable.ttf";
 import { IconButton } from "components/icon_button.slint";
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
 import { SettingsView, LanguageItem, SettingOptionItem, AudioDeviceItem } from "components/settings_view.slint";
+import { OnboardingView, OnboardingPromptItem, OnboardingOptionItem } from "components/onboarding_view.slint";
 import { ChatMessagesView, LinkItem, MessageBlock, MessageLine, MessageAttachment, MessageButton, ChatMessage } from "components/chat_messages_view.slint";
 
 struct CommandSuggestion {
@@ -155,6 +156,9 @@ export component AppWindow inherits Window {
     callback stop_stream();
     callback open_stream_modal();
     callback close_stream_modal();
+    callback onboarding_toggle(int /* prompt */, int /* option */);
+    callback onboarding_submit();
+    callback onboarding_dismiss();
     callback popout_stream_window(string /* user_id */, string /* username */);
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
@@ -440,6 +444,14 @@ export component AppWindow inherits Window {
     in-out property <string> web_share_url: "";
     in-out property <string> web_share_error: "";
     in-out property <int> web_share_viewers: 0;
+
+    // Community onboarding questionnaire shown after joining a server.
+    in-out property <bool> show_onboarding_modal: false;
+    in-out property <string> onboarding_guild_id: "";
+    in-out property <string> onboarding_guild_name: "";
+    in-out property <[OnboardingPromptItem]> onboarding_prompts: [];
+    in-out property <bool> onboarding_submitting: false;
+    in-out property <string> onboarding_error: "";
 
     if root.web_share_error != "": Rectangle {
         z: 100;
@@ -3792,6 +3804,17 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Community onboarding questionnaire.
+    if root.show_onboarding_modal: OnboardingView {
+        guild_name: root.onboarding_guild_name;
+        prompts: root.onboarding_prompts;
+        submitting: root.onboarding_submitting;
+        error_text: root.onboarding_error;
+        toggle_option(prompt, option) => { root.onboarding_toggle(prompt, option); }
+        submit => { root.onboarding_submit(); }
+        dismiss => { root.onboarding_dismiss(); }
     }
 
     // Web sharing: the link to send to whoever will watch in a browser.

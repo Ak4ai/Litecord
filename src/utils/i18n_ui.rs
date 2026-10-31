@@ -292,6 +292,17 @@ ui_strings! {
     (event_view, set_event_view, "View event", "Ver evento", "Ver evento", "Event ansehen", "Voir l’événement", "Открыть событие", "イベントを見る"),
     (event_live, set_event_live, "Happening now", "Acontecendo agora", "En curso", "Läuft gerade", "En cours", "Идёт сейчас", "開催中"),
     (event_interested, set_event_interested, "{} interested", "{} interessados", "{} interesados", "{} interessiert", "{} intéressés", "{} заинтересованы", "{}人が興味あり"),
+    // Community onboarding questionnaire.
+    (onboarding_title, set_onboarding_title, "Welcome!", "Bem-vindo!", "¡Bienvenido!", "Willkommen!", "Bienvenue !", "Добро пожаловать!", "ようこそ！"),
+    (onboarding_subtitle, set_onboarding_subtitle, "Answer a few questions so we can set up your channels and roles. You can change this later.", "Responda a algumas perguntas para configurarmos seus canais e cargos. Você pode mudar depois.", "Responde unas preguntas para configurar tus canales y roles. Puedes cambiarlo después.", "Beantworte ein paar Fragen, damit wir deine Kanäle und Rollen einrichten können. Du kannst das später ändern.", "Répondez à quelques questions pour configurer vos salons et rôles. Vous pourrez modifier cela plus tard.", "Ответьте на несколько вопросов, чтобы мы настроили ваши каналы и роли. Это можно изменить позже.", "いくつかの質問に答えると、チャンネルとロールが設定されます。後から変更できます。"),
+    (onboarding_single, set_onboarding_single, "Select one", "Escolha uma", "Elige una", "Eine auswählen", "Choisissez-en une", "Выберите один", "1つ選択"),
+    (onboarding_multi, set_onboarding_multi, "Select all that apply", "Escolha todas que se aplicam", "Elige todas las que correspondan", "Alle zutreffenden auswählen", "Choisissez tout ce qui s’applique", "Выберите все подходящие", "該当するものをすべて選択"),
+    (onboarding_required, set_onboarding_required, "Required", "Obrigatório", "Obligatorio", "Erforderlich", "Obligatoire", "Обязательно", "必須"),
+    (onboarding_finish, set_onboarding_finish, "Finish", "Concluir", "Finalizar", "Fertig", "Terminer", "Готово", "完了"),
+    (onboarding_skip, set_onboarding_skip, "Skip for now", "Pular por agora", "Omitir por ahora", "Vorerst überspringen", "Passer pour l’instant", "Пропустить пока", "今はスキップ"),
+    (onboarding_saving, set_onboarding_saving, "Saving…", "Salvando…", "Guardando…", "Speichern…", "Enregistrement…", "Сохранение…", "保存中…"),
+    (onboarding_error, set_onboarding_error, "Could not save your answers. Please try again.", "Não foi possível salvar suas respostas. Tente novamente.", "No se pudieron guardar tus respuestas. Inténtalo de nuevo.", "Deine Antworten konnten nicht gespeichert werden. Bitte versuche es erneut.", "Impossible d’enregistrer vos réponses. Réessayez.", "Не удалось сохранить ответы. Попробуйте ещё раз.", "回答を保存できませんでした。もう一度お試しください。"),
+    (onboarding_required_error, set_onboarding_required_error, "Answer the required questions before finishing.", "Responda às perguntas obrigatórias antes de concluir.", "Responde las preguntas obligatorias antes de finalizar.", "Beantworte die erforderlichen Fragen, bevor du fertigstellst.", "Répondez aux questions obligatoires avant de terminer.", "Ответьте на обязательные вопросы, прежде чем завершить.", "必須の質問に答えてから完了してください。"),
 }
 
 #[cfg(test)]

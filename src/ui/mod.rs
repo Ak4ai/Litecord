@@ -6,6 +6,7 @@ pub mod invite_cards;
 pub mod message_grouping;
 pub mod gpu_video;
 pub mod window_place;
+pub mod onboarding;
 
 pub use helpers::*;
 pub use data_loader::*;
