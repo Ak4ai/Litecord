@@ -507,27 +507,27 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
     let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
         i18n::Language::English => (
             "Advanced Suppression",
-            "Deep neural network background noise removal and transient filtering.",
+            "Ideal for gaming & typing: blocks mechanical keyboards, pets, house noise & fans. (Avoid for musical instruments).",
             "Standard (RNNoise)",
-            "Classic recurrent neural network noise reduction.",
-            "Disabled (Default)",
-            "No noise suppression applied to microphone."
+            "For quiet rooms with steady hum (PC fans, AC). Preserves voice warmth, but does not block keyboard clicks.",
+            "Disabled (Raw Audio)",
+            "Pure unprocessed audio. Recommended for singing, playing guitar, and musical instruments."
         ),
         i18n::Language::Spanish => (
             "Supresión avanzada",
-            "Supresión por red neuronal profunda y filtrado de transientes.",
+            "Ideal para gaming y llamadas: bloquea teclados mecánicos, mascotas, ruidos de casa y ventiladores. (Evitar para música).",
             "Estándar (RNNoise)",
-            "Reducción de ruido clásica basada en red neuronal recurrente.",
-            "Desactivado (Predeterminado)",
-            "Sin procesamiento de supresión de ruido en el micrófono."
+            "Para ambientes tranquilos con zumbido constante (ventilador, AC). Mantiene voz natural, no quita teclas.",
+            "Desactivado (Audio puro)",
+            "Audio puro sin filtros ni cortes. Recomendado para cantar, tocar guitarra y transmitir instrumentos musicales."
         ),
         _ => (
             "Supressão Avançada",
-            "Supressão por rede neural profunda e filtragem de transientes.",
+            "Ideal para jogos e digitação: bloqueia teclado mecânico, pets, ruídos domésticos e ventoinhas. (Evitar para música).",
             "Padrão (RNNoise)",
-            "Redução de ruído clássica baseada em rede neural recorrente.",
-            "Desativado (Padrão)",
-            "Sem processamento de supressão de ruído no microfone."
+            "Para ambientes calmos com ruído contínuo (ventoinha, AC). Mantém voz natural, mas não remove teclas.",
+            "Desativado (Áudio puro)",
+            "Áudio puro sem filtros ou cortes. Recomendado para cantar, tocar violão/guitarra e transmitir instrumentos."
         ),
     };
 

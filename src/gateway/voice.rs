@@ -691,10 +691,10 @@ pub async fn connect_voice_gateway(
                                                             info!("🔊 Dispositivo de saída de áudio disponível novamente.");
                                                         }
 
-                                                        let config = match device.default_output_config() {
-                                                            Ok(c) => c,
-                                                            Err(e) => {
-                                                                warn!("Falha ao obter config de saída: {:?}", e);
+                                                        let config = match crate::audio::engine::select_preferred_48khz_config(&device, false) {
+                                                            Some(c) => c,
+                                                            None => {
+                                                                warn!("Falha ao obter config de saída para o dispositivo");
                                                                 std::thread::sleep(std::time::Duration::from_millis(500));
                                                                 continue;
                                                             }
@@ -1252,22 +1252,43 @@ pub async fn connect_voice_gateway(
                                                     }
 
                                                     if !is_muted {
-                                                        // Process audio with VoiceProcessor (AEC, Krisp/Standard Denoising, AGC)
+                                                        // Process audio with VoiceProcessor (AEC, Standard/Advanced Denoising, AGC2)
                                                         let suppression_mode = crate::utils::video_settings::get_noise_suppression();
                                                         let enable_aec = crate::utils::video_settings::get_echo_cancellation();
                                                         let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
 
-                                                        voice_proc.process_frame(&mut pcm_frame, &suppression_mode, enable_aec, enable_agc);
+                                                        let metrics = voice_proc.process_frame(&mut pcm_frame, &suppression_mode, enable_aec, enable_agc);
 
-                                                        // Enforce VAD threshold gating on processed audio
-                                                        let mut sum_sq = 0.0f32;
-                                                        for &s in pcm_frame.iter() {
-                                                            sum_sq += s * s;
-                                                        }
-                                                        let rms = (sum_sq / 960.0).sqrt();
-                                                        let level = (rms * 6.0).min(1.0);
-                                                        if level >= get_vad_threshold() {
+                                                        // Report POST-DSP level to UI meter so user sees exactly what is transmitted
+                                                        set_self_mic_level(metrics.ui_level);
+
+                                                        // Discord AudioModeVAD logic:
+                                                        // Manual threshold: user slider in [0.0, 1.0] -> [-100.0 dB, 0.0 dB]
+                                                        // Advanced mode / Automatic: Gated on neural speech probability vad_prob >= 0.45
+                                                        let user_threshold = get_vad_threshold();
+                                                        let user_threshold_db = crate::audio::dsp::VolumeAnalyzer::ui_level_to_db(user_threshold);
+
+                                                        let passes_volume = metrics.volume_db >= user_threshold_db;
+                                                        // Neural VAD check: prevents mechanical keyboard clicks from opening VAD
+                                                        let passes_neural = if suppression_mode == "advanced" || suppression_mode == "krisp" {
+                                                            metrics.vad_prob >= 0.35 // Higher noise immunity in advanced mode
+                                                        } else {
+                                                            metrics.vad_prob >= 0.20 || metrics.volume_db >= -28.0
+                                                        };
+
+                                                        if passes_volume && passes_neural {
                                                             has_audio = true;
+                                                        }
+
+                                                        // If mic testing is active during call, feed post-DSP samples to loopback
+                                                        if is_testing_mic() {
+                                                            if let Ok(mut loop_q) = get_mic_loopback_queue().lock() {
+                                                                if loop_q.len() < 48000 {
+                                                                    for &s in pcm_frame.iter() {
+                                                                        loop_q.push_back(s);
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     }
 
