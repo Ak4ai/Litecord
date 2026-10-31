@@ -136,6 +136,59 @@ impl DiscordHttpClient {
         }
     }
 
+    pub async fn get_guild_onboarding(&self, guild_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/onboarding", guild_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        return Ok(json);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+        }
+    }
+
+    /// Saves the answers of the community onboarding questionnaire.
+    ///
+    /// A member that never finished the flow answers with POST. Once Discord has
+    /// marked onboarding as completed (for example after a previous client), the
+    /// same endpoint only accepts edits through PUT and answers 403 to POST.
+    pub async fn submit_guild_onboarding(
+        &self,
+        guild_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/onboarding-responses", guild_id);
+        let response = self.client.post(&url).json(body).send().await
+            .map_err(|e| format!("Falha de rede ao enviar onboarding: {:?}", e))?;
+        let status = response.status();
+        if status.is_success() {
+            info!("Onboarding do servidor {} enviado.", guild_id);
+            return Ok(());
+        }
+        let first_error = response.text().await.unwrap_or_default();
+        if status.as_u16() != 403 && status.as_u16() != 405 {
+            let err = format!("Onboarding HTTP {}: {}", status, first_error);
+            error!("{}", err);
+            return Err(err);
+        }
+
+        let response = self.client.put(&url).json(body).send().await
+            .map_err(|e| format!("Falha de rede ao enviar onboarding: {:?}", e))?;
+        let status = response.status();
+        if status.is_success() {
+            info!("Onboarding do servidor {} atualizado.", guild_id);
+            return Ok(());
+        }
+        let err = format!("Onboarding HTTP {}: {}", status, response.text().await.unwrap_or_default());
+        error!("{}", err);
+        Err(err)
+    }
+
     pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
         if let Some(permissions) = crate::channel_permissions::cached(guild_id) {
             return Ok(permissions);
