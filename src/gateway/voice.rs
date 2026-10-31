@@ -7,7 +7,7 @@ use std::num::NonZeroU16;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio::net::UdpSocket;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{client_async_tls, connect_async, tungstenite::protocol::Message, tungstenite::client::IntoClientRequest};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use log::{info, error, warn};
@@ -15,6 +15,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce
 };
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use opus_rs::{OpusEncoder, OpusDecoder, Application};
 use davey::{DaveSession, ProposalsOperationType, MediaType};
 
@@ -23,7 +24,138 @@ use super::types::*;
 // 48 kHz stereo pairs. Cap after admission, including concealed Opus frames.
 const VOICE_QUEUE_LIMIT: usize = 28800;
 const VOICE_PREBUFFER_SAMPLES: usize = 1920;
-const VOICE_RESET_INACTIVE_CALLBACKS: u32 = 3;
+/// Silence after which a stream is considered idle and must re-fill the jitter
+/// pre-buffer before resuming. Measured in samples (60 ms at 48 kHz) so a larger
+/// ALSA callback does not stretch or shrink the threshold.
+const VOICE_RESET_INACTIVE_SAMPLES: u64 = 2_880;
+/// Silence after which the per-SSRC state is forgotten (800 ms at 48 kHz).
+const VOICE_FORGET_SSRC_SAMPLES: u64 = 38_400;
+
+/// Last datagram received from the voice media server (ms since the UNIX epoch).
+/// Every packet counts, so this proves the UDP path is alive even when nobody is
+/// talking. A NAT rebind or an interface change leaves the WebSocket healthy while
+/// the media socket goes deaf forever, which is what this timestamp detects.
+pub static VOICE_LAST_UDP_RX_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Datagrams received in this process, used by the watchdog to tell a call that went
+/// from streaming audio to silence from one that was simply quiet.
+pub static VOICE_UDP_RX_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Last time a peer announced it started talking (voice op 5, speaking flag 1).
+pub static VOICE_LAST_PEER_SPEAKING_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Raised when the media path stays dead with other people in the call. The main
+/// gateway session has to be rebuilt: a UDP socket bound to the old address cannot
+/// be repaired from inside the voice connection.
+pub static VOICE_MEDIA_REJOIN_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// An automatic rebuild must not replay the join chime: Discord does not do it for
+/// internal reconnects and it would sound like the user rejoined the call.
+pub static VOICE_SUPPRESS_CHIME: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// A peer that started talking and produced no RTP for this long means the media
+/// path is dead right now.
+const VOICE_SPEAKING_WITHOUT_MEDIA_MS: u64 = 8_000;
+/// Sustained silence after a call that was streaming media. A quiet call never
+/// reaches this because no audio was flowing in the first place; a false positive
+/// here is harmless (it only happens when nobody is talking) and the chime is muted.
+const VOICE_MEDIA_LOST_AFTER_SILENCE_MS: u64 = 30_000;
+/// Grace period after the voice gateway is ready before the watchdog can fire.
+const VOICE_MEDIA_WARMUP: Duration = Duration::from_secs(15);
+
+pub(crate) fn voice_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn note_voice_udp_rx() {
+    VOICE_LAST_UDP_RX_MS.store(voice_now_ms(), Ordering::Relaxed);
+    VOICE_UDP_RX_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Source address the kernel would use to reach `ip:port` right now. When the machine
+/// changes network (Wi-Fi roam, VPN, new NAT binding) this value changes, and the UDP
+/// mapping the voice server knows about is dead even though the WebSocket survives.
+fn probe_local_source(ip: &str, port: u16) -> Option<std::net::SocketAddr> {
+    use std::net::{IpAddr, UdpSocket as StdUdpSocket};
+    let dest: IpAddr = ip.parse().ok()?;
+    let bind = if dest.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    let sock = StdUdpSocket::bind(bind).ok()?;
+    sock.connect((dest, port)).ok()?;
+    sock.local_addr().ok()
+}
+
+pub(crate) async fn connect_voice_ws(
+    voice_url: &str,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    let mut request = voice_url.into_client_request()?;
+    let domain = request.uri().host().ok_or(tokio_tungstenite::tungstenite::error::Error::Url(
+        tokio_tungstenite::tungstenite::error::UrlError::NoHostName,
+    ))?.to_string();
+    let port = request.uri().port_u16().unwrap_or(443);
+
+    let headers = request.headers_mut();
+    headers.insert(
+        tokio_tungstenite::tungstenite::http::header::USER_AGENT,
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.98 Chrome/134.0.6998.36 Electron/35.0.0 Safari/537.36"
+            .parse()
+            .map_err(|_| tokio_tungstenite::tungstenite::error::Error::Url(tokio_tungstenite::tungstenite::error::UrlError::UnsupportedUrlScheme))?,
+    );
+    headers.insert(
+        tokio_tungstenite::tungstenite::http::header::ORIGIN,
+        "https://discord.com"
+            .parse()
+            .map_err(|_| tokio_tungstenite::tungstenite::error::Error::Url(tokio_tungstenite::tungstenite::error::UrlError::UnsupportedUrlScheme))?,
+    );
+
+    let mut addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((domain.as_str(), port))
+        .await
+        .map_err(tokio_tungstenite::tungstenite::Error::Io)?
+        .collect();
+
+    // Prioritize IPv4 first to prevent hanging when system/router drops outbound IPv6 packets
+    addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+
+    let mut last_err = None;
+    let mut tcp_stream = None;
+    for addr in addrs {
+        info!("🔌 [VOICE GATEWAY TCP] Conectando ao endereço IP: {}...", addr);
+        match tokio::time::timeout(Duration::from_millis(1500), tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => {
+                let _ = stream.set_nodelay(true);
+                info!("✅ [VOICE GATEWAY TCP] Conectado via TCP com sucesso a {}!", addr);
+                tcp_stream = Some(stream);
+                break;
+            }
+            Ok(Err(e)) => {
+                warn!("⚠️ [VOICE GATEWAY TCP] Falha ao conectar a {}: {:?}", addr, e);
+                last_err = Some(e);
+            }
+            Err(_) => {
+                warn!("⏱️ [VOICE GATEWAY TCP] Timeout (1.5s) ao conectar a {} (possível rota IPv6 quebrada)", addr);
+                last_err = Some(std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out"));
+            }
+        }
+    }
+
+    let stream = match tcp_stream {
+        Some(s) => s,
+        None => return Err(tokio_tungstenite::tungstenite::Error::Io(
+            last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "No address found")),
+        )),
+    };
+
+    client_async_tls(request, stream).await
+}
 
 pub async fn connect_voice_gateway(
     raw_endpoint: &str,
@@ -36,17 +168,21 @@ pub async fn connect_voice_gateway(
     _event_tx: mpsc::Sender<GatewayEvent>,
 ) {
     let clean_endpoint = raw_endpoint.trim();
+    // The official client connects to the bare path (`wss://host:port/`) and lets the
+    // server pick the protocol version. Adding `?v=N` there risks a close with an
+    // unknown-version code, which leaves the call connected but completely silent.
     let voice_url = if clean_endpoint.starts_with("wss://") || clean_endpoint.starts_with("ws://") {
         clean_endpoint.to_string()
     } else {
-        format!("wss://{}/?v=4", clean_endpoint)
+        format!("wss://{}/", clean_endpoint)
     };
-    info!("Conectando Ã  Discord Voice Gateway: {}...", voice_url);
+    info!("Conectando à Discord Voice Gateway: {}...", voice_url);
 
     let my_session_id = CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst) + 1;
-    info!("Iniciando nova sessÃ£o de voz ID={}", my_session_id);
+    info!("Iniciando nova sessão de voz ID={}", my_session_id);
     let cid_num: u64 = channel_id.parse().unwrap_or(0);
     set_my_voice_channel_id(cid_num);
+    set_my_voice_guild_id(guild_id);
 
     let mut is_first_connect = true;
     let mut final_close = false;
@@ -64,7 +200,7 @@ pub async fn connect_voice_gateway(
         }
         is_first_connect = false;
 
-        match connect_async(&voice_url).await {
+        match connect_voice_ws(&voice_url).await {
             Ok((ws_stream, _)) => {
                 info!("Conexão WebSocket com Voice Gateway estabelecida!");
                 crate::screen_capture::invalidate_cached_stun_address();
@@ -81,6 +217,12 @@ pub async fn connect_voice_gateway(
                 let active_ssrc: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(12345));
                 let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
                 let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+                let native_mode: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new("aead_xchacha20_poly1305_rtpsize".to_string()));
+                let voice_hb_acked: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                // Video SSRCs announced on this (parent) connection, so op 15 can be
+                // re-sent once the session description is complete.
+                let native_wants: Arc<std::sync::Mutex<std::collections::HashSet<u32>>> =
+                    Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
                 // Create DAVE (Discord Audio/Video E2EE) session using the davey crate
                 let uid_num: u64 = user_id.parse().unwrap_or(0);
@@ -92,6 +234,14 @@ pub async fn connect_voice_gateway(
                 ));
                 let saved_external_sender: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
                 let dave_flow = Arc::new(DaveFlow::new());
+                let voice_diag = Arc::new(VoiceDiag::default());
+                spawn_voice_diagnostics(
+                    Arc::clone(&voice_diag),
+                    Arc::clone(&dave_session),
+                    Arc::clone(&self_mute_state),
+                    my_session_id,
+                    channel_id_str.clone(),
+                );
 
                 // Read loop: wait for Opcode 8 HELLO from Voice Gateway before sending Opcode 0 Identify!
                 while let Some(msg_result) = read.next().await {
@@ -118,11 +268,14 @@ pub async fn connect_voice_gateway(
                                         "op": 0,
                                         "d": {
                                             "server_id": guild_id,
+                                            "channel_id": channel_id,
                                             "user_id": user_id,
                                             "session_id": session_id,
                                             "token": token,
-                                            "video": false,
-                                            "streams": [],
+                                            "video": true,
+                                            "streams": [
+                                                { "type": "video", "rid": "100", "quality": 100 }
+                                            ],
                                             "max_dave_protocol_version": 1
                                         }
                                     });
@@ -138,10 +291,15 @@ pub async fn connect_voice_gateway(
 
                                     // 2. Spawn Voice Heartbeat loop (Opcode 3 with epoch timestamp)
                                     let write_hb = Arc::clone(&write_arc);
+                                    let voice_hb_acked_loop = Arc::clone(&voice_hb_acked);
                                     tokio::spawn(async move {
                                         loop {
                                             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id { break; }
                                             sleep(Duration::from_millis(heartbeat_interval)).await;
+                                            if !voice_hb_acked_loop.swap(false, Ordering::SeqCst) {
+                                                warn!("⚠️ [VOICE] Servidor de voz não respondeu ao Heartbeat anterior (falta Opcode 6 ACK). Reconectando!");
+                                                break;
+                                            }
                                             let t_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                                             let hb = serde_json::json!({ "op": 3, "d": t_now });
                                             let mut w = write_hb.lock().await;
@@ -164,18 +322,107 @@ pub async fn connect_voice_gateway(
                                     let voice_ip = val["d"]["ip"].as_str().unwrap_or("").to_string();
                                     let voice_port = val["d"]["port"].as_u64().unwrap_or(0) as u16;
 
-                                    let selected_mode = if let Some(modes) = val["d"]["modes"].as_array() {
-                                        modes.iter()
-                                            .find_map(|m| m.as_str())
-                                            .unwrap_or("aead_aes256_gcm_rtpsize")
-                                            .to_string()
+                                    // Seleciona o melhor modo de criptografia oferecido (prioriza XChaCha20Poly1305 ou AES-256-GCM)
+                                    let offered_modes: Vec<&str> = val["d"]["modes"].as_array()
+                                        .map(|modes| modes.iter().filter_map(|m| m.as_str()).collect())
+                                        .unwrap_or_default();
+                                    let selected_mode = if offered_modes.contains(&"aead_xchacha20_poly1305_rtpsize") {
+                                        "aead_xchacha20_poly1305_rtpsize".to_string()
+                                    } else if offered_modes.contains(&"aead_aes256_gcm_rtpsize") {
+                                        "aead_aes256_gcm_rtpsize".to_string()
+                                    } else if !offered_modes.is_empty() {
+                                        offered_modes[0].to_string()
                                     } else {
                                         "aead_aes256_gcm_rtpsize".to_string()
                                     };
+                                    *native_mode.lock().unwrap() = selected_mode.clone();
 
                                     info!("🎉 VOICE GATEWAY PRONTA (Opcode 2 READY)! SSRC={}, IP={}:{}, Encryption Mode={}", ssrc, voice_ip, voice_port, selected_mode);
+                                    voice_diag.set_session(format!(
+                                        "endpoint={}:{} mode={} ssrc={} modes={:?}",
+                                        voice_ip, voice_port, selected_mode, ssrc,
+                                        val["d"]["modes"].as_array().map(|m| m.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()).unwrap_or_default()
+                                    ));
+
+                                    // Media watchdog. A NAT rebind or an interface change can leave
+                                    // the WebSocket heartbeating happily while the UDP media path is
+                                    // dead: the call still looks connected but no audio arrives and,
+                                    // because the socket is bound to the old address, it can never
+                                    // recover on its own. Ask the main gateway for a clean rejoin.
+                                    note_voice_udp_rx();
+                                    let wd_session = my_session_id;
+                                    let wd_channel = channel_id.to_string();
+                                    let wd_my_ssrc = ssrc;
+                                    let wd_ip = voice_ip.clone();
+                                    let wd_port = voice_port;
+                                    let wd_source_at_ready = probe_local_source(&wd_ip, wd_port);
+                                    tokio::spawn(async move {
+                                        let armed_at = std::time::Instant::now();
+                                        // One sample every 5 s, last 60 s of traffic. A call that was
+                                        // streaming audio and then went silent is a dead media path; a
+                                        // call that was quiet all along is not.
+                                        let mut windows: VecDeque<bool> = VecDeque::with_capacity(12);
+                                        let mut last_count = VOICE_UDP_RX_COUNT.load(Ordering::Relaxed);
+                                        loop {
+                                            sleep(Duration::from_secs(5)).await;
+                                            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != wd_session { break; }
+                                            let count = VOICE_UDP_RX_COUNT.load(Ordering::Relaxed);
+                                            windows.push_back(count > last_count);
+                                            last_count = count;
+                                            while windows.len() > 12 { windows.pop_front(); }
+
+                                            if armed_at.elapsed() < VOICE_MEDIA_WARMUP { continue; }
+                                            // The local source address changed: the media mapping is dead
+                                            // from this instant, no need to wait for the silence timer.
+                                            if let (Some(before), Some(now)) = (wd_source_at_ready, probe_local_source(&wd_ip, wd_port)) {
+                                                if before.ip() != now.ip() {
+                                                    warn!("🎧 [VOICE] Endereço local mudou ({} -> {}); reconstruindo a sessão de voz...",
+                                                        before.ip(), now.ip());
+                                                    VOICE_SUPPRESS_CHIME.store(true, Ordering::SeqCst);
+                                                    VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+                                                    break;
+                                                }
+                                            }
+                                            if is_self_deaf() {
+                                                // Deafened: the server stops sending voice on purpose.
+                                                note_voice_udp_rx();
+                                                continue;
+                                            }
+                                            let remote_peers = get_active_voice_participants_store()
+                                                .lock()
+                                                .map(|m| m.keys().filter(|&&s| s != wd_my_ssrc && s != 999_999).count())
+                                                .unwrap_or(0);
+                                            let in_channel = get_voice_channel_participant_count(&wd_channel);
+                                            if remote_peers == 0 && in_channel <= 1 {
+                                                // Nobody else to listen to: silence is expected.
+                                                continue;
+                                            }
+
+                                            let now_ms = voice_now_ms();
+                                            let last_rx = VOICE_LAST_UDP_RX_MS.load(Ordering::Relaxed);
+                                            let silent_ms = now_ms.saturating_sub(last_rx);
+                                            // A peer announced it started talking over the (healthy)
+                                            // WebSocket and no RTP followed: the media path is dead.
+                                            let spoke = VOICE_LAST_PEER_SPEAKING_MS.load(Ordering::Relaxed);
+                                            let speaking_now = spoke > last_rx
+                                                && now_ms.saturating_sub(spoke) >= VOICE_SPEAKING_WITHOUT_MEDIA_MS;
+                                            // Media flowed until recently and then stopped for good.
+                                            let heard_recently = windows.iter().filter(|&&w| w).count() >= 6;
+                                            let trailing_silence = windows.iter().rev().take_while(|&&w| !w).count() >= 3;
+                                            if speaking_now
+                                                || (heard_recently && trailing_silence && silent_ms >= VOICE_MEDIA_LOST_AFTER_SILENCE_MS)
+                                            {
+                                                warn!("🎧 [VOICE] Sem áudio recebido há {}s com {} pessoa(s) no canal; reconstruindo a sessão de voz...",
+                                                    silent_ms / 1000, in_channel.max(remote_peers as i32));
+                                                VOICE_SUPPRESS_CHIME.store(true, Ordering::SeqCst);
+                                                VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+                                                break;
+                                            }
+                                        }
+                                    });
 
                                     // Synthesize Join Voice Chime (523.25Hz C5 -> 659.25Hz E5) to test local audio playback
+                                    if !VOICE_SUPPRESS_CHIME.swap(false, Ordering::SeqCst) {
                                     let mut chime_samples = Vec::new();
                                     let sr = 48000.0f32;
                                     for i in 0..(0.12 * sr) as usize {
@@ -197,6 +444,7 @@ pub async fn connect_voice_gateway(
                                         }
                                     }
                                     info!("🎵 Efeito sonoro de entrada no canal de voz injetado na fila dos alto-falantes!");
+                                    }
 
                                     // UDP IP Discovery & Opcode 1 Select Protocol Handshake
                                     if !voice_ip.is_empty() && voice_port > 0 {
@@ -206,7 +454,9 @@ pub async fn connect_voice_gateway(
                                         let dave_flow_audio = Arc::clone(&dave_flow);
                                         let dave_sender_audio = Arc::clone(&saved_external_sender);
                                         let ssrc_to_userid_audio = Arc::clone(&ssrc_to_userid);
+                                        let native_mode_audio = Arc::clone(&native_mode);
                                         let self_mute_rx = Arc::clone(&self_mute_state);
+                                        let diag_audio = Arc::clone(&voice_diag);
 
                                         tokio::spawn(async move {
                                             let socket = match UdpSocket::bind("0.0.0.0:0").await {
@@ -278,7 +528,13 @@ pub async fn connect_voice_gateway(
                                                             "address": my_pub_ip,
                                                             "port": my_pub_port,
                                                             "mode": selected_mode
-                                                        }
+                                                        },
+                                                        "codecs": [
+                                                            { "name": "opus", "type": "audio", "priority": 1000, "payload_type": 120 },
+                                                            { "name": "H264", "type": "video", "priority": 1000,
+                                                              "payload_type": 103, "rtx_payload_type": 104,
+                                                              "encode": true, "decode": true }
+                                                        ]
                                                     }
                                                 });
 
@@ -300,9 +556,18 @@ pub async fn connect_voice_gateway(
                                                 let dave_sender_rx = Arc::clone(&dave_sender_audio);
                                                 let write_rx = Arc::clone(&write_arc_proto);
                                                 let ssrc_to_userid_rx = Arc::clone(&ssrc_to_userid_audio);
+                                                let native_mode_rx = Arc::clone(&native_mode_audio);
                                                 let speaker_queues_rx = get_speaker_pcm_queues();
                                                 let my_ssrc = ssrc;
                                                 let rx_session_id = my_session_id;
+                                                let native_target: Option<std::net::SocketAddr> = target_addr.parse().ok();
+                                                // One outbound nonce counter for every packet on this
+                                                // connection (audio RTP and RTCP feedback), as the
+                                                // `*_rtpsize` modes expect.  Each sender takes its value
+                                                // with fetch_add, so no nonce is ever reused.
+                                                let outbound_nonce = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                                                let outbound_nonce_rx = Arc::clone(&outbound_nonce);
+                                                let diag_rx = Arc::clone(&diag_audio);
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
@@ -315,6 +580,23 @@ pub async fn connect_voice_gateway(
                                                     let mut dave_decrypt_fail_cnt = 0u64;
                                                     let mut dave_plaintext_cnt = 0u64;
                                                     let mut _dave_not_ready_cnt = 0u64;
+                                                    let mut voice_layout_cache: HashMap<u32, (usize, usize)> = HashMap::new();
+
+                                                    // Native Discord video (camera) shares this UDP socket and
+                                                    // the parent DAVE session.  Non-Opus packets go here.
+                                                    let native_ctx = crate::native_video::NativeVideoContext {
+                                                        secret_key: Arc::clone(&secret_key_rx),
+                                                        mode: Arc::clone(&native_mode_rx),
+                                                        dave: Arc::clone(&dave_session_rx),
+                                                        ssrc_to_uid: Arc::clone(&ssrc_to_userid_rx),
+                                                        stream_owner: None,
+                                                        socket: Some(Arc::clone(&socket_rx)),
+                                                        target: native_target,
+                                                        sender_ssrc: my_ssrc,
+                                                        rtcp_counter: outbound_nonce_rx,
+                                                    };
+                                                    let mut native_session = crate::native_video::NativeVideoSession::new();
+                                                    let mut last_native_tick = std::time::Instant::now();
 
                                                     info!("🎧 Loop UDP de recepção de voz INICIADO (Session ID={})!", rx_session_id);
 
@@ -322,6 +604,7 @@ pub async fn connect_voice_gateway(
                                                         if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != rx_session_id { break; }
                                                         match tokio::time::timeout(Duration::from_millis(100), socket_rx.recv_from(&mut recv_buf)).await {
                                                             Ok(Ok((len, addr))) => {
+                                                                note_voice_udp_rx();
                                                                 if len < 12 { continue; }
                                                                 let pkt = &recv_buf[..len];
                                                                 
@@ -329,10 +612,20 @@ pub async fn connect_voice_gateway(
                                                                 let version = (pkt[0] >> 6) & 0x3;
                                                                 if version != 2 { continue; }
                                                                 let pt = pkt[1] & 0x7F;
-                                                                if pt != 120 { continue; } // Strictly allow ONLY Opus Audio packets (Payload Type 120)
+                                                                if pt != 120 {
+                                                                    // Video (H264) and RTCP share this socket with Opus;
+                                                                    // the native receiver ignores audio and unknown SSRCs.
+                                                                    native_session.ingest(&native_ctx, pkt);
+                                                                    if last_native_tick.elapsed() >= Duration::from_secs(1) {
+                                                                        native_session.tick(&native_ctx);
+                                                                        last_native_tick = std::time::Instant::now();
+                                                                    }
+                                                                    continue;
+                                                                }
 
                                                                 let ssrc_recv = u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]);
                                                                 if ssrc_recv == my_ssrc { continue; }
+                                                                diag_rx.rx_packets.fetch_add(1, Ordering::Relaxed);
 
                                                                 if detected_ssrcs.insert(ssrc_recv) {
                                                                     info!("🎙️ NOVO SSRC DE VOZ REMOTO RECEBIDO! SSRC={} de {}", ssrc_recv, addr);
@@ -369,49 +662,118 @@ pub async fn connect_voice_gateway(
                                                                 let nonce_u32_le = u32::from_le_bytes(nonce_bytes_rx);
                                                                 let nonce_u32_be = u32::from_be_bytes(nonce_bytes_rx);
 
-                                                                let mut n1 = [0u8; 12]; n1[0..4].copy_from_slice(&nonce_bytes_rx);
-                                                                let mut n2 = [0u8; 12]; n2[8..12].copy_from_slice(&nonce_bytes_rx);
-                                                                let mut n3 = [0u8; 12]; n3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
-                                                                let mut n4 = [0u8; 12]; n4[8..12].copy_from_slice(&nonce_u32_le.to_be_bytes());
-                                                                let mut n5 = [0u8; 12]; n5[0..4].copy_from_slice(&nonce_u32_be.to_le_bytes());
-                                                                let mut n6 = [0u8; 12]; n6[8..12].copy_from_slice(&nonce_u32_be.to_le_bytes());
-
-                                                                let nonce_candidates = [&n1, &n2, &n3, &n4, &n5, &n6];
-
                                                                 let key_opt = secret_key_rx.lock().unwrap().clone();
                                                                 if let Some(key_bytes) = key_opt {
-                                                                    if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
-                                                                        let candidates: &[(usize, usize)] = if has_ext {
-                                                                            &[
-                                                                                (base_header_len + 4, ext_bytes_len),
-                                                                                (base_header_len + 4 + ext_bytes_len, 0),
-                                                                                (base_header_len, ext_bytes_len + 4),
-                                                                                (base_header_len, 0),
-                                                                            ]
-                                                                        } else {
-                                                                            &[(base_header_len, 0)]
-                                                                        };
+                                                                    let cur_rx_mode = native_mode_rx.lock().unwrap().clone();
+                                                                    let is_xchacha = cur_rx_mode.to_ascii_lowercase().contains("xchacha");
 
-                                                                        let mut decrypted_opt: Option<(Vec<u8>, usize)> = None;
+                                                                    let candidates: &[(usize, usize)] = if has_ext {
+                                                                        &[
+                                                                            (base_header_len + 4, ext_bytes_len),
+                                                                            (base_header_len + 4 + ext_bytes_len, 0),
+                                                                            (base_header_len, ext_bytes_len + 4),
+                                                                            (base_header_len, 0),
+                                                                        ]
+                                                                    } else {
+                                                                        &[(base_header_len, 0)]
+                                                                    };
 
-                                                                        'try_decrypt: for &(test_aad_len, test_ext_len) in candidates {
-                                                                            if test_aad_len >= ciphertext_end { continue; }
-                                                                            let header = &pkt[..test_aad_len];
-                                                                            let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                    let mut decrypted_opt: Option<(Vec<u8>, usize)> = None;
+                                                                    let cached_layout = voice_layout_cache.get(&ssrc_recv).copied();
 
-                                                                            for &nonce_cand in &nonce_candidates {
-                                                                                let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
-                                                                                if let Ok(dec) = cipher.decrypt(Nonce::from_slice(nonce_cand), payload) {
-                                                                                    if dec.len() >= test_ext_len {
-                                                                                        decrypted_opt = Some((dec, test_ext_len));
-                                                                                        break 'try_decrypt;
+                                                                    if is_xchacha {
+                                                                        if let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&key_bytes) {
+                                                                            let mut xn1 = [0u8; 24]; xn1[0..4].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut xn2 = [0u8; 24]; xn2[20..24].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut xn3 = [0u8; 24]; xn3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let mut xn4 = [0u8; 24]; xn4[20..24].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let x_nonces = [&xn1, &xn2, &xn3, &xn4];
+
+                                                                            // Fast path com layout em cache
+                                                                            if let Some((c_idx, n_idx)) = cached_layout {
+                                                                                if c_idx < candidates.len() && n_idx < x_nonces.len() {
+                                                                                    let (test_aad_len, test_ext_len) = candidates[c_idx];
+                                                                                    if test_aad_len < ciphertext_end {
+                                                                                        let header = &pkt[..test_aad_len];
+                                                                                        let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(XNonce::from_slice(x_nonces[n_idx]), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+
+                                                                            if decrypted_opt.is_none() {
+                                                                                'x_search: for (c_idx, &(test_aad_len, test_ext_len)) in candidates.iter().enumerate() {
+                                                                                    if test_aad_len >= ciphertext_end { continue; }
+                                                                                    let header = &pkt[..test_aad_len];
+                                                                                    let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                    for (n_idx, &nonce_cand) in x_nonces.iter().enumerate() {
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(XNonce::from_slice(nonce_cand), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                voice_layout_cache.insert(ssrc_recv, (c_idx, n_idx));
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                                break 'x_search;
+                                                                                            }
+                                                                                        }
                                                                                     }
                                                                                 }
                                                                             }
                                                                         }
+                                                                } else {
+                                                                        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
+                                                                            let mut n1 = [0u8; 12]; n1[0..4].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut n2 = [0u8; 12]; n2[8..12].copy_from_slice(&nonce_bytes_rx);
+                                                                            let mut n3 = [0u8; 12]; n3[0..4].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let mut n4 = [0u8; 12]; n4[8..12].copy_from_slice(&nonce_u32_le.to_be_bytes());
+                                                                            let mut n5 = [0u8; 12]; n5[0..4].copy_from_slice(&nonce_u32_be.to_le_bytes());
+                                                                            let mut n6 = [0u8; 12]; n6[8..12].copy_from_slice(&nonce_u32_be.to_le_bytes());
+                                                                            let aes_nonces = [&n1, &n2, &n3, &n4, &n5, &n6];
+
+                                                                            // Fast path com layout em cache
+                                                                            if let Some((c_idx, n_idx)) = cached_layout {
+                                                                                if c_idx < candidates.len() && n_idx < aes_nonces.len() {
+                                                                                    let (test_aad_len, test_ext_len) = candidates[c_idx];
+                                                                                    if test_aad_len < ciphertext_end {
+                                                                                        let header = &pkt[..test_aad_len];
+                                                                                        let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(Nonce::from_slice(aes_nonces[n_idx]), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+
+                                                                            if decrypted_opt.is_none() {
+                                                                                'aes_search: for (c_idx, &(test_aad_len, test_ext_len)) in candidates.iter().enumerate() {
+                                                                                    if test_aad_len >= ciphertext_end { continue; }
+                                                                                    let header = &pkt[..test_aad_len];
+                                                                                    let ciphertext = &pkt[test_aad_len..ciphertext_end];
+                                                                                    for (n_idx, &nonce_cand) in aes_nonces.iter().enumerate() {
+                                                                                        let payload = aes_gcm::aead::Payload { msg: ciphertext, aad: header };
+                                                                                        if let Ok(dec) = cipher.decrypt(Nonce::from_slice(nonce_cand), payload) {
+                                                                                            if dec.len() >= test_ext_len {
+                                                                                                voice_layout_cache.insert(ssrc_recv, (c_idx, n_idx));
+                                                                                                decrypted_opt = Some((dec, test_ext_len));
+                                                                                                break 'aes_search;
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
 
                                                                         let (decrypted_raw, ext_skip) = match decrypted_opt {
                                                                             Some(res) => {
+                                                                                diag_rx.rx_decrypt_ok.fetch_add(1, Ordering::Relaxed);
                                                                                 static LOGGED_SUCCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                                                                                 if !LOGGED_SUCCESS.swap(true, std::sync::atomic::Ordering::Relaxed) {
                                                                                     info!("🎉 Descriptografia AES-GCM BEM-SUCEDIDA para SSRC {}! ext_skip={} bytes", ssrc_recv, res.1);
@@ -420,6 +782,7 @@ pub async fn connect_voice_gateway(
                                                                             },
                                                                             None => {
                                                                                 decrypt_err_cnt += 1;
+                                                                                diag_rx.rx_decrypt_fail.fetch_add(1, Ordering::Relaxed);
                                                                                 if decrypt_err_cnt % 50 == 1 {
                                                                                     warn!("Descriptografia AES-GCM falhou para SSRC {}: len={} has_ext={} cc={} base_len={} ext_words={} header={:02X?} nonce={:02X?}",
                                                                                         ssrc_recv, len, has_ext, cc, base_header_len, ext_len_words, &pkt[..16.min(len)], nonce_bytes_rx);
@@ -479,6 +842,7 @@ pub async fn connect_voice_gateway(
                                                                                     match res {
                                                                                         Ok(d) => {
                                                                                             dave_flow_rx.failures.store(0, Ordering::Relaxed);
+                                                                                            diag_rx.rx_dave_ok.fetch_add(1, Ordering::Relaxed);
                                                                                             (d, true)
                                                                                         }
                                                                                         Err(_) if !has_dave_magic && dave_flow_rx.plaintext_allowed() => {
@@ -497,12 +861,20 @@ pub async fn connect_voice_gateway(
                                                                                                 warn!("🔑 [DAVE DIAG] decrypt() FALHOU para SSRC={} UserID={} (payload_len={}, group_users={:?}): {:?}",
                                                                                                     ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
                                                                                             }
-                                                                                            (Vec::new(), false)
+                                                                                            let has_dave_magic = transport_payload.len() >= 4 && transport_payload.ends_with(&[0xFA, 0xFA]);
+                                                                                            diag_rx.rx_dave_fail.fetch_add(1, Ordering::Relaxed);
+                                                                                            if has_dave_magic {
+                                                                                                diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
+                                                                                                (Vec::new(), false)
+                                                                                            } else {
+                                                                                                (transport_payload.to_vec(), true)
+                                                                                            }
                                                                                         }
                                                                                     }
                                                                                 } else {
                                                                                     _dave_not_ready_cnt += 1;
                                                                                     if has_dave_magic {
+                                                                                        diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                         (Vec::new(), false)
                                                                                     } else {
                                                                                         (transport_payload.to_vec(), true)
@@ -510,6 +882,7 @@ pub async fn connect_voice_gateway(
                                                                                 }
                                                                             } else {
                                                                                 if has_dave_magic {
+                                                                                    diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                     (Vec::new(), false)
                                                                                 } else {
                                                                                     (transport_payload.to_vec(), true)
@@ -614,6 +987,11 @@ pub async fn connect_voice_gateway(
                                                                         if decode_success && decoded_count > 0 {
                                                                             register_voice_participant(ssrc_recv, sender_user_id);
                                                                             let total_samples = decoded_count * pkt_channels;
+                                                                            diag_rx.rx_decode_ok.fetch_add(1, Ordering::Relaxed);
+                                                                            diag_rx.rx_samples.fetch_add(total_samples as u64, Ordering::Relaxed);
+                                                                            for &s in pcm_out_buf[..total_samples].iter() {
+                                                                                VoiceDiag::note_peak(&diag_rx.rx_peak_milli, s);
+                                                                            }
                                                                             let dump_vec = decoded_voice_pairs(&pcm_out_buf[..total_samples], pkt_channels);
                                                                                     ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
 
@@ -627,18 +1005,24 @@ pub async fn connect_voice_gateway(
                                                                                         push_voice_frame(q, &plc_pairs, &dump_vec);
                                                                                     }
                                                                                 } else if !opus_data.is_empty() {
+                                                                                    diag_rx.rx_decode_fail.fetch_add(1, Ordering::Relaxed);
                                                                                     opus_err_cnt += 1;
                                                                                     if opus_err_cnt % 50 == 1 {
                                                                                         warn!("📊 [MÉTRICA DE ERRO] Opus decode falhou para SSRC {} (Erros={})", ssrc_recv, opus_err_cnt);
                                                                                     }
                                                                                 }
                                                                             }
-                                                                        }
                                                             }
                                                             Ok(Err(e)) => {
                                                                 warn!("Erro socket.recv_from: {:?}", e);
                                                             }
-                                                            Err(_) => { /* timeout 100ms, keep looping */ }
+                                                            Err(_) => {
+                                                                // timeout 100ms, keep looping
+                                                                if last_native_tick.elapsed() >= Duration::from_secs(1) {
+                                                                    native_session.tick(&native_ctx);
+                                                                    last_native_tick = std::time::Instant::now();
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     info!("Loop de recepção de voz (ID={}) encerrado.", rx_session_id);
@@ -646,6 +1030,7 @@ pub async fn connect_voice_gateway(
 
                                                 let speaker_queues_out = get_speaker_pcm_queues();
                                                 let ssrc_to_userid_speaker = Arc::clone(&ssrc_to_userid_audio);
+                                                let diag_out = Arc::clone(&diag_audio);
                                                 let out_session_id = my_session_id;
                                                 std::thread::spawn(move || {
                                                     use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
@@ -691,10 +1076,10 @@ pub async fn connect_voice_gateway(
                                                             info!("🔊 Dispositivo de saída de áudio disponível novamente.");
                                                         }
 
-                                                        let config = match device.default_output_config() {
-                                                            Ok(c) => c,
-                                                            Err(e) => {
-                                                                warn!("Falha ao obter config de saída: {:?}", e);
+                                                        let config = match crate::audio::engine::select_preferred_48khz_config(&device, false) {
+                                                            Some(c) => c,
+                                                            None => {
+                                                                warn!("Falha ao obter config de saída para o dispositivo");
                                                                 std::thread::sleep(std::time::Duration::from_millis(500));
                                                                 continue;
                                                             }
@@ -707,61 +1092,102 @@ pub async fn connect_voice_gateway(
                                                     let sq = Arc::clone(&speaker_queues_out);
                                                     let ssrc_to_userid_spk = Arc::clone(&ssrc_to_userid_speaker);
                                                     let mut started_ssrcs = std::collections::HashSet::new();
-                                                    let mut inactive_ticks = std::collections::HashMap::new();
+                                                    let mut inactive_samples: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
                                                     // Fractional phase counters per SSRC for smooth Hermite cubic sample rate conversion (48kHz -> out_sample_rate)
                                                     let mut ssrc_phases: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
+                                                    // Deafen silences the speaker by policy; on undeafen the queued
+                                                    // backlog is stale, so drop it and restart the pre-buffer.
+                                                    let mut was_deaf = is_self_deaf();
 
                                                     #[cfg(not(target_os = "linux"))]
                                                     let stream_config: cpal::StreamConfig = config.clone().into();
                                                     #[cfg(target_os = "linux")]
-                                                    let stream_config = crate::audio::engine::linux_voice_stream_config(&device, &config, false);
+                                                    let stream_config = crate::audio::engine::linux_voice_output_config(&device, &config);
 
                                                     // Watchdog: the callbacks count how often they run and the error
                                                     // callback raises a flag; a stream that errors or goes quiet is rebuilt.
                                                     let output_ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
                                                     let output_broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                                    // ALSA through PipeWire reports transient POLLERR bursts while
+                                                    // the callbacks keep running; rebuilding on every one of them
+                                                    // cost seconds of silence. Only a stall rebuilds now, and the
+                                                    // error log is rate-limited instead of flooding the file.
+                                                    let output_err_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                                                    let output_err_last_log = Arc::new(std::sync::atomic::AtomicU64::new(0));
                                                     let stream_res = match config.sample_format() {
                                                         cpal::SampleFormat::F32 => {
                                                             let ticks_f32 = Arc::clone(&output_ticks);
                                                             let broken_f32 = Arc::clone(&output_broken);
+                                                            let err_count_f32 = Arc::clone(&output_err_count);
+                                                            let err_log_f32 = Arc::clone(&output_err_last_log);
                                                             let sq_f32 = Arc::clone(&sq);
                                                             let ssrc_to_userid_f32 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let diag_f32 = Arc::clone(&diag_out);
+                                                            let diag_err_f32 = Arc::clone(&diag_out);
+                                                            let mut first_tick = true;
+                                                            let mut ready_ssrcs = Vec::with_capacity(32);
+                                                            let mut to_remove = Vec::with_capacity(8);
+                                                            let mut ssrc_vol_map = std::collections::HashMap::with_capacity(32);
+                                                            let mut aec_ref = Vec::with_capacity(1024);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [f32], _| {
                                                                     ticks_f32.fetch_add(1, Ordering::Relaxed);
+                                                                    diag_f32.speaker_ticks.fetch_add(1, Ordering::Relaxed);
+                                                                    if first_tick {
+                                                                        first_tick = false;
+                                                                        let got = output.len() / out_channels.max(1);
+                                                                        info!("🔊 Speaker callback (F32): {} frames ({:.2} ms) @ {} Hz",
+                                                                            got, got as f64 * 1000.0 / out_sample_rate.max(1) as f64, out_sample_rate);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
                                                                         output.fill(0.0);
                                                                         return;
                                                                     }
-                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                        for s in output.iter_mut() { *s = 0.0; }
+                                                                        return;
+                                                                    }
+                                                                    if is_self_deaf() {
+                                                                        was_deaf = true;
                                                                         for s in output.iter_mut() { *s = 0.0; }
                                                                         return;
                                                                     }
                                                                     for s in output.iter_mut() { *s = 0.0; }
 
                                                                     if let Ok(mut queues) = sq_f32.lock() {
+                                                                        if was_deaf {
+                                                                            was_deaf = false;
+                                                                            for q in queues.values_mut() { q.clear(); }
+                                                                            started_ssrcs.clear();
+                                                                            inactive_samples.clear();
+                                                                            ssrc_phases.clear();
+                                                                            ssrc_histories.clear();
+                                                                        }
                                                                         let frames = output.len() / out_channels.max(1);
-                                                                        let mut ready_ssrcs = Vec::new();
-                                                                        let mut to_remove = Vec::new();
+                                                                        // Keep at least three callbacks buffered: a fixed 40 ms would drain
+                                                                        // mid-callback once ALSA hands out larger blocks, chopping syllables.
+                                                                        let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
+                                                                        ready_ssrcs.clear();
+                                                                        to_remove.clear();
 
                                                                         for (&ssrc, q) in queues.iter() {
                                                                             if q.is_empty() {
-                                                                                let ticks = inactive_ticks.entry(ssrc).or_insert(0);
-                                                                                *ticks += 1;
-                                                                                if *ticks > VOICE_RESET_INACTIVE_CALLBACKS {
+                                                                                let silence = inactive_samples.entry(ssrc).or_insert(0);
+                                                                                *silence += frames as u64;
+                                                                                if *silence > VOICE_RESET_INACTIVE_SAMPLES {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
                                                                                 }
-                                                                                if *ticks > 150 {
+                                                                                if *silence > VOICE_FORGET_SSRC_SAMPLES {
                                                                                     to_remove.push(ssrc);
                                                                                 }
                                                                             } else {
-                                                                                inactive_ticks.insert(ssrc, 0);
+                                                                                inactive_samples.insert(ssrc, 0);
                                                                             }
 
                                                                             if ssrc >= 0x8000_0000 {
@@ -773,23 +1199,23 @@ pub async fn connect_voice_gateway(
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
-                                                                            } else if q.len() >= VOICE_PREBUFFER_SAMPLES { // 40ms Jitter Pre-buffer
+                                                                            } else if q.len() >= prebuffer {
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
                                                                         }
 
-                                                                        for ssrc in to_remove {
+                                                                        for &ssrc in &to_remove {
                                                                             queues.remove(&ssrc);
                                                                             started_ssrcs.remove(&ssrc);
-                                                                            inactive_ticks.remove(&ssrc);
+                                                                            inactive_samples.remove(&ssrc);
                                                                             ssrc_phases.remove(&ssrc);
                                                                             ssrc_histories.remove(&ssrc);
                                                                         }
 
                                                                         if ready_ssrcs.is_empty() { return; }
 
-                                                                        let mut ssrc_vol_map = std::collections::HashMap::new();
+                                                                        ssrc_vol_map.clear();
                                                                         let mut max_active_priority = 0i32;
                                                                         let active_spk_store = get_active_voice_participants_store();
                                                                         let active_spk_map = active_spk_store.lock().ok();
@@ -820,7 +1246,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
-                                                                        let mut aec_ref = Vec::with_capacity(frames);
+                                                                        aec_ref.clear();
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
@@ -891,11 +1317,20 @@ pub async fn connect_voice_gateway(
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
+                                                                    for &s in output.iter() {
+                                                                        VoiceDiag::note_peak(&diag_f32.speaker_peak_milli, s);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     crate::utils::test_hooks::voice_played_f32(output);
                                                                 },
                                                                 move |err| {
-                                                                    warn!("Erro no stream de saída F32: {:?}", err);
+                                                                    let total = err_count_f32.fetch_add(1, Ordering::Relaxed) + 1;
+                                                                    diag_err_f32.speaker_errors.fetch_add(1, Ordering::Relaxed);
+                                                                    let now = voice_now_ms();
+                                                                    if now.saturating_sub(err_log_f32.load(Ordering::Relaxed)) >= 3_000 {
+                                                                        err_log_f32.store(now, Ordering::Relaxed);
+                                                                        warn!("Erro no stream de saída F32 (#{}): {:?}", total, err);
+                                                                    }
                                                                     broken_f32.store(true, Ordering::Relaxed);
                                                                 },
                                                                 None,
@@ -904,42 +1339,70 @@ pub async fn connect_voice_gateway(
                                                         cpal::SampleFormat::I16 => {
                                                             let ticks_i16 = Arc::clone(&output_ticks);
                                                             let broken_i16 = Arc::clone(&output_broken);
+                                                            let err_count_i16 = Arc::clone(&output_err_count);
+                                                            let err_log_i16 = Arc::clone(&output_err_last_log);
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let diag_i16 = Arc::clone(&diag_out);
+                                                            let diag_err_i16 = Arc::clone(&diag_out);
+                                                            let mut first_tick = true;
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [i16], _| {
                                                                     ticks_i16.fetch_add(1, Ordering::Relaxed);
+                                                                    diag_i16.speaker_ticks.fetch_add(1, Ordering::Relaxed);
+                                                                    if first_tick {
+                                                                        first_tick = false;
+                                                                        let got = output.len() / out_channels.max(1);
+                                                                        info!("🔊 Speaker callback (I16): {} frames ({:.2} ms) @ {} Hz",
+                                                                            got, got as f64 * 1000.0 / out_sample_rate.max(1) as f64, out_sample_rate);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
                                                                         output.fill(0);
                                                                         return;
                                                                     }
-                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id || is_self_deaf() {
+                                                                    if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != out_session_id {
+                                                                        for s in output.iter_mut() { *s = 0; }
+                                                                        return;
+                                                                    }
+                                                                    if is_self_deaf() {
+                                                                        was_deaf = true;
                                                                         for s in output.iter_mut() { *s = 0; }
                                                                         return;
                                                                     }
                                                                     for s in output.iter_mut() { *s = 0; }
 
                                                                     if let Ok(mut queues) = sq_i16.lock() {
+                                                                        if was_deaf {
+                                                                            was_deaf = false;
+                                                                            for q in queues.values_mut() { q.clear(); }
+                                                                            started_ssrcs.clear();
+                                                                            inactive_samples.clear();
+                                                                            ssrc_phases.clear();
+                                                                            ssrc_histories.clear();
+                                                                        }
                                                                         let frames = output.len() / out_channels.max(1);
+                                                                        // Keep at least three callbacks buffered: a fixed 40 ms would drain
+                                                                        // mid-callback once ALSA hands out larger blocks, chopping syllables.
+                                                                        let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
                                                                         let mut ready_ssrcs = Vec::new();
                                                                         let mut to_remove = Vec::new();
 
                                                                         for (&ssrc, q) in queues.iter() {
                                                                             if q.is_empty() {
-                                                                                let ticks = inactive_ticks.entry(ssrc).or_insert(0);
-                                                                                *ticks += 1;
-                                                                                if *ticks > VOICE_RESET_INACTIVE_CALLBACKS {
+                                                                                let silence = inactive_samples.entry(ssrc).or_insert(0);
+                                                                                *silence += frames as u64;
+                                                                                if *silence > VOICE_RESET_INACTIVE_SAMPLES {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
                                                                                 }
-                                                                                if *ticks > 150 {
+                                                                                if *silence > VOICE_FORGET_SSRC_SAMPLES {
                                                                                     to_remove.push(ssrc);
                                                                                 }
                                                                             } else {
-                                                                                inactive_ticks.insert(ssrc, 0);
+                                                                                inactive_samples.insert(ssrc, 0);
                                                                             }
 
                                                                             if ssrc >= 0x8000_0000 {
@@ -951,16 +1414,16 @@ pub async fn connect_voice_gateway(
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
-                                                                            } else if q.len() >= VOICE_PREBUFFER_SAMPLES { // 40ms Jitter Pre-buffer
+                                                                            } else if q.len() >= prebuffer {
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
                                                                         }
 
-                                                                        for ssrc in to_remove {
+                                                                        for &ssrc in &to_remove {
                                                                             queues.remove(&ssrc);
                                                                             started_ssrcs.remove(&ssrc);
-                                                                            inactive_ticks.remove(&ssrc);
+                                                                            inactive_samples.remove(&ssrc);
                                                                             ssrc_phases.remove(&ssrc);
                                                                             ssrc_histories.remove(&ssrc);
                                                                         }
@@ -1063,11 +1526,20 @@ pub async fn connect_voice_gateway(
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
+                                                                    for &s in output.iter() {
+                                                                        VoiceDiag::note_peak(&diag_i16.speaker_peak_milli, s as f32 / 32768.0);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     crate::utils::test_hooks::voice_played_i16(output);
                                                                 },
                                                                 move |err| {
-                                                                    warn!("Erro no stream de saída I16: {:?}", err);
+                                                                    let total = err_count_i16.fetch_add(1, Ordering::Relaxed) + 1;
+                                                                    diag_err_i16.speaker_errors.fetch_add(1, Ordering::Relaxed);
+                                                                    let now = voice_now_ms();
+                                                                    if now.saturating_sub(err_log_i16.load(Ordering::Relaxed)) >= 3_000 {
+                                                                        err_log_i16.store(now, Ordering::Relaxed);
+                                                                        warn!("Erro no stream de saída I16 (#{}): {:?}", total, err);
+                                                                    }
                                                                     broken_i16.store(true, Ordering::Relaxed);
                                                                 },
                                                                 None,
@@ -1088,6 +1560,7 @@ pub async fn connect_voice_gateway(
                                                                 continue;
                                                             }
                                                             info!("🔊 Stream de Saída de Áudio (Speaker) ATIVO! Reproduzindo vozes dos outros usuários...");
+                                                            diag_out.speaker_started.store(true, Ordering::Relaxed);
                                                             #[cfg(feature = "automation")]
                                                             crate::utils::test_hooks::voice_output_started();
                                                             // Keep stream alive until voice session ends OR user selects another output device!
@@ -1103,7 +1576,14 @@ pub async fn connect_voice_gateway(
                                                                     quiet_since = std::time::Instant::now();
                                                                 }
                                                                 let broken = output_broken.load(Ordering::Relaxed);
-                                                                if broken || quiet_since.elapsed() >= OUTPUT_STALL {
+                                                                // POLLERR alone does not mean the stream is gone: ALSA through
+                                                                // PipeWire reports bursts while the callback keeps producing
+                                                                // audio. A stall after an error is the real failure though, so
+                                                                // it is caught quickly instead of waiting the full timeout.
+                                                                let stalled = quiet_since.elapsed();
+                                                                if stalled >= OUTPUT_STALL
+                                                                    || (broken && stalled >= OUTPUT_STALL_AFTER_ERROR)
+                                                                {
                                                                     warn!("🔊 Saída de áudio {}: recriando o stream.",
                                                                         if broken { "com erro" } else { "parada" });
                                                                     let wait = next_no_device_wait(output_retry_wait);
@@ -1143,12 +1623,14 @@ pub async fn connect_voice_gateway(
                                                 info!("Loop principal de áudio de saída encerrado.");
                                             });
 
+                                                let outbound_nonce_audio = Arc::clone(&outbound_nonce);
+                                                let diag_tx = Arc::clone(&diag_audio);
+                                                let native_mode_tx = Arc::clone(&native_mode_audio);
                                                 tokio::spawn(async move {
                                                 let pcm_queue = get_mic_pcm_queue();
                                                 let mut voice_proc = crate::audio::dsp::VoiceProcessor::new();
                                                 let mut seq: u16 = 0;
                                                 let mut timestamp: u32 = 0;
-                                                let mut nonce_cnt: u32 = 0;
                                                 let mut opus_out = vec![0u8; 1000];
                                                 let mut speaking_loop_counter: u32 = 0;
 
@@ -1200,7 +1682,7 @@ pub async fn connect_voice_gateway(
                                                 let mut pacing_timer = tokio::time::interval(Duration::from_millis(20));
                                                 pacing_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                                                loop {
+                                                    loop {
                                                     #[allow(unused_variables)]
                                                     let had_mic_frame = if timer_pacing {
                                                         pacing_timer.tick().await;
@@ -1208,6 +1690,9 @@ pub async fn connect_voice_gateway(
                                                     } else {
                                                         next_frame().await
                                                     };
+                                                    if !had_mic_frame {
+                                                        diag_tx.tx_mic_empty.fetch_add(1, Ordering::Relaxed);
+                                                    }
                                                     if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
                                                         info!("Sessão de voz antiga (ID={}) encerrada, saindo do loop UDP!", my_session_id);
                                                         break;
@@ -1252,28 +1737,52 @@ pub async fn connect_voice_gateway(
                                                     }
 
                                                     if !is_muted {
-                                                        // Process audio with VoiceProcessor (AEC, Krisp/Standard Denoising, AGC)
+                                                        // Process audio with VoiceProcessor (AEC, Standard/Advanced Denoising, AGC2)
                                                         let suppression_mode = crate::utils::video_settings::get_noise_suppression();
                                                         let enable_aec = crate::utils::video_settings::get_echo_cancellation();
                                                         let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
 
-                                                        voice_proc.process_frame(&mut pcm_frame, &suppression_mode, enable_aec, enable_agc);
+                                                        let metrics = voice_proc.process_frame(&mut pcm_frame, &suppression_mode, enable_aec, enable_agc);
 
-                                                        // Enforce VAD threshold gating on processed audio
-                                                        let mut sum_sq = 0.0f32;
-                                                        for &s in pcm_frame.iter() {
-                                                            sum_sq += s * s;
-                                                        }
-                                                        let rms = (sum_sq / 960.0).sqrt();
-                                                        let level = (rms * 6.0).min(1.0);
-                                                        if level >= get_vad_threshold() {
+                                                        // Report POST-DSP level to UI meter so user sees exactly what is transmitted
+                                                        set_self_mic_level(metrics.ui_level);
+
+                                                        // Discord AudioModeVAD logic:
+                                                        // Manual threshold: user slider in [0.0, 1.0] -> [-100.0 dB, 0.0 dB]
+                                                        // Advanced mode / Automatic: Gated on neural speech probability vad_prob >= 0.45
+                                                        let user_threshold = get_vad_threshold();
+                                                        let user_threshold_db = crate::audio::dsp::VolumeAnalyzer::ui_level_to_db(user_threshold);
+
+                                                        let passes_volume = metrics.volume_db >= user_threshold_db;
+                                                        // Neural VAD check: prevents mechanical keyboard clicks from opening VAD
+                                                        let passes_neural = if suppression_mode == "advanced" || suppression_mode == "krisp" {
+                                                            metrics.vad_prob >= 0.35 // Higher noise immunity in advanced mode
+                                                        } else {
+                                                            metrics.vad_prob >= 0.20 || metrics.volume_db >= -28.0
+                                                        };
+
+                                                        if passes_volume && passes_neural {
                                                             has_audio = true;
                                                         }
+
+                                                        // If mic testing is active during call, feed post-DSP samples to loopback
+                                                        if is_testing_mic() {
+                                                            if let Ok(mut loop_q) = get_mic_loopback_queue().lock() {
+                                                                if loop_q.len() < 48000 {
+                                                                    for &s in pcm_frame.iter() {
+                                                                        loop_q.push_back(s);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    for &s in pcm_frame.iter() {
+                                                        VoiceDiag::note_peak(&diag_tx.tx_peak_milli, s);
                                                     }
 
                                                     let is_silence_packet = if has_audio {
                                                         speech_hangover_frames = 12; // 240ms hangover
-                                                        remaining_silence_frames = 5;
+                                                        remaining_silence_frames = 10; // 10 silence packets (200ms) matching Discord ShouldSendSilence
                                                         silence_keepalive_counter = 0;
                                                         false
                                                     } else if speech_hangover_frames > 0 {
@@ -1286,15 +1795,19 @@ pub async fn connect_voice_gateway(
                                                         silence_keepalive_counter = silence_keepalive_counter.wrapping_add(1);
                                                         // Send a keepalive silence packet every 2.5 seconds (125 frames) to keep NAT route open
                                                         if silence_keepalive_counter >= 125 {
-                                                            silence_keepalive_counter = 0;
-                                                            true
+                                                             silence_keepalive_counter = 0;
+                                                             true
                                                         } else {
-                                                            continue;
+                                                             continue;
                                                         }
                                                     };
 
+                                                    // Keep self speaking indicator perfectly synced with transmitted voice
+                                                    set_self_speaking(!is_muted && (has_audio || speech_hangover_frames > 0));
+
                                                     seq = seq.wrapping_add(1);
-                                                    nonce_cnt = nonce_cnt.wrapping_add(1);
+                                                    // Shares the connection counter with RTCP feedback.
+                                                    let nonce_cnt = outbound_nonce_audio.fetch_add(1, Ordering::Relaxed);
 
                                                     let mut audio_header = [0u8; 12];
                                                     audio_header[0] = 0x80; // RTP Version 2
@@ -1346,28 +1859,52 @@ pub async fn connect_voice_gateway(
                                                     let opus_payload: &[u8] = if let Some(ref v) = dave_encrypted { v } else { opus_bytes };
 
                                                     if let Some(key_bytes) = key_opt {
-                                                        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
-                                                            // 12-byte AES-GCM Nonce for aead_aes256_gcm_rtpsize:
-                                                            let mut nonce_bytes = [0u8; 12];
-                                                            nonce_bytes[0..4].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                        let cur_mode = native_mode_tx.lock().unwrap().clone();
+                                                        let is_xchacha = cur_mode.to_ascii_lowercase().contains("xchacha");
+                                                        let cipher_res = if is_xchacha {
+                                                            if let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&key_bytes) {
+                                                                let mut nonce_bytes = [0u8; 24];
+                                                                nonce_bytes[20..24].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                                let nonce = XNonce::from_slice(&nonce_bytes);
+                                                                let payload = Payload {
+                                                                    msg: opus_payload,
+                                                                    aad: &audio_header,
+                                                                };
+                                                                cipher.encrypt(nonce, payload).ok()
+                                                            } else {
+                                                                None
+                                                            }
+                                                        } else {
+                                                            if let Ok(cipher) = Aes256Gcm::new_from_slice(&key_bytes) {
+                                                                let mut nonce_bytes = [0u8; 12];
+                                                                nonce_bytes[0..4].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                                let nonce = Nonce::from_slice(&nonce_bytes);
+                                                                let payload = Payload {
+                                                                    msg: opus_payload,
+                                                                    aad: &audio_header,
+                                                                };
+                                                                cipher.encrypt(nonce, payload).ok()
+                                                            } else {
+                                                                None
+                                                            }
+                                                        };
 
-                                                            let nonce = Nonce::from_slice(&nonce_bytes);
-
-                                                            // Encrypt the (DAVE-encrypted) Opus payload with transport AES-256-GCM
-                                                            let payload = Payload {
-                                                                msg: opus_payload,
-                                                                aad: &audio_header,
-                                                            };
-
-                                                            if let Ok(ciphertext) = cipher.encrypt(nonce, payload) {
-                                                                let mut rtp_pkt = Vec::with_capacity(12 + ciphertext.len() + 4);
-                                                                rtp_pkt.extend_from_slice(&audio_header);
-                                                                rtp_pkt.extend_from_slice(&ciphertext);
-                                                                // Append 4-byte nonce counter as suffix (rtpsize format)
-                                                                rtp_pkt.extend_from_slice(&nonce_cnt.to_be_bytes());
+                                                        if let Some(ciphertext) = cipher_res {
+                                                            let mut rtp_pkt = Vec::with_capacity(12 + ciphertext.len() + 4);
+                                                            rtp_pkt.extend_from_slice(&audio_header);
+                                                            rtp_pkt.extend_from_slice(&ciphertext);
+                                                            // Append 4-byte nonce counter as suffix (rtpsize format)
+                                                            rtp_pkt.extend_from_slice(&nonce_cnt.to_be_bytes());
 
                                                                 if let Err(_) = socket.send_to(&rtp_pkt, &target_addr).await {
                                                                     break;
+                                                                }
+                                                                diag_tx.tx_frames.fetch_add(1, Ordering::Relaxed);
+                                                                if has_audio {
+                                                                    diag_tx.tx_voice_frames.fetch_add(1, Ordering::Relaxed);
+                                                                }
+                                                                if dave_enc_ok {
+                                                                    diag_tx.tx_dave_ok.fetch_add(1, Ordering::Relaxed);
                                                                 }
                                                                 #[cfg(feature = "automation")]
                                                                 crate::utils::test_hooks::voice_sent(!is_silence_packet, !had_mic_frame);
@@ -1389,9 +1926,8 @@ pub async fn connect_voice_gateway(
                                                             }
                                                         }
                                                     }
-                                                }
+                                                });
                                             });
-                                        });
                                     }
                                 }
                                 4 => {
@@ -1399,6 +1935,14 @@ pub async fn connect_voice_gateway(
                                     let ssrc = *active_ssrc.lock().unwrap();
                                     info!("ðŸŽ‰ VOICE GATEWAY OPCODE 4 SESSION DESCRIPTION RECEBIDO! SessÃ£o de Voz Ativada com Sucesso!");
 
+                                    // The Session Description repeats the negotiated mode; keep
+                                    // the decryption side in sync in case it differs from op 2.
+                                    if let Some(mode) = val["d"]["mode"].as_str() {
+                                        *native_mode.lock().unwrap() = mode.to_string();
+                                        if mode != "aead_aes256_gcm_rtpsize" {
+                                            warn!("⚠️ [VOICE] Session Description confirmou o modo '{}'; o áudio usa AES-256-GCM.", mode);
+                                        }
+                                    }
                                     if let Some(key_arr) = val["d"]["secret_key"].as_array() {
                                         let key_bytes: Vec<u8> = key_arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
                                         if key_bytes.len() == 32 {
@@ -1407,8 +1951,22 @@ pub async fn connect_voice_gateway(
                                             fixed.copy_from_slice(&key_bytes);
                                             *get_voice_secret_key_store().lock().unwrap() = Some(fixed);
                                             *secret_key_arc.lock().unwrap() = Some(key_bytes);
+                                            voice_diag.ready.store(true, Ordering::Relaxed);
+                                        } else {
+                                            warn!("⚠️ [VOICE] Session Description trouxe uma chave de {} bytes (esperado 32): o áudio NÃO pode ser enviado.", key_bytes.len());
                                         }
+                                    } else {
+                                        warn!("⚠️ [VOICE] Session Description SEM secret_key: o áudio NÃO pode ser enviado.");
                                     }
+                                    voice_diag.set_session(format!(
+                                        "{} | op4 mode={} audio={:?} video={:?} dave_version={:?} media_session={:?}",
+                                        voice_diag.session_text(),
+                                        val["d"]["mode"].as_str().unwrap_or("?"),
+                                        val["d"]["audio_codec"].as_str(),
+                                        val["d"]["video_codec"].as_str(),
+                                        val["d"]["dave_protocol_version"].as_u64(),
+                                        val["d"]["media_session_id"].as_u64(),
+                                    ));
 
                                     // Send Voice Opcode 5: Speaking
                                     let speaking_pkt = serde_json::json!({
@@ -1421,8 +1979,26 @@ pub async fn connect_voice_gateway(
                                     });
 
                                     info!("Enviando OP 5 Speaking para a Voice Gateway...");
-                                    let mut w = write_arc.lock().await;
-                                    let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
+                                    {
+                                        let mut w = write_arc.lock().await;
+                                        let _ = w.send(Message::Text(speaking_pkt.to_string().into())).await;
+                                    }
+
+                                    // Video state may have arrived before the session was
+                                    // established; subscribe again now that it is.
+                                    let wants: Vec<u32> = native_wants
+                                        .lock()
+                                        .map(|set| set.iter().copied().collect())
+                                        .unwrap_or_default();
+                                    if !wants.is_empty() {
+                                        let payload = serde_json::json!({
+                                            "op": 15,
+                                            "d": crate::native_video::media_sink_wants(&wants)
+                                        });
+                                        let mut w = write_arc.lock().await;
+                                        let _ = w.send(Message::Text(payload.to_string().into())).await;
+                                        info!("🎥 [NATIVE VIDEO] OP 15 reenviado após Session Description: {:?}", wants);
+                                    }
                                 }
                                  5 => {
                                      // Voice Opcode 5: Speaking notification from another user
@@ -1436,37 +2012,94 @@ pub async fn connect_voice_gateway(
                                          ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
                                          register_voice_participant(s_ssrc, u_id);
                                          info!("Voice Gateway OP 5: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
+                                         // Remember that a peer announced speech: if no RTP
+                                         // follows, the media path is dead while the control
+                                         // connection stayed healthy.
+                                         let speaking_flag = val["d"]["speaking"].as_u64().unwrap_or(0);
+                                         let my_ssrc = *active_ssrc.lock().unwrap();
+                                         if speaking_flag & 1 != 0 && s_ssrc != my_ssrc {
+                                             VOICE_LAST_PEER_SPEAKING_MS.store(voice_now_ms(), Ordering::Relaxed);
+                                         }
                                      }
                                  }
                                  6 => {
                                      // Voice Opcode 6: Heartbeat ACK!
+                                     voice_hb_acked.store(true, Ordering::SeqCst);
                                      info!("Voice Gateway Heartbeat ACK (Opcode 6) recebido!");
                                  }
-                                 11 | 12 => {
-                                     // Voice Opcode 11/12: User Joined / Client Connect
-                                     if let Some(arr) = val["d"]["user_ids"].as_array() {
-                                         for v in arr {
-                                             if let Some(uid_str) = v.as_str() {
-                                                 if let Ok(uid) = uid_str.parse::<u64>() {
-                                                     let ssrc = (uid & 0xFFFFFFFF) as u32;
-                                                     register_voice_participant(ssrc, uid);
-                                                     info!("Voice Gateway OP 11/12 (user_ids): Registrado participante User ID {}", uid);
-                                                 }
-                                             }
-                                         }
-                                     }
-                                     let s_ssrc = val["d"]["audio_ssrc"].as_u64().or_else(|| val["d"]["ssrc"].as_u64()).unwrap_or(0) as u32;
-                                     let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
-                                         s.parse().unwrap_or(0)
-                                     } else {
-                                         val["d"]["user_id"].as_u64().unwrap_or(0)
-                                     };
-                                     if s_ssrc > 0 && u_id > 0 {
-                                         ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
-                                         register_voice_participant(s_ssrc, u_id);
-                                         info!("Voice Gateway OP 11/12: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
-                                     }
-                                 }
+                                 11 => {
+                                    // Voice Opcode 11: Clients Connect (user ids only).
+                                    if let Some(arr) = val["d"]["user_ids"].as_array() {
+                                        for v in arr {
+                                            if let Some(uid_str) = v.as_str() {
+                                                if let Ok(uid) = uid_str.parse::<u64>() {
+                                                    let ssrc = (uid & 0xFFFFFFFF) as u32;
+                                                    register_voice_participant(ssrc, uid);
+                                                    info!("Voice Gateway OP 11 (user_ids): Registrado participante User ID {}", uid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let s_ssrc = val["d"]["audio_ssrc"].as_u64().or_else(|| val["d"]["ssrc"].as_u64()).unwrap_or(0) as u32;
+                                    let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        val["d"]["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    if s_ssrc > 0 && u_id > 0 {
+                                        ssrc_to_userid.lock().unwrap().insert(s_ssrc, u_id);
+                                        register_voice_participant(s_ssrc, u_id);
+                                        info!("Voice Gateway OP 11: Mapeado SSRC {} -> User ID {}", s_ssrc, u_id);
+                                    }
+                                }
+                                12 => {
+                                    // Voice Opcode 12: Video state (camera SSRCs + Go Live streams).
+                                    let wants = crate::native_video::handle_video_state(
+                                        &val["d"],
+                                        0,
+                                        false,
+                                        &ssrc_to_userid,
+                                    );
+                                    // Keep the speaking-indicator mapping populated, as the
+                                    // old combined op 11/12 handler did.
+                                    let audio_ssrc = val["d"]["audio_ssrc"].as_u64().unwrap_or(0) as u32;
+                                    let video_uid: u64 = val["d"]["user_id"]
+                                        .as_str()
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .or_else(|| val["d"]["user_id"].as_u64())
+                                        .unwrap_or(0);
+                                    if audio_ssrc > 0 && video_uid > 0 {
+                                        register_voice_participant(audio_ssrc, video_uid);
+                                    }
+                                    if !wants.is_empty() {
+                                        if let Ok(mut set) = native_wants.lock() {
+                                            set.extend(wants.iter().copied());
+                                        }
+                                        let payload = serde_json::json!({
+                                            "op": 15,
+                                            "d": crate::native_video::media_sink_wants(&wants)
+                                        });
+                                        let mut w = write_arc.lock().await;
+                                        let _ = w.send(Message::Text(payload.to_string().into())).await;
+                                        info!("🎥 [NATIVE VIDEO] OP 12: assinando video SSRCs {:?} via OP 15", wants);
+                                    }
+                                }
+                                13 => {
+                                    // Voice Opcode 13: Client Disconnect.
+                                    let u_id: u64 = if let Some(s) = val["d"]["user_id"].as_str() {
+                                        s.parse().unwrap_or(0)
+                                    } else {
+                                        val["d"]["user_id"].as_u64().unwrap_or(0)
+                                    };
+                                    if u_id > 0 {
+                                        crate::native_video::unregister_user_video(u_id);
+                                        if let Ok(mut map) = ssrc_to_userid.lock() {
+                                            map.retain(|_, uid| *uid != u_id);
+                                        }
+                                        crate::screen_capture::types::set_peer_streaming(u_id, false);
+                                        info!("🎥 [NATIVE VIDEO] OP 13: usuário {} desconectado do canal de voz", u_id);
+                                    }
+                                }
                                 18 => {
                                     // DAVE Opcode 18: DAVE_PREPARE_TRANSITION (Sent for all active voice channel participants)
                                     let transition_id = val["d"]["transition_id"].as_u64().unwrap_or(0);
@@ -1541,8 +2174,10 @@ pub async fn connect_voice_gateway(
                                     let epoch = val["d"]["epoch"].as_u64().unwrap_or(0);
                                     let protocol_version = val["d"]["protocol_version"].as_u64().unwrap_or(1);
                                     info!("DAVE Prepare Epoch (op=24): epoch={}, protocol_version={}", epoch, protocol_version);
-                                    if epoch == 1 {
-                                        dave_flow.failures.store(0, Ordering::Relaxed);
+                                    if epoch >= 1 {
+                                        if epoch == 1 {
+                                            dave_flow.failures.store(0, Ordering::Relaxed);
+                                        }
                                         let key_pkg_bytes = {
                                             let mut sess = dave_session.lock().unwrap();
                                             if let Some(ref mut s) = *sess {
@@ -1565,7 +2200,7 @@ pub async fn connect_voice_gateway(
                                             pkt.extend_from_slice(&kp);
                                             let mut w = write_arc.lock().await;
                                             let _ = w.send(Message::Binary(pkt.into())).await;
-                                            info!("DAVE: Novo KeyPackage (op=26) gerado e enviado para Epoch Reset (op=24)!");
+                                            info!("DAVE: Novo KeyPackage (op=26) gerado e enviado para Epoch Reset (op=24, epoch={})!", epoch);
                                         }
                                     }
                                 }
@@ -1751,12 +2386,14 @@ pub async fn connect_voice_gateway(
                 }
             }
 
-            set_is_connected_to_voice(false);
             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id {
+                // Superseded by a newer session: it owns the global voice state now,
+                // so this task must not clear it (it may exit after the replacement
+                // is already up and running).
                 info!("Sessão de voz {} finalizada pelo usuário.", my_session_id);
-                clear_voice_participants();
                 break;
             }
+            set_is_connected_to_voice(false);
             if final_close {
                 clear_voice_participants();
                 break;
@@ -1798,6 +2435,170 @@ type VoiceSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
+
+/// Counters that say, in one line, where a call is losing audio: the handshake,
+/// the DAVE group, transport decryption, Opus decode, the speaker or the microphone.
+#[derive(Default)]
+struct VoiceDiag {
+    /// Session Description (op 4) received: the transport is usable.
+    ready: std::sync::atomic::AtomicBool,
+    /// Mode, codecs, DAVE version and endpoint, filled from op 2 and op 4.
+    session: std::sync::Mutex<Option<String>>,
+    rx_packets: std::sync::atomic::AtomicU64,
+    rx_decrypt_ok: std::sync::atomic::AtomicU64,
+    rx_decrypt_fail: std::sync::atomic::AtomicU64,
+    rx_dave_ok: std::sync::atomic::AtomicU64,
+    rx_dave_fail: std::sync::atomic::AtomicU64,
+    rx_dave_dropped: std::sync::atomic::AtomicU64,
+    rx_decode_ok: std::sync::atomic::AtomicU64,
+    rx_decode_fail: std::sync::atomic::AtomicU64,
+    rx_samples: std::sync::atomic::AtomicU64,
+    rx_peak_milli: std::sync::atomic::AtomicU32,
+    tx_frames: std::sync::atomic::AtomicU64,
+    tx_voice_frames: std::sync::atomic::AtomicU64,
+    tx_dave_ok: std::sync::atomic::AtomicU64,
+    tx_mic_empty: std::sync::atomic::AtomicU64,
+    tx_peak_milli: std::sync::atomic::AtomicU32,
+    speaker_started: std::sync::atomic::AtomicBool,
+    speaker_ticks: std::sync::atomic::AtomicU64,
+    /// Cumulative backend errors (`POLLERR` bursts included) for this call.
+    speaker_errors: std::sync::atomic::AtomicU64,
+    speaker_peak_milli: std::sync::atomic::AtomicU32,
+}
+
+impl VoiceDiag {
+    fn set_session(&self, text: String) {
+        if let Ok(mut slot) = self.session.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    fn session_text(&self) -> String {
+        self.session.lock().ok().and_then(|s| s.clone()).unwrap_or_else(|| "pending".to_string())
+    }
+
+    /// Highest absolute sample of an interval, in thousandths (integer max is atomic).
+    fn note_peak(cell: &std::sync::atomic::AtomicU32, sample: f32) {
+        let milli = (sample.abs().clamp(0.0, 1.0) * 1000.0) as u32;
+        cell.fetch_max(milli, Ordering::Relaxed);
+    }
+
+    fn take_peak(cell: &std::sync::atomic::AtomicU32) -> u32 {
+        cell.swap(0, Ordering::Relaxed)
+    }
+}
+
+/// Prints one diagnostic line every five seconds, and whenever DAVE becomes ready or
+/// stops being ready. It is the first thing to read when a call is silent.
+fn spawn_voice_diagnostics(
+    diag: Arc<VoiceDiag>,
+    dave_session: Arc<std::sync::Mutex<Option<DaveSession>>>,
+    self_mute: Arc<std::sync::Mutex<bool>>,
+    session_id: u64,
+    channel_id: String,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_dave: Option<(bool, usize)> = None;
+        let started = std::time::Instant::now();
+        let (mut warned_rx, mut warned_dave, mut warned_mic) = (false, false, false);
+        let (mut p_rx, mut p_dec_ok, mut p_dec_fail, mut p_dave_ok, mut p_dave_fail,
+             mut p_dropped, mut p_decode_ok, mut p_decode_fail) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        let (mut p_tx, mut p_tx_voice, mut p_tx_dave, mut p_tx_empty) = (0u64, 0u64, 0u64, 0u64);
+
+        loop {
+            ticker.tick().await;
+            if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != session_id { break; }
+
+            let dave_state = {
+                let guard = dave_session.lock().unwrap();
+                guard.as_ref().map(|s| (s.is_ready(), s.get_user_ids().map(|u| u.len()).unwrap_or(0)))
+            };
+            if let Some(state) = dave_state {
+                if last_dave != Some(state) {
+                    last_dave = Some(state);
+                    let details = {
+                        let guard = dave_session.lock().unwrap();
+                        guard.as_ref().map(|s| format!(
+                            "ready={} users={:?} epoch={:?} protocol={}",
+                            s.is_ready(), s.get_user_ids(), s.epoch().map(|e| e.as_u64()), s.protocol_version()
+                        )).unwrap_or_else(|| "no session".to_string())
+                    };
+                    info!("🔑 [DAVE STATE] {}", details);
+                }
+            }
+
+            let rx = diag.rx_packets.load(Ordering::Relaxed);
+            let dec_ok = diag.rx_decrypt_ok.load(Ordering::Relaxed);
+            let dec_fail = diag.rx_decrypt_fail.load(Ordering::Relaxed);
+            let dave_ok = diag.rx_dave_ok.load(Ordering::Relaxed);
+            let dave_fail = diag.rx_dave_fail.load(Ordering::Relaxed);
+            let dropped = diag.rx_dave_dropped.load(Ordering::Relaxed);
+            let decode_ok = diag.rx_decode_ok.load(Ordering::Relaxed);
+            let decode_fail = diag.rx_decode_fail.load(Ordering::Relaxed);
+            let tx = diag.tx_frames.load(Ordering::Relaxed);
+            let tx_voice = diag.tx_voice_frames.load(Ordering::Relaxed);
+            let tx_dave = diag.tx_dave_ok.load(Ordering::Relaxed);
+            let tx_empty = diag.tx_mic_empty.load(Ordering::Relaxed);
+
+            let muted = *self_mute.lock().unwrap();
+            let rx_peak = VoiceDiag::take_peak(&diag.rx_peak_milli);
+            let tx_peak = VoiceDiag::take_peak(&diag.tx_peak_milli);
+            let spk_peak = VoiceDiag::take_peak(&diag.speaker_peak_milli);
+            let mic_queue = get_mic_pcm_queue().lock().map(|q| q.len()).unwrap_or(0);
+
+            if started.elapsed() >= Duration::from_secs(15) {
+                if !warned_rx && rx == 0 {
+                    warned_rx = true;
+                    warn!("🔇 [VOICE] 15 s na chamada e NENHUM pacote de áudio remoto chegou. \
+                           O gateway de voz pode ter caído: confira as linhas HELLO/READY/op 4 acima.");
+                }
+                if !warned_dave && matches!(dave_state, Some((false, _))) {
+                    warned_dave = true;
+                    warn!("🔑 [DAVE] O grupo de criptografia NÃO foi estabelecido (estado {:?}). \
+                           Com DAVE ativo isso deixa a chamada muda nos dois sentidos: \
+                           procure por 'Falha ao processar', 'Welcome' e 'Commit' acima.", dave_state);
+                }
+                if !warned_mic && tx > 0 && tx_voice == 0 {
+                    warned_mic = true;
+                    warn!("🎙️ [VOICE] 15 s enviando apenas silêncio (mic_queue={}, muted={}). \
+                           Verifique o dispositivo de entrada e o limiar de ativação por voz.", mic_queue, muted);
+                }
+            }
+
+            info!(
+                "📊 [VOICE DIAG ch={}] ready={} muted={} deaf={} | {} | DAVE={:?} | \
+                 RX +{} pkt (+{} ok / +{} fail) dave +{} ok / +{} fail / +{} dropped decode +{} ok / +{} fail peak={} | \
+                 TX +{} frames (+{} voice, +{} dave) mic_empty +{} peak={} | \
+                 SPK started={} ticks={} peak={} errors={} | mic_queue={}",
+                channel_id,
+                if diag.ready.load(Ordering::Relaxed) { "yes" } else { "no" },
+                if muted { "yes" } else { "no" },
+                if is_self_deaf() { "yes" } else { "no" },
+                diag.session_text(),
+                dave_state,
+                rx - p_rx, dec_ok - p_dec_ok, dec_fail - p_dec_fail,
+                dave_ok - p_dave_ok, dave_fail - p_dave_fail, dropped - p_dropped,
+                decode_ok - p_decode_ok, decode_fail - p_decode_fail,
+                rx_peak,
+                tx - p_tx, tx_voice - p_tx_voice, tx_dave - p_tx_dave, tx_empty - p_tx_empty,
+                tx_peak,
+                if diag.speaker_started.load(Ordering::Relaxed) { "yes" } else { "no" },
+                diag.speaker_ticks.load(Ordering::Relaxed),
+                spk_peak,
+                diag.speaker_errors.load(Ordering::Relaxed),
+                mic_queue,
+            );
+
+            p_rx = rx; p_dec_ok = dec_ok; p_dec_fail = dec_fail;
+            p_dave_ok = dave_ok; p_dave_fail = dave_fail; p_dropped = dropped;
+            p_decode_ok = decode_ok; p_decode_fail = decode_fail;
+            p_tx = tx; p_tx_voice = tx_voice; p_tx_dave = tx_dave; p_tx_empty = tx_empty;
+        }
+        info!("📊 [VOICE DIAG] resumo encerrado (sessão {}).", session_id);
+    });
+}
 
 /// DAVE bookkeeping shared by the gateway handler and the receiver.
 struct DaveFlow {
@@ -1939,6 +2740,9 @@ async fn dave_start_over(
 
 /// An output stream whose callback has not run for this long is rebuilt.
 const OUTPUT_STALL: std::time::Duration = std::time::Duration::from_secs(2);
+/// A stream that reported an error and stopped asking for audio is dead: no point
+/// waiting the full stall timeout while the call is silent.
+const OUTPUT_STALL_AFTER_ERROR: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Wait before looking for an output device again: 0.5 s, doubling up to 5 s.
 fn next_no_device_wait(previous: Option<Duration>) -> Duration {

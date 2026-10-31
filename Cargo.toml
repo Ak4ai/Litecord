@@ -146,9 +146,15 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
+codegen-units = 16
+lto = "thin"
+strip = true
+
+# Fast release profile for rapid sandbox/agent iteration without long link times
+[profile.fast-release]
+inherits = "release"
 codegen-units = 256
 lto = "off"
-strip = false
 
 
 # Local copy of i-slint-core 1.17.1 with one fix: a mouse-wheel scroll animation could get

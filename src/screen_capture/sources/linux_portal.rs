@@ -406,20 +406,18 @@ pub fn list_capturable_windows() -> Vec<CapturableWindowItem> {
 pub fn capture_screen_rgb(_target_hwnd: isize, target_w: u32, target_h: u32, target_fps: u64, out_bgra: &mut Vec<u8>) -> Option<(u128, u128)> {
     #[cfg(target_os = "linux")]
     {
-        let capture_backend = crate::video_settings::get_video_capture_backend();
-        if capture_backend != "x11" {
-            init_wayland_portal_screencast(target_w, target_h, target_fps);
+        // O portal XDG Desktop ScreenCast suporta Wayland e X11 moderno nativamente
+        init_wayland_portal_screencast(target_w, target_h, target_fps);
 
-            if let Ok(slot) = PORTAL_FRAME.lock() {
-                if let Some(ref frame) = *slot {
-                    let total = (target_w * target_h * 4) as usize;
-                    if frame.len() == total {
-                        if out_bgra.len() != total {
-                            out_bgra.resize(total, 0);
-                        }
-                        out_bgra.copy_from_slice(frame);
-                        return Some((0, 0));
+        if let Ok(slot) = PORTAL_FRAME.lock() {
+            if let Some(ref frame) = *slot {
+                let total = (target_w * target_h * 4) as usize;
+                if frame.len() == total {
+                    if out_bgra.len() != total {
+                        out_bgra.resize(total, 0);
                     }
+                    out_bgra.copy_from_slice(frame);
+                    return Some((0, 0));
                 }
             }
         }

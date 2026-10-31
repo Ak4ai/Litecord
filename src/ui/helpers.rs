@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 
-use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 use log::{info, warn};
 
 use crate::{
@@ -82,7 +82,10 @@ pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::
 
 pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
     let _ = slint::invoke_from_event_loop(move || {
-        let delays = [15, 45, 100, 200, 400];
+        // Images and embeds change the height after the first layout, so keep pinning
+        // the chat to the bottom for a moment; a channel with pictures would otherwise
+        // stay at its oldest message the first time it is opened.
+        let delays = [15, 45, 100, 220, 500, 900, 1500];
         for delay in delays {
             let app_w = app_weak.clone();
             slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
@@ -92,6 +95,27 @@ pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
             });
         }
     });
+}
+
+static LAST_CHAT_PAINT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks that a channel batch was just painted in the chat.
+pub fn mark_chat_painted() {
+    LAST_CHAT_PAINT_MS.store(unix_millis(), Ordering::Relaxed);
+}
+
+/// True while a channel paint is recent: late model refreshes (images, emojis) may
+/// re-pin the chat even if a rebuild already reset the scroll position.
+pub fn chat_painted_within(max_age: std::time::Duration) -> bool {
+    let last = LAST_CHAT_PAINT_MS.load(Ordering::Relaxed);
+    last > 0 && unix_millis().saturating_sub(last) <= max_age.as_millis() as u64
 }
 
 pub fn parse_hex_color(hex: &str) -> slint::Color {
@@ -185,7 +209,11 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
         for i in 0..current.row_count() {
             let Some(old) = current.row_data(i) else { continue };
             let new = fresh_by_id[old.id.as_str()];
-            if old.voice_count != new.voice_count || old.name != new.name {
+            if old.voice_count != new.voice_count
+                || old.name != new.name
+                || old.is_speaking != new.is_speaking
+                || old.is_streaming != new.is_streaming
+            {
                 let mut row = new.clone();
                 row.unread_count = old.unread_count;
                 current.set_row_data(i, row);
@@ -318,13 +346,15 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let notice = video_settings::get_enable_self_preview_notice();
     let show_hw = video_settings::get_show_hardware_monitor();
     ui.set_use_gpu_renderer(video_settings::get_use_gpu_renderer());
-    let use_light_theme = video_settings::get_use_light_theme();
+    let theme_mode = video_settings::get_theme_mode();
+    let use_light_theme = theme_mode == "light";
 
     ui.set_selected_video_encoder(enc.clone().into());
     ui.set_selected_video_capture_backend(vcap.clone().into());
     ui.set_selected_audio_loopback_backend(aloop.clone().into());
     ui.set_enable_self_preview_notice(notice);
     ui.set_show_hardware_monitor(show_hw);
+    ui.set_theme_mode_name(theme_mode.as_str().into());
     ui.set_use_light_theme(use_light_theme);
 
     #[cfg(target_os = "windows")]
@@ -507,27 +537,27 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
     let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
         i18n::Language::English => (
             "Advanced Suppression",
-            "Deep neural network background noise removal and transient filtering.",
+            "Ideal for gaming & typing: blocks mechanical keyboards, pets, house noise & fans. (Avoid for musical instruments).",
             "Standard (RNNoise)",
-            "Classic recurrent neural network noise reduction.",
-            "Disabled (Default)",
-            "No noise suppression applied to microphone."
+            "For quiet rooms with steady hum (PC fans, AC). Preserves voice warmth, but does not block keyboard clicks.",
+            "Disabled (Raw Audio)",
+            "Pure unprocessed audio. Recommended for singing, playing guitar, and musical instruments."
         ),
         i18n::Language::Spanish => (
             "Supresión avanzada",
-            "Supresión por red neuronal profunda y filtrado de transientes.",
+            "Ideal para gaming y llamadas: bloquea teclados mecánicos, mascotas, ruidos de casa y ventiladores. (Evitar para música).",
             "Estándar (RNNoise)",
-            "Reducción de ruido clásica basada en red neuronal recurrente.",
-            "Desactivado (Predeterminado)",
-            "Sin procesamiento de supresión de ruido en el micrófono."
+            "Para ambientes tranquilos con zumbido constante (ventilador, AC). Mantiene voz natural, no quita teclas.",
+            "Desactivado (Audio puro)",
+            "Audio puro sin filtros ni cortes. Recomendado para cantar, tocar guitarra y transmitir instrumentos musicales."
         ),
         _ => (
             "Supressão Avançada",
-            "Supressão por rede neural profunda e filtragem de transientes.",
+            "Ideal para jogos e digitação: bloqueia teclado mecânico, pets, ruídos domésticos e ventoinhas. (Evitar para música).",
             "Padrão (RNNoise)",
-            "Redução de ruído clássica baseada em rede neural recorrente.",
-            "Desativado (Padrão)",
-            "Sem processamento de supressão de ruído no microfone."
+            "Para ambientes calmos com ruído contínuo (ventoinha, AC). Mantém voz natural, mas não remove teclas.",
+            "Desativado (Áudio puro)",
+            "Áudio puro sem filtros ou cortes. Recomendado para cantar, tocar violão/guitarra e transmitir instrumentos."
         ),
     };
 
@@ -884,9 +914,12 @@ pub fn map_message_attachments(
 ) -> slint::ModelRc<MessageAttachment> {
     let att_cache = attachment_cache::get_attachment_cache();
     let slint_atts: Vec<MessageAttachment> = attachments.iter().map(|a| {
-        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full(&a.id, &a.filename) {
+        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full_for_ui(&a.id, &a.filename) {
             (true, img)
         } else {
+            if a.id.starts_with("embed_img_") {
+                att_cache.download_full_async(&a.id, &a.filename, &a.url, app_weak.clone());
+            }
             (false, slint::Image::default())
         };
 
@@ -910,6 +943,8 @@ pub fn map_message_attachments(
             (a.width, a.height)
         };
 
+        let is_loading = a.id.starts_with("embed_img_") && !is_downloaded;
+
         MessageAttachment {
             id: a.id.clone().into(),
             filename: a.filename.clone().into(),
@@ -920,7 +955,7 @@ pub fn map_message_attachments(
             height,
             is_image: a.is_image,
             is_downloaded,
-            is_loading: false,
+            is_loading,
             full_img,
             preview_img,
         }
@@ -1083,12 +1118,21 @@ pub fn build_ui_channels(
                     .take(2)
                     .flat_map(char::to_uppercase)
                     .collect();
+                let my_uid = gateway::get_my_user_id();
+                let is_self_member = user_id == 999999 || (my_uid != 0 && user_id == my_uid);
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
                     name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: true,
+                    is_speaking: gateway::is_voice_user_speaking(user_id),
+                    is_streaming: if is_self_member {
+                        crate::screen_capture::is_self_streaming()
+                    } else {
+                        crate::screen_capture::peer_is_streaming(user_id)
+                    },
+                    is_self_member,
                     parent_channel_id: ch.id.clone().into(),
                     avatar_text: avatar_text.into(),
                     avatar_slot: crate::utils::avatar_cache::get_avatar_cache().slot_for(&avatar_url),
