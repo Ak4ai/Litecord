@@ -244,23 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
-                        let is_max = w.is_maximized() || {
-                            #[cfg(target_os = "linux")]
-                            {
-                                if let Some(m) = w.current_monitor() {
-                                    let ms = m.size();
-                                    let ps = w.inner_size();
-                                    (ps.width as i64 - ms.width as i64).abs() <= 4
-                                        && (ps.height as i64 - ms.height as i64).abs() <= 120
-                                } else {
-                                    false
-                                }
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                false
-                            }
-                        };
+                        let is_max = crate::ui::window_place::is_maximized(w);
                         if ui.get_is_maximized() != is_max {
                             ui.set_is_maximized(is_max);
                         }
@@ -312,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if crate::ui::window_place::restore(winit_win) {
                     ui.set_is_maximized(true);
                 }
+                crate::ui::window_place::register(&app_weak_init);
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 // A frameless window gets no drop shadow, so over another light window its
@@ -4466,7 +4451,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            let is_max = app_instance.window().is_maximized();
+            // `window().is_maximized()` misses the state on some Wayland compositors.
+            let mut is_max = app_instance.get_is_maximized();
+            app_instance.window().with_winit_window(|w| {
+                is_max = crate::ui::window_place::is_maximized(w);
+            });
             let next = !is_max;
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);

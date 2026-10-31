@@ -15,6 +15,13 @@ use crate::utils::video_settings::{self, WindowGeometry, WINDOW_MIN_HEIGHT, WIND
 use crate::AppWindow;
 
 const DEFAULT_SIZE: (u32, u32) = (980, 620);
+/// A window covering this much of its monitor is treated as maximized. Wayland
+/// compositors do not always report the maximized state, and the work area can be
+/// shorter than the monitor (panels, docks), so compare proportions instead of pixels.
+#[cfg(target_os = "linux")]
+const MAXIMIZED_WIDTH_RATIO: f64 = 0.98;
+#[cfg(target_os = "linux")]
+const MAXIMIZED_HEIGHT_RATIO: f64 = 0.85;
 #[cfg(not(target_os = "linux"))]
 const DEFAULT_POSITION: (f64, f64) = (100.0, 100.0);
 const SAVE_AFTER: Duration = Duration::from_secs(1);
@@ -69,27 +76,43 @@ pub fn restore(window: &winit::window::Window) -> bool {
     maximized
 }
 
+/// Registers the window so its geometry can be written on close, even when the
+/// compositor never delivered a move or resize event.
+pub fn register(app: &slint::Weak<AppWindow>) {
+    WINDOW.with(|w| *w.borrow_mut() = Some(app.clone()));
+}
+
 /// A move or resize happened: the geometry is read when it is saved, a second later.
 /// Read during the events it can be wrong: maximizing reports the maximized size first
 /// and the maximized flag only after.
 pub fn observe(app: &slint::Weak<AppWindow>) {
+    WINDOW.with(|w| *w.borrow_mut() = Some(app.clone()));
     if !READY.with(|r| r.get()) {
         return;
     }
     DIRTY.with(|d| d.set(true));
-    WINDOW.with(|w| *w.borrow_mut() = Some(app.clone()));
     SAVE_TIMER.with(|t| {
         t.borrow_mut()
             .get_or_insert_with(slint::Timer::default)
-            .start(slint::TimerMode::SingleShot, SAVE_AFTER, save_now);
+            .start(slint::TimerMode::SingleShot, SAVE_AFTER, save_if_dirty);
     });
 }
 
-/// Writes a pending change at once (closing, going to the tray).
-pub fn save_now() {
-    if !DIRTY.with(|d| d.replace(false)) {
-        return;
+/// Writes the geometry after a move/resize, once the events have settled.
+fn save_if_dirty() {
+    if DIRTY.with(|d| d.replace(false)) {
+        save_geometry();
     }
+}
+
+/// Writes the geometry right away (closing, going to the tray). Some Wayland
+/// compositors do not deliver move/resize events, so this cannot depend on `DIRTY`.
+pub fn save_now() {
+    DIRTY.with(|d| d.set(false));
+    save_geometry();
+}
+
+fn save_geometry() {
     let Some(app) = WINDOW.with(|w| w.borrow().as_ref().and_then(|w| w.upgrade())) else { return };
     let previous = LAST.with(|l| l.get());
     let Some(geometry) = app.window().with_winit_window(|w| current(w, previous)).flatten() else { return };
@@ -102,27 +125,33 @@ pub fn save_now() {
     }
 }
 
+/// Whether the window is maximized. On Wayland the compositor does not always report
+/// it, so fall back to comparing the window size with its monitor.
+pub fn is_maximized(window: &winit::window::Window) -> bool {
+    if window.is_maximized() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(monitor) = window.current_monitor() {
+            let monitor_size = monitor.size();
+            let inner = window.inner_size();
+            let width_ratio = inner.width as f64 / monitor_size.width as f64;
+            let height_ratio = inner.height as f64 / monitor_size.height as f64;
+            return width_ratio >= MAXIMIZED_WIDTH_RATIO && height_ratio >= MAXIMIZED_HEIGHT_RATIO;
+        }
+    }
+    false
+}
+
 fn current(window: &winit::window::Window, previous: Option<WindowGeometry>) -> Option<WindowGeometry> {
-    if window.is_minimized().unwrap_or(false) {
+    // A hidden window reports no usable area. `is_minimized` is unreliable on
+    // Wayland, where it may stay true while the window is on screen.
+    let inner = window.inner_size();
+    if inner.width == 0 || inner.height == 0 {
         return None;
     }
-    let maximized = window.is_maximized() || {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(m) = window.current_monitor() {
-                let ms = m.size();
-                let ps = window.inner_size();
-                (ps.width as i64 - ms.width as i64).abs() <= 4
-                    && (ps.height as i64 - ms.height as i64).abs() <= 120
-            } else {
-                false
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
-    };
+    let maximized = is_maximized(window);
     if maximized {
         // Keep the size and place the window goes back to when restored.
         let (width, height) = previous.map_or(DEFAULT_SIZE, |g| (g.width, g.height));
