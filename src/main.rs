@@ -117,13 +117,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
         std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
+    let configure_window = |ui: &AppWindow| {
+        if let Some(saved) = video_settings::get_window_geometry() {
+            ui.window().set_size(slint::LogicalSize::new(
+                saved.width as f32,
+                saved.height as f32,
+            ));
+            #[cfg(not(target_os = "linux"))]
+            if let (Some(x), Some(y)) = (saved.x, saved.y) {
+                ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+            }
+            if saved.maximized {
+                ui.window().set_maximized(true);
+                ui.set_is_maximized(true);
+            }
+        }
+    };
+
     let app = match AppWindow::new() {
         Ok(app) => {
+            configure_window(&app);
             info!("🖥️ Exibindo janela principal (app.show())...");
             if let Err(e) = app.show() {
                 log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
                 std::env::set_var("SLINT_BACKEND", "software");
                 let sw_app = AppWindow::new()?;
+                configure_window(&sw_app);
                 sw_app.show()?;
                 info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
                 sw_app
@@ -136,6 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
             std::env::set_var("SLINT_BACKEND", "software");
             let sw_app = AppWindow::new()?;
+            configure_window(&sw_app);
             sw_app.show()?;
             info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
             sw_app
@@ -224,8 +244,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
-                        if ui.get_is_maximized() != w.is_maximized() {
-                            ui.set_is_maximized(w.is_maximized());
+                        let is_max = crate::ui::window_place::is_maximized(w);
+                        if ui.get_is_maximized() != is_max {
+                            ui.set_is_maximized(is_max);
                         }
                     }
                 });
@@ -275,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if crate::ui::window_place::restore(winit_win) {
                     ui.set_is_maximized(true);
                 }
+                crate::ui::window_place::register(&app_weak_init);
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 // A frameless window gets no drop shadow, so over another light window its
@@ -287,27 +309,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 winit_win.focus_window();
                 winit_win.request_redraw();
+                #[cfg(target_os = "windows")]
                 if let Some(pop_win) = popout_weak_init.upgrade() {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
                         let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
                         winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                         winit_pop.set_visible(false);
-                        #[cfg(target_os = "windows")]
-                        {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            if let Ok(handle) = winit_pop.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    let hwnd = win32_handle.hwnd.get() as isize;
-                                    *pop_hwnd_c.lock().unwrap() = Some(hwnd);
-                                    set_dark_titlebar_color(hwnd);
-                                    unsafe {
-                                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
-                                        };
-                                        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
-                                        SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
-                                    }
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        if let Ok(handle) = winit_pop.window_handle() {
+                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                let hwnd = win32_handle.hwnd.get() as isize;
+                                *pop_hwnd_c.lock().unwrap() = Some(hwnd);
+                                set_dark_titlebar_color(hwnd);
+                                unsafe {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                        GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+                                    };
+                                    let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+                                    SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
                                 }
                             }
                         }
@@ -619,6 +639,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 let _ = pop_win.window().with_winit_window(|w| {
+                    w.set_decorations(false);
+                    let _ = w.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
+                    w.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                     w.set_visible(true);
                     w.set_minimized(false);
                     w.focus_window();
@@ -4428,7 +4451,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            let is_max = app_instance.window().is_maximized();
+            // `window().is_maximized()` misses the state on some Wayland compositors.
+            let mut is_max = app_instance.get_is_maximized();
+            app_instance.window().with_winit_window(|w| {
+                is_max = crate::ui::window_place::is_maximized(w);
+            });
             let next = !is_max;
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);
@@ -4443,6 +4470,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
         std::process::exit(0);
+    });
+
+    let sm_for_close_req = Arc::clone(&screen_manager);
+    app.window().on_close_requested(move || {
+        info!("Solicitação nativa de fechamento da janela recebida (Alt+F4 / Taskbar)...");
+        crate::ui::window_place::save_now();
+        sm_for_close_req.stop();
+        #[cfg(target_os = "linux")]
+        screen_capture::kill_portal_child();
+        std::process::exit(0);
+        #[allow(unreachable_code)]
+        slint::CloseRequestResponse::HideWindow
     });
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
