@@ -78,21 +78,21 @@ pub fn save_now() {
     }
     let Some(app) = WINDOW.with(|w| w.borrow().as_ref().and_then(|w| w.upgrade())) else { return };
     let previous = LAST.with(|l| l.get());
-    let Some(geometry) = app.window().with_winit_window(|w| current(w, previous)).flatten() else { return };
-    if app.get_is_maximized() != geometry.maximized {
-        app.set_is_maximized(geometry.maximized);
-    }
+    // The UI property is the source of truth for maximize state: on macOS
+    // `Window::is_maximized` is a mutating getter for borderless windows, and
+    // elsewhere the window event handler keeps it in sync with the OS.
+    let maximized = app.get_is_maximized();
+    let Some(geometry) = app.window().with_winit_window(|w| current(w, previous, maximized)).flatten() else { return };
     if Some(geometry) != previous {
         LAST.with(|l| l.set(Some(geometry)));
         video_settings::set_window_geometry(geometry);
     }
 }
 
-fn current(window: &winit::window::Window, previous: Option<WindowGeometry>) -> Option<WindowGeometry> {
+fn current(window: &winit::window::Window, previous: Option<WindowGeometry>, maximized: bool) -> Option<WindowGeometry> {
     if window.is_minimized().unwrap_or(false) {
         return None;
     }
-    let maximized = window.is_maximized();
     if maximized {
         // Keep the size and place the window goes back to when restored.
         let (width, height) = previous.map_or(DEFAULT_SIZE, |g| (g.width, g.height));
