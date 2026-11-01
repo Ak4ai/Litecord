@@ -1863,7 +1863,7 @@ pub async fn connect_voice_gateway(
                                                         let cipher_res = if is_xchacha {
                                                             if let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&key_bytes) {
                                                                 let mut nonce_bytes = [0u8; 24];
-                                                                nonce_bytes[20..24].copy_from_slice(&nonce_cnt.to_be_bytes());
+                                                                nonce_bytes[0..4].copy_from_slice(&nonce_cnt.to_be_bytes());
                                                                 let nonce = XNonce::from_slice(&nonce_bytes);
                                                                 let payload = Payload {
                                                                     msg: opus_payload,
