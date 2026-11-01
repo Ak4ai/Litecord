@@ -1041,18 +1041,15 @@ pub async fn connect_voice_gateway(
                                                     while CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) == out_session_id {
                                                         let host = cpal::default_host();
                                                         let target_dev_name = current_target_dev.clone();
-                                                        let device = if let Ok(devices) = host.output_devices() {
-                                                            let dev_list: Vec<_> = devices.into_iter().collect();
-                                                            if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
-                                                                dev_list.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
+                                                        let device = if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+                                                            if let Ok(devices) = host.output_devices() {
+                                                                devices.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
                                                                     .or_else(|| host.default_output_device())
                                                             } else {
-                                                                dev_list.into_iter().find(|d| {
-                                                                    let n = d.name().unwrap_or_default();
-                                                                    !n.contains("Litecord") && !n.contains("Virtual") && !n.contains("Null") && !n.contains("Steam")
-                                                                }).or_else(|| host.default_output_device())
+                                                                host.default_output_device()
                                                             }
                                                         } else {
+                                                            // Standard system default output device (e.g. "default", mapped cleanly to PipeWire/Pulse)
                                                             host.default_output_device()
                                                         };
 

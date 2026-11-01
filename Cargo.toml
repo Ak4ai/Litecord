@@ -146,8 +146,8 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
-codegen-units = 16
-lto = "thin"
+codegen-units = 1
+lto = "fat"
 strip = true
 
 # Fast release profile for rapid sandbox/agent iteration without long link times

@@ -54,6 +54,7 @@ jobs:
         run: |
           mkdir -p package_portable
           Copy-Item target/release/litecord.exe package_portable/
+          Copy-Item -Recurse assets package_portable/ -ErrorAction SilentlyContinue
           Copy-Item README.md package_portable/ -ErrorAction SilentlyContinue
           Compress-Archive -Path package_portable/* -DestinationPath litecord-windows-x64-portable.zip
 
@@ -130,6 +131,60 @@ jobs:
           name: litecord-linux-x64
           path: litecord-linux-x64.tar.gz
 
+  build-linux-arm64:
+    name: Build Linux ARM64 (.tar.gz)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux System Dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libxkbcommon-x11-dev \
+            patchelf \
+            xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache Rust dependencies & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-arm64-release"
+          cache-on-failure: true
+
+      - name: Build Linux ARM64 Binary (Release)
+        run: cargo build --release --bin litecord ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
+
+      - name: Package Linux ARM64 Binary (.tar.gz)
+        run: |
+          mkdir -p release-pkg-arm64
+          cp target/release/litecord release-pkg-arm64/
+          cp -r assets release-pkg-arm64/
+          cp README.md release-pkg-arm64/ 2>/dev/null || true
+          tar -czvf litecord-linux-arm64.tar.gz -C release-pkg-arm64 .
+
+      - name: Upload Linux ARM64 tar.gz Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: litecord-linux-arm64
+          path: litecord-linux-arm64.tar.gz
+
   # Anylinux AppImage, built the way pkgforge-dev documents it:
   # https://pkgforge-dev.github.io/Anylinux-AppImages/HOW-TO-MAKE-THESE.html
   # - build on Arch Linux (never Debian/Fedora), app installed under /usr
@@ -200,7 +255,7 @@ jobs:
 
   create-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-linux, build-appimage]
+    needs: [build-windows, build-linux, build-linux-arm64, build-appimage]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true && inputs.features == '')
     runs-on: ubuntu-latest
     steps:
@@ -241,6 +296,7 @@ jobs:
             release-artifacts/Litecord-Setup-x64.exe
             release-artifacts/litecord-windows-x64-portable.zip
             release-artifacts/litecord-linux-x64.tar.gz
+            release-artifacts/litecord-linux-arm64.tar.gz
             release-artifacts/Litecord-x86_64.AppImage
           generate_release_notes: false
           append_body: false

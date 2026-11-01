@@ -466,7 +466,7 @@ fn open_mic_stream(
     #[cfg(target_os = "linux")]
     let stream_config = linux_voice_stream_config(&target_dev, &config, true);
 
-    let stream = match config.sample_format() {
+    let stream_res = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&pcm_queue);
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
@@ -499,7 +499,7 @@ fn open_mic_stream(
                     log::error!("Erro no Stream de Microfone: {:?}", err);
                 },
                 None,
-            ).ok()?
+            )
         }
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&pcm_queue);
@@ -533,7 +533,7 @@ fn open_mic_stream(
                     log::error!("Erro no Stream de Microfone I16: {:?}", err);
                 },
                 None,
-            ).ok()?
+            )
         }
         cpal::SampleFormat::I32 => {
             let q_arc = Arc::clone(&pcm_queue);
@@ -567,9 +567,20 @@ fn open_mic_stream(
                     log::error!("Erro no Stream de Microfone I32: {:?}", err);
                 },
                 None,
-            ).ok()?
+            )
         }
-        _ => return None,
+        fmt => {
+            log::warn!("Formato de microfone não suportado: {:?}", fmt);
+            return None;
+        }
+    };
+
+    let stream = match stream_res {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Falha em build_input_stream no microfone: {:?}", e);
+            return None;
+        }
     };
 
     if stream.play().is_ok() {
