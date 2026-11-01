@@ -370,26 +370,26 @@ export component ChannelSidebar inherits Rectangle {
                             if channel.is_streaming : VerticalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    height: 14px;
+                                    height: 18px;
                                     border-radius: 4px;
                                     background: AppTheme.danger-action;
                                     HorizontalLayout {
-                                        padding-left: 4px;
-                                        padding-right: 4px;
-                                        spacing: 3px;
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        spacing: 4px;
                                         VerticalLayout {
                                             alignment: center;
                                             Rectangle {
-                                                width: 4px;
-                                                height: 4px;
-                                                border-radius: 2px;
+                                                width: 5px;
+                                                height: 5px;
+                                                border-radius: 2.5px;
                                                 background: AppTheme.solid-white;
                                             }
                                         }
                                         Text {
                                             text: "LIVE";
                                             color: AppTheme.text-on-accent;
-                                            font-size: TypeScale.micro;
+                                            font-size: TypeScale.caption;
                                             font-weight: 800;
                                             vertical-alignment: center;
                                         }

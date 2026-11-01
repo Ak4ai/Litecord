@@ -529,3 +529,13 @@ pub fn get_user_stream_frame(uid: u64) -> Option<SharedPixelBuffer<Rgba8Pixel>> 
         None
     }
 }
+
+static IS_CAMERA_STREAM: AtomicBool = AtomicBool::new(false);
+
+pub fn set_is_camera_stream(is_cam: bool) {
+    IS_CAMERA_STREAM.store(is_cam, Ordering::Relaxed);
+}
+
+pub fn is_camera_stream() -> bool {
+    IS_CAMERA_STREAM.load(Ordering::Relaxed)
+}

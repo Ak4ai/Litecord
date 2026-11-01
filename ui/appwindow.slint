@@ -2133,9 +2133,9 @@ export component AppWindow inherits Window {
 
                                                             // Stream Mute Button
                                                             Rectangle {
-                                                                width: 26px;
-                                                                height: 24px;
-                                                                border-radius: 4px;
+                                                                width: 30px;
+                                                                height: 28px;
+                                                                border-radius: 6px;
                                                                 background: str_mute_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                                 VerticalLayout {
@@ -2144,8 +2144,8 @@ export component AppWindow inherits Window {
                                                                         alignment: center;
                                                                         Image {
                                                                             source: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
-                                                                            width: 12px;
-                                                                            height: 12px;
+                                                                            width: 14px;
+                                                                            height: 14px;
                                                                             colorize: p.is_muted ? AppTheme.danger : AppTheme.text-primary;
                                                                             image-fit: contain;
                                                                         }
@@ -2220,9 +2220,9 @@ export component AppWindow inherits Window {
 
                                                     // 3. max (Stream Card Focus / Expand Toggle - Priority 3, hidden when width < 160px)
                                                     if (stream_top_bar.width >= 160px): Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_fs_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -2231,8 +2231,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: is_this_stream_focused ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
-                                                                    width: 10px;
-                                                                    height: 10px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: is_this_stream_focused ? AppTheme.accent : AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2253,9 +2253,9 @@ export component AppWindow inherits Window {
 
                                                     // Fullscreen (whole window)
                                                     if (stream_top_bar.width >= 190px): Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_full_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -2264,8 +2264,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: @image-url("../assets/chrome-maximize.svg");
-                                                                    width: 10px;
-                                                                    height: 10px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: root.is_stream_fullscreen ? AppTheme.accent : AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2285,9 +2285,9 @@ export component AppWindow inherits Window {
 
                                                     // 2. desanexar (Popout Button - Priority 2, hidden when width < 110px)
                                                     if (stream_top_bar.width >= 110px): Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_pop_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -2296,8 +2296,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: @image-url("../assets/popout.svg");
-                                                                    width: 12px;
-                                                                    height: 12px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2315,9 +2315,9 @@ export component AppWindow inherits Window {
 
                                                     // 1. x (Stop Screen Share or Hide Stream - Priority 1, ALWAYS visible)
                                                     Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_stop_ta.has-hover ? AppTheme.danger : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -2326,8 +2326,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: @image-url("../assets/chrome-close.svg");
-                                                                    width: 10px;
-                                                                    height: 10px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2534,16 +2534,17 @@ export component AppWindow inherits Window {
                                                          horizontal-stretch: 0;
                                                          background: live_badge_ta.has-hover ? AppTheme.danger-action-hover : AppTheme.danger-action;
                                                          border-radius: 4px;
-                                                         height: 16px;
+                                                         height: 22px;
+                                                         min-width: 50px;
                                                          HorizontalLayout {
-                                                             padding-left: 6px;
-                                                             padding-right: 6px;
-                                                             spacing: 4px;
+                                                             padding-left: 8px;
+                                                             padding-right: 8px;
+                                                             spacing: 5px;
                                                              VerticalLayout {
                                                                  alignment: center;
                                                                  Rectangle {
-                                                                     width: 5px;
-                                                                     height: 5px;
+                                                                     width: 6px;
+                                                                     height: 6px;
                                                                      border-radius: 3px;
                                                                      background: AppTheme.solid-white;
                                                                  }
@@ -2551,7 +2552,7 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: Tr.live_badge;
                                                                  color: AppTheme.text-on-accent;
-                                                                 font-size: TypeScale.micro;
+                                                                 font-size: TypeScale.caption;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
                                                              }
@@ -2559,6 +2560,10 @@ export component AppWindow inherits Window {
 
                                                          live_badge_ta := TouchArea {
                                                              mouse-cursor: pointer;
+                                                             x: -4px;
+                                                             y: -4px;
+                                                             width: parent.width + 8px;
+                                                             height: parent.height + 8px;
                                                              clicked => { root.unhide_stream(p.user_id); }
                                                          }
                                                      }

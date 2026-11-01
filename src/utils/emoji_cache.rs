@@ -110,6 +110,90 @@ impl EmojiCache {
         None
     }
 
+    /// Returns the image only if it is already decoded in RAM.
+    ///
+    /// Painting paths use this instead of `get`, so a cold cache never reads and
+    /// decodes a PNG inside the UI thread; they call `hydrate_from_disk_async`.
+    pub fn get_cached(&self, emoji_id: &str) -> Option<slint::Image> {
+        if emoji_id.is_empty() {
+            return None;
+        }
+        let guard = self.memory_cache.lock().ok()?;
+        guard
+            .get(emoji_id)
+            .map(|dec| slint::Image::from_rgba8(dec.buffer.clone()))
+    }
+
+    /// Drops decoded emojis from RAM (the PNG disk cache is kept).
+    pub fn clear_memory(&self) {
+        if let Ok(mut guard) = self.memory_cache.lock() {
+            guard.clear();
+        }
+    }
+
+    /// Decodes an emoji already saved on disk on a blocking worker and refreshes
+    /// the rows that use it.
+    pub fn hydrate_from_disk_async(
+        &self,
+        emoji_id: &str,
+        app_weak: slint::Weak<crate::AppWindow>,
+    ) {
+        if emoji_id.is_empty() {
+            return;
+        }
+        if let Ok(guard) = self.memory_cache.lock() {
+            if guard.contains_key(emoji_id) {
+                return;
+            }
+        }
+        let file_path = self.disk_dir.join(format!("{}.png", emoji_id));
+        if !file_path.exists() {
+            return;
+        }
+        if let Ok(mut in_flight) = self.in_flight.lock() {
+            if !in_flight.insert(emoji_id.to_string()) {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        let cache_arc = get_emoji_cache();
+        let id_str = emoji_id.to_string();
+        tokio::spawn(async move {
+            let path = file_path.clone();
+            let decoded = tokio::task::spawn_blocking(move || {
+                std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| decode_bytes_to_rgba(&bytes))
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(dec) = decoded {
+                if let Ok(mut guard) = cache_arc.memory_cache.lock() {
+                    if guard.len() >= 64 {
+                        guard.clear();
+                    }
+                    guard.insert(id_str.clone(), dec);
+                }
+                let id_ui = id_str.clone();
+                let cache_ui = cache_arc.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_weak.upgrade() {
+                        if let Some(img) = cache_ui.get_cached(&id_ui) {
+                            crate::ui::helpers::refresh_channel_emoji(&ui, &id_ui, &img);
+                            crate::ui::helpers::refresh_emoji_in_messages(&ui, &id_ui, &img);
+                        }
+                    }
+                });
+            }
+            if let Ok(mut in_flight) = cache_arc.in_flight.lock() {
+                in_flight.remove(&id_str);
+            }
+        });
+    }
+
     /// Prioritized async downloader: supports both Discord custom emojis and Unicode Twemoji
     pub fn fetch_priority_async(&self, emoji_id: &str, channel_id: &str, app_weak: slint::Weak<crate::AppWindow>) {
         if emoji_id.is_empty() {
@@ -177,75 +261,14 @@ impl EmojiCache {
                                     guard.insert(id_str.clone(), dec);
                                 }
 
-                                // Update Slint UI messages in-place immediately!
+                                // Update Slint UI in place: sidebar slot and painted rows.
                                 let id_clone = id_str.clone();
                                 let cache_arc_ui = cache_arc.clone();
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = app_weak.upgrade() {
                                         if let Some(img) = cache_arc_ui.get(&id_clone) {
                                             crate::ui::helpers::refresh_channel_emoji(&ui, &id_clone, &img);
-                                            let messages = ui.get_messages();
-                                            let row_count = messages.row_count();
-
-                                            for idx in 0..row_count {
-                                                if let Some(mut msg) = messages.row_data(idx) {
-                                                    let mut msg_changed = false;
-
-                                                    // 1. Update content_lines
-                                                    let current_content_lines: Vec<crate::MessageLine> = msg.content_lines.iter().collect();
-                                                    let mut updated_content_lines = Vec::with_capacity(current_content_lines.len());
-                                                    for line in current_content_lines {
-                                                        let blocks: Vec<crate::MessageBlock> = line.blocks.iter().collect();
-                                                        let mut updated_blocks = Vec::with_capacity(blocks.len());
-                                                        for mut b in blocks {
-                                                            if b.is_emoji && b.emoji_id == id_clone.as_str() {
-                                                                b.emoji_img = img.clone();
-                                                                msg_changed = true;
-                                                            }
-                                                            updated_blocks.push(b);
-                                                        }
-                                                        updated_content_lines.push(crate::MessageLine {
-                                                            blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
-                                                        });
-                                                    }
-
-                                                    // 2. Update embed_lines
-                                                    let current_embed_lines: Vec<crate::MessageLine> = msg.embed_lines.iter().collect();
-                                                    let mut updated_embed_lines = Vec::with_capacity(current_embed_lines.len());
-                                                    for line in current_embed_lines {
-                                                        let blocks: Vec<crate::MessageBlock> = line.blocks.iter().collect();
-                                                        let mut updated_blocks = Vec::with_capacity(blocks.len());
-                                                        for mut b in blocks {
-                                                            if b.is_emoji && b.emoji_id == id_clone.as_str() {
-                                                                b.emoji_img = img.clone();
-                                                                msg_changed = true;
-                                                            }
-                                                            updated_blocks.push(b);
-                                                        }
-                                                        updated_embed_lines.push(crate::MessageLine {
-                                                            blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
-                                                        });
-                                                    }
-
-                                                    // 3. Update buttons
-                                                    let current_buttons: Vec<crate::MessageButton> = msg.buttons.iter().collect();
-                                                    let mut updated_buttons = Vec::with_capacity(current_buttons.len());
-                                                    for mut btn in current_buttons {
-                                                        if btn.emoji_id == id_clone.as_str() {
-                                                            btn.emoji_img = img.clone();
-                                                            msg_changed = true;
-                                                        }
-                                                        updated_buttons.push(btn);
-                                                    }
-
-                                                    if msg_changed {
-                                                        msg.content_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_content_lines)));
-                                                        msg.embed_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_embed_lines)));
-                                                        msg.buttons = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_buttons)));
-                                                        messages.set_row_data(idx, msg);
-                                                    }
-                                                }
-                                            }
+                                            crate::ui::helpers::refresh_emoji_in_messages(&ui, &id_clone, &img);
                                         }
                                     }
                                 });

@@ -242,6 +242,36 @@ impl AvatarCache {
         }
     }
 
+    /// Drops decoded thumbnails and pool bookkeeping for the signed-out account.
+    ///
+    /// The disk cache is shared between accounts and is intentionally kept. Must
+    /// run on the UI thread: the shared thumbnail pool is cleared in place.
+    pub fn clear_session(&self) {
+        if let Ok(mut images) = self.images.lock() {
+            images.entries.clear();
+            images.clock = 0;
+        }
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.clear();
+        }
+        if let Ok(mut failed) = self.failed_until.lock() {
+            failed.clear();
+        }
+        if let Ok(mut slots) = self.slots.lock() {
+            slots.by_url.clear();
+            slots.urls.clear();
+            slots.next = 0;
+        }
+        UI_POOL.with(|pool| {
+            if let Some(pool) = pool.borrow().as_ref() {
+                for index in 0..pool.images.row_count() {
+                    pool.images.set_row_data(index, slint::Image::default());
+                    pool.urls.set_row_data(index, slint::SharedString::default());
+                }
+            }
+        });
+    }
+
     /// Pool slot for a sidebar row's avatar. Thread-safe and cheap: the image
     /// itself is attached on the UI thread once cached or downloaded.
     pub fn slot_for(&self, url: &str) -> i32 {

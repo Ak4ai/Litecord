@@ -337,9 +337,9 @@ impl ScreenCaptureManager {
                     Arc::new(s)
                 });
 
-                let (tx_frame, rx_frame) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32, u128, u128)>(6);
+                let (tx_frame, rx_frame) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32, u128, u128)>(2);
                 #[allow(unused_variables)]
-                let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
+                let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
                 let is_running_cap = Arc::clone(&is_running);
 
                 #[cfg(windows)]
@@ -676,11 +676,11 @@ impl ScreenCaptureManager {
                                                 Ok(caps) => {
                                                     info!("📷 [CAMERA WORKER] Probe em '{}' reportou {} formatos suportados", dev.name, caps.formats.len());
                                                     let preferred_pixel_formats = [
+                                                        cameras::PixelFormat::Mjpeg,
                                                         cameras::PixelFormat::Bgra8,
                                                         cameras::PixelFormat::Rgba8,
                                                         cameras::PixelFormat::Yuyv,
                                                         cameras::PixelFormat::Nv12,
-                                                        cameras::PixelFormat::Mjpeg,
                                                         cameras::PixelFormat::Rgb8,
                                                     ];
 
@@ -757,21 +757,15 @@ impl ScreenCaptureManager {
 
                             let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));
                             let mut next_cap_time = Instant::now() + frame_interval;
-                            let mut first_camera_frame = true;
 
                             while is_running_cap.load(Ordering::Relaxed) {
                                 let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
 
                                 let cap_res = if camera_index.is_some() {
                                     if let Some(ref cam) = camera_handle {
-                                        let cam_timeout = if first_camera_frame {
-                                            Duration::from_millis(1500)
-                                        } else {
-                                            Duration::from_millis(500)
-                                        };
+                                        let cam_timeout = Duration::from_millis(1500);
                                         match cameras::next_frame(cam, cam_timeout) {
                                             Ok(frame) => {
-                                                first_camera_frame = false;
                                                 let (w, h) = (frame.width, frame.height);
                                                 let converted = std::panic::catch_unwind(|| {
                                                     cameras::to_rgba8(&frame)
@@ -789,7 +783,7 @@ impl ScreenCaptureManager {
                                                 }
                                             }
                                             Err(e) => {
-                                                log::debug!("📷 [CAMERA WORKER] next_frame erro/timeout: {:?}", e);
+                                                log::warn!("📷 [CAMERA WORKER] next_frame erro/timeout: {:?}", e);
                                                 None
                                             }
                                         }
@@ -806,9 +800,7 @@ impl ScreenCaptureManager {
                                 }
 
                                 // Para câmera física o próprio sensor/driver impõe a cadência; para captura de tela usamos o intervalo configurado.
-                                let frame_interval = if camera_index.is_some() {
-                                    Duration::from_millis(1)
-                                } else if TX_WATCHED.load(Ordering::Relaxed) {
+                                let frame_interval = if TX_WATCHED.load(Ordering::Relaxed) || camera_index.is_some() {
                                     frame_interval
                                 } else {
                                     IDLE_FRAME_INTERVAL
@@ -1014,8 +1006,13 @@ impl ScreenCaptureManager {
                         }
                     }
                     // Decouple UI local preview with fast downsampler (480w) to eliminate UI thread lag and memory overhead
-                    if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| last_local_preview.elapsed() >= Duration::from_millis(250)) {
-                        if (camera_index.is_some() || cfg!(windows)) && cur_w > 0 && cur_h > 0 {
+                    let preview_interval = if camera_index.is_some() {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_millis(150)
+                    };
+                    if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| last_local_preview.elapsed() >= preview_interval) {
+                        if cur_w > 0 && cur_h > 0 {
                             let prev_w = 480u32.min(cur_w);
                             let prev_h = (((prev_w as f32 / cur_w as f32) * (cur_h as f32)).round() as u32).max(1);
 

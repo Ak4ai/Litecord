@@ -218,7 +218,7 @@ pub async fn connect_voice_gateway(
                 let ssrc_to_userid: Arc<std::sync::Mutex<HashMap<u32, u64>>> = Arc::new(std::sync::Mutex::new(HashMap::new()));
                 let secret_key_arc: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
                 let native_mode: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new("aead_xchacha20_poly1305_rtpsize".to_string()));
-                let voice_hb_acked: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let voice_hb_acked: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
                 // Video SSRCs announced on this (parent) connection, so op 15 can be
                 // re-sent once the session description is complete.
                 let native_wants: Arc<std::sync::Mutex<std::collections::HashSet<u32>>> =
@@ -296,8 +296,10 @@ pub async fn connect_voice_gateway(
                                         loop {
                                             if CURRENT_VOICE_SESSION_ID.load(Ordering::SeqCst) != my_session_id { break; }
                                             sleep(Duration::from_millis(heartbeat_interval)).await;
-                                            if !voice_hb_acked_loop.swap(false, Ordering::SeqCst) {
-                                                warn!("⚠️ [VOICE] Servidor de voz não respondeu ao Heartbeat anterior (falta Opcode 6 ACK). Reconectando!");
+                                            // Allow up to 2 missed heartbeats before disconnecting to tolerate network jitter
+                                            let missed = voice_hb_acked_loop.fetch_add(1, Ordering::SeqCst) + 1;
+                                            if missed >= 2 {
+                                                warn!("⚠️ [VOICE] Servidor de voz não respondeu aos Heartbeats ({} falhas). Reconectando!", missed);
                                                 break;
                                             }
                                             let t_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -2019,9 +2021,14 @@ pub async fn connect_voice_gateway(
                                          }
                                      }
                                  }
+                                 3 => {
+                                     // Voice Opcode 3: Heartbeat ACK from voice server (or server-requested heartbeat)
+                                     voice_hb_acked.store(0, Ordering::SeqCst);
+                                     info!("Voice Gateway Heartbeat ACK (Opcode 3) recebido!");
+                                 }
                                  6 => {
                                      // Voice Opcode 6: Heartbeat ACK!
-                                     voice_hb_acked.store(true, Ordering::SeqCst);
+                                     voice_hb_acked.store(0, Ordering::SeqCst);
                                      info!("Voice Gateway Heartbeat ACK (Opcode 6) recebido!");
                                  }
                                  11 => {

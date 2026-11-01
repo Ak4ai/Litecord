@@ -56,6 +56,10 @@ slint::include_modules!();
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GDK_GL").is_none() {
+        std::env::set_var("GDK_GL", "never");
+    }
     commit_heap_pages_on_demand();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
@@ -370,10 +374,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(not(target_os = "windows"))]
     {
+        // First paint on the software renderer can land before the fonts/layout are
+        // ready; two late redraws cover that without the old 8×250 ms pulse that kept
+        // repainting the whole window for two seconds after startup.
         let app_weak_pulse = app_weak.clone();
         tokio::spawn(async move {
-            for _ in 0..8 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            for delay in [300u64, 800] {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 let app_w = app_weak_pulse.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w.upgrade() {
@@ -1140,6 +1147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
 
                 let source_tab = ui.get_stream_source_tab().to_string();
+                screen_capture::types::set_is_camera_stream(source_tab == "cameras");
                 let (target_hwnd, screen_index, camera_index, include_audio) = if source_tab == "cameras" {
                     let cam_id_str = ui.get_stream_selected_camera_id().to_string();
                     let cam_idx: Option<u32> = cam_id_str.parse().ok().or_else(|| {
@@ -2075,6 +2083,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
             }
+        }
+    });
+
+    // Periodic background memory trimming (every 45s, returns unused heap pages back to OS)
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(45));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            crate::ui::helpers::trim_process_memory();
         }
     });
 
@@ -3283,6 +3301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 4. Reset backend states
         crate::ui::helpers::reset_unread_and_dedup_state();
+        crate::ui::helpers::clear_session_caches();
         *cmd_tx_logout.lock().unwrap() = None;
         *http_client_logout.lock().unwrap() = None;
         *last_token_logout.lock().unwrap() = String::new();
@@ -3387,6 +3406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Reset backend states
         crate::ui::helpers::reset_unread_and_dedup_state();
+        crate::ui::helpers::clear_session_caches();
         *cmd_tx_sw.lock().unwrap() = None;
         *http_client_sw.lock().unwrap() = None;
         *last_token_sw.lock().unwrap() = target_token.clone();
@@ -3470,6 +3490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Reset backend states in-memory (vault remains intact with existing accounts)
         crate::ui::helpers::reset_unread_and_dedup_state();
+        crate::ui::helpers::clear_session_caches();
         *cmd_tx_add.lock().unwrap() = None;
         *http_client_add.lock().unwrap() = None;
         *last_token_add.lock().unwrap() = String::new();
@@ -4059,13 +4080,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_is_voice_focused(false);
                 request_chat_scroll_to_bottom(app_weak_chan_select.clone());
 
-                // Zera o badge de não lidos do canal que foi aberto
-                let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-                if let Some(ch) = channels.iter_mut().find(|c| c.id == ch_id.as_str()) {
-                    ch.unread_count = 0;
-                }
-                let model = std::rc::Rc::new(slint::VecModel::from(channels));
-                ui.set_channels(model.into());
+                // Zera o badge de não lidos do canal que foi aberto sem reconstruir a sidebar
+                crate::ui::helpers::clear_channel_unread(&ui, &ch_id);
 
                 // Zera o unread deste canal no mapa global de DMs e atualiza o badge do botão principal de DMs
                 let remaining_dm_unreads = crate::ui::helpers::clear_dm_unread(&ch_id);
@@ -4843,7 +4859,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak_inner.upgrade() {
-                                let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+                                // A new message only pins the chat when the reader was already
+                                // at the bottom (or sent it); otherwise the history stays put.
+                                let was_at_bottom = ui.get_chat_is_at_bottom();
 
                                 let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                                 let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
@@ -4878,22 +4896,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 message.avatar_url = avatar_url.into();
                                 message.avatar_initial = message.author.chars().next().unwrap_or('?').to_uppercase().to_string().into();
                                 message.is_bot = is_bot;
-                                current_msgs.push(message);
-                                regroup_messages(&mut current_msgs);
-                                // An append never changes the grouping of older rows. Keep the
-                                // existing model so a new message does not rebuild the chat UI.
-                                let mut appended = current_msgs.pop().expect("message was appended");
-                                avatar_cache::get_avatar_cache().hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
-                                crate::ui::invite_cards::hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
+                                avatar_cache::get_avatar_cache().hydrate(std::slice::from_mut(&mut message), &app_weak_inner);
+                                crate::ui::invite_cards::hydrate(std::slice::from_mut(&mut message), &app_weak_inner);
                                 let messages = ui.get_messages();
                                 if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
-                                    model.push(appended);
+                                    // An append never changes the grouping of older rows, so
+                                    // group against the last row and push instead of copying and
+                                    // regrouping the whole history on every message.
+                                    crate::ui::message_grouping::group_appended_message(&messages, &mut message);
+                                    model.push(message);
                                 } else {
-                                    current_msgs.push(appended);
+                                    let mut current_msgs: Vec<ChatMessage> = messages.iter().collect();
+                                    current_msgs.push(message);
+                                    regroup_messages(&mut current_msgs);
                                     ui.set_messages(std::rc::Rc::new(slint::VecModel::from(current_msgs)).into());
                                 }
 
-                                request_chat_scroll_to_bottom(app_weak_inner.clone());
+                                if was_at_bottom || is_self {
+                                    request_chat_scroll_to_bottom(app_weak_inner.clone());
+                                }
                             }
                         });
                     }
@@ -4908,8 +4929,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
-                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
-
                             let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                             let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
 
@@ -4919,61 +4938,122 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }).collect();
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                            let mut found = false;
-                            for msg in current_msgs.iter_mut() {
-                                if !id.is_empty() && msg.id == id.as_str() {
-                                    msg.content = content.clone().into();
-                                    msg.commands = slint::ModelRc::from(commands_model.clone());
-                                    msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
-                                    msg.embed_content = embed_content.clone().into();
-                                    msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
-                                    msg.embed_color = parse_hex_color(&embed_color);
-                                    msg.embed_footer = embed_footer.clone().into();
-                                    msg.code_block = code_block.clone().into();
-                                    if !reply_author.is_empty() {
-                                        msg.reply_author = reply_author.clone().into();
-                                    }
-                                    if !reply_content.is_empty() {
-                                        msg.reply_content = reply_content.clone().into();
-                                    }
-                                    if !reply_command.is_empty() {
-                                        msg.reply_command = reply_command.clone().into();
-                                    }
-                                    msg.links = slint::ModelRc::from(links_model.clone());
-                                    msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
-                                    msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
-                                    found = true;
-                                    break;
-                                }
-                            }
-
-                            if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty()) {
-                                current_msgs.push(ChatMessage {
-                                    id: id.into(),
-                                    author: "Bot".into(),
-                                    content: content.into(),
-                                    commands: slint::ModelRc::from(commands_model),
-                                    content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
-                                    embed_content: embed_content.into(),
-                                    embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
-                                    embed_color: parse_hex_color(&embed_color),
-                                    embed_footer: embed_footer.into(),
-                                    code_block: code_block.into(),
-                                    reply_author: reply_author.into(),
-                                    reply_content: reply_content.into(),
-                                    reply_command: reply_command.into(),
-                                    links: slint::ModelRc::from(links_model),
-                                    buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
-                                    attachments: map_message_attachments(&attachments, &app_weak_inner),
-                                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
-                                    show_header: true,
-                                    ..Default::default()
+                            let messages = ui.get_messages();
+                            if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
+                                // An edit keeps the author and timestamp, so grouping does not
+                                // change: update the single row and leave the rest of the model.
+                                let found_index = (0..model.row_count()).find(|&index| {
+                                    model.row_data(index).is_some_and(|msg| !id.is_empty() && msg.id == id.as_str())
                                 });
-                            }
+                                if let Some(index) = found_index {
+                                    if let Some(mut msg) = model.row_data(index) {
+                                        msg.content = content.clone().into();
+                                        msg.commands = slint::ModelRc::from(commands_model.clone());
+                                        msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_content = embed_content.clone().into();
+                                        msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_color = parse_hex_color(&embed_color);
+                                        msg.embed_footer = embed_footer.clone().into();
+                                        msg.code_block = code_block.clone().into();
+                                        if !reply_author.is_empty() {
+                                            msg.reply_author = reply_author.clone().into();
+                                        }
+                                        if !reply_content.is_empty() {
+                                            msg.reply_content = reply_content.clone().into();
+                                        }
+                                        if !reply_command.is_empty() {
+                                            msg.reply_command = reply_command.clone().into();
+                                        }
+                                        msg.links = slint::ModelRc::from(links_model.clone());
+                                        msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
+                                        msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
+                                        model.set_row_data(index, msg);
+                                    }
+                                } else if !content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty() {
+                                    let mut message = ChatMessage {
+                                        id: id.into(),
+                                        author: "Bot".into(),
+                                        content: content.into(),
+                                        commands: slint::ModelRc::from(commands_model),
+                                        content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
+                                        embed_content: embed_content.into(),
+                                        embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
+                                        embed_color: parse_hex_color(&embed_color),
+                                        embed_footer: embed_footer.into(),
+                                        code_block: code_block.into(),
+                                        reply_author: reply_author.into(),
+                                        reply_content: reply_content.into(),
+                                        reply_command: reply_command.into(),
+                                        links: slint::ModelRc::from(links_model),
+                                        buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
+                                        attachments: map_message_attachments(&attachments, &app_weak_inner),
+                                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                                        show_header: true,
+                                        ..Default::default()
+                                    };
+                                    crate::ui::message_grouping::group_appended_message(&messages, &mut message);
+                                    model.push(message);
+                                }
+                            } else {
+                                // Unexpected model kind: keep the old full rebuild path.
+                                let mut current_msgs: Vec<ChatMessage> = messages.iter().collect();
 
-                            regroup_messages(&mut current_msgs);
-                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-                            ui.set_messages(model.into());
+                                let mut found = false;
+                                for msg in current_msgs.iter_mut() {
+                                    if !id.is_empty() && msg.id == id.as_str() {
+                                        msg.content = content.clone().into();
+                                        msg.commands = slint::ModelRc::from(commands_model.clone());
+                                        msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_content = embed_content.clone().into();
+                                        msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_color = parse_hex_color(&embed_color);
+                                        msg.embed_footer = embed_footer.clone().into();
+                                        msg.code_block = code_block.clone().into();
+                                        if !reply_author.is_empty() {
+                                            msg.reply_author = reply_author.clone().into();
+                                        }
+                                        if !reply_content.is_empty() {
+                                            msg.reply_content = reply_content.clone().into();
+                                        }
+                                        if !reply_command.is_empty() {
+                                            msg.reply_command = reply_command.clone().into();
+                                        }
+                                        msg.links = slint::ModelRc::from(links_model.clone());
+                                        msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
+                                        msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
+                                        found = true;
+                                        break;
+                                    }
+                                }
+
+                                if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty()) {
+                                    current_msgs.push(ChatMessage {
+                                        id: id.into(),
+                                        author: "Bot".into(),
+                                        content: content.into(),
+                                        commands: slint::ModelRc::from(commands_model),
+                                        content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
+                                        embed_content: embed_content.into(),
+                                        embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
+                                        embed_color: parse_hex_color(&embed_color),
+                                        embed_footer: embed_footer.into(),
+                                        code_block: code_block.into(),
+                                        reply_author: reply_author.into(),
+                                        reply_content: reply_content.into(),
+                                        reply_command: reply_command.into(),
+                                        links: slint::ModelRc::from(links_model),
+                                        buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
+                                        attachments: map_message_attachments(&attachments, &app_weak_inner),
+                                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                                        show_header: true,
+                                        ..Default::default()
+                                    });
+                                }
+
+                                regroup_messages(&mut current_msgs);
+                                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                                ui.set_messages(model.into());
+                            }
                         }
                     });
                 }
@@ -4987,12 +5067,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
-                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
-                            regroup_messages(&mut current_msgs);
-                            avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
-                            crate::ui::invite_cards::hydrate(&mut current_msgs, &app_weak_inner);
-                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-                            ui.set_messages(model.into());
+                            let messages = ui.get_messages();
+                            if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
+                                // Only the row that moved up needs regrouping; the rows that
+                                // stay put keep their grouping, avatars and invite cards.
+                                if let Some(index) = (0..model.row_count())
+                                    .find(|&index| model.row_data(index).is_some_and(|m| m.id == id.as_str()))
+                                {
+                                    model.remove(index);
+                                    crate::ui::message_grouping::regroup_message_at(&messages, index);
+                                }
+                            } else {
+                                let mut current_msgs: Vec<ChatMessage> = messages.iter().filter(|m| m.id != id.as_str()).collect();
+                                regroup_messages(&mut current_msgs);
+                                avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
+                                crate::ui::invite_cards::hydrate(&mut current_msgs, &app_weak_inner);
+                                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                                ui.set_messages(model.into());
+                            }
                         }
                     });
                 }

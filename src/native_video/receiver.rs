@@ -23,7 +23,7 @@ use crate::screen_capture::types::{
     get_active_stream_frames, mark_stream_started, set_peer_streaming,
 };
 use crate::screen_capture::video_pipeline::{decode_video_frame, Decoded, StreamDecoders};
-use crate::screen_capture::watch::set_wanted;
+use crate::screen_capture::watch::{is_wanted, set_wanted};
 
 /// How often a keyframe may be requested for the same SSRC.
 const PLI_INTERVAL: Duration = Duration::from_millis(700);
@@ -58,6 +58,7 @@ pub struct NativeVideoSession {
     jitter: HashMap<u32, JitterBuffer>,
     depacketizers: HashMap<u32, H264Depacketizer>,
     decoders: StreamDecoders,
+    opus_decoders: HashMap<u32, opus_rs::OpusDecoder>,
     started: HashSet<u64>,
     fps: HashMap<u64, FpsCounter>,
     last_frame: HashMap<u64, Instant>,
@@ -77,6 +78,7 @@ impl Default for NativeVideoSession {
             jitter: HashMap::new(),
             depacketizers: HashMap::new(),
             decoders: StreamDecoders::default(),
+            opus_decoders: HashMap::new(),
             started: HashSet::new(),
             fps: HashMap::new(),
             last_frame: HashMap::new(),
@@ -100,12 +102,6 @@ impl NativeVideoSession {
         let Some(header) = rtp::parse(datagram) else {
             return;
         };
-        // Opus is payload type 120 in Discord.  Anything else on this socket is
-        // video (or a probe).
-        if header.payload_type == 120 || header.payload_type == 0 {
-            return;
-        }
-
         let uid = ctx
             .stream_owner
             .or_else(|| ctx.ssrc_to_uid.lock().ok().and_then(|map| map.get(&header.ssrc).copied()))
@@ -113,6 +109,18 @@ impl NativeVideoSession {
         let Some(uid) = uid else {
             return;
         };
+
+        // Opus is payload type 120 in Discord. Decode stream audio if wanted.
+        if header.payload_type == 120 {
+            if is_wanted(uid) {
+                self.handle_audio(ctx, uid, &header, datagram);
+            }
+            return;
+        }
+
+        if header.payload_type == 0 {
+            return;
+        }
 
         let key = ctx
             .secret_key
@@ -184,12 +192,75 @@ impl NativeVideoSession {
         }
     }
 
+    fn handle_audio(
+        &mut self,
+        ctx: &NativeVideoContext,
+        uid: u64,
+        header: &rtp::RtpHeader,
+        datagram: &[u8],
+    ) {
+        let key = ctx
+            .secret_key
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        let Some(key) = key else {
+            return;
+        };
+        let mode = ctx
+            .mode
+            .lock()
+            .map(|guard| TransportMode::from_name(&guard))
+            .unwrap_or(TransportMode::Aes256Gcm);
+
+        let Some(payload) = decrypt_payload(&key, mode, datagram, header) else {
+            return;
+        };
+
+        let opus_data = if let Ok(mut dave_guard) = ctx.dave.lock() {
+            if let Some(ref mut d) = *dave_guard {
+                d.decrypt(uid, MediaType::AUDIO, &payload).unwrap_or(payload)
+            } else {
+                payload
+            }
+        } else {
+            payload
+        };
+
+        let dec = self.opus_decoders.entry(header.ssrc).or_insert_with(|| {
+            opus_rs::OpusDecoder::new(48000, 2).expect("Falha ao inicializar OpusDecoder para áudio de stream")
+        });
+
+        let mut pcm_buf = [0.0f32; 5760];
+        if let Ok(samples) = dec.decode(&opus_data, 2880, &mut pcm_buf[..]) {
+            if samples > 0 {
+                crate::gateway::register_voice_participant(header.ssrc, uid);
+                let vol = crate::screen_capture::audio_loopback::get_stream_volume(uid);
+                if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
+                    let q = queues
+                        .entry(header.ssrc)
+                        .or_insert_with(std::collections::VecDeque::new);
+                    if q.len() > 19200 {
+                        q.clear();
+                    }
+                    for i in 0..samples {
+                        let l = (pcm_buf[i * 2] * vol).clamp(-1.0, 1.0);
+                        let r = (pcm_buf[i * 2 + 1] * vol).clamp(-1.0, 1.0);
+                        q.push_back((l, r));
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_frame(&mut self, ctx: &NativeVideoContext, uid: u64, ssrc: u32, frame: &[u8]) {
-        // Native frames must show up without the LTPV "Watch" button: mark the
-        // stream wanted *before* announcing it, otherwise the UI state callback
-        // hides it.  Re-asserting both also covers the parent/stream sessions
-        // clearing each other's state.
-        set_wanted(uid, true);
+        let (self_stream, self_video) = crate::screen_capture::types::get_user_stream_flags(uid);
+        let wanted = is_wanted(uid) || (self_video && !self_stream);
+        if !wanted {
+            // Drop un-watched stream frames immediately without decoding or allocating
+            return;
+        }
+
         set_peer_streaming(uid, true);
         let Some(frame) = decrypt_dave(ctx, uid, frame) else {
             self.send_pli(ctx, ssrc);
@@ -239,9 +310,6 @@ impl NativeVideoSession {
 
     fn mark_started(&mut self, uid: u64) {
         if self.started.insert(uid) {
-            // Native camera/Go Live should appear without the LTPV "Watch"
-            // button: mark the stream as wanted before announcing it.
-            set_wanted(uid, true);
             mark_stream_started(uid);
             set_peer_streaming(uid, true);
             log::info!("🎥 [NATIVE VIDEO] Primeiro quadro nativo do usuário {} recebido", uid);

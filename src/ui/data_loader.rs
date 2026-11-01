@@ -442,6 +442,35 @@ pub fn invalidate_message_cache(channel_id: &str) {
     }
 }
 
+/// Drops every per-session map so a new account cannot inherit channels,
+/// cached messages, ordering or pagination cursors from the previous one.
+pub fn clear_session_caches() {
+    if let Ok(mut cache) = message_cache_slot().lock() {
+        cache.clear();
+    }
+    if let Ok(mut map) = LAST_CHANNEL_BY_GUILD
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        map.clear();
+    }
+    if let Ok(mut map) = GUILD_REFRESHED_AT
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        map.clear();
+    }
+    if let Ok(mut set) = PRELOADED_GUILDS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+    {
+        set.clear();
+    }
+    if let Ok(mut map) = get_oldest_message_map().lock() {
+        map.clear();
+    }
+}
+
 /// Remembers the channel the user was reading, so returning to a server reopens it.
 pub fn remember_last_channel(guild_id: &str, channel_id: &str) {
     if guild_id.is_empty() || channel_id.is_empty() || guild_id == "@me" {

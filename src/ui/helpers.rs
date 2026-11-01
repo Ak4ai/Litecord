@@ -14,6 +14,7 @@ use crate::utils::i18n;
 use crate::utils::i18n_ui;
 use crate::utils::video_settings;
 use crate::utils::attachment_cache;
+use crate::utils::avatar_cache;
 use crate::utils::emoji_cache;
 use std::sync::Mutex;
 use slint::Model;
@@ -71,6 +72,22 @@ pub fn reset_unread_and_dedup_state() {
     guard.1.clear();
 }
 
+/// Drops per-account memory: decoded images, message caches and user maps.
+///
+/// Called on logout and account switch. Preferences, window geometry and the
+/// on-disk image caches are kept; a new account re-downloads what it needs.
+pub fn clear_session_caches() {
+    avatar_cache::get_avatar_cache().clear_session();
+    emoji_cache::get_emoji_cache().clear_memory();
+    attachment_cache::get_attachment_cache().clear_memory();
+    crate::ui::data_loader::clear_session_caches();
+    gateway::clear_user_directory();
+    gateway::clear_guild_voice_states();
+    if let Ok(mut pending) = HIDDEN_CHANNEL_ACTIVITY.lock() {
+        pending.clear();
+    }
+}
+
 pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::gateway::GuildData>>>) -> bool {
     if let Ok(map) = guilds_map.lock() {
         if let Some(dm_guild) = map.get("@me") {
@@ -80,20 +97,58 @@ pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::
     false
 }
 
+struct ChatPinTimers {
+    first: slint::Timer,
+    follow_up: slint::Timer,
+}
+
+thread_local! {
+    static CHAT_PIN_TIMERS: std::cell::RefCell<Option<std::rc::Rc<ChatPinTimers>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
     let _ = slint::invoke_from_event_loop(move || {
-        // Images and embeds change the height after the first layout, so keep pinning
-        // the chat to the bottom for a moment; a channel with pictures would otherwise
-        // stay at its oldest message the first time it is opened.
-        let delays = [15, 45, 100, 220, 500, 900, 1500];
-        for delay in delays {
-            let app_w = app_weak.clone();
-            slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
-                if let Some(ui) = app_w.upgrade() {
-                    ui.invoke_scroll_chat_to_bottom();
-                }
+        // Images and embeds change the height after the first layout, so one follow-up
+        // pin still lets a channel with pictures settle. Earlier requests are cancelled,
+        // so a burst of messages coalesces into at most two scrolls instead of seven
+        // timers per message.
+        CHAT_PIN_TIMERS.with(|slot| {
+            let existing = slot.borrow().clone();
+            let timers = existing.unwrap_or_else(|| {
+                let timers = std::rc::Rc::new(ChatPinTimers {
+                    first: slint::Timer::default(),
+                    follow_up: slint::Timer::default(),
+                });
+                *slot.borrow_mut() = Some(timers.clone());
+                timers
             });
-        }
+            timers.first.stop();
+            timers.follow_up.stop();
+
+            let weak_timers = std::rc::Rc::downgrade(&timers);
+            let app_first = app_weak.clone();
+            timers.first.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(80),
+                move || {
+                    if let Some(ui) = app_first.upgrade() {
+                        ui.invoke_scroll_chat_to_bottom();
+                    }
+                    let Some(timers) = weak_timers.upgrade() else { return };
+                    let app_follow = app_first.clone();
+                    timers.follow_up.start(
+                        slint::TimerMode::SingleShot,
+                        std::time::Duration::from_millis(340),
+                        move || {
+                            if let Some(ui) = app_follow.upgrade() {
+                                ui.invoke_scroll_chat_to_bottom();
+                            }
+                        },
+                    );
+                },
+            );
+        });
     });
 }
 
@@ -178,24 +233,73 @@ pub fn take_hidden_channel_activity() -> Vec<(String, i32)> {
 /// Applies sidebar activity in order: each channel's unread count grows by its new
 /// messages (the open channel goes back to 0) and, in the DM list, it moves to the top.
 pub fn apply_channel_activity(ui: &AppWindow, activity: &[(String, i32)], active_channel: &str, showing_dms: bool) {
-    let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-    let mut changed = false;
+    let current = ui.get_channels();
+    let Some(model) = current.as_any().downcast_ref::<slint::VecModel<ChannelItem>>() else {
+        // Unexpected model kind: keep the old rebuild path so the badge still updates.
+        let mut channels: Vec<ChannelItem> = current.iter().collect();
+        let mut changed = false;
+        for (id, new_unread) in activity {
+            let Some(pos) = channels.iter().position(|c| c.id == id.as_str()) else { continue };
+            let unread = if id == active_channel { 0 } else { channels[pos].unread_count + new_unread };
+            if channels[pos].unread_count != unread {
+                channels[pos].unread_count = unread;
+                changed = true;
+            }
+            if showing_dms && pos != 0 {
+                let ch = channels.remove(pos);
+                channels.insert(0, ch);
+                changed = true;
+            }
+        }
+        if changed {
+            ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
+        }
+        return;
+    };
+
+    // Touch only the rows that changed: replacing the whole model made the sidebar
+    // rebuild every visible row (and restart hover/selection) for each message.
     for (id, new_unread) in activity {
-        let Some(pos) = channels.iter().position(|c| c.id == id.as_str()) else { continue };
-        let unread = if id == active_channel { 0 } else { channels[pos].unread_count + new_unread };
-        if channels[pos].unread_count != unread {
-            channels[pos].unread_count = unread;
-            changed = true;
-        }
+        let Some(pos) = (0..model.row_count())
+            .find(|&index| model.row_data(index).is_some_and(|c| c.id == id.as_str()))
+        else {
+            continue;
+        };
+        let Some(mut row) = model.row_data(pos) else { continue };
+        let unread = if id == active_channel { 0 } else { row.unread_count + new_unread };
+        let unread_changed = row.unread_count != unread;
+        row.unread_count = unread;
         if showing_dms && pos != 0 {
-            let ch = channels.remove(pos);
-            channels.insert(0, ch);
-            changed = true;
+            let _ = model.remove(pos);
+            model.insert(0, row);
+        } else if unread_changed {
+            model.set_row_data(pos, row);
         }
     }
-    if changed {
-        ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
+}
+
+/// Clears the unread badge of one channel without rebuilding the sidebar model.
+pub fn clear_channel_unread(ui: &AppWindow, channel_id: &str) {
+    let current = ui.get_channels();
+    if let Some(model) = current.as_any().downcast_ref::<slint::VecModel<ChannelItem>>() {
+        for index in 0..model.row_count() {
+            let Some(mut row) = model.row_data(index) else { continue };
+            if row.id == channel_id {
+                if row.unread_count != 0 {
+                    row.unread_count = 0;
+                    model.set_row_data(index, row);
+                }
+                return;
+            }
+        }
+        return;
     }
+
+    let mut channels: Vec<ChannelItem> = current.iter().collect();
+    if let Some(channel) = channels.iter_mut().find(|c| c.id == channel_id) {
+        channel.unread_count = 0;
+    }
+    ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
 }
 
 /// Refreshes voice counts and participants from `fresh` (a `build_ui_channels` result).
@@ -880,9 +984,12 @@ pub fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, a
     let slint_lines: Vec<MessageLine> = lines.iter().map(|line| {
         let slint_blocks: Vec<MessageBlock> = line.blocks.iter().map(|b| {
             let emoji_img = if b.is_emoji {
-                if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+                if let Some(img) = emoji_mgr.get_cached(&b.emoji_id) {
                     img
                 } else {
+                    // Never decode on the paint path: hydrate what is on disk and
+                    // download only what is missing.
+                    emoji_mgr.hydrate_from_disk_async(&b.emoji_id, app_weak.clone());
                     emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
                     slint::Image::default()
                 }
@@ -914,9 +1021,12 @@ pub fn map_message_attachments(
 ) -> slint::ModelRc<MessageAttachment> {
     let att_cache = attachment_cache::get_attachment_cache();
     let slint_atts: Vec<MessageAttachment> = attachments.iter().map(|a| {
-        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full_for_ui(&a.id, &a.filename) {
+        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full_for_ui(&a.id) {
             (true, img)
         } else {
+            // Painting never touches the disk: decode what is already downloaded on a
+            // worker thread and update this row when it is ready.
+            att_cache.hydrate_full_from_disk_async(&a.id, &a.filename, app_weak.clone());
             if a.id.starts_with("embed_img_") {
                 att_cache.download_full_async(&a.id, &a.filename, &a.url, app_weak.clone());
             }
@@ -971,9 +1081,10 @@ pub fn map_message_buttons(
     let emoji_mgr = emoji_cache::get_emoji_cache();
     let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| {
         let emoji_img = if !b.emoji_id.is_empty() {
-            if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+            if let Some(img) = emoji_mgr.get_cached(&b.emoji_id) {
                 img
             } else {
+                emoji_mgr.hydrate_from_disk_async(&b.emoji_id, app_weak.clone());
                 emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
                 slint::Image::default()
             }
@@ -1355,6 +1466,72 @@ pub fn refresh_channel_emoji(ui: &AppWindow, emoji_id: &str, img: &slint::Image)
         let pool = ui.get_channel_emoji_pool();
         if (slot as usize) < pool.row_count() {
             pool.set_row_data(slot as usize, img.clone());
+        }
+    }
+}
+
+/// Replaces an emoji image in every row already painted that uses it.
+///
+/// Used both by the async downloader and by the disk-hydration path; without
+/// this, an emoji decoded after the first paint would only appear in the
+/// sidebar and stay blank inside messages.
+pub fn refresh_emoji_in_messages(ui: &AppWindow, emoji_id: &str, img: &slint::Image) {
+    let messages = ui.get_messages();
+    let row_count = messages.row_count();
+
+    for idx in 0..row_count {
+        let Some(mut msg) = messages.row_data(idx) else { continue };
+        let mut msg_changed = false;
+
+        let current_content_lines: Vec<MessageLine> = msg.content_lines.iter().collect();
+        let mut updated_content_lines = Vec::with_capacity(current_content_lines.len());
+        for line in current_content_lines {
+            let blocks: Vec<MessageBlock> = line.blocks.iter().collect();
+            let mut updated_blocks = Vec::with_capacity(blocks.len());
+            for mut block in blocks {
+                if block.is_emoji && block.emoji_id == emoji_id {
+                    block.emoji_img = img.clone();
+                    msg_changed = true;
+                }
+                updated_blocks.push(block);
+            }
+            updated_content_lines.push(MessageLine {
+                blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
+            });
+        }
+
+        let current_embed_lines: Vec<MessageLine> = msg.embed_lines.iter().collect();
+        let mut updated_embed_lines = Vec::with_capacity(current_embed_lines.len());
+        for line in current_embed_lines {
+            let blocks: Vec<MessageBlock> = line.blocks.iter().collect();
+            let mut updated_blocks = Vec::with_capacity(blocks.len());
+            for mut block in blocks {
+                if block.is_emoji && block.emoji_id == emoji_id {
+                    block.emoji_img = img.clone();
+                    msg_changed = true;
+                }
+                updated_blocks.push(block);
+            }
+            updated_embed_lines.push(MessageLine {
+                blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
+            });
+        }
+
+        let current_buttons: Vec<MessageButton> = msg.buttons.iter().collect();
+        let mut updated_buttons = Vec::with_capacity(current_buttons.len());
+        for mut button in current_buttons {
+            if button.emoji_id == emoji_id {
+                button.emoji_img = img.clone();
+                msg_changed = true;
+            }
+            updated_buttons.push(button);
+        }
+
+        if msg_changed {
+            msg.content_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_content_lines)));
+            msg.embed_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_embed_lines)));
+            msg.buttons = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_buttons)));
+            messages.set_row_data(idx, msg);
         }
     }
 }

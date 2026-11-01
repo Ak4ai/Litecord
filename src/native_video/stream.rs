@@ -650,6 +650,9 @@ pub async fn connect_stream_sender(
 
     let (write, mut read) = ws.split();
     let write = Arc::new(AsyncMutex::new(write));
+    let dave: Arc<Mutex<Option<DaveSession>>> = Arc::new(Mutex::new(None));
+    let saved_external_sender: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let mut dave_group = 0u64;
     let mut sender_ssrc = 0u32;
     let mut video_ssrc = 0u32;
     let mut rtx_ssrc = 0u32;
@@ -675,6 +678,8 @@ pub async fn connect_stream_sender(
                         let interval = value["d"]["heartbeat_interval"].as_f64().unwrap_or(41250.0);
                         let heartbeat = (interval * 0.75).max(1000.0) as u64;
                         read_timeout = Duration::from_millis(heartbeat.saturating_mul(2).saturating_add(5000));
+                        let is_cam = crate::screen_capture::types::is_camera_stream();
+                        let stream_type = if is_cam { "video" } else { "screen" };
                         let identify = json!({
                             "op": 0,
                             "d": {
@@ -685,9 +690,9 @@ pub async fn connect_stream_sender(
                                 "token": token,
                                 "video": true,
                                 "streams": [
-                                    { "type": "screen", "rid": "100", "quality": 100 }
+                                    { "type": stream_type, "rid": "100", "quality": 100 }
                                 ],
-                                "max_dave_protocol_version": 0
+                                "max_dave_protocol_version": 1
                             }
                         });
                         if let Err(e) = send_text(&write, identify).await {
@@ -788,6 +793,31 @@ pub async fn connect_stream_sender(
                             break;
                         }
 
+                        dave_group = value["d"]["media_session_id"]
+                            .as_u64()
+                            .filter(|id| *id != 0)
+                            .or_else(|| value["d"]["media_session_id"].as_str().and_then(|s| s.parse::<u64>().ok()))
+                            .unwrap_or_else(|| server_id.parse::<u64>().unwrap_or(1).saturating_sub(1))
+                            .max(1);
+                        let version = value["d"]["dave_protocol_version"]
+                            .as_u64()
+                            .unwrap_or(1)
+                            .max(1) as u16;
+                        if version > 0 && dave_group > 0 {
+                            let mut session = dave.lock().unwrap();
+                            if session.is_none() {
+                                match DaveSession::new(
+                                    std::num::NonZeroU16::new(version).unwrap_or(std::num::NonZeroU16::MIN),
+                                    user_id,
+                                    dave_group,
+                                    None,
+                                ) {
+                                    Ok(created) => *session = Some(created),
+                                    Err(error) => log::warn!("🎬 [GO LIVE TX] DAVE init falhou: {:?}", error),
+                                }
+                            }
+                        }
+
                         // Opcode 5 Speaking
                         let speaking = json!({
                             "op": 5,
@@ -800,6 +830,8 @@ pub async fn connect_stream_sender(
                         let _ = send_text(&write, speaking).await;
 
                         // Opcode 12 Video
+                        let is_cam = crate::screen_capture::types::is_camera_stream();
+                        let stream_type = if is_cam { "video" } else { "screen" };
                         let video = json!({
                             "op": 12,
                             "d": {
@@ -808,7 +840,7 @@ pub async fn connect_stream_sender(
                                 "rtx_ssrc": rtx_ssrc,
                                 "streams": [
                                     {
-                                        "type": "screen",
+                                        "type": stream_type,
                                         "rid": "100",
                                         "ssrc": video_ssrc,
                                         "active": true,
@@ -818,8 +850,8 @@ pub async fn connect_stream_sender(
                                         "max_framerate": 60,
                                         "max_resolution": {
                                             "type": "fixed",
-                                            "width": 1280,
-                                            "height": 720
+                                            "width": 1920,
+                                            "height": 1080
                                         }
                                     }
                                 ]
@@ -846,11 +878,34 @@ pub async fn connect_stream_sender(
                                 mode,
                                 video_ssrc,
                                 stream_key.clone(),
+                                Arc::clone(&dave),
                             );
                         }
                     }
+                    21 | 18 => {
+                        let transition = value["d"]["transition_id"].as_u64().unwrap_or(0);
+                        let _ = send_text(
+                            &write,
+                            json!({ "op": 23, "d": { "transition_id": transition } }),
+                        )
+                        .await;
+                    }
+                    22 | 19 => {
+                        log::info!("🎬 [GO LIVE TX] DAVE execute transition");
+                    }
                     _ => {}
                 }
+            }
+            Message::Binary(bin) => {
+                let _ = handle_dave_binary(
+                    &bin,
+                    &dave,
+                    &saved_external_sender,
+                    user_id,
+                    dave_group,
+                    &write,
+                )
+                .await;
             }
             Message::Close(_) => break,
             _ => {}

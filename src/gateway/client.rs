@@ -76,6 +76,11 @@ pub fn unwatch_stream(stream_key: &str) {
         set.remove(stream_key);
     }
     crate::native_video::stream::stop_stream_viewer(stream_key);
+    if let Some(uid_str) = stream_key.split(':').last() {
+        if let Ok(uid) = uid_str.parse::<u64>() {
+            crate::screen_capture::mpv_player::stop_mpv_player(uid);
+        }
+    }
 }
 
 /// Drops every Go Live subscription (left the voice call).
@@ -84,6 +89,9 @@ pub fn clear_watched_streams() {
         set.clear();
     }
     crate::native_video::stream::stop_all_stream_viewers();
+    crate::screen_capture::mpv_player::stop_all_mpv_players();
+    crate::screen_capture::watch::clear_wanted();
+    crate::ui::helpers::trim_process_memory();
 }
 
 #[derive(Clone, Debug)]
@@ -169,7 +177,6 @@ pub fn resubscribe_channel_streams(channel_id: &str, _guild_id: Option<&str>) {
             continue;
         }
         // Do NOT automatically watch or hijack screen on join: streams remain on-demand
-        crate::screen_capture::types::mark_stream_started(uid);
         crate::screen_capture::types::set_peer_streaming(uid, true);
     }
 }
@@ -1477,9 +1484,6 @@ impl GatewayClient {
                                 let self_video = v["d"]["self_video"].as_bool().unwrap_or(false);
                                 crate::screen_capture::types::set_user_stream_flags(event_uid, self_stream, self_video);
                                 let is_streaming = self_stream || self_video;
-                                if is_streaming {
-                                    crate::screen_capture::types::mark_stream_started(event_uid);
-                                }
                                 crate::screen_capture::types::set_peer_streaming(event_uid, is_streaming);
                                 if let Some(cid) = event_chan.as_deref() {
                                     let stream_key = match v["d"]["guild_id"].as_str() {

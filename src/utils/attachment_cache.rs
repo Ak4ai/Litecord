@@ -139,7 +139,7 @@ fn flush_attachment_updates(app_weak: slint::Weak<crate::AppWindow>) {
             let mut rewritten = Vec::with_capacity(attachments.len());
             for mut attachment in attachments {
                 if ids.contains(attachment.id.as_str()) {
-                    if let Some(image) = cache.get_full_for_ui(&attachment.id, &attachment.filename) {
+                    if let Some(image) = cache.get_full_for_ui(&attachment.id) {
                         let size = image.size();
                         attachment.full_img = image;
                         attachment.is_downloaded = true;
@@ -220,6 +220,15 @@ fn ui_image_put(att_id: &str, image: slint::Image) {
     });
 }
 
+fn ui_image_clear() {
+    UI_IMAGES.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        cache.entries.clear();
+        cache.bytes = 0;
+        cache.clock = 0;
+    });
+}
+
 pub fn get_attachment_cache() -> Arc<AttachmentCache> {
     ATTACHMENT_CACHE.get_or_init(|| {
         let mut temp_dir = std::env::temp_dir();
@@ -274,52 +283,79 @@ impl AttachmentCache {
         None
     }
 
-    /// Check if full image is in memory or saved on disk
-    pub fn get_full(&self, att_id: &str, filename: &str) -> Option<slint::Image> {
-        if att_id.is_empty() {
-            return None;
-        }
-
-        // 1. In memory
-        if let Ok(mut guard) = self.full_cache.lock() {
-            if let Some(dec) = guard.get(att_id) {
-                return Some(slint::Image::from_rgba8(dec.buffer.clone()));
-            }
-        }
-
-        // 2. On disk in %TEMP%
-        let safe_name = sanitize_filename(filename);
-        let file_path = self.temp_dir.join(format!("{}_{}", att_id, safe_name));
-        if file_path.exists() {
-            if let Ok(bytes) = std::fs::read(&file_path) {
-                if let Some(dec) = decode_bytes_to_rgba(&bytes) {
-                    let image = slint::Image::from_rgba8(dec.buffer.clone());
-                    if let Ok(mut guard) = self.full_cache.lock() {
-                        guard.insert(att_id.to_string(), dec);
-                    }
-                    return Some(image);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// `get_full` that reuses the Slint handle on the UI thread.
+    /// Memory-only lookup for the UI thread, reusing the Slint handle per row.
     ///
-    /// The model is rebuilt every time a batch of downloads finishes; creating a
-    /// new texture for each attachment on every rebuild made image-heavy channels
-    /// allocate hundreds of MB of throwaway textures.
-    pub fn get_full_for_ui(&self, att_id: &str, filename: &str) -> Option<slint::Image> {
+    /// Never reads the disk: a cold cache used to decode the whole image inside
+    /// the paint/update closure and stall the frame. Callers that miss schedule
+    /// `hydrate_full_from_disk_async` instead.
+    pub fn get_full_for_ui(&self, att_id: &str) -> Option<slint::Image> {
         if let Some(image) = ui_image_get(att_id) {
             return Some(image);
         }
-        let image = self.get_full(att_id, filename)?;
+        let decoded = {
+            let mut guard = self.full_cache.lock().ok()?;
+            guard.get(att_id).cloned()
+        }?;
+        let image = slint::Image::from_rgba8(decoded.buffer.clone());
         ui_image_put(att_id, image.clone());
         Some(image)
     }
 
-    /// Clear all cached in-memory decoded textures to reclaim RAM
+    /// Decodes an attachment already saved on disk on a blocking worker and asks
+    /// for a single coalesced row refresh. Used when the UI cache was evicted but
+    /// the file is still in the temp directory.
+    pub fn hydrate_full_from_disk_async(
+        &self,
+        att_id: &str,
+        filename: &str,
+        app_weak: slint::Weak<crate::AppWindow>,
+    ) {
+        if att_id.is_empty() || self.get_full_for_ui(att_id).is_some() {
+            return;
+        }
+        let file_path = self
+            .temp_dir
+            .join(format!("{}_{}", att_id, sanitize_filename(filename)));
+        if !file_path.exists() {
+            return;
+        }
+        match downloads_in_flight().lock() {
+            Ok(mut in_flight) => {
+                if !in_flight.insert(att_id.to_string()) {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+
+        let cache_arc = get_attachment_cache();
+        let id_str = att_id.to_string();
+        tokio::spawn(async move {
+            let path = file_path.clone();
+            let decoded = tokio::task::spawn_blocking(move || {
+                std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| decode_bytes_to_rgba(&bytes))
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(decoded) = decoded {
+                if let Ok(mut guard) = cache_arc.full_cache.lock() {
+                    guard.insert(id_str.clone(), decoded);
+                }
+                queue_attachment_update(&id_str, app_weak);
+            }
+            if let Ok(mut in_flight) = downloads_in_flight().lock() {
+                in_flight.remove(&id_str);
+            }
+        });
+    }
+
+    /// Clear all cached in-memory decoded textures to reclaim RAM.
+    ///
+    /// Also drops the UI-thread texture handles, so a signed-out account does not
+    /// keep pictures of the previous session alive in the window.
     pub fn clear_memory(&self) {
         if let Ok(mut guard) = self.preview_cache.lock() {
             guard.clear();
@@ -327,6 +363,7 @@ impl AttachmentCache {
         if let Ok(mut guard) = self.full_cache.lock() {
             guard.clear();
         }
+        ui_image_clear();
     }
 
     /// Fetch ultra-low-res thumbnail in background (~500 bytes) for pixel-art placeholder

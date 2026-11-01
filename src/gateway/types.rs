@@ -650,9 +650,17 @@ pub fn get_user_names_store() -> Arc<std::sync::Mutex<std::collections::HashMap<
     USER_NAMES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
 }
 
+/// Names are short but unlimited otherwise: a long session in large guilds would
+/// keep every user ever seen in READY and voice states. Bounded like the avatar
+/// directory; when the cap is reached the map is cleared and refills from events.
+const MAX_USER_NAMES: usize = 4096;
+
 pub fn register_user_name(user_id: u64, name: String) {
     if user_id > 0 && !name.is_empty() {
         if let Ok(mut map) = get_user_names_store().lock() {
+            if map.len() >= MAX_USER_NAMES && !map.contains_key(&user_id) {
+                map.clear();
+            }
             map.insert(user_id, name);
         }
     }
@@ -685,6 +693,29 @@ pub fn get_user_avatar_url(user_id: u64) -> String {
         .and_then(|map| map.get(&user_id).cloned())
         .map(|hash| format!("https://cdn.discordapp.com/avatars/{user_id}/{hash}.webp?size=64"))
         .unwrap_or_default()
+}
+
+/// Forgets the name/avatar directory of the signed-out account.
+pub fn clear_user_directory() {
+    if let Some(store) = USER_NAMES.get() {
+        if let Ok(mut map) = store.lock() {
+            map.clear();
+        }
+    }
+    if let Some(store) = USER_AVATARS.get() {
+        if let Ok(mut map) = store.lock() {
+            map.clear();
+        }
+    }
+}
+
+/// Forgets cached guild voice membership (names/channels are re-sent on READY).
+pub fn clear_guild_voice_states() {
+    if let Some(store) = GUILD_VOICE_STATES.get() {
+        if let Ok(mut map) = store.lock() {
+            map.clear();
+        }
+    }
 }
 
 pub fn get_user_name(user_id: u64) -> String {

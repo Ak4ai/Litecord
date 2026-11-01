@@ -12,6 +12,7 @@ use std::time::Instant;
 use log::{info, warn};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use davey::{Codec, DaveSession, MediaType};
 
 use super::crypto::{protect_rtcp, protect_rtp, TransportMode};
 use super::h264::H264Packetizer;
@@ -58,6 +59,7 @@ pub fn start_sender(
     mode: TransportMode,
     video_ssrc: u32,
     stream_key: String,
+    dave: Arc<Mutex<Option<DaveSession>>>,
 ) {
     stop_sender("");
 
@@ -100,8 +102,27 @@ pub fn start_sender(
             if !IS_BROADCASTING.load(Ordering::Relaxed) {
                 break;
             }
+
+            // Apply DAVE end-to-end frame encryption if active and ready
+            let dave_encrypted = if let Ok(mut dg) = dave.lock() {
+                if let Some(ref mut d) = *dg {
+                    if d.is_ready() {
+                        d.encrypt(MediaType::VIDEO, Codec::H264, &frame)
+                            .ok()
+                            .map(|cow| cow.into_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let frame_to_packetize = dave_encrypted.as_deref().unwrap_or(&frame);
+
             let pts_ms = stream_start.elapsed().as_millis() as u64;
-            let packets = packetizer.packetize(&frame, pts_ms);
+            let packets = packetizer.packetize(frame_to_packetize, pts_ms);
 
             for (header, payload) in packets {
                 let cnt = nonce_counter.fetch_add(1, Ordering::Relaxed);
