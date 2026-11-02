@@ -377,6 +377,21 @@ O ponto importante: **a formatação acontece antes de saber se o canal está at
 
 ---
 
+### F16 — Troca de servidor/canal sem transição (Baixa, UX)
+
+**Evidência:** antes desta rodada, `paint_channel_messages` substituía o modelo de mensagens instantaneamente; `show_guild_channels`/`set_channels` trocava a sidebar de uma vez; e `active_channel_name` mudava o cabeçalho sem transição. O resultado era um “corte” seco a cada troca, mesmo quando o carregamento já vinha do cache e era rápido.
+
+**Correção aplicada:**
+
+- Chat: `chat_enter_opacity` (0 → 1 em 130 ms, `ease-out`) aplicado ao `ChatMessagesView`. `paint_channel_messages` só dispara o fade quando `chat_painted_channel` muda; appends ao vivo, edições e refreshes do mesmo canal mantêm a opacidade.
+- Sidebar: `content_opacity` (0 → 1 em 150 ms) no conteúdo do `ChannelSidebar`, não no fundo, para o painel não piscar. O fade só ocorre no primeiro lote de canais de cada servidor (`sidebar_painted_guild`), então atualizações de voz/unread/categorias não reanimam.
+- Cabeçalho: `header_enter_opacity` (0 → 1 em 130 ms) no prefixo e no nome do canal, que continuam nítidos enquanto os ícones da barra não mudam.
+- O estado 0.0 é entregue ao renderizador com um `Timer` de 24 ms antes de voltar a 1.0; sem esse tick o Slint pode coalescer as duas escritas e não animar. Tudo roda na thread da UI, sem trabalho extra de layout (só opacidade, sem transform).
+
+**Risco:** baixo; são animações curtas e locais. Validar tema claro/escuro e que trocas rápidas de canal não deixam a opacidade presa em 0 (o timer sempre retorna a 1.0).
+
+---
+
 ## 4. Mapa de memória
 
 ### 4.1 Orçamentos atuais
@@ -599,6 +614,7 @@ Fases 1 e parte da Fase 2 aplicadas em `main` (commits `91eee39`, `f52b5b0` e o 
 | F11 — trim periódico de 45 s | feito | `src/main.rs`: loop removido; os trims por evento (startup, troca de canal, esconder na bandeja, logout) continuam |
 | F4 — janela de chat limitada | feito (janela, não virtualização) | `src/ui/message_grouping.rs` (`MAX_CHAT_ROWS = 300`, `MAX_CHAT_ROWS_WITH_HISTORY = 600`, `trim_chat_window`, `trim_chat_window_and_rebase` + teste), `src/main.rs`: appends em vivo podam só com o leitor no fim, movem o cursor de `OLDEST_MESSAGE_MAP` para a nova primeira linha e re-agrupam a linha 0; “carregar anteriores” cresce até 600 linhas e então esconde o botão, evitando crescimento sem limite na árvore não virtualizada |
 | F13 — animações/sombras no backend software | feito (parcial) | `ui/components/channel_sidebar.slint` e `ui/appwindow.slint`: hover/seleção de 120 ms → 80 ms (23 animações). As `drop-shadow` de 10–24 px ficaram como estão: trocar por 9-slice ou removê-las exige validação visual claro/escuro |
+| F16 — fade de entrada ao trocar de canal/servidor | feito | `ui/appwindow.slint` (`chat_enter_opacity`, `sidebar_enter_opacity`, `header_enter_opacity`, `ChatMessagesView`/textos com `animate opacity`), `ui/components/channel_sidebar.slint` (`content_opacity`), `src/ui/data_loader.rs` (`paint_channel_messages` anima só quando o canal pintado muda) |
 
 **Validação:** `cargo check --bin litecord`, `cargo build --release --bin litecord` e `cargo test --bin litecord` (10 testes de agrupamento + 6 do gateway, incluindo o de formatação por canal) limpos, somente warnings pré-existentes. Smoke tests de 15–30 s com o binário release recém-compilado: login OK e nenhum panic; o RSS de platô variou entre ≈144 e ≈178 MiB conforme o canal em que a sessão abriu, então serve como sanidade e não como ganho medido.
 

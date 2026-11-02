@@ -74,6 +74,10 @@ export component ChannelSidebar inherits Rectangle {
     // Dragged by the handle on the right edge; saved when the drag ends.
     in-out property <length> sidebar_width: 230px;
     callback sidebar_width_committed(length);
+    // Fades the sidebar content (not its background) when a new server's
+    // channels first appear, so the panel does not blink. Entering `hidden`
+    // snaps to 0; leaving it animates back to 1.
+    in property <bool> content_hidden: false;
 
     width: sidebar_width;
     background: AppTheme.surface-sidebar;
@@ -81,6 +85,14 @@ export component ChannelSidebar inherits Rectangle {
     clip: true;
 
     VerticalBox {
+        opacity: 1;
+        states [
+            hidden when root.content_hidden: {
+                opacity: 0;
+                in { animate opacity { duration: 0ms; } }
+                out { animate opacity { duration: 150ms; easing: ease-out; } }
+            }
+        ]
         padding: 8px;
         spacing: 6px;
 

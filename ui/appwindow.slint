@@ -348,6 +348,38 @@ export component AppWindow inherits Window {
     in-out property <bool> chat_is_at_bottom: false;
     in-out property <int> scroll_to_bottom_trigger: 0;
 
+    // Entry animations. The chat fades in when a new channel batch is painted
+    // (driven from Rust); the sidebar fades in on the first channel batch of a
+    // new server so frequent in-place updates (voice state, unread badges) stay
+    // flicker-free.
+    //
+    // A plain `animate opacity` would also interpolate the reset, so setting 0
+    // and then 1 a few milliseconds later barely dips the opacity. The
+    // `hidden` state instead enters with a 0 ms transition (snap to 0) and
+    // leaves with the visible fade.
+    in-out property <bool> chat_enter_hidden: false;
+    in-out property <string> chat_painted_channel: "";
+    in-out property <bool> sidebar_enter_hidden: false;
+    in-out property <bool> header_enter_hidden: false;
+    property <string> sidebar_painted_guild: "";
+    changed channels => {
+        if root.active_guild_id != root.sidebar_painted_guild {
+            root.sidebar_painted_guild = root.active_guild_id;
+            root.sidebar_enter_hidden = true;
+            sidebar_fade_timer.start();
+        }
+    }
+    sidebar_fade_timer := Timer {
+        interval: 24ms;
+        running: false;
+        triggered => { root.sidebar_enter_hidden = false; }
+    }
+    header_fade_timer := Timer {
+        interval: 24ms;
+        running: false;
+        triggered => { root.header_enter_hidden = false; }
+    }
+
     // Discord-style server-name tooltip shown while a guild icon is hovered.
     in-out property <string> guild_tooltip_id: "";
     in-out property <string> guild_tooltip_text: "";
@@ -369,6 +401,8 @@ export component AppWindow inherits Window {
 
     changed active_channel_id => {
         root.scroll_chat_to_bottom();
+        root.header_enter_hidden = true;
+        header_fade_timer.start();
     }
 
     public function move_suggestion_up() {
@@ -1461,6 +1495,7 @@ export component AppWindow inherits Window {
 
             // 2. Channels Sidebar
             ChannelSidebar {
+                content_hidden: root.sidebar_enter_hidden;
                 sidebar_width <=> root.channel_sidebar_width;
                 sidebar_width_committed(w) => { root.channel_sidebar_width_committed(w); }
                 active_guild_name: root.active_guild_name;
@@ -2907,6 +2942,14 @@ export component AppWindow inherits Window {
                             // Show "@" prefix for DMs, "#" for regular channels
                             Text {
                                 text: (root.active_guild_id == "@me") ? "@" : "#";
+                                opacity: 1;
+                                states [
+                                    hidden when root.header_enter_hidden: {
+                                        opacity: 0;
+                                        in { animate opacity { duration: 0ms; } }
+                                        out { animate opacity { duration: 130ms; easing: ease-out; } }
+                                    }
+                                ]
                                 color: AppTheme.text-subtle;
                                 font-size: TypeScale.heading;
                                 font-weight: 800;
@@ -2915,6 +2958,14 @@ export component AppWindow inherits Window {
 
                             Text {
                                 text: root.active_channel_name;
+                                opacity: 1;
+                                states [
+                                    hidden when root.header_enter_hidden: {
+                                        opacity: 0;
+                                        in { animate opacity { duration: 0ms; } }
+                                        out { animate opacity { duration: 130ms; easing: ease-out; } }
+                                    }
+                                ]
                                 color: AppTheme.text-strong;
                                 font-size: TypeScale.title;
                                 font-weight: 700;
@@ -3023,6 +3074,14 @@ export component AppWindow inherits Window {
 
                             // Messages Chat Feed View
                             chat_view := ChatMessagesView {
+                        opacity: 1;
+                        states [
+                            hidden when root.chat_enter_hidden: {
+                                opacity: 0;
+                                in { animate opacity { duration: 0ms; } }
+                                out { animate opacity { duration: 130ms; easing: ease-out; } }
+                            }
+                        ]
                         vertical-stretch: 1;
                         messages: root.messages;
                         has_more_older_messages: root.has_more_older_messages;
