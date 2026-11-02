@@ -62,6 +62,7 @@ struct VoiceParticipant {
     is_speaking: bool,
     audio_level: float,
     is_muted: bool,
+    is_deafened: bool,
     volume: float,
     priority: int,
     is_self: bool,
@@ -461,6 +462,7 @@ export component AppWindow inherits Window {
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
     in-out property <bool> use_gpu_renderer: false;
+    in-out property <bool> enable_tray_icon: true;
     in-out property <bool> net_diag_running: false;
     in-out property <int> net_diag_verdict: -1;
     in-out property <bool> net_diag_signaling_ok: true;
@@ -485,6 +487,7 @@ export component AppWindow inherits Window {
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
     callback toggle_gpu_renderer();
+    callback toggle_tray_icon();
     in-out property <length> channel_sidebar_width: 230px;
     callback channel_sidebar_width_committed(length);
     callback run_network_diagnostics();
@@ -2568,13 +2571,38 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
-                                                     if p.is_muted: HorizontalLayout {
+                                                     if p.is_deafened: HorizontalLayout {
                                                          spacing: 4px;
                                                          alignment: start;
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Image {
-                                                                 source: @image-url("../assets/volume-x.svg");
+                                                                 source: @image-url("../assets/headphones-mute.svg");
+                                                                 width: 14px;
+                                                                 height: 14px;
+                                                                 colorize: AppTheme.danger;
+                                                                 image-fit: contain;
+                                                             }
+                                                         }
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Text {
+                                                                 text: Tr.label_deafened_caps;
+                                                                 color: AppTheme.danger;
+                                                                 font-size: TypeScale.caption;
+                                                                 font-weight: 700;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
+
+                                                     if (!p.is_deafened && p.is_muted): HorizontalLayout {
+                                                         spacing: 4px;
+                                                         alignment: start;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/microphone-mute.svg");
                                                                  width: 12px;
                                                                  height: 12px;
                                                                  colorize: AppTheme.danger;
@@ -3641,6 +3669,7 @@ export component AppWindow inherits Window {
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
         use_gpu_renderer: root.use_gpu_renderer;
+        enable_tray_icon: root.enable_tray_icon;
         net_diag_running: root.net_diag_running;
         net_diag_verdict: root.net_diag_verdict;
         net_diag_signaling_ok: root.net_diag_signaling_ok;
@@ -3677,6 +3706,7 @@ export component AppWindow inherits Window {
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
         toggle_hardware_monitor => { root.toggle_hardware_monitor(); }
         toggle_gpu_renderer => { root.toggle_gpu_renderer(); }
+        toggle_tray_icon => { root.toggle_tray_icon(); }
         run_network_diagnostics => { root.run_network_diagnostics(); }
         copy_network_diagnostics => { root.copy_network_diagnostics(); }
         select_proxy_mode(arg0) => { root.select_proxy_mode(arg0); }

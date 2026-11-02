@@ -392,10 +392,20 @@ struct StrictReadyGuild<'a> {
     name: Option<std::borrow::Cow<'a, str>>,
     #[serde(default, borrow)]
     emojis: Vec<StrictReadyEmoji<'a>>,
-    #[serde(default)]
-    voice_states: Vec<StrictReadyVoiceState>,
+    #[serde(default, borrow)]
+    members: Vec<StrictReadyMember<'a>>,
+    #[serde(default, borrow)]
+    voice_states: Vec<StrictReadyVoiceState<'a>>,
     #[serde(default, borrow)]
     channels: Vec<StrictReadyChannel<'a>>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyMember<'a> {
+    #[serde(default, borrow)]
+    user: Option<StrictReadyUser<'a>>,
+    #[serde(default, borrow)]
+    nick: Option<std::borrow::Cow<'a, str>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -409,7 +419,7 @@ struct StrictReadyEmoji<'a> {
 }
 
 #[derive(serde::Deserialize)]
-struct StrictReadyVoiceState {
+struct StrictReadyVoiceState<'a> {
     #[serde(deserialize_with = "deserialize_id_u64")]
     user_id: u64,
     #[serde(deserialize_with = "deserialize_id_string")]
@@ -418,6 +428,93 @@ struct StrictReadyVoiceState {
     self_stream: Option<bool>,
     #[serde(default)]
     self_video: Option<bool>,
+    #[serde(default)]
+    self_mute: Option<bool>,
+    #[serde(default)]
+    self_deaf: Option<bool>,
+    #[serde(default)]
+    mute: Option<bool>,
+    #[serde(default)]
+    deaf: Option<bool>,
+    #[serde(default, borrow)]
+    member: Option<StrictReadyMember<'a>>,
+}
+
+fn sort_gateway_channels(raw_channels: Vec<(String, String, u64, Option<String>, i64)>) -> Vec<ChannelData> {
+    let mut cats = Vec::new();
+    let mut chans = Vec::new();
+    for (id, name, ch_type, parent_id, position) in raw_channels {
+        if id.is_empty() { continue; }
+        if ch_type == 4 {
+            cats.push((id, name.to_uppercase(), position));
+        } else if ch_type == 0 || ch_type == 2 || ch_type == 5 || ch_type == 10 || ch_type == 11 || ch_type == 12 || ch_type == 13 || ch_type == 15 || ch_type == 16 {
+            chans.push((id, name, ch_type, parent_id, position));
+        }
+    }
+    cats.sort_by_key(|c| c.2);
+    let cat_ids: std::collections::HashSet<String> = cats.iter().map(|c| c.0.clone()).collect();
+    let mut cat_map: HashMap<String, Vec<(String, String, u64, Option<String>, i64)>> = HashMap::new();
+    let mut uncategorized = Vec::new();
+    for ch in chans {
+        if let Some(ref pid) = ch.3 {
+            if cat_ids.contains(pid) {
+                cat_map.entry(pid.clone()).or_default().push(ch);
+                continue;
+            }
+        }
+        uncategorized.push(ch);
+    }
+    let sort_list = |list: &mut Vec<(String, String, u64, Option<String>, i64)>| {
+        list.sort_by(|a, b| {
+            let a_v = a.2 == 2 || a.2 == 13;
+            let b_v = b.2 == 2 || b.2 == 13;
+            if a_v == b_v {
+                a.4.cmp(&b.4)
+            } else if !a_v {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+    };
+    sort_list(&mut uncategorized);
+    for children in cat_map.values_mut() {
+        sort_list(children);
+    }
+    let mut out = Vec::new();
+    for (id, name, ch_type, _, position) in uncategorized {
+        out.push(ChannelData {
+            id,
+            name,
+            is_voice: ch_type == 2 || ch_type == 13,
+            is_category: false,
+            parent_id: None,
+            position,
+        });
+    }
+    for (cat_id, cat_name, cat_pos) in cats {
+        let children = cat_map.remove(&cat_id).unwrap_or_default();
+        if children.is_empty() { continue; }
+        out.push(ChannelData {
+            id: cat_id.clone(),
+            name: cat_name,
+            is_voice: false,
+            is_category: true,
+            parent_id: None,
+            position: cat_pos,
+        });
+        for (id, name, ch_type, _, position) in children {
+            out.push(ChannelData {
+                id,
+                name,
+                is_voice: ch_type == 2 || ch_type == 13,
+                is_category: false,
+                parent_id: Some(cat_id.clone()),
+                position,
+            });
+        }
+    }
+    out
 }
 
 #[derive(serde::Deserialize)]
@@ -686,7 +783,58 @@ impl GatewayClient {
                             }
                         }
                     }
-                    GatewayCommand::SubscribeGuild { .. } => {}
+                    GatewayCommand::SubscribeGuild { guild_id, channel_ids } => {
+                        if guild_id.is_empty() || guild_id == "@me" {
+                            continue;
+                        }
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let mut channels_obj = serde_json::Map::new();
+                            for cid in &channel_ids {
+                                if !cid.is_empty() {
+                                    channels_obj.insert(cid.clone(), serde_json::json!([[0, 99]]));
+                                }
+                            }
+                            let lazy_req = serde_json::json!({
+                                "op": 14,
+                                "d": {
+                                    "guild_id": guild_id,
+                                    "typing": true,
+                                    "activities": true,
+                                    "threads": true,
+                                    "channels": channels_obj
+                                }
+                            });
+                            let _ = tx.send(Message::Text(lazy_req.to_string().into())).await;
+
+                            let missing_uids: Vec<String> = get_guild_voice_states_store()
+                                .lock()
+                                .ok()
+                                .map(|gvs| {
+                                    gvs.iter()
+                                        .filter(|(&uid, cid)| {
+                                            uid > 0
+                                                && (channel_ids.is_empty() || channel_ids.contains(cid))
+                                                && (!has_user_name(uid) || get_user_avatar_url(uid).is_empty())
+                                        })
+                                        .take(100)
+                                        .map(|(&uid, _)| uid.to_string())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            if !missing_uids.is_empty() {
+                                let chunk_req = serde_json::json!({
+                                    "op": 8,
+                                    "d": {
+                                        "guild_id": guild_id,
+                                        "user_ids": missing_uids,
+                                        "presences": false
+                                    }
+                                });
+                                let _ = tx.send(Message::Text(chunk_req.to_string().into())).await;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -1091,13 +1239,49 @@ impl GatewayClient {
                 crate::utils::emoji_cache::register_custom_emoji(&em.id, &em.name, anim);
             }
 
+            // Members included in READY guild object
+            for m in g.members {
+                if let Some(u) = m.user {
+                    let u_id: u64 = u.id.parse().unwrap_or(0);
+                    if u_id > 0 {
+                        let dname = m.nick
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| u.global_name.as_deref().filter(|s| !s.is_empty()))
+                            .or_else(|| u.username.as_deref().filter(|s| !s.is_empty()))
+                            .unwrap_or("");
+                        if !dname.is_empty() {
+                            register_user_avatar(u_id, u.avatar.as_deref().unwrap_or(""));
+                            register_user_name(u_id, dname.to_string());
+                        }
+                    }
+                }
+            }
+
             // Voice states
             for vs in g.voice_states {
                 if vs.user_id > 0 && !vs.channel_id.is_empty() {
+                    if let Some(m) = vs.member {
+                        let dname = m.nick
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| m.user.as_ref().and_then(|u| u.global_name.as_deref()).filter(|s| !s.is_empty()))
+                            .or_else(|| m.user.as_ref().and_then(|u| u.username.as_deref()).filter(|s| !s.is_empty()))
+                            .unwrap_or("");
+                        if !dname.is_empty() {
+                            if let Some(ref u) = m.user {
+                                register_user_avatar(vs.user_id, u.avatar.as_deref().unwrap_or(""));
+                            }
+                            register_user_name(vs.user_id, dname.to_string());
+                        }
+                    }
                     if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                         gvs.insert(vs.user_id, vs.channel_id.clone());
                         info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", vs.user_id, vs.channel_id);
                     }
+                    let is_muted = vs.self_mute.unwrap_or(false) || vs.mute.unwrap_or(false);
+                    let is_deaf = vs.self_deaf.unwrap_or(false) || vs.deaf.unwrap_or(false);
+                    set_user_voice_audio_flags(vs.user_id, is_muted, is_deaf);
                     let self_stream = vs.self_stream.unwrap_or(false);
                     let self_video = vs.self_video.unwrap_or(false);
                     crate::screen_capture::types::set_user_stream_flags(vs.user_id, self_stream, self_video);
@@ -1111,22 +1295,19 @@ impl GatewayClient {
             let gid = g.id.to_string();
             let gname = g.name.as_deref().unwrap_or("Servidor").to_string();
             if !gid.is_empty() {
-                let mut channels = Vec::new();
-                for ch in g.channels {
-                    let ch_type = ch.ch_type;
-                    if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
-                        let ch_id = ch.id.to_string();
-                        let ch_name = ch.name.as_deref().unwrap_or("canal").to_string();
-                        channels.push(ChannelData {
-                            id: ch_id,
-                            name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
-                            is_voice: ch_type == 2 || ch_type == 13,
-                            is_category: ch_type == 4,
-                            parent_id: ch.parent_id.map(|s| s.to_string()),
-                            position: ch.position.unwrap_or(0),
-                        });
-                    }
-                }
+                let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = g.channels
+                    .into_iter()
+                    .map(|ch| {
+                        (
+                            ch.id.to_string(),
+                            ch.name.as_deref().unwrap_or("canal").to_string(),
+                            ch.ch_type,
+                            ch.parent_id.map(|s| s.to_string()),
+                            ch.position.unwrap_or(0),
+                        )
+                    })
+                    .collect();
+                let channels = sort_gateway_channels(raw_channels);
                 if !channels.is_empty() {
                     let guild = GuildData { id: gid, name: gname, channels };
                     let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
@@ -1139,6 +1320,20 @@ impl GatewayClient {
         for dm in d.private_channels {
             let ch_id = dm.id.to_string();
             if ch_id.is_empty() { continue; }
+            for r in &dm.recipients {
+                let r_id: u64 = r.id.parse().unwrap_or(0);
+                if r_id > 0 {
+                    let r_name = r.global_name
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| r.username.as_deref().filter(|s| !s.is_empty()))
+                        .unwrap_or("");
+                    if !r_name.is_empty() {
+                        register_user_avatar(r_id, r.avatar.as_deref().unwrap_or(""));
+                        register_user_name(r_id, r_name.to_string());
+                    }
+                }
+            }
             let name = dm.recipients
                 .first()
                 .and_then(|u| u.global_name.as_deref().or_else(|| u.username.as_deref()))
@@ -1161,6 +1356,9 @@ impl GatewayClient {
             };
             let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
         }
+
+        save_user_directory_cache();
+        let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
 
         let discriminator = d.user.discriminator.as_deref().unwrap_or("0");
         let user_tag = if discriminator == "0" {
@@ -1232,6 +1430,32 @@ impl GatewayClient {
                                 }
                             }
 
+                            if let Some(members_arr) = g["members"].as_array() {
+                                for m in members_arr {
+                                    let uid_str = m["user"]["id"].as_str().unwrap_or("");
+                                    if let Ok(uid) = uid_str.parse::<u64>() {
+                                        let mut display_name = String::new();
+                                        if let Some(nick) = m["nick"].as_str() {
+                                            if !nick.is_empty() { display_name = nick.to_string(); }
+                                        }
+                                        if display_name.is_empty() {
+                                            if let Some(gname) = m["user"]["global_name"].as_str() {
+                                                if !gname.is_empty() { display_name = gname.to_string(); }
+                                            }
+                                        }
+                                        if display_name.is_empty() {
+                                            if let Some(uname) = m["user"]["username"].as_str() {
+                                                if !uname.is_empty() { display_name = uname.to_string(); }
+                                            }
+                                        }
+                                        if !display_name.is_empty() {
+                                            register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
+                                            register_user_name(uid, display_name);
+                                        }
+                                    }
+                                }
+                            }
+
                             if let Some(vs_arr) = g["voice_states"].as_array() {
                                 for vs in vs_arr {
                                     let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
@@ -1247,10 +1471,20 @@ impl GatewayClient {
                                         String::new()
                                     };
                                     if u_id > 0 && !c_str.is_empty() {
+                                        let dname = vs["member"]["nick"].as_str().filter(|s| !s.is_empty())
+                                            .or_else(|| vs["member"]["user"]["global_name"].as_str().filter(|s| !s.is_empty()))
+                                            .or_else(|| vs["member"]["user"]["username"].as_str().filter(|s| !s.is_empty()));
+                                        if let Some(name) = dname {
+                                            register_user_avatar(u_id, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
+                                            register_user_name(u_id, name.to_string());
+                                        }
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
                                             info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", u_id, c_str);
                                         }
+                                        let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                        let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                        set_user_voice_audio_flags(u_id, is_muted, is_deaf);
                                         let self_stream = vs["self_stream"].as_bool().unwrap_or(false);
                                         let self_video = vs["self_video"].as_bool().unwrap_or(false);
                                         crate::screen_capture::types::set_user_stream_flags(u_id, self_stream, self_video);
@@ -1266,22 +1500,19 @@ impl GatewayClient {
                             let gname = g["name"].as_str().unwrap_or("Servidor").to_string();
                             if !gid.is_empty() {
                                 if let Some(chans_arr) = g["channels"].as_array() {
-                                    let mut channels = Vec::new();
-                                    for ch in chans_arr {
-                                        let ch_id = ch["id"].as_str().unwrap_or("").to_string();
-                                        let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
-                                        let ch_type = ch["type"].as_u64().unwrap_or(0);
-                                        if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
-                                            channels.push(ChannelData {
-                                                id: ch_id,
-                                                name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
-                                                is_voice: ch_type == 2 || ch_type == 13,
-                                                is_category: ch_type == 4,
-                                                parent_id: ch["parent_id"].as_str().map(|s| s.to_string()),
-                                                position: ch["position"].as_i64().unwrap_or(0),
-                                            });
-                                        }
-                                    }
+                                    let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = chans_arr
+                                        .iter()
+                                        .map(|ch| {
+                                            (
+                                                ch["id"].as_str().unwrap_or("").to_string(),
+                                                ch["name"].as_str().unwrap_or("canal").to_string(),
+                                                ch["type"].as_u64().unwrap_or(0),
+                                                ch["parent_id"].as_str().map(|s| s.to_string()),
+                                                ch["position"].as_i64().unwrap_or(0),
+                                            )
+                                        })
+                                        .collect();
+                                    let channels = sort_gateway_channels(raw_channels);
                                     if !channels.is_empty() {
                                         let guild = GuildData { id: gid.clone(), name: gname, channels };
                                         let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
@@ -1322,6 +1553,9 @@ impl GatewayClient {
                         }
                     }
 
+                    save_user_directory_cache();
+                    let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
+
                     let discriminator = v["d"]["user"]["discriminator"].as_str().unwrap_or("0");
                     let user_tag = if discriminator == "0" {
                         global_name.to_string()
@@ -1354,10 +1588,20 @@ impl GatewayClient {
                                 String::new()
                             };
                             if u_id > 0 && !c_str.is_empty() {
+                                let dname = vs["member"]["nick"].as_str().filter(|s| !s.is_empty())
+                                    .or_else(|| vs["member"]["user"]["global_name"].as_str().filter(|s| !s.is_empty()))
+                                    .or_else(|| vs["member"]["user"]["username"].as_str().filter(|s| !s.is_empty()));
+                                if let Some(name) = dname {
+                                    register_user_avatar(u_id, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
+                                    register_user_name(u_id, name.to_string());
+                                }
                                 if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                     gvs.insert(u_id, c_str.clone());
                                     info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
                                 }
+                                let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                set_user_voice_audio_flags(u_id, is_muted, is_deaf);
                                 crate::screen_capture::types::set_user_stream_flags(
                                     u_id,
                                     vs["self_stream"].as_bool().unwrap_or(false),
@@ -1385,10 +1629,20 @@ impl GatewayClient {
                                         String::new()
                                     };
                                     if u_id > 0 && !c_str.is_empty() {
+                                        let dname = vs["member"]["nick"].as_str().filter(|s| !s.is_empty())
+                                            .or_else(|| vs["member"]["user"]["global_name"].as_str().filter(|s| !s.is_empty()))
+                                            .or_else(|| vs["member"]["user"]["username"].as_str().filter(|s| !s.is_empty()));
+                                        if let Some(name) = dname {
+                                            register_user_avatar(u_id, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
+                                            register_user_name(u_id, name.to_string());
+                                        }
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
                                             info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
                                         }
+                                        let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                        let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                        set_user_voice_audio_flags(u_id, is_muted, is_deaf);
                                         crate::screen_capture::types::set_user_stream_flags(
                                             u_id,
                                             vs["self_stream"].as_bool().unwrap_or(false),
@@ -1402,6 +1656,7 @@ impl GatewayClient {
                     let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
                 }
                 "GUILD_MEMBERS_CHUNK" => {
+                    let mut updated = false;
                     if let Some(members_arr) = v["d"]["members"].as_array() {
                         for m in members_arr {
                             let uid_str = m["user"]["id"].as_str().unwrap_or("");
@@ -1421,10 +1676,16 @@ impl GatewayClient {
                                     }
                                 }
                                 if !display_name.is_empty() {
+                                    register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
                                     register_user_name(uid, display_name);
+                                    updated = true;
                                 }
                             }
                         }
+                    }
+                    if updated {
+                        save_user_directory_cache();
+                        let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
                     }
                 }
                 "VOICE_STATE_UPDATE" => {
@@ -1469,11 +1730,18 @@ impl GatewayClient {
                                 info!("📌 [VOICE_STATE_UPDATE] User {} -> Canal {}", event_uid, cid);
                                 gvs.insert(event_uid, cid.clone())
                             } else {
+                                remove_user_voice_audio_flags(event_uid);
                                 gvs.remove(&event_uid)
                             }
                         } else {
                             None
                         };
+
+                        if event_chan.is_some() {
+                            let is_muted = v["d"]["self_mute"].as_bool().unwrap_or(false) || v["d"]["mute"].as_bool().unwrap_or(false);
+                            let is_deaf = v["d"]["self_deaf"].as_bool().unwrap_or(false) || v["d"]["deaf"].as_bool().unwrap_or(false);
+                            set_user_voice_audio_flags(event_uid, is_muted, is_deaf);
+                        }
                         let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
 
                         if let Some(ref my_cid) = my_voice_chan {
@@ -1890,27 +2158,23 @@ impl GatewayClient {
                 "GUILD_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let name = v["d"]["name"].as_str().unwrap_or("Servidor").to_string();
-                    let mut channels = Vec::new();
-
-                    if let Some(chans_arr) = v["d"]["channels"].as_array() {
-                        for ch in chans_arr {
-                            let ch_id = ch["id"].as_str().unwrap_or("").to_string();
-                            let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
-                            let ch_type = ch["type"].as_u64().unwrap_or(0);
-
-                            // type 0 = text, type 2 = voice, type 4 = category, type 5 = news, type 13 = stage, type 15 = forum
-                            if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
-                                channels.push(ChannelData {
-                                    id: ch_id,
-                                    name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
-                                    is_voice: ch_type == 2 || ch_type == 13,
-                                    is_category: ch_type == 4,
-                                    parent_id: ch["parent_id"].as_str().map(|s| s.to_string()),
-                                    position: ch["position"].as_i64().unwrap_or(0),
-                                });
-                            }
-                        }
-                    }
+                    let channels = if let Some(chans_arr) = v["d"]["channels"].as_array() {
+                        let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = chans_arr
+                            .iter()
+                            .map(|ch| {
+                                (
+                                    ch["id"].as_str().unwrap_or("").to_string(),
+                                    ch["name"].as_str().unwrap_or("canal").to_string(),
+                                    ch["type"].as_u64().unwrap_or(0),
+                                    ch["parent_id"].as_str().map(|s| s.to_string()),
+                                    ch["position"].as_i64().unwrap_or(0),
+                                )
+                            })
+                            .collect();
+                        sort_gateway_channels(raw_channels)
+                    } else {
+                        Vec::new()
+                    };
 
                     // Parse members to cache user display names
                     if let Some(members_arr) = v["d"]["members"].as_array() {
@@ -1960,6 +2224,9 @@ impl GatewayClient {
                                     gvs.insert(uid, cid_str.clone());
                                     info!("📌 [GUILD_CREATE] Pré-carregado estado de voz: User {} -> Canal {}", uid, cid_str);
                                 }
+                                let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                set_user_voice_audio_flags(uid, is_muted, is_deaf);
                                 crate::screen_capture::types::set_user_stream_flags(
                                     uid,
                                     vs["self_stream"].as_bool().unwrap_or(false),
@@ -1991,6 +2258,7 @@ impl GatewayClient {
 
                     let guild = GuildData { id, name, channels };
                     let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
+                    let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
                 }
                 _ => {}
             }

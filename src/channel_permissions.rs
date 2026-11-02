@@ -105,7 +105,7 @@ impl ChannelPermissions {
 }
 
 /// Servers whose permissions are kept, the last ones opened.
-const CACHED_SERVERS: usize = 8;
+const CACHED_SERVERS: usize = 64;
 /// A safety net: role and member changes already drop an entry as they arrive.
 const CACHED_FOR: Duration = Duration::from_secs(300);
 

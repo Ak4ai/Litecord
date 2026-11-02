@@ -20,7 +20,7 @@ pub mod rtcp;
 pub mod sender;
 pub mod stream;
 
-pub use sender::{is_broadcasting, offer_outbound_frame, stop_sender};
+pub use sender::{is_broadcasting, offer_outbound_audio, offer_outbound_frame, stop_sender};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

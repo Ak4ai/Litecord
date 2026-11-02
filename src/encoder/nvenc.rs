@@ -511,8 +511,8 @@ impl VideoEncoder for FfmpegNvencEncoder {
                 }
             }
 
-            // PTS
-            *(frame_u8.add(136) as *mut i64) = (self.frame_count * 16666) as i64;
+            // PTS conforme time_base (1 / target_fps)
+            *(frame_u8.add(136) as *mut i64) = self.frame_count as i64;
             self.frame_count += 1;
 
             if self.needs_keyframe {

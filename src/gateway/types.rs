@@ -54,7 +54,7 @@ pub struct MessageAttachmentData {
     pub is_image: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct ChannelData {
     pub id: String,
@@ -79,6 +79,7 @@ pub enum GatewayEvent {
     Connected { user_tag: String },
     Disconnected { reason: String },
     VoiceStatesUpdated,
+    VoiceConnected,
     VoiceDisconnected,
     MessageCreated {
         id: String,
@@ -628,9 +629,37 @@ pub fn remove_voice_participant_by_user_id(user_id: u64) {
 }
 
 pub static GUILD_VOICE_STATES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>> = std::sync::OnceLock::new();
+pub static GUILD_VOICE_AUDIO_FLAGS: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, (bool, bool)>>>> = std::sync::OnceLock::new();
 
 pub fn get_guild_voice_states_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> {
     GUILD_VOICE_STATES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn get_guild_voice_audio_flags_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, (bool, bool)>>> {
+    GUILD_VOICE_AUDIO_FLAGS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+pub fn set_user_voice_audio_flags(user_id: u64, is_muted: bool, is_deafened: bool) {
+    if user_id == 0 { return; }
+    if let Ok(mut map) = get_guild_voice_audio_flags_store().lock() {
+        map.insert(user_id, (is_muted, is_deafened));
+    }
+}
+
+pub fn get_user_voice_audio_flags(user_id: u64) -> (bool, bool) {
+    if user_id == 0 { return (false, false); }
+    if let Ok(map) = get_guild_voice_audio_flags_store().lock() {
+        if let Some(&flags) = map.get(&user_id) {
+            return flags;
+        }
+    }
+    (false, false)
+}
+
+pub fn remove_user_voice_audio_flags(user_id: u64) {
+    if let Ok(mut map) = get_guild_voice_audio_flags_store().lock() {
+        map.remove(&user_id);
+    }
 }
 
 pub fn sync_voice_channel_participants(channel_id: &str) {
@@ -646,14 +675,59 @@ pub fn sync_voice_channel_participants(channel_id: &str) {
 
 pub static USER_NAMES: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>> = std::sync::OnceLock::new();
 
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedUserDirectory {
+    #[serde(default)]
+    names: std::collections::HashMap<u64, String>,
+    #[serde(default)]
+    avatars: std::collections::HashMap<u64, String>,
+}
+
+const USER_DIRECTORY_CACHE_FILE: &str = ".litecord_cache/users_cache.json";
+
+fn load_persisted_user_directory() -> PersistedUserDirectory {
+    if let Ok(data) = std::fs::read_to_string(USER_DIRECTORY_CACHE_FILE) {
+        if let Ok(dir) = serde_json::from_str::<PersistedUserDirectory>(&data) {
+            return dir;
+        }
+    }
+    PersistedUserDirectory::default()
+}
+
+pub fn save_user_directory_cache() {
+    let names = get_user_names_store().lock().ok().map(|m| m.clone()).unwrap_or_default();
+    let avatars = USER_AVATARS.get().and_then(|s| s.lock().ok()).map(|m| m.clone()).unwrap_or_default();
+    if names.is_empty() && avatars.is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(".litecord_cache");
+    let dir = PersistedUserDirectory { names, avatars };
+    if let Ok(json) = serde_json::to_string(&dir) {
+        let tmp = ".litecord_cache/users_cache.json.tmp";
+        if std::fs::write(tmp, json).is_ok() {
+            let _ = std::fs::rename(tmp, USER_DIRECTORY_CACHE_FILE);
+        }
+    }
+}
+
 pub fn get_user_names_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>> {
-    USER_NAMES.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+    USER_NAMES.get_or_init(|| {
+        let loaded = load_persisted_user_directory();
+        if !loaded.avatars.is_empty() {
+            let _ = USER_AVATARS.set(std::sync::Mutex::new(loaded.avatars));
+        }
+        Arc::new(std::sync::Mutex::new(loaded.names))
+    }).clone()
+}
+
+pub fn has_user_name(user_id: u64) -> bool {
+    get_user_names_store().lock().ok().is_some_and(|map| map.contains_key(&user_id))
 }
 
 /// Names are short but unlimited otherwise: a long session in large guilds would
 /// keep every user ever seen in READY and voice states. Bounded like the avatar
 /// directory; when the cap is reached the map is cleared and refills from events.
-const MAX_USER_NAMES: usize = 4096;
+const MAX_USER_NAMES: usize = 8192;
 
 pub fn register_user_name(user_id: u64, name: String) {
     if user_id > 0 && !name.is_empty() {
@@ -669,13 +743,14 @@ pub fn register_user_name(user_id: u64, name: String) {
 /// Avatar hashes (max 34 bytes each) of users seen in voice states, so voice rows
 /// and the DM list can show a picture without extra REST calls. Bounded: when the
 /// cap is reached the map is simply cleared and refills from live events.
-const MAX_USER_AVATARS: usize = 1024;
+const MAX_USER_AVATARS: usize = 2048;
 static USER_AVATARS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, String>>> = std::sync::OnceLock::new();
 
 pub fn register_user_avatar(user_id: u64, hash: &str) {
     if user_id == 0 || !crate::ui::message_grouping::valid_avatar_hash(hash) {
         return;
     }
+    let _ = get_user_names_store();
     let store = USER_AVATARS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Ok(mut map) = store.lock() {
         if map.len() >= MAX_USER_AVATARS && !map.contains_key(&user_id) {
@@ -687,6 +762,7 @@ pub fn register_user_avatar(user_id: u64, hash: &str) {
 
 /// Discord CDN thumbnail URL for a known user, or an empty string.
 pub fn get_user_avatar_url(user_id: u64) -> String {
+    let _ = get_user_names_store();
     USER_AVATARS
         .get()
         .and_then(|store| store.lock().ok())
@@ -707,11 +783,17 @@ pub fn clear_user_directory() {
             map.clear();
         }
     }
+    let _ = std::fs::remove_file(USER_DIRECTORY_CACHE_FILE);
 }
 
 /// Forgets cached guild voice membership (names/channels are re-sent on READY).
 pub fn clear_guild_voice_states() {
     if let Some(store) = GUILD_VOICE_STATES.get() {
+        if let Ok(mut map) = store.lock() {
+            map.clear();
+        }
+    }
+    if let Some(store) = GUILD_VOICE_AUDIO_FLAGS.get() {
         if let Ok(mut map) = store.lock() {
             map.clear();
         }

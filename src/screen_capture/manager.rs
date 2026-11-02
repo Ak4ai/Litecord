@@ -342,8 +342,9 @@ impl ScreenCaptureManager {
                 let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
                 let is_running_cap = Arc::clone(&is_running);
 
+                let rx_recycle_shared = Arc::new(Mutex::new(rx_recycle));
                 #[cfg(windows)]
-                let rx_recycle_gpu = Arc::new(Mutex::new(rx_recycle));
+                let rx_recycle_gpu = Arc::clone(&rx_recycle_shared);
                 #[cfg(windows)]
                 let selected_gpu_started = camera_index.is_none() && {
                     use windows_capture::monitor::Monitor;
@@ -651,7 +652,8 @@ impl ScreenCaptureManager {
                 let wgc_started = false;
 
                 if !wgc_started {
-                    // Fallback para Câmera ou Captura Tradicional
+                    // Fallback para Câmera ou Captura Tradicional (Linux / Fallback)
+                    let rx_recycle_fallback = Arc::clone(&rx_recycle_shared);
                     std::thread::Builder::new()
                         .name("screen-capture-worker".to_string())
                         .spawn(move || {
@@ -758,8 +760,14 @@ impl ScreenCaptureManager {
                             let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));
                             let mut next_cap_time = Instant::now() + frame_interval;
 
+                            let total_canvas_bytes = (target_w * target_h * 4) as usize;
                             while is_running_cap.load(Ordering::Relaxed) {
-                                let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
+                                let mut cur_buf = if let Ok(rx) = rx_recycle_fallback.lock() {
+                                    rx.try_recv().unwrap_or_else(|_| Vec::with_capacity(total_canvas_bytes))
+                                } else {
+                                    Vec::with_capacity(total_canvas_bytes)
+                                };
+                                cur_buf.clear();
 
                                 let cap_res = if camera_index.is_some() {
                                     if let Some(ref cam) = camera_handle {

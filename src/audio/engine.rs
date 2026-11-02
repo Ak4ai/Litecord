@@ -18,14 +18,13 @@ fn voice_buffer_frames(rate: u32, supported: &cpal::SupportedBufferSize) -> u32 
     }
 }
 
-/// Speaker-only default. 2048 frames = four exact 512-frame PipeWire quanta,
-/// so the ring is not split into a fractional last period like 960/256 was.
+/// Speaker-only default. 960 frames = 20 ms at 48 kHz (exact match for 20 ms Opus packets,
+/// fits cleanly in two 480-frame or four 240-frame PipeWire quanta).
 #[cfg(target_os = "linux")]
-const DEFAULT_VOICE_OUT_FRAMES: u32 = 2048;
-/// One 256-frame PipeWire quantum. Anything smaller is tighter than today and
-/// cannot absorb a stall, so it is rejected instead of honoured.
+const DEFAULT_VOICE_OUT_FRAMES: u32 = 960;
+/// One 240-frame PipeWire quantum (5 ms).
 #[cfg(target_os = "linux")]
-const MIN_VOICE_OUT_FRAMES: u32 = 256;
+const MIN_VOICE_OUT_FRAMES: u32 = 240;
 
 /// Speaker-only override, read once per stream creation:
 /// `LITECORD_VOICE_OUT_FRAMES=<frames>`; `0` means `BufferSize::Default`

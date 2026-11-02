@@ -818,16 +818,26 @@ pub async fn connect_stream_sender(
                             }
                         }
 
-                        // Opcode 5 Speaking
+                        // Opcode 5 Speaking (Video + Soundshare = 3, or video_ssrc & audio_ssrc)
                         let speaking = json!({
                             "op": 5,
                             "d": {
-                                "speaking": 1,
+                                "speaking": 3,
                                 "delay": 0,
                                 "ssrc": video_ssrc
                             }
                         });
                         let _ = send_text(&write, speaking).await;
+
+                        let speaking_audio = json!({
+                            "op": 5,
+                            "d": {
+                                "speaking": 2, // SOUNDSHARE
+                                "delay": 0,
+                                "ssrc": sender_ssrc
+                            }
+                        });
+                        let _ = send_text(&write, speaking_audio).await;
 
                         // Opcode 12 Video
                         let is_cam = crate::screen_capture::types::is_camera_stream();
@@ -876,6 +886,7 @@ pub async fn connect_stream_sender(
                                 target_addr,
                                 secret_key_bytes,
                                 mode,
+                                sender_ssrc,
                                 video_ssrc,
                                 stream_key.clone(),
                                 Arc::clone(&dave),
@@ -892,6 +903,37 @@ pub async fn connect_stream_sender(
                     }
                     22 | 19 => {
                         log::info!("🎬 [GO LIVE TX] DAVE execute transition");
+                    }
+                    24 => {
+                        // Opcode 24: DAVE Prepare Epoch. Se epoch == 1, reinicia o grupo MLS e envia KeyPackage (Op 26)
+                        let epoch = value["d"]["epoch"].as_u64().unwrap_or(0);
+                        log::info!("🎬 [GO LIVE TX] DAVE prepare epoch: {}", epoch);
+                        if epoch == 1 {
+                            let kp_opt = {
+                                let mut d_guard = dave.lock().unwrap();
+                                if let Ok(mut session) = DaveSession::new(
+                                    NonZeroU16::new(1).unwrap(),
+                                    user_id,
+                                    dave_group.max(1),
+                                    None,
+                                ) {
+                                    if let Some(ref ext) = *saved_external_sender.lock().unwrap() {
+                                        let _ = session.set_external_sender(ext);
+                                    }
+                                    let kp = session.create_key_package().ok();
+                                    *d_guard = Some(session);
+                                    kp
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(kp) = kp_opt {
+                                let mut packet = vec![26u8];
+                                packet.extend_from_slice(&kp);
+                                let mut sink = write.lock().await;
+                                let _ = sink.send(Message::Binary(packet.into())).await;
+                            }
+                        }
                     }
                     _ => {}
                 }

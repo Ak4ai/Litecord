@@ -19,6 +19,7 @@ use super::h264::H264Packetizer;
 use super::rtp::is_rtcp;
 
 static FRAME_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
+static AUDIO_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 static IS_BROADCASTING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_STREAM_KEY: Mutex<Option<String>> = Mutex::new(None);
 
@@ -39,6 +40,17 @@ pub fn offer_outbound_frame(annex_b: &[u8]) {
     }
 }
 
+/// Hands a 20ms Opus audio frame to the outbound transmitter.
+pub fn offer_outbound_audio(opus_frame: &[u8]) {
+    if !is_broadcasting() || opus_frame.is_empty() {
+        return;
+    }
+    let guard = AUDIO_TX.lock().unwrap();
+    if let Some(tx) = guard.as_ref() {
+        let _ = tx.try_send(opus_frame.to_vec());
+    }
+}
+
 /// Stops any active outbound stream sender.
 pub fn stop_sender(stream_key: &str) {
     let mut key_guard = ACTIVE_STREAM_KEY.lock().unwrap();
@@ -47,6 +59,8 @@ pub fn stop_sender(stream_key: &str) {
         IS_BROADCASTING.store(false, Ordering::SeqCst);
         let mut tx_guard = FRAME_TX.lock().unwrap();
         *tx_guard = None;
+        let mut atx_guard = AUDIO_TX.lock().unwrap();
+        *atx_guard = None;
         info!("🛑 [GO LIVE TX] Transmissor nativo de stream encerrado: {}", stream_key);
     }
 }
@@ -57,14 +71,17 @@ pub fn start_sender(
     target_addr: SocketAddr,
     key: Vec<u8>,
     mode: TransportMode,
+    audio_ssrc: u32,
     video_ssrc: u32,
     stream_key: String,
     dave: Arc<Mutex<Option<DaveSession>>>,
 ) {
     stop_sender("");
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(5);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
     *FRAME_TX.lock().unwrap() = Some(tx);
+    let (atx, mut arx) = mpsc::channel::<Vec<u8>>(32);
+    *AUDIO_TX.lock().unwrap() = Some(atx);
     *ACTIVE_STREAM_KEY.lock().unwrap() = Some(stream_key.clone());
     IS_BROADCASTING.store(true, Ordering::SeqCst);
 
@@ -76,6 +93,61 @@ pub fn start_sender(
     let total_packets = Arc::new(AtomicU32::new(0));
     let total_octets = Arc::new(AtomicU32::new(0));
 
+    let socket_send_audio = Arc::clone(&socket);
+    let dave_audio = Arc::clone(&dave);
+    let key_audio = key.clone();
+    let nonce_counter_audio = Arc::clone(&nonce_counter);
+
+    // 1b. Outbound Audio RTP Worker Task (Opus 48 kHz stereo for Go Live soundshare)
+    tokio::spawn(async move {
+        info!(
+            "🔊 [GO LIVE TX] Pumping de áudio nativo Opus iniciado para {} (SSRC={}, mode={:?})",
+            target_addr, audio_ssrc, mode
+        );
+        let mut audio_seq: u16 = 0;
+        let mut audio_ts: u32 = 0;
+
+        while let Some(opus_frame) = arx.recv().await {
+            if !IS_BROADCASTING.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Apply DAVE end-to-end audio encryption if active
+            let encrypted_payload = if let Ok(mut dg) = dave_audio.lock() {
+                if let Some(ref mut d) = *dg {
+                    if d.is_ready() {
+                        d.encrypt(MediaType::AUDIO, Codec::OPUS, &opus_frame)
+                            .ok()
+                            .map(|cow| cow.into_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let payload_to_send = encrypted_payload.as_deref().unwrap_or(&opus_frame);
+
+            // Construct 12-byte RTP header (PT=120 Discord Opus)
+            let mut rtp_header = [0u8; 12];
+            rtp_header[0] = 0x80; // V=2, P=0, X=0, CC=0
+            rtp_header[1] = 120;  // Payload Type 120 (Opus)
+            rtp_header[2..4].copy_from_slice(&audio_seq.to_be_bytes());
+            rtp_header[4..8].copy_from_slice(&audio_ts.to_be_bytes());
+            rtp_header[8..12].copy_from_slice(&audio_ssrc.to_be_bytes());
+
+            audio_seq = audio_seq.wrapping_add(1);
+            audio_ts = audio_ts.wrapping_add(960); // 20ms @ 48kHz = 960 samples
+
+            let cnt = nonce_counter_audio.fetch_add(1, Ordering::Relaxed);
+            if let Some(encrypted) = protect_rtp(&key_audio, mode, &rtp_header, payload_to_send, cnt) {
+                let _ = socket_send_audio.send_to(&encrypted, target_addr).await;
+            }
+        }
+        info!("🛑 [GO LIVE TX] Worker de envio de áudio finalizado.");
+    });
     let socket_send = Arc::clone(&socket);
     let socket_send_rtcp = Arc::clone(&socket);
     let socket_recv = Arc::clone(&socket);

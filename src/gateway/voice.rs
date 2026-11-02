@@ -165,7 +165,7 @@ pub async fn connect_voice_gateway(
     token: &str,
     channel_id: &str,
     self_mute_state: Arc<std::sync::Mutex<bool>>,
-    _event_tx: mpsc::Sender<GatewayEvent>,
+    event_tx: mpsc::Sender<GatewayEvent>,
 ) {
     let clean_endpoint = raw_endpoint.trim();
     // The official client connects to the bare path (`wss://host:port/`) and lets the
@@ -315,6 +315,7 @@ pub async fn connect_voice_gateway(
                                 2 => {
                                     // Voice Opcode 2: READY!
                                     set_is_connected_to_voice(true);
+                                    let _ = event_tx.send(GatewayEvent::VoiceConnected).await;
                                     let ssrc = val["d"]["ssrc"].as_u64().unwrap_or(12345) as u32;
                                     *active_ssrc.lock().unwrap() = ssrc;
                                     ssrc_to_userid.lock().unwrap().insert(ssrc, uid_num);
@@ -644,19 +645,11 @@ pub async fn connect_voice_gateway(
                                                                 };
                                                                 let ext_bytes_len = ext_len_words * 4;
 
-                                                                // rtpsize nonce: last 4 bytes of packet, padding byte before nonce if P bit set
-                                                                let has_padding = (pkt[0] & 0x20) != 0;
-                                                                let padding_len = if has_padding && len > 5 {
-                                                                    pkt[len - 5] as usize
-                                                                } else {
-                                                                    0
-                                                                };
-
-                                                                let ciphertext_end = if len >= 4 + padding_len && len - 4 - padding_len > base_header_len {
-                                                                    len - 4 - padding_len
-                                                                } else {
-                                                                    len - 4
-                                                                };
+                                                                // rtpsize nonce: last 4 bytes of datagram in cleartext.
+                                                                // In Discord aead_*_rtpsize, RTP padding (and its count byte) is encrypted INSIDE
+                                                                // the AEAD payload, followed by the 16-byte auth tag, followed by the 4-byte nonce.
+                                                                // Any padding is stripped AFTER successful AEAD decryption (lines ~921).
+                                                                let ciphertext_end = len - 4;
 
                                                                 if ciphertext_end <= base_header_len { continue; }
 
@@ -805,77 +798,78 @@ pub async fn connect_voice_gateway(
                                                                             let mut sess = dave_session_rx.lock().unwrap();
                                                                             if let Some(ref mut s) = *sess {
                                                                                 if s.is_ready() {
-                                                                                    let res = s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload);
-                                                                                    let res = match res {
-                                                                                        Ok(d) => Ok(d),
-                                                                                        Err(_) => {
-                                                                                            let swapped_uid = u64::from_be_bytes(sender_user_id.to_le_bytes());
-                                                                                            s.decrypt(swapped_uid, MediaType::AUDIO, transport_payload)
-                                                                                        }
-                                                                                    };
-                                                                                    let res = match res {
-                                                                                        Ok(d) => Ok(d),
-                                                                                        Err(_) => {
-                                                                                            if let Some(uids) = s.get_user_ids() {
-                                                                                                let mut found = None;
-                                                                                                for &alt_uid in &uids {
-                                                                                                    if alt_uid != s.user_id() {
-                                                                                                        if let Ok(d) = s.decrypt(alt_uid, MediaType::AUDIO, transport_payload) {
-                                                                                                            found = Some((d, alt_uid));
-                                                                                                            break;
-                                                                                                        }
-                                                                                                    }
-                                                                                                }
-                                                                                                if let Some((d, matched_uid)) = found {
-                                                                                                    if let Ok(mut m) = ssrc_to_userid_rx.lock() {
-                                                                                                        m.insert(ssrc_recv, matched_uid);
-                                                                                                    }
-                                                                                                    register_voice_participant(ssrc_recv, matched_uid);
-                                                                                                    Ok(d)
-                                                                                                } else {
-                                                                                                    Err(davey::errors::DecryptError::NoDecryptorForUser)
-                                                                                                }
-                                                                                            } else {
-                                                                                                Err(davey::errors::DecryptError::NoDecryptorForUser)
-                                                                                            }
-                                                                                        }
-                                                                                    };
-
-                                                                                    match res {
-                                                                                        Ok(d) => {
-                                                                                            dave_flow_rx.failures.store(0, Ordering::Relaxed);
-                                                                                            diag_rx.rx_dave_ok.fetch_add(1, Ordering::Relaxed);
-                                                                                            (d, true)
-                                                                                        }
-                                                                                        Err(_) if !has_dave_magic && dave_flow_rx.plaintext_allowed() => {
+                                                                                    if !has_dave_magic {
+                                                                                        // Sem marcador DAVE: aceitar texto plano apenas se permitido durante transição/downgrade
+                                                                                        if dave_flow_rx.plaintext_allowed() {
                                                                                             dave_plaintext_cnt += 1;
                                                                                             if dave_plaintext_cnt % 500 == 1 {
                                                                                                 info!("🔓 [DAVE] Tocando pacotes sem DAVE durante a transição para a versão 0 ({} até agora).", dave_plaintext_cnt);
                                                                                             }
                                                                                             (transport_payload.to_vec(), true)
-                                                                                        }
-                                                                                        Err(e) => {
-                                                                                            start_over = dave_flow_rx.failed_once();
-                                                                                            #[cfg(feature = "automation")]
-                                                                                            crate::utils::test_hooks::dave_decrypt_failed();
-                                                                                            dave_decrypt_fail_cnt += 1;
-                                                                                            if dave_decrypt_fail_cnt % 50 == 1 {
-                                                                                                warn!("🔑 [DAVE DIAG] decrypt() FALHOU para SSRC={} UserID={} (payload_len={}, group_users={:?}): {:?}",
-                                                                                                    ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
-                                                                                            }
-                                                                                            let has_dave_magic = transport_payload.len() >= 4 && transport_payload.ends_with(&[0xFA, 0xFA]);
+                                                                                        } else {
                                                                                             diag_rx.rx_dave_fail.fetch_add(1, Ordering::Relaxed);
-                                                                                            if has_dave_magic {
+                                                                                            diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
+                                                                                            (Vec::new(), false)
+                                                                                        }
+                                                                                    } else {
+                                                                                        // Com marcador DAVE 0xFAFA: tentar decifrar com sender_user_id
+                                                                                        let res = s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload);
+                                                                                        let res = match res {
+                                                                                            Ok(d) => Ok(d),
+                                                                                            Err(_) => {
+                                                                                                // Fallback apenas se o SSRC ainda não estava mapeado
+                                                                                                if user_id_opt.is_none() {
+                                                                                                    let mut found = None;
+                                                                                                    if let Some(uids) = s.get_user_ids() {
+                                                                                                        for &alt_uid in &uids {
+                                                                                                            if alt_uid != s.user_id() {
+                                                                                                                if let Ok(d) = s.decrypt(alt_uid, MediaType::AUDIO, transport_payload) {
+                                                                                                                    found = Some((d, alt_uid));
+                                                                                                                    break;
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                    if let Some((d, matched_uid)) = found {
+                                                                                                        if let Ok(mut m) = ssrc_to_userid_rx.lock() {
+                                                                                                            m.insert(ssrc_recv, matched_uid);
+                                                                                                        }
+                                                                                                        register_voice_participant(ssrc_recv, matched_uid);
+                                                                                                        Ok(d)
+                                                                                                    } else {
+                                                                                                        Err(davey::errors::DecryptError::NoDecryptorForUser)
+                                                                                                    }
+                                                                                                } else {
+                                                                                                    Err(davey::errors::DecryptError::NoDecryptorForUser)
+                                                                                                }
+                                                                                            }
+                                                                                        };
+
+                                                                                        match res {
+                                                                                            Ok(d) => {
+                                                                                                dave_flow_rx.failures.store(0, Ordering::Relaxed);
+                                                                                                diag_rx.rx_dave_ok.fetch_add(1, Ordering::Relaxed);
+                                                                                                (d, true)
+                                                                                            }
+                                                                                            Err(e) => {
+                                                                                                start_over = dave_flow_rx.failed_once();
+                                                                                                #[cfg(feature = "automation")]
+                                                                                                crate::utils::test_hooks::dave_decrypt_failed();
+                                                                                                dave_decrypt_fail_cnt += 1;
+                                                                                                if dave_decrypt_fail_cnt % 50 == 1 {
+                                                                                                    warn!("🔑 [DAVE DIAG] decrypt() FALHOU para SSRC={} UserID={} (payload_len={}, group_users={:?}): {:?}",
+                                                                                                        ssrc_recv, sender_user_id, transport_payload.len(), s.get_user_ids(), e);
+                                                                                                }
+                                                                                                diag_rx.rx_dave_fail.fetch_add(1, Ordering::Relaxed);
                                                                                                 diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
+                                                                                                // Pacote com DAVE magic que falhou ao decifrar NUNCA deve ir para o decodificador Opus
                                                                                                 (Vec::new(), false)
-                                                                                            } else {
-                                                                                                (transport_payload.to_vec(), true)
                                                                                             }
                                                                                         }
                                                                                     }
                                                                                 } else {
                                                                                     _dave_not_ready_cnt += 1;
-                                                                                    if has_dave_magic {
+                                                                                    if has_dave_magic || !dave_flow_rx.plaintext_allowed() {
                                                                                         diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                         (Vec::new(), false)
                                                                                     } else {
@@ -883,7 +877,7 @@ pub async fn connect_voice_gateway(
                                                                                     }
                                                                                 }
                                                                             } else {
-                                                                                if has_dave_magic {
+                                                                                if has_dave_magic || !dave_flow_rx.plaintext_allowed() {
                                                                                     diag_rx.rx_dave_dropped.fetch_add(1, Ordering::Relaxed);
                                                                                     (Vec::new(), false)
                                                                                 } else {
@@ -981,8 +975,21 @@ pub async fn connect_voice_gateway(
                                                                                     }
                                                                                     Err(e) => {
                                                                                         warn!("📊 [OPUS DIAG] Decode FALHOU: {:?}", e);
+                                                                                        if let Ok(plc_samples) = dec.decode(&[], 960, &mut pcm_out_buf[..]) {
+                                                                                            decode_success = true;
+                                                                                            decoded_count = plc_samples;
+                                                                                        }
                                                                                     }
                                                                                 }
+                                                                            }
+                                                                        } else if !can_decode || opus_data.is_empty() {
+                                                                            // Pacote com falha em DAVE/AEAD: aplicar PLC para evitar estalo seco
+                                                                            let dec = opus_decoders.entry((ssrc_recv, pkt_channels)).or_insert_with(|| {
+                                                                                OpusDecoder::new(48000, pkt_channels).expect("Falha ao inicializar OpusDecoder 48kHz")
+                                                                            });
+                                                                            if let Ok(plc_samples) = dec.decode(&[], 960, &mut pcm_out_buf[..]) {
+                                                                                decode_success = true;
+                                                                                decoded_count = plc_samples;
                                                                             }
                                                                         }
 
@@ -1492,9 +1499,18 @@ pub async fn connect_voice_gateway(
                                                                                             hist[1] = hist[2];
                                                                                             hist[2] = hist[3];
                                                                                             if let Some(next_p) = q.pop_front() {
-                                                                                                hist[3] = next_p;
+                                                                                                if hist[0] == (0.0, 0.0) && hist[1] == (0.0, 0.0) && hist[2] == (0.0, 0.0) {
+                                                                                                    hist[0] = next_p;
+                                                                                                    hist[1] = next_p;
+                                                                                                    hist[2] = next_p;
+                                                                                                    hist[3] = next_p;
+                                                                                                } else {
+                                                                                                    hist[3] = next_p;
+                                                                                                }
                                                                                             } else {
-                                                                                                hist[3] = (hist[2].0 * 0.995, hist[2].1 * 0.995);
+                                                                                                let decay_l = if hist[2].0.abs() < 0.0001 { 0.0 } else { hist[2].0 * 0.999 };
+                                                                                                let decay_r = if hist[2].1.abs() < 0.0001 { 0.0 } else { hist[2].1 * 0.999 };
+                                                                                                hist[3] = (decay_l, decay_r);
                                                                                             }
                                                                                         }
                                                                                     }
@@ -1931,6 +1947,7 @@ pub async fn connect_voice_gateway(
                                 }
                                 4 => {
                                     // Voice Opcode 4: Session Description (Handshake Complete & Secret Key received!)
+                                    let _ = event_tx.send(GatewayEvent::VoiceConnected).await;
                                     let ssrc = *active_ssrc.lock().unwrap();
                                     info!("ðŸŽ‰ VOICE GATEWAY OPCODE 4 SESSION DESCRIPTION RECEBIDO! SessÃ£o de Voz Ativada com Sucesso!");
 

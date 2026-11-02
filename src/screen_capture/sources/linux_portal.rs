@@ -323,7 +323,7 @@ pub fn init_wayland_portal_screencast(target_w: u32, target_h: u32, target_fps: 
                         if dest.len() != raw_buf.len() {
                             dest.resize(raw_buf.len(), 0);
                         }
-                        dest.copy_from_slice(&raw_buf);
+                        std::mem::swap(dest, &mut raw_buf);
                     } else {
                         *slot = Some(raw_buf.clone());
                     }

@@ -365,14 +365,12 @@ impl LinuxLoopbackSinkGuard {
             None
         };
 
+        // NUNCA alteramos o sink padrão do sistema (pactl set-default-sink)!
+        // Em vez disso, criamos um sink nulo 'LitecordAppAudio' com loopback para o sink físico real.
+        // As aplicações a serem transmitidas (ou o áudio do sistema) tocam nesse sink, ou
+        // capturamos diretamente do monitor do sink nativo sem tocar nas configurações globais do WirePlumber.
         if mod_null.is_some() && mod_loopback.is_some() {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", "LitecordDesktopSink"])
-                .status();
-            info!("🛡️ [LOOPBACK TX] Sink virtual isolado 'LitecordDesktopSink' criado (áudio do Litecord excluído da transmissão de tela)!");
-
-            // Move imediatamente qualquer stream já aberta do Litecord de volta para o hardware físico
-            Self::move_litecord_sink_inputs(&orig);
+            info!("🛡️ [LOOPBACK TX] Sink auxiliar 'LitecordDesktopSink' criado com espelhamento transparente (sem alterar o sink padrão do sistema)!");
         }
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -406,12 +404,6 @@ impl Drop for LinuxLoopbackSinkGuard {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(t) = self.recheck_thread.take() {
             let _ = t.join();
-        }
-        if !self.original_sink.is_empty() && !self.original_sink.contains("Litecord") {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", &self.original_sink])
-                .status();
-            info!("🛡️ [LOOPBACK TX] Sink padrão restaurado para '{}'", self.original_sink);
         }
         if let Some(ref m) = self.mod_loopback {
             let _ = std::process::Command::new("pactl")
@@ -736,12 +728,14 @@ pub fn start_audio_loopback_tx(
                 // Only to the viewers that asked for the stream, with the stream's key.
                 let target_addrs = super::watch::viewer_addrs();
                 let stream_key = super::watch::session_key();
+                let is_go_live_active = crate::native_video::is_broadcasting();
                 for chunk in chunks_to_send {
                     super::web_share::offer_audio(&chunk, active_sample_rate);
-                    let Some(stream_key) = stream_key.filter(|_| !target_addrs.is_empty()) else {
+                    let should_encode = !target_addrs.is_empty() || is_go_live_active;
+                    if !should_encode {
                         opus = None;
                         continue;
-                    };
+                    }
                     if opus.is_none() {
                         opus = super::stream_audio::StreamAudioEncoder::new();
                     }
@@ -749,24 +743,32 @@ pub fn start_audio_loopback_tx(
                     let pts_ms = get_tx_pts_ms();
                     // One packet per 20 ms Opus frame (48 kHz, two equal channels).
                     for frame in encoder.push(&chunk, active_sample_rate) {
-                        seq = seq.wrapping_add(1);
-                        let Some(audio_payload) = encrypt_signaling_payload(&stream_key, &frame) else {
-                            continue;
-                        };
-                        let mut pkt = Vec::with_capacity(40 + audio_payload.len());
-                        pkt.extend_from_slice(MAGIC);
-                        pkt.extend_from_slice(&inst.to_be_bytes());
-                        pkt.push(OP_AUDIO_FRAME);
-                        pkt.extend_from_slice(&cid.to_be_bytes());
-                        pkt.extend_from_slice(&uid.to_be_bytes());
-                        pkt.extend_from_slice(&seq.to_be_bytes());
-                        pkt.extend_from_slice(&pts_ms.to_be_bytes());
-                        pkt.push(2); // channels
-                        pkt.extend_from_slice(&48_000u32.to_be_bytes());
-                        pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
-                        pkt.extend_from_slice(&audio_payload);
-                        for target in &target_addrs {
-                            let _ = socket.send_to(&pkt, target);
+                        // 1. Enviar para Discord Go Live nativo se ativo
+                        if is_go_live_active {
+                            crate::native_video::offer_outbound_audio(&frame);
+                        }
+
+                        // 2. Enviar para espectadores P2P LTPV se presentes
+                        if let Some(ref sk) = stream_key.as_ref().filter(|_| !target_addrs.is_empty()) {
+                            seq = seq.wrapping_add(1);
+                            let Some(audio_payload) = encrypt_signaling_payload(sk, &frame) else {
+                                continue;
+                            };
+                            let mut pkt = Vec::with_capacity(40 + audio_payload.len());
+                            pkt.extend_from_slice(MAGIC);
+                            pkt.extend_from_slice(&inst.to_be_bytes());
+                            pkt.push(OP_AUDIO_FRAME);
+                            pkt.extend_from_slice(&cid.to_be_bytes());
+                            pkt.extend_from_slice(&uid.to_be_bytes());
+                            pkt.extend_from_slice(&seq.to_be_bytes());
+                            pkt.extend_from_slice(&pts_ms.to_be_bytes());
+                            pkt.push(2); // channels
+                            pkt.extend_from_slice(&48_000u32.to_be_bytes());
+                            pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
+                            pkt.extend_from_slice(&audio_payload);
+                            for target in &target_addrs {
+                                let _ = socket.send_to(&pkt, target);
+                            }
                         }
                     }
 

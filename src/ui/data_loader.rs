@@ -30,13 +30,65 @@ pub struct RawGuildItem {
 pub struct SessionSnapshot {
     pub guilds: Vec<RawGuildItem>,
     pub order: Vec<String>,
+    #[serde(default)]
+    pub guild_channels: HashMap<String, Vec<ChannelData>>,
+    #[serde(default)]
+    pub last_channels: HashMap<String, String>,
 }
 
-pub fn save_session_snapshot(guilds: &[RawGuildItem], order: &[String]) {
+static SNAPSHOT_GUILDS: OnceLock<Mutex<(Vec<RawGuildItem>, Vec<String>)>> = OnceLock::new();
+
+pub fn save_session_snapshot(
+    guilds: &[RawGuildItem],
+    order: &[String],
+    guilds_map: Option<&Arc<Mutex<HashMap<String, GuildData>>>>,
+) {
     let _ = std::fs::create_dir_all(".litecord_cache");
+    if let Ok(mut slot) = SNAPSHOT_GUILDS.get_or_init(Default::default).lock() {
+        if !guilds.is_empty() {
+            slot.0 = guilds.to_vec();
+        }
+        if !order.is_empty() {
+            slot.1 = order.to_vec();
+        }
+    }
+    let (saved_guilds, saved_order) = SNAPSHOT_GUILDS
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .map(|s| (s.0.clone(), s.1.clone()))
+        .unwrap_or_else(|| (guilds.to_vec(), order.to_vec()));
+
+    let mut guild_channels = HashMap::new();
+    if let Some(gmap_arc) = guilds_map {
+        if let Ok(gmap) = gmap_arc.lock() {
+            for (gid, gdata) in gmap.iter() {
+                if !gdata.channels.is_empty() {
+                    guild_channels.insert(gid.clone(), gdata.channels.clone());
+                }
+            }
+        }
+    }
+    if guild_channels.is_empty() {
+        if let Ok(data) = std::fs::read_to_string(".litecord_cache/session_state.json") {
+            if let Ok(prev) = serde_json::from_str::<SessionSnapshot>(&data) {
+                guild_channels = prev.guild_channels;
+            }
+        }
+    }
+
+    let last_channels = LAST_CHANNEL_BY_GUILD
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .map(|m| m.clone())
+        .unwrap_or_default();
+
     let snapshot = SessionSnapshot {
-        guilds: guilds.to_vec(),
-        order: order.to_vec(),
+        guilds: if guilds.is_empty() { saved_guilds } else { guilds.to_vec() },
+        order: if order.is_empty() { saved_order } else { order.to_vec() },
+        guild_channels,
+        last_channels,
     };
     if let Ok(json) = serde_json::to_string(&snapshot) {
         let tmp = ".litecord_cache/session_state.json.tmp";
@@ -59,10 +111,47 @@ pub async fn fetch_and_populate_guilds(
     let cache_dir = std::path::Path::new(".litecord_cache/icons");
     let _ = std::fs::create_dir_all(cache_dir);
 
-    // ⚡ Fast Boot Snapshot: Hidrata a barra lateral de servidores em < 2ms antes da resposta de rede REST
+    let mut snapshot_order: Vec<String> = Vec::new();
+    let mut hydrated_first_guild: Option<String> = None;
+
+    // ⚡ Fast Boot Snapshot: Hidrata a barra lateral de servidores e canais em < 2ms antes da resposta de rede REST
     if let Ok(data) = std::fs::read_to_string(".litecord_cache/session_state.json") {
         if let Ok(snapshot) = serde_json::from_str::<SessionSnapshot>(&data) {
+            snapshot_order = snapshot.order.clone();
+            if !snapshot.last_channels.is_empty() {
+                if let Ok(mut map) = LAST_CHANNEL_BY_GUILD.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+                    for (k, v) in snapshot.last_channels {
+                        map.entry(k).or_insert(v);
+                    }
+                }
+            }
             if !snapshot.guilds.is_empty() {
+                if let Ok(mut slot) = SNAPSHOT_GUILDS.get_or_init(Default::default).lock() {
+                    slot.0 = snapshot.guilds.clone();
+                    slot.1 = snapshot.order.clone();
+                }
+                {
+                    let mut gmap = guilds_map.lock().unwrap();
+                    for raw in &snapshot.guilds {
+                        let chans = snapshot.guild_channels.get(&raw.id).cloned().unwrap_or_default();
+                        if !chans.is_empty() {
+                            gateway::channel_names::remember(&raw.id, chans.iter().map(|c| (c.id.as_str(), c.name.as_str())));
+                        }
+                        gmap.entry(raw.id.clone())
+                            .and_modify(|g| {
+                                g.name = raw.name.clone();
+                                if g.channels.is_empty() && !chans.is_empty() {
+                                    g.channels = chans.clone();
+                                }
+                            })
+                            .or_insert_with(|| GuildData {
+                                id: raw.id.clone(),
+                                name: raw.name.clone(),
+                                channels: chans,
+                            });
+                    }
+                }
+                hydrated_first_guild = snapshot.guilds.first().map(|g| g.id.clone());
                 let cached_guilds = snapshot.guilds.clone();
                 let app_w_cache = app_weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
@@ -89,6 +178,14 @@ pub async fn fetch_and_populate_guilds(
                         ui.set_guilds(model.into());
                     }
                 });
+
+                if let Some(ref fgid) = hydrated_first_guild {
+                    let cached_chans = guilds_map.lock().unwrap().get(fgid).map(|g| g.channels.clone()).unwrap_or_default();
+                    if !cached_chans.is_empty() {
+                        *active_guild_id.lock().unwrap() = fgid.clone();
+                        show_guild_channels(&app_weak, &active_guild_id, fgid, &cached_chans);
+                    }
+                }
             }
         }
     }
@@ -129,11 +226,16 @@ pub async fn fetch_and_populate_guilds(
                         pending_icon_downloads.push((g_id.clone(), icon_url, local_icon_path.to_string_lossy().to_string()));
                     }
 
-                    guilds_map.lock().unwrap().insert(g_id.clone(), GuildData {
-                        id: g_id.clone(),
-                        name: g_name.clone(),
-                        channels: Vec::new(),
-                    });
+                    guilds_map.lock().unwrap()
+                        .entry(g_id.clone())
+                        .and_modify(|existing| {
+                            existing.name = g_name.clone();
+                        })
+                        .or_insert_with(|| GuildData {
+                            id: g_id.clone(),
+                            name: g_name.clone(),
+                            channels: Vec::new(),
+                        });
 
                     raw_guilds.push(RawGuildItem {
                         id: g_id,
@@ -150,6 +252,9 @@ pub async fn fetch_and_populate_guilds(
                 if let Ok(ids) = serde_json::from_str::<Vec<String>>(&data) {
                     ordered_ids = ids;
                 }
+            }
+            if ordered_ids.is_empty() && !snapshot_order.is_empty() {
+                ordered_ids = snapshot_order;
             }
             if ordered_ids.is_empty() {
                 if let Ok(settings) = http.get_user_settings().await {
@@ -183,7 +288,7 @@ pub async fn fetch_and_populate_guilds(
             }
 
             // Salva snapshot local atômico para carregamento sub-2ms no próximo boot
-            save_session_snapshot(&raw_guilds, &ordered_ids);
+            save_session_snapshot(&raw_guilds, &ordered_ids, Some(&guilds_map));
 
             let raw_guilds_clone = raw_guilds.clone();
             let app_w = app_weak.clone();
@@ -282,9 +387,9 @@ pub async fn fetch_and_populate_guilds(
 // Revisiting a channel paints the last batch at once; the network answer only
 // replaces it when something actually changed. Everything is raw JSON, so the
 // cache costs a few hundred KB instead of a second copy of the UI models.
-const MESSAGE_CACHE_CHANNELS: usize = 8;
-const MESSAGE_CACHE_FRESH_AFTER: Duration = Duration::from_secs(15);
-const GUILD_REFRESH_AFTER: Duration = Duration::from_secs(60);
+const MESSAGE_CACHE_CHANNELS: usize = 32;
+const MESSAGE_CACHE_FRESH_AFTER: Duration = Duration::from_secs(30);
+const GUILD_REFRESH_AFTER: Duration = Duration::from_secs(180);
 
 #[derive(Clone, Debug)]
 pub struct CompactCachedMessage {
@@ -435,10 +540,16 @@ fn message_cache_put(channel_id: &str, messages: Arc<Vec<CompactCachedMessage>>)
     }
 }
 
-/// Drops a channel batch after a local edit or a gateway event changes it.
+/// Marks a channel batch stale after a local edit or a gateway event changes it:
+/// it still paints instantly next time, and REST refreshes it in the background.
 pub fn invalidate_message_cache(channel_id: &str) {
     if let Ok(mut cache) = message_cache_slot().lock() {
-        cache.retain(|entry| entry.channel_id != channel_id);
+        let stale = Instant::now()
+            .checked_sub(MESSAGE_CACHE_FRESH_AFTER + Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        for entry in cache.iter_mut().filter(|e| e.channel_id == channel_id) {
+            entry.fetched_at = stale;
+        }
     }
 }
 
@@ -550,6 +661,13 @@ pub async fn fetch_and_populate_channels(
     let cached: Vec<ChannelData> = guilds_map.lock().unwrap().get(guild_id).map(|g| g.channels.clone()).unwrap_or_default();
     let preferred = last_channel_for_guild(guild_id);
     if !cached.is_empty() {
+        if let Some(tx) = cmd_tx_store.lock().unwrap().as_ref() {
+            let _ = tx.try_send(GatewayCommand::SubscribeGuild {
+                guild_id: guild_id.to_string(),
+                channel_ids: cached.iter().filter(|c| c.is_voice).map(|c| c.id.clone()).collect(),
+            });
+        }
+        spawn_resolve_voice_users(http, &app_weak, &active_guild_id, &guilds_map, guild_id);
         show_guild_channels(&app_weak, &active_guild_id, guild_id, &cached);
         if guild_refresh_is_recent(guild_id) {
             info!("Servidor {} visitado recentemente: abrindo pelo cache.", guild_id);
@@ -790,6 +908,8 @@ pub async fn fetch_and_populate_channels(
         g_data.channels = channels_data.clone();
         gateway::channel_names::remember(guild_id, channels_data.iter().map(|c| (c.id.as_str(), c.name.as_str())));
     }
+    save_session_snapshot(&[], &[], Some(&guilds_map));
+    spawn_resolve_voice_users(http, &app_weak, &active_guild_id, &guilds_map, guild_id);
 
     if channels_differ || cached.is_empty() {
         show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
@@ -936,6 +1056,87 @@ async fn open_first_readable_channel(
     None
 }
 
+/// Looks up (by REST, in parallel) the users in the voice channels of `guild_id` whose name
+/// or avatar is unknown, then redraws the voice rows if that server is still open.
+fn spawn_resolve_voice_users(
+    http: &DiscordHttpClient,
+    app_weak: &slint::Weak<AppWindow>,
+    active_guild_id: &Arc<Mutex<String>>,
+    guilds_map: &Arc<Mutex<HashMap<String, GuildData>>>,
+    guild_id: &str,
+) {
+    if guild_id.is_empty() || guild_id == "@me" {
+        return;
+    }
+    let voice_cids: Vec<String> = guilds_map
+        .lock()
+        .unwrap()
+        .get(guild_id)
+        .map(|g| g.channels.iter().filter(|c| c.is_voice).map(|c| c.id.clone()).collect())
+        .unwrap_or_default();
+    let mut missing: Vec<u64> = Vec::new();
+    for cid in &voice_cids {
+        for (uid, _) in gateway::get_voice_channel_participants(cid) {
+            if uid > 0 && (!gateway::has_user_name(uid) || gateway::get_user_avatar_url(uid).is_empty()) && !missing.contains(&uid) {
+                missing.push(uid);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return;
+    }
+    missing.truncate(50);
+    let (http, app_weak, active, guilds_map, guild_id) = (
+        http.clone(),
+        app_weak.clone(),
+        Arc::clone(active_guild_id),
+        Arc::clone(guilds_map),
+        guild_id.to_string(),
+    );
+    tokio::spawn(async move {
+        let lookups = missing.into_iter().map(|uid| {
+            let (http, guild_id) = (http.clone(), guild_id.clone());
+            async move {
+                let uid_s = uid.to_string();
+                match http.get_guild_member(&guild_id, &uid_s).await {
+                    Ok(m) => Some((uid, m["nick"].as_str().map(str::to_string), m["user"].clone())),
+                    Err(_) => http.get_user_profile(&uid_s).await.ok().map(|u| (uid, None, u)),
+                }
+            }
+        });
+        let results = futures_util::future::join_all(lookups).await;
+        let mut any = false;
+        for (uid, nick, user) in results.into_iter().flatten() {
+            let name = nick
+                .filter(|n| !n.is_empty())
+                .or_else(|| user["global_name"].as_str().filter(|n| !n.is_empty()).map(str::to_string))
+                .or_else(|| user["username"].as_str().filter(|n| !n.is_empty()).map(str::to_string));
+            if let Some(name) = name {
+                gateway::register_user_name(uid, name);
+                any = true;
+            }
+            gateway::register_user_avatar(uid, user["avatar"].as_str().unwrap_or(""));
+        }
+        if !any {
+            return;
+        }
+        gateway::save_user_directory_cache();
+        if *active.lock().unwrap() != guild_id {
+            return;
+        }
+        let chans = guilds_map.lock().unwrap().get(&guild_id).map(|g| g.channels.clone()).unwrap_or_default();
+        let ui_channels = {
+            let cats_guard = get_collapsed_categories().lock().unwrap().clone();
+            build_ui_channels(&chans, &cats_guard)
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                update_channel_voice_rows(&ui, ui_channels);
+            }
+        });
+    });
+}
+
 static PRELOADED_GUILDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
 
 /// Names of the server's members and bots, for mentions and voice rows.
@@ -969,8 +1170,10 @@ async fn preload_guild_members(http: &DiscordHttpClient, guild_id: &str) {
                 if !display_name.is_empty() {
                     gateway::register_user_name(uid, display_name);
                 }
+                gateway::register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
             }
         }
+        gateway::save_user_directory_cache();
         info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
     }
 
@@ -1428,6 +1631,18 @@ pub async fn try_login_with_candidates(
                 let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
                 *cmd_tx_store.lock().unwrap() = Some(cmd_tx);
 
+                if let Ok(uid) = user_id.parse::<u64>() {
+                    gateway::set_my_user_id(uid);
+                    gateway::set_my_username(global_name.to_string());
+                    gateway::register_user_name(uid, global_name.to_string());
+                    gateway::register_user_avatar(uid, user_info["avatar"].as_str().unwrap_or(""));
+                }
+                // The gateway connects while the REST lists load.
+                let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
+                tokio::spawn(async move {
+                    gw.start(cmd_rx).await;
+                });
+
                 fetch_and_populate_guilds(
                     &http,
                     app_weak.clone(),
@@ -1436,9 +1651,6 @@ pub async fn try_login_with_candidates(
                     active_channel_id,
                     cmd_tx_store,
                 ).await;
-
-                let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
-                gw.start(cmd_rx).await;
 
                 return true;
             }

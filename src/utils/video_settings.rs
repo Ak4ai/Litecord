@@ -66,6 +66,9 @@ pub struct VideoSettings {
     /// Where the main window was when it last moved or resized. None until it does.
     #[serde(default)]
     pub window: Option<WindowGeometry>,
+    /// Whether the system tray icon (and minimize/close-to-tray behavior) is enabled.
+    #[serde(default = "default_true")]
+    pub enable_tray_icon: bool,
 }
 
 /// Position in physical pixels (a logical position is ambiguous across monitors with
@@ -122,6 +125,7 @@ impl Default for VideoSettings {
             echo_cancellation: false,
             automatic_gain_control: false,
             window: None,
+            enable_tray_icon: true,
         }
     }
 }
@@ -323,6 +327,25 @@ pub fn toggle_automatic_gain_control() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.automatic_gain_control = !store.automatic_gain_control;
     let new_val = store.automatic_gain_control;
+    save_video_settings(&store);
+    new_val
+}
+
+pub fn get_enable_tray_icon() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).enable_tray_icon
+}
+
+#[allow(dead_code)]
+pub fn set_enable_tray_icon(val: bool) {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.enable_tray_icon = val;
+    save_video_settings(&store);
+}
+
+pub fn toggle_enable_tray_icon() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.enable_tray_icon = !store.enable_tray_icon;
+    let new_val = store.enable_tray_icon;
     save_video_settings(&store);
     new_val
 }

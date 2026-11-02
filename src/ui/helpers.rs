@@ -317,6 +317,8 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
                 || old.name != new.name
                 || old.is_speaking != new.is_speaking
                 || old.is_streaming != new.is_streaming
+                || old.is_muted != new.is_muted
+                || old.is_deafened != new.is_deafened
             {
                 let mut row = new.clone();
                 row.unread_count = old.unread_count;
@@ -450,6 +452,7 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let notice = video_settings::get_enable_self_preview_notice();
     let show_hw = video_settings::get_show_hardware_monitor();
     ui.set_use_gpu_renderer(video_settings::get_use_gpu_renderer());
+    ui.set_enable_tray_icon(video_settings::get_enable_tray_icon());
     let theme_mode = video_settings::get_theme_mode();
     let use_light_theme = theme_mode == "light";
 
@@ -1231,6 +1234,9 @@ pub fn build_ui_channels(
                     .collect();
                 let my_uid = gateway::get_my_user_id();
                 let is_self_member = user_id == 999999 || (my_uid != 0 && user_id == my_uid);
+                let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(user_id);
+                let (is_muted_saved, _, _) = gateway::get_user_audio_settings(&user_id.to_string());
+                let final_muted = is_muted_flag || is_muted_saved;
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
                     name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
@@ -1243,6 +1249,8 @@ pub fn build_ui_channels(
                     } else {
                         crate::screen_capture::peer_is_streaming(user_id)
                     },
+                    is_muted: final_muted,
+                    is_deafened: is_deaf_flag,
                     is_self_member,
                     parent_channel_id: ch.id.clone().into(),
                     avatar_text: avatar_text.into(),

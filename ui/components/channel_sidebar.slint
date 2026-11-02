@@ -12,6 +12,8 @@ export struct ChannelItem {
     // the red LIVE badge while they share their screen.
     is_speaking: bool,
     is_streaming: bool,
+    is_muted: bool,
+    is_deafened: bool,
     is_self_member: bool,
     parent_channel_id: string,
     avatar_text: string,
@@ -366,6 +368,26 @@ export component ChannelSidebar inherits Rectangle {
                                 horizontal-stretch: 1;
                                 overflow: elide;
                                 animate color { duration: 120ms; }
+                            }
+                            if channel.is_deafened : VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../../assets/headphones-mute.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                    colorize: AppTheme.danger;
+                                    image-fit: contain;
+                                }
+                            }
+                            if (!channel.is_deafened && channel.is_muted) : VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../../assets/microphone-mute.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                    colorize: AppTheme.danger;
+                                    image-fit: contain;
+                                }
                             }
                             if channel.is_streaming : VerticalLayout {
                                 alignment: center;
