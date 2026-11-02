@@ -3088,6 +3088,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(http) = http_opt {
             if let Some(ui) = app_w.upgrade() {
+                // History browsing has its own hard cap: without it, repeatedly
+                // clicking "load older" would grow the non-virtualized scene
+                // forever. Live appends later trim back to MAX_CHAT_ROWS and
+                // re-enable the button through the rebased cursor.
+                if ui.get_messages().row_count()
+                    >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY
+                {
+                    ui.set_has_more_older_messages(false);
+                    return;
+                }
                 ui.set_is_loading_older_messages(true);
             }
 
@@ -3152,8 +3162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 regroup_messages(&mut combined);
                                 avatar_cache::get_avatar_cache().hydrate(&mut combined, &app_w_inner);
                                 crate::ui::invite_cards::hydrate(&mut combined, &app_w_inner);
+                                let window_is_full = combined.len()
+                                    >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY;
                                 let model = std::rc::Rc::new(slint::VecModel::from(combined));
                                 ui.set_messages(model.into());
+                                if window_is_full {
+                                    ui.set_has_more_older_messages(false);
+                                }
                             }
                         });
                     }

@@ -13,6 +13,14 @@ const GROUP_WINDOW_SECONDS: i64 = 5 * 60;
 /// bounds the model while the rows that leave are far above the viewport.
 pub const MAX_CHAT_ROWS: usize = 300;
 
+/// Hard cap while the user explicitly walks back through the history.
+///
+/// Live appends keep the smaller [`MAX_CHAT_ROWS`] window. "Load older" may
+/// grow the model up to this limit; after that the button is hidden so browsing
+/// history cannot grow the scene without bound. Returning to the present is
+/// unaffected because only live appends trim from the oldest end.
+pub const MAX_CHAT_ROWS_WITH_HISTORY: usize = 600;
+
 /// Oldest row after a trim, so the pagination cursor can move back to it.
 pub struct TrimmedWindow {
     pub oldest_id: Option<String>,
