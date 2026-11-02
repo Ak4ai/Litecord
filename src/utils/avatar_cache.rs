@@ -12,14 +12,14 @@ use crate::{AppWindow, ChatMessage};
 const AVATAR_SIZE: u32 = 40;
 const AVATAR_BYTES: usize = (AVATAR_SIZE * AVATAR_SIZE * 4) as usize;
 const MAX_DOWNLOAD_BYTES: usize = 512 * 1024;
-// Decoded thumbnails use about 2.4 MiB in RAM and 25 MiB on disk at these limits.
+// Decoded thumbnails use about 5 MiB in RAM and 25 MiB on disk at these limits.
 // Messages, voice rows and the DM list share this one cache.
-const MAX_MEMORY_AVATARS: usize = 128;
+const MAX_MEMORY_AVATARS: usize = 256;
 const MAX_DISK_AVATARS: usize = 4096;
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 // Sidebar rows (DM list, voice members) are Send-only data, so their thumbnails
 // live in this UI-thread pool and rows just carry a slot index.
-const POOL_SLOTS: usize = 128;
+const POOL_SLOTS: usize = 256;
 
 #[derive(Default)]
 struct SlotTable {
@@ -115,7 +115,7 @@ pub fn get_avatar_cache() -> Arc<AvatarCache> {
                 images: Mutex::new(MemoryStore::default()),
                 pending: Mutex::new(HashSet::new()),
                 failed_until: Mutex::new(HashMap::new()),
-                requests: Arc::new(Semaphore::new(4)),
+                requests: Arc::new(Semaphore::new(16)),
                 disk_dir: avatar_disk_dir(),
                 app: Mutex::new(None),
                 slots: Mutex::new(SlotTable::default()),
@@ -383,10 +383,7 @@ impl AvatarCache {
         let url = url.to_owned();
         let cache = get_avatar_cache();
         tokio::spawn(async move {
-            let _permit = match cache.requests.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => return,
-            };
+            // First check local disk cache without contending for network download permits
             let disk_path = avatar_disk_path(&cache.disk_dir, &url);
             let mut pixels = tokio::task::spawn_blocking(move || load_disk_avatar(&disk_path))
                 .await
@@ -394,37 +391,42 @@ impl AvatarCache {
                 .flatten();
             let mut downloaded = false;
 
+            // Only acquire network permit if we actually need to download over HTTP
             if pixels.is_none() {
+                let _permit = match cache.requests.acquire().await {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                };
                 let client = crate::utils::network_settings::shared_http_client();
                 if let Ok(mut response) = client.get(&url).send().await {
-                        if response.status().is_success()
-                            && response.content_length().unwrap_or(0) <= MAX_DOWNLOAD_BYTES as u64
-                        {
-                            let mut bytes = Vec::new();
-                            let mut valid = true;
-                            loop {
-                                match response.chunk().await {
-                                    Ok(Some(chunk))
-                                        if bytes.len() + chunk.len() <= MAX_DOWNLOAD_BYTES =>
-                                    {
-                                        bytes.extend_from_slice(&chunk);
-                                    }
-                                    Ok(None) => break,
-                                    _ => {
-                                        valid = false;
-                                        break;
-                                    }
+                    if response.status().is_success()
+                        && response.content_length().unwrap_or(0) <= MAX_DOWNLOAD_BYTES as u64
+                    {
+                        let mut bytes = Vec::new();
+                        let mut valid = true;
+                        loop {
+                            match response.chunk().await {
+                                Ok(Some(chunk))
+                                    if bytes.len() + chunk.len() <= MAX_DOWNLOAD_BYTES =>
+                                {
+                                    bytes.extend_from_slice(&chunk);
+                                }
+                                Ok(None) => break,
+                                _ => {
+                                    valid = false;
+                                    break;
                                 }
                             }
-                            if valid {
-                                pixels = tokio::task::spawn_blocking(move || decode_avatar(&bytes))
-                                    .await
-                                    .ok()
-                                    .flatten();
-                                downloaded = pixels.is_some();
-                            }
+                        }
+                        if valid {
+                            pixels = tokio::task::spawn_blocking(move || decode_avatar(&bytes))
+                                .await
+                                .ok()
+                                .flatten();
+                            downloaded = pixels.is_some();
                         }
                     }
+                }
             }
 
             if let Some(rgba) = pixels {

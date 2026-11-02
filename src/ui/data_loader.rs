@@ -1732,13 +1732,12 @@ fn decode_rounded_guild_icon_buffer(bytes: &[u8], scale_factor: f32) -> Option<s
     const TILE_LOGICAL_PX: f32 = 48.0;
     let side = (TILE_LOGICAL_PX * scale_factor.clamp(1.0, 4.0)).round() as u32;
     let decoded = image::load_from_memory(bytes).ok()?;
-    let mut rgba = if decoded.width() > side || decoded.height() > side {
+    let rgba = if decoded.width() > side || decoded.height() > side {
         decoded.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8()
     } else {
         decoded.to_rgba8()
     };
     let (w, h) = rgba.dimensions();
-    crate::utils::image_shape::round_corners(&mut rgba, w, h, w.min(h) as f32 / 3.0);
     Some(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h))
 }
 

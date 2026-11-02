@@ -1395,9 +1395,9 @@ export component AppWindow inherits Window {
                                             Rectangle {
                                                 x: 0;
                                                 y: (parent.height - self.height) / 2;
-                                                width: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 4px : 0px;
-                                                height: (guild.id == root.active_guild_id) ? 40px : (guild_ta.pressed ? 28px : (guild_ta.has-hover ? 20px : 0px));
-                                                opacity: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 1.0 : 0.0;
+                                                width: (guild.id == root.active_guild_id || guild.id == root.guild_tooltip_id) ? 4px : 0px;
+                                                height: (guild.id == root.active_guild_id) ? 40px : (guild_ta.pressed ? 28px : ((guild.id == root.guild_tooltip_id) ? 20px : 0px));
+                                                opacity: (guild.id == root.active_guild_id || guild.id == root.guild_tooltip_id) ? 1.0 : 0.0;
                                                 background: AppTheme.text-strong;
                                                 border-top-right-radius: 4px;
                                                 border-bottom-right-radius: 4px;
@@ -1409,8 +1409,8 @@ export component AppWindow inherits Window {
                                             height: 48px;
                                             width: 48px;
                                             y: guild_ta.pressed ? 1px : 0px;
-                                            background: (guild.id == root.active_guild_id) ? AppTheme.accent : (guild_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
-                                            border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 15px : 24px;
+                                            background: (guild.id == root.active_guild_id) ? AppTheme.accent : ((guild.id == root.guild_tooltip_id) ? AppTheme.accent : AppTheme.surface-chat);
+                                            border-radius: (guild.id == root.active_guild_id || guild.id == root.guild_tooltip_id) ? 15px : 24px;
                                             clip: true;
                                             opacity: (root.dragging_guild_idx == idx) ? 0.4 : 1.0;
                                             animate border-radius, background, opacity, y { duration: 220ms; easing: ease-out; }
