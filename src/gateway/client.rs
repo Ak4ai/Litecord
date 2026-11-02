@@ -30,6 +30,10 @@ pub struct GatewayClient {
     resume: std::sync::Mutex<Option<ResumeSession>>,
     /// `stream_key` -> (`rtc_server_id`, `rtc_channel_id`) from STREAM_CREATE.
     stream_servers: std::sync::Mutex<HashMap<String, (String, String)>>,
+    /// Channel currently painted in the chat view. Shared with the UI state so a
+    /// message for any other channel can skip markdown/embed formatting: only its
+    /// unread badge matters, and opening that channel reloads it through REST.
+    active_channel_id: Arc<std::sync::Mutex<String>>,
 }
 
 #[derive(Clone)]
@@ -540,7 +544,11 @@ struct StrictReadyPrivateChannel<'a> {
 }
 
 impl GatewayClient {
-    pub fn new(raw_token: String, event_tx: mpsc::Sender<GatewayEvent>) -> Self {
+    pub fn new(
+        raw_token: String,
+        event_tx: mpsc::Sender<GatewayEvent>,
+        active_channel_id: Arc<std::sync::Mutex<String>>,
+    ) -> Self {
         let mut token = raw_token.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
 
         if token.to_lowercase().starts_with("authorization:") {
@@ -566,6 +574,18 @@ impl GatewayClient {
             ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
             resume: std::sync::Mutex::new(None),
             stream_servers: std::sync::Mutex::new(HashMap::new()),
+            active_channel_id,
+        }
+    }
+
+    /// True when `channel_id` is the one currently shown in the chat view.
+    ///
+    /// On a poisoned lock we fall back to `true` (format normally) so a broken
+    /// mutex can never hide a message that the UI would otherwise paint.
+    fn is_active_channel(&self, channel_id: &str) -> bool {
+        match self.active_channel_id.lock() {
+            Ok(active) => !active.is_empty() && active.as_str() == channel_id,
+            Err(_) => true,
         }
     }
 
@@ -2031,6 +2051,41 @@ impl GatewayClient {
                     let author_id = v["d"]["author"]["id"].as_str().unwrap_or("");
                     let is_self = !my_uid.is_empty() && author_id == my_uid;
 
+                    // A message for another channel is never painted: the UI only
+                    // bumps its unread badge and opening it later fetches the history.
+                    // Formatting markdown, embeds and attachments here was pure CPU.
+                    if !self.is_active_channel(&channel_id) {
+                        let _ = self.event_tx.send(GatewayEvent::MessageCreated {
+                            id,
+                            channel_id,
+                            author: String::new(),
+                            author_id: if matches!(v["d"]["type"].as_i64().unwrap_or(0), 0 | 19) {
+                                author_id.to_string()
+                            } else {
+                                String::new()
+                            },
+                            created_at: String::new(),
+                            avatar_url: String::new(),
+                            is_bot: false,
+                            content: String::new(),
+                            commands: Vec::new(),
+                            content_lines: Vec::new(),
+                            embed_content: String::new(),
+                            embed_lines: Vec::new(),
+                            embed_color: String::new(),
+                            embed_footer: String::new(),
+                            code_block: String::new(),
+                            reply_author: String::new(),
+                            reply_content: String::new(),
+                            reply_command: String::new(),
+                            links: Vec::new(),
+                            buttons: Vec::new(),
+                            attachments: Vec::new(),
+                            is_self,
+                        }).await;
+                        return;
+                    }
+
                     let author = format_discord_author(&v["d"]);
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
                     let created_at = v["d"]["timestamp"].as_str().unwrap_or("").to_string();
@@ -2069,6 +2124,31 @@ impl GatewayClient {
                 "MESSAGE_UPDATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+
+                    // Same as MESSAGE_CREATE: a channel that is not on screen only
+                    // needs its cached batch invalidated, which the empty event does.
+                    if !self.is_active_channel(&channel_id) {
+                        let _ = self.event_tx.send(GatewayEvent::MessageUpdated {
+                            id,
+                            channel_id,
+                            content: String::new(),
+                            commands: Vec::new(),
+                            content_lines: Vec::new(),
+                            embed_content: String::new(),
+                            embed_lines: Vec::new(),
+                            embed_color: String::new(),
+                            embed_footer: String::new(),
+                            code_block: String::new(),
+                            reply_author: String::new(),
+                            reply_content: String::new(),
+                            reply_command: String::new(),
+                            links: Vec::new(),
+                            buttons: Vec::new(),
+                            attachments: Vec::new(),
+                        }).await;
+                        return;
+                    }
+
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
 
                     let _ = self.event_tx.send(GatewayEvent::MessageUpdated {
@@ -2303,6 +2383,61 @@ mod tests {
         assert_eq!(permission_change(other, 7), None);
         let presence = r#"{"t":"PRESENCE_UPDATE","s":42,"op":0,"d":{"guild_id":"10"}}"#;
         assert!(!peek(presence).unwrap().permissions);
+    }
+
+    #[test]
+    fn only_the_open_channel_is_formatted_for_the_ui() {
+        let (tx, _rx) = mpsc::channel(1);
+        let active = Arc::new(std::sync::Mutex::new(String::new()));
+        let client = GatewayClient::new("token".into(), tx, Arc::clone(&active));
+        assert!(!client.is_active_channel("1"), "no channel is open yet");
+        *active.lock().unwrap() = "1".into();
+        assert!(client.is_active_channel("1"));
+        assert!(!client.is_active_channel("2"));
+        // Empty again means the chat view is closed, so nothing needs formatting.
+        *active.lock().unwrap() = String::new();
+        assert!(!client.is_active_channel("1"));
+    }
+
+    #[tokio::test]
+    async fn messages_for_the_open_channel_are_formatted_and_others_are_not() {
+        let payload = serde_json::json!({
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "1",
+                "channel_id": "2",
+                "type": 0,
+                "author": { "id": "3", "username": "Ana" },
+                "content": "**hola**",
+                "timestamp": "2026-11-02T12:00:00.000Z"
+            }
+        });
+
+        // Channel "2" is not open: the event carries no formatted body.
+        let (tx, mut rx) = mpsc::channel(4);
+        let active = Arc::new(std::sync::Mutex::new("9".to_string()));
+        let client = GatewayClient::new("token".into(), tx, Arc::clone(&active));
+        client.handle_event(&payload).await;
+        match rx.recv().await.expect("event") {
+            GatewayEvent::MessageCreated { content, content_lines, .. } => {
+                assert!(content.is_empty());
+                assert!(content_lines.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // The same payload for the open channel keeps the formatted content.
+        *active.lock().unwrap() = "2".to_string();
+        let (tx, mut rx) = mpsc::channel(4);
+        let client = GatewayClient::new("token".into(), tx, active);
+        client.handle_event(&payload).await;
+        match rx.recv().await.expect("event") {
+            GatewayEvent::MessageCreated { content, content_lines, .. } => {
+                assert!(content.contains("hola"), "content was {content:?}");
+                assert!(!content_lines.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

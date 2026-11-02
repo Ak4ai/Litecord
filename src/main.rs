@@ -2104,15 +2104,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Periodic background memory trimming (every 45s, returns unused heap pages back to OS)
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(45));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            crate::ui::helpers::trim_process_memory();
-        }
-    });
+    // Memory trimming stays event-driven (startup, channel switch, hide to tray,
+    // logout...). A periodic 45 s trim only produced a sawtooth and CPU spikes
+    // without lowering the plateau, so it is intentionally not scheduled here.
 
     // Voice & Audio Settings Callbacks
     let app_weak_open_settings = app_weak.clone();
@@ -3678,7 +3672,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         gateway::register_user_avatar(uid, user_info["avatar"].as_str().unwrap_or(""));
                     }
                     // The gateway connects while the REST lists load.
-                    let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
+                    let gw = Arc::new(GatewayClient::new(
+                        token_str,
+                        event_tx_gw,
+                        Arc::clone(&active_channel_in),
+                    ));
                     tokio::spawn(async move {
                         gw.start(cmd_rx).await;
                     });

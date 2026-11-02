@@ -1638,7 +1638,11 @@ pub async fn try_login_with_candidates(
                     gateway::register_user_avatar(uid, user_info["avatar"].as_str().unwrap_or(""));
                 }
                 // The gateway connects while the REST lists load.
-                let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
+                let gw = Arc::new(GatewayClient::new(
+                    token_str,
+                    event_tx_gw,
+                    Arc::clone(&active_channel_id),
+                ));
                 tokio::spawn(async move {
                     gw.start(cmd_rx).await;
                 });

@@ -579,9 +579,9 @@ Para alocação, usar um build de teste separado (não substituir `~/.local/bin/
 
 ---
 
-## 11. Status de implementação (2026-11-01)
+## 11. Status de implementação (2026-11-02)
 
-Fase 1 aplicada no working tree de `build/unified-local-release`, **sem commit** e sem tocar em LTPV/áudio/mic/DSP.
+Fases 1 e parte da Fase 2 aplicadas em `main` (commits `91eee39`, `f52b5b0` e o commit desta rodada), sem tocar em LTPV/áudio/mic/DSP.
 
 | Item | Status | Arquivos |
 |---|---|---|
@@ -595,10 +595,11 @@ Fase 1 aplicada no working tree de `build/unified-local-release`, **sem commit**
 | F14 — caches/mapas no ciclo de sessão | feito (parcial) | `clear_session` de avatar, `clear_memory` de emoji/anexo, `data_loader::clear_session_caches`, `gateway::clear_user_directory`/`clear_guild_voice_states`, `helpers::clear_session_caches` chamado em logout/troca/adicionar conta; `USER_NAMES` agora limitado a 4096 e limpo por inteiro no teto (como `USER_AVATARS`) |
 | F15 — pulso de redraw no startup | feito | `src/main.rs`: de 8 redraws a cada 250 ms para 2 (300 ms e 800 ms), mantendo o redraw imediato |
 | F9 — voz por linha | já existia | `src/ui/helpers.rs::update_channel_voice_rows` já usa `set_row_data` quando o conjunto de linhas é o mesmo; nada a mudar |
-| F11 — trim periódico de 45 s | pendente | `src/main.rs:2086` é hunk não commitado de outro agente; precisa de decisão antes de remover |
-| F4, F8, F13 | pendentes | requerem decisão de produto/benchmark (virtualização, formatação no gateway, animações/sombras) |
+| F8 — não formatar canal inativo no gateway | feito + teste | `src/gateway/client.rs`: `GatewayClient` recebe o `Arc<Mutex<String>>` do canal ativo; `MESSAGE_CREATE`/`MESSAGE_UPDATE` de outro canal enviam evento mínimo (só ids) e não parseiam markdown/embeds/anexos. Teste `messages_for_the_open_channel_are_formatted_and_others_are_not` |
+| F11 — trim periódico de 45 s | feito | `src/main.rs`: loop removido; os trims por evento (startup, troca de canal, esconder na bandeja, logout) continuam |
+| F4, F13 | pendentes | F4 precisa de virtualização/janela de mensagens com âncora de scroll; F13 é política visual (animações/sombras) e exige validação visual e medição com `SLINT_DEBUG_PERFORMANCE` |
 
-**Validação:** `cargo check --bin litecord`, `cargo build --release --bin litecord` e `cargo test --bin litecord message_grouping::tests` (9 testes) limpos, somente warnings pré-existentes. Smoke tests de 15–30 s com o binário release recém-compilado: login OK e nenhum panic; o RSS de platô variou entre ≈144 e ≈178 MiB conforme o canal em que a sessão abriu, então serve como sanidade e não como ganho medido.
+**Validação:** `cargo check --bin litecord`, `cargo build --release --bin litecord` e `cargo test --bin litecord` (9 testes de agrupamento + 6 do gateway, incluindo o de formatação por canal) limpos, somente warnings pré-existentes. Smoke tests de 15–30 s com o binário release recém-compilado: login OK e nenhum panic; o RSS de platô variou entre ≈144 e ≈178 MiB conforme o canal em que a sessão abriu, então serve como sanidade e não como ganho medido.
 
 **O que ainda falta para medir:** perfil controlado (`SLINT_DEBUG_PERFORMANCE`, `perf`) e um teste de rajada/20 trocas de canal. Nada disso foi feito ainda; os números acima são apenas de inicialização.
 
