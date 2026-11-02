@@ -461,10 +461,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui_inner) = app_weak_inner.upgrade() {
+                        let _ = ui_inner.show();
+                        let app_w_restore = app_weak_inner.clone();
                         let _ = ui_inner.window().with_winit_window(|winit_win| {
                             winit_win.set_visible(true);
                             winit_win.set_minimized(false);
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                winit_win.set_decorations(true);
+                                let icon_bytes = include_bytes!("../assets/app_icon.png");
+                                if let Ok(img) = image::load_from_memory(icon_bytes) {
+                                    let rgba = img.into_rgba8();
+                                    let (width, height) = rgba.dimensions();
+                                    if let Ok(winit_icon) = winit::window::Icon::from_rgba(rgba.into_raw(), width, height) {
+                                        winit_win.set_window_icon(Some(winit_icon));
+                                    }
+                                }
+                                if crate::ui::window_place::restore(winit_win) {
+                                    if let Some(ui) = app_w_restore.upgrade() {
+                                        ui.set_is_maximized(true);
+                                    }
+                                }
+                            }
                             winit_win.focus_window();
+                        });
+                        // Redraw when the surface is mapped
+                        let app_w_pulse = app_weak_inner.clone();
+                        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                            if let Some(ui) = app_w_pulse.upgrade() {
+                                ui.window().with_winit_window(|winit_win| {
+                                    winit_win.set_visible(true);
+                                    winit_win.focus_window();
+                                });
+                                i_slint_backend_winit::redraw_whole_window(ui.window());
+                            }
                         });
                         i_slint_backend_winit::redraw_whole_window(ui_inner.window());
                     }
@@ -4593,47 +4623,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Minimize to Tray Callback using Win32 ShowWindow(SW_HIDE)
-    let app_weak_tray_min = app_weak.clone();
-    let hwnd_store_minimize = Arc::clone(&hwnd_store);
-    app.on_minimize_to_tray(move || {
-        info!("Minimizando janela para a bandeja do sistema...");
-        crate::ui::window_place::save_now();
-        crate::ui::invite_cards::clear();
-        APP_IS_VISIBLE.store(false, Ordering::Relaxed);
-        PENDING_MESSAGES.store(0, Ordering::Relaxed);
-        info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
-        let app_w = app_weak_tray_min.clone();
-        let hwnd_store_c = Arc::clone(&hwnd_store_minimize);
-        if let Some(ui) = app_w.upgrade() {
-            let _ = ui.window().with_winit_window(|winit_win| {
-                winit_win.set_visible(false);
-            });
-        }
-        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-            let mut target_hwnd = *hwnd_store_c.lock().unwrap();
-            if let Some(ui) = app_w.upgrade() {
-                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                let _ = ui.window().with_winit_window(|winit_win| {
-                    winit_win.set_visible(false);
-                    if target_hwnd.is_none() {
-                        if let Ok(handle) = winit_win.window_handle() {
-                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                target_hwnd = Some(win32_handle.hwnd.get() as isize);
-                            }
-                        }
-                    }
-                });
-            }
-            #[cfg(target_os = "windows")]
-            if let Some(hwnd) = target_hwnd {
-                unsafe {
-                    ShowWindow(hwnd as _, SW_HIDE);
+    // Helper closure to hide the window to tray across Linux (Wayland/X11) and Windows
+    let hide_to_tray = {
+        let app_w = app_weak.clone();
+        let _hwnd_store_c = Arc::clone(&hwnd_store);
+        move || {
+            crate::ui::window_place::save_now();
+            crate::ui::invite_cards::clear();
+            APP_IS_VISIBLE.store(false, Ordering::Relaxed);
+            PENDING_MESSAGES.store(0, Ordering::Relaxed);
+            info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
+
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(ui) = app_w.upgrade() {
+                    let _ = ui.hide();
                 }
             }
-            trim_process_memory();
-            info!("[DeepSleep] Memória RAM compactada e liberada (minimize to tray)!");
-        });
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                if let Some(ui) = app_w.upgrade() {
+                    let _ = ui.window().with_winit_window(|winit_win| {
+                        winit_win.set_visible(false);
+                    });
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                let app_w_timer = app_w.clone();
+                let hwnd_store_timer = Arc::clone(&_hwnd_store_c);
+                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                    let mut target_hwnd = *hwnd_store_timer.lock().unwrap();
+                    if let Some(ui) = app_w_timer.upgrade() {
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        let _ = ui.window().with_winit_window(|winit_win| {
+                            winit_win.set_visible(false);
+                            if target_hwnd.is_none() {
+                                if let Ok(handle) = winit_win.window_handle() {
+                                    if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                        target_hwnd = Some(win32_handle.hwnd.get() as isize);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    if let Some(hwnd) = target_hwnd {
+                        unsafe {
+                            ShowWindow(hwnd as _, SW_HIDE);
+                        }
+                    }
+                    trim_process_memory();
+                    info!("[DeepSleep] Memória RAM compactada e liberada (tray hide)!");
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                trim_process_memory();
+                info!("[DeepSleep] Memória RAM compactada e liberada (tray hide)!");
+            }
+        }
+    };
+
+    // Minimize to Tray Callback using Win32 ShowWindow(SW_HIDE)
+    let hide_tray_min_cb = hide_to_tray.clone();
+    app.on_minimize_to_tray(move || {
+        info!("Minimizando janela para a bandeja do sistema...");
+        hide_tray_min_cb();
     });
 
     // Custom window controls for frameless mode
@@ -4691,7 +4748,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app_weak_min = app_weak.clone();
-    let hwnd_store_min = Arc::clone(&hwnd_store);
+    let hide_tray_min_win = hide_to_tray.clone();
     app.on_minimize_window(move || {
         if !video_settings::get_enable_tray_icon() {
             info!("Minimizando janela para a barra de tarefas (System Tray desativado)...");
@@ -4703,40 +4760,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return;
         }
         info!("🔕 Minimizando janela para a bandeja do sistema (System Tray) & entrando em DeepSleep...");
-        APP_IS_VISIBLE.store(false, Ordering::Relaxed);
-        PENDING_MESSAGES.store(0, Ordering::Relaxed);
-        info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
-        let app_w = app_weak_min.clone();
-        let hwnd_store_c = Arc::clone(&hwnd_store_min);
-        if let Some(ui) = app_w.upgrade() {
-            let _ = ui.window().with_winit_window(|winit_win| {
-                winit_win.set_visible(false);
-            });
-        }
-        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-            let mut target_hwnd = *hwnd_store_c.lock().unwrap();
-            if let Some(ui) = app_w.upgrade() {
-                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                let _ = ui.window().with_winit_window(|winit_win| {
-                    winit_win.set_visible(false);
-                    if target_hwnd.is_none() {
-                        if let Ok(handle) = winit_win.window_handle() {
-                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                target_hwnd = Some(win32_handle.hwnd.get() as isize);
-                            }
-                        }
-                    }
-                });
-            }
-            #[cfg(target_os = "windows")]
-            if let Some(hwnd) = target_hwnd {
-                unsafe {
-                    ShowWindow(hwnd as _, SW_HIDE);
-                }
-            }
-            trim_process_memory();
-            info!("[DeepSleep] Memória RAM compactada e liberada ao minimizar!");
-        });
+        hide_tray_min_win();
     });
 
     let app_weak_max = app_weak.clone();
@@ -4754,47 +4778,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let sm_for_close = Arc::clone(&screen_manager);
-    let app_weak_close = app_weak.clone();
-    let hwnd_store_close = Arc::clone(&hwnd_store);
+    let hide_tray_close = hide_to_tray.clone();
     app.on_close_window(move || {
-        crate::ui::window_place::save_now();
         if video_settings::get_enable_tray_icon() {
             info!("Fechar clicado na barra superior: minimizando para o System Tray (DeepSleep)...");
-            crate::ui::invite_cards::clear();
-            APP_IS_VISIBLE.store(false, Ordering::Relaxed);
-            PENDING_MESSAGES.store(0, Ordering::Relaxed);
-            let app_w = app_weak_close.clone();
-            let hwnd_store_c = Arc::clone(&hwnd_store_close);
-            if let Some(ui) = app_w.upgrade() {
-                let _ = ui.window().with_winit_window(|winit_win| {
-                    winit_win.set_visible(false);
-                });
-            }
-            slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-                let mut target_hwnd = *hwnd_store_c.lock().unwrap();
-                if let Some(ui) = app_w.upgrade() {
-                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                    let _ = ui.window().with_winit_window(|winit_win| {
-                        winit_win.set_visible(false);
-                        if target_hwnd.is_none() {
-                            if let Ok(handle) = winit_win.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    target_hwnd = Some(win32_handle.hwnd.get() as isize);
-                                }
-                            }
-                        }
-                    });
-                }
-                #[cfg(target_os = "windows")]
-                if let Some(hwnd) = target_hwnd {
-                    unsafe {
-                        ShowWindow(hwnd as _, SW_HIDE);
-                    }
-                }
-                trim_process_memory();
-            });
+            hide_tray_close();
             return;
         }
+        crate::ui::window_place::save_now();
         info!("Fechar clicado na barra superior: saindo do aplicativo...");
         sm_for_close.stop();
         #[cfg(target_os = "linux")]
@@ -4803,47 +4794,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let sm_for_close_req = Arc::clone(&screen_manager);
-    let app_weak_close_req = app_weak.clone();
-    let hwnd_store_close_req = Arc::clone(&hwnd_store);
+    let hide_tray_close_req = hide_to_tray.clone();
     app.window().on_close_requested(move || {
-        crate::ui::window_place::save_now();
         if video_settings::get_enable_tray_icon() {
             info!("Solicitação nativa de fechamento recebida: minimizando para o System Tray (DeepSleep)...");
-            crate::ui::invite_cards::clear();
-            APP_IS_VISIBLE.store(false, Ordering::Relaxed);
-            PENDING_MESSAGES.store(0, Ordering::Relaxed);
-            let app_w = app_weak_close_req.clone();
-            let hwnd_store_c = Arc::clone(&hwnd_store_close_req);
-            if let Some(ui) = app_w.upgrade() {
-                let _ = ui.window().with_winit_window(|winit_win| {
-                    winit_win.set_visible(false);
-                });
-            }
-            slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-                let mut target_hwnd = *hwnd_store_c.lock().unwrap();
-                if let Some(ui) = app_w.upgrade() {
-                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                    let _ = ui.window().with_winit_window(|winit_win| {
-                        winit_win.set_visible(false);
-                        if target_hwnd.is_none() {
-                            if let Ok(handle) = winit_win.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    target_hwnd = Some(win32_handle.hwnd.get() as isize);
-                                }
-                            }
-                        }
-                    });
-                }
-                #[cfg(target_os = "windows")]
-                if let Some(hwnd) = target_hwnd {
-                    unsafe {
-                        ShowWindow(hwnd as _, SW_HIDE);
-                    }
-                }
-                trim_process_memory();
-            });
+            hide_tray_close_req();
             return slint::CloseRequestResponse::KeepWindowShown;
         }
+        crate::ui::window_place::save_now();
         info!("Solicitação nativa de fechamento da janela recebida (Alt+F4 / Taskbar)...");
         sm_for_close_req.stop();
         #[cfg(target_os = "linux")]
@@ -5373,7 +5331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    app.run()?;
+    slint::run_event_loop_until_quit()?;
     crate::ui::window_place::save_now();
     Ok(())
 }
