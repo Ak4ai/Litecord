@@ -4584,7 +4584,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_tray_min = app_weak.clone();
     let hwnd_store_minimize = Arc::clone(&hwnd_store);
     app.on_minimize_to_tray(move || {
-        info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
+        info!("Minimizando janela para a bandeja do sistema...");
         crate::ui::window_place::save_now();
         crate::ui::invite_cards::clear();
         APP_IS_VISIBLE.store(false, Ordering::Relaxed);
@@ -4592,6 +4592,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
         let app_w = app_weak_tray_min.clone();
         let hwnd_store_c = Arc::clone(&hwnd_store_minimize);
+        if let Some(ui) = app_w.upgrade() {
+            let _ = ui.window().with_winit_window(|winit_win| {
+                winit_win.set_visible(false);
+            });
+        }
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
             let mut target_hwnd = *hwnd_store_c.lock().unwrap();
             if let Some(ui) = app_w.upgrade() {
@@ -4690,13 +4695,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
         let app_w = app_weak_min.clone();
         let hwnd_store_c = Arc::clone(&hwnd_store_min);
+        if let Some(ui) = app_w.upgrade() {
+            let _ = ui.window().with_winit_window(|winit_win| {
+                winit_win.set_visible(false);
+            });
+        }
         slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
             let mut target_hwnd = *hwnd_store_c.lock().unwrap();
             if let Some(ui) = app_w.upgrade() {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
-                    winit_win.set_minimized(true);
                     if target_hwnd.is_none() {
                         if let Ok(handle) = winit_win.window_handle() {
                             if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
@@ -4746,7 +4755,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ui) = app_w.upgrade() {
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
-                    winit_win.set_minimized(true);
                 });
             }
             slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
@@ -4755,7 +4763,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                     let _ = ui.window().with_winit_window(|winit_win| {
                         winit_win.set_visible(false);
-                        winit_win.set_minimized(true);
                         if target_hwnd.is_none() {
                             if let Ok(handle) = winit_win.window_handle() {
                                 if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
@@ -4797,7 +4804,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ui) = app_w.upgrade() {
                 let _ = ui.window().with_winit_window(|winit_win| {
                     winit_win.set_visible(false);
-                    winit_win.set_minimized(true);
                 });
             }
             slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
@@ -4806,7 +4812,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                     let _ = ui.window().with_winit_window(|winit_win| {
                         winit_win.set_visible(false);
-                        winit_win.set_minimized(true);
                         if target_hwnd.is_none() {
                             if let Ok(handle) = winit_win.window_handle() {
                                 if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
