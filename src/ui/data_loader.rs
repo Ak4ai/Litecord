@@ -1544,7 +1544,7 @@ fn paint_channel_messages(
                 ui.set_chat_painted_channel(ch_id_current.clone().into());
                 ui.set_chat_enter_hidden(true);
                 let app_fade = app_weak.clone();
-                slint::Timer::single_shot(std::time::Duration::from_millis(24), move || {
+                slint::Timer::single_shot(std::time::Duration::from_millis(12), move || {
                     if let Some(ui) = app_fade.upgrade() {
                         ui.set_chat_enter_hidden(false);
                     }

@@ -377,18 +377,22 @@ O ponto importante: **a formatação acontece antes de saber se o canal está at
 
 ---
 
-### F16 — Troca de servidor/canal sem transição (Baixa, UX)
+### F16 — Troca de servidor/canal com transição suave e feedback elástico dos servidores (Baixa, UX)
 
-**Evidência:** antes desta rodada, `paint_channel_messages` substituía o modelo de mensagens instantaneamente; `show_guild_channels`/`set_channels` trocava a sidebar de uma vez; e `active_channel_name` mudava o cabeçalho sem transição. O resultado era um “corte” seco a cada troca, mesmo quando o carregamento já vinha do cache e era rápido.
+**Evidência:** anteriormente, `paint_channel_messages` e a sidebar trocavam de golpe sem transição contínua; alternar entre 0% e 100% causava sensação de parpadeo ("blink"). Além disso, o indicador de servidor (pílula esquerda e raio do ícone) tinha curso muito curto (16px a 14px de radius) e sem animação de clique ou largura.
 
 **Correção aplicada:**
 
-- Chat: `chat_enter_opacity` (0 → 1 em 130 ms, `ease-out`) aplicado ao `ChatMessagesView`. `paint_channel_messages` só dispara o fade quando `chat_painted_channel` muda; appends ao vivo, edições e refreshes do mesmo canal mantêm a opacidade.
-- Sidebar: `content_opacity` (0 → 1 em 150 ms) no conteúdo do `ChannelSidebar`, não no fundo, para o painel não piscar. O fade só ocorre no primeiro lote de canais de cada servidor (`sidebar_painted_guild`), então atualizações de voz/unread/categorias não reanimam.
-- Cabeçalho: `header_enter_opacity` (0 → 1 em 130 ms) no prefixo e no nome do canal, que continuam nítidos enquanto os ícones da barra não mudam.
-- O estado 0.0 é entregue ao renderizador com um `Timer` de 24 ms antes de voltar a 1.0; sem esse tick o Slint pode coalescer as duas escritas e não animar. Tudo roda na thread da UI, sem trabalho extra de layout (só opacidade, sem transform).
-
-**Risco:** baixo; são animações curtas e locais. Validar tema claro/escuro e que trocas rápidas de canal não deixam a opacidade presa em 0 (o timer sempre retorna a 1.0).
+- **Fade + Slide no Chat e Sidebar:**
+  - `chat_view`: fade suave de `opacity: 0.35 → 1.0` combinado com micro-deslizamento vertical `y: 6px → 0px` em 280 ms (`ease-out`). Partir de 0.35 elimina totalmente o flash escuro ("blink").
+  - `ChannelSidebar`: `VerticalBox` interno com `y: 6px → 0px` e `opacity: 0.35 → 1.0` em 300 ms (`ease-out`) apenas no primeiro carregamento do servidor (`sidebar_painted_guild`).
+  - Cabeçalho: nome e prefixo (`#`/`@`) animam `opacity: 0.35 → 1.0` em 280 ms (`ease-out`).
+  - Timer de transição reduzido para 12 ms para disparar exatamente no próximo frame sem reter quadros parados.
+- **Pílula e ícones de servidores estilo Discord:**
+  - Pílula lateral anima altura (`0px → 20px` em hover, `28px` pressionado, `40px` ativo), largura (`0px → 4px`) e opacidade em 220 ms (`ease-out`).
+  - Ícone do servidor transiciona de círculo (`border-radius: 24px`) para squircle (`border-radius: 15px`) com feedback tátil de clique (`y: 1px`).
+- **Otimização de sombras:**
+  - Sombras grandes de overlays recalculadas com blur menor (4px–8px) com borda sutil, preservando 60 FPS no renderizador por software.
 
 ---
 
