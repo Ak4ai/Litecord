@@ -6,6 +6,65 @@ use crate::ChatMessage;
 
 const GROUP_WINDOW_SECONDS: i64 = 5 * 60;
 
+/// Rows kept in the chat model while the reader is at the bottom.
+///
+/// The chat view is not virtualized yet, so every row stays instantiated. Live
+/// appends used to grow it without limit for the whole visit; keeping a window
+/// bounds the model while the rows that leave are far above the viewport.
+pub const MAX_CHAT_ROWS: usize = 300;
+
+/// Oldest row after a trim, so the pagination cursor can move back to it.
+pub struct TrimmedWindow {
+    pub oldest_id: Option<String>,
+}
+
+/// Drops the oldest rows when `model` grew past `max_rows`.
+///
+/// Returns `Some` only when rows were actually removed. The caller must move the
+/// `oldest_message_map` cursor to `oldest_id` (when present) and regroup row 0,
+/// otherwise "load older" would skip the trimmed window.
+pub fn trim_chat_window(
+    model: &slint::VecModel<ChatMessage>,
+    max_rows: usize,
+) -> Option<TrimmedWindow> {
+    use slint::Model;
+
+    let row_count = model.row_count();
+    if row_count <= max_rows {
+        return None;
+    }
+    for _ in 0..(row_count - max_rows) {
+        model.remove(0);
+    }
+    let oldest_id = (0..model.row_count()).find_map(|index| {
+        let row = model.row_data(index)?;
+        (!row.id.is_empty()).then(|| row.id.to_string())
+    });
+    Some(TrimmedWindow { oldest_id })
+}
+
+/// Trims the window and keeps pagination coherent with what is left.
+///
+/// Moves the "oldest message" cursor to the new first row and re-groups it, so
+/// "load older" refetches the dropped window instead of skipping it. Returns
+/// `true` when rows were removed.
+pub fn trim_chat_window_and_rebase(
+    messages: &slint::ModelRc<ChatMessage>,
+    model: &slint::VecModel<ChatMessage>,
+    channel_id: &str,
+) -> bool {
+    let Some(trimmed) = trim_chat_window(model, MAX_CHAT_ROWS) else {
+        return false;
+    };
+    if let Some(oldest_id) = trimmed.oldest_id {
+        if let Ok(mut map) = crate::ui::data_loader::get_oldest_message_map().lock() {
+            map.insert(channel_id.to_string(), oldest_id);
+        }
+    }
+    regroup_message_at(messages, 0);
+    true
+}
+
 /// Keep the Discord metadata on each independent message, including messages
 /// loaded from history and messages received through the gateway.
 pub fn apply_message_metadata(message: &mut ChatMessage, source: &Value) {
@@ -468,6 +527,29 @@ mod tests {
             assert_eq!(actual.show_header, expected.show_header);
             assert_eq!(actual.day_label.as_str(), expected.day_label.as_str());
         }
+    }
+
+    #[test]
+    fn chat_window_drops_the_oldest_rows_and_reports_the_new_cursor() {
+        use slint::Model;
+
+        fn message(id: &str) -> ChatMessage {
+            ChatMessage {
+                id: id.into(),
+                author_id: "1".into(),
+                author: "Ana".into(),
+                created_at: "2026-09-24T12:00:00Z".into(),
+                ..Default::default()
+            }
+        }
+
+        let model = slint::VecModel::from((0..10).map(|index| message(&index.to_string())).collect::<Vec<_>>());
+        assert!(trim_chat_window(&model, 10).is_none(), "at the cap nothing moves");
+
+        let trimmed = trim_chat_window(&model, 6).expect("five rows are dropped");
+        assert_eq!(model.row_count(), 6);
+        assert_eq!(trimmed.oldest_id.as_deref(), Some("4"));
+        assert_eq!(model.row_data(0).unwrap().id.as_str(), "4");
     }
 
     #[test]

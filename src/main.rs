@@ -5046,6 +5046,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // regrouping the whole history on every message.
                                     crate::ui::message_grouping::group_appended_message(&messages, &mut message);
                                     model.push(message);
+
+                                    // Keep the model bounded while the reader is at the bottom:
+                                    // the dropped rows are above the viewport, and moving the
+                                    // pagination cursor back to the new oldest row lets "load
+                                    // older" refetch that window instead of skipping it.
+                                    if was_at_bottom
+                                        && crate::ui::message_grouping::trim_chat_window_and_rebase(
+                                            &messages,
+                                            model,
+                                            &channel_id,
+                                        )
+                                    {
+                                        ui.set_has_more_older_messages(true);
+                                    }
                                 } else {
                                     let mut current_msgs: Vec<ChatMessage> = messages.iter().collect();
                                     current_msgs.push(message);
@@ -5134,6 +5148,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     };
                                     crate::ui::message_grouping::group_appended_message(&messages, &mut message);
                                     model.push(message);
+                                    // Bot/webhook appends can also arrive while the reader sits
+                                    // at the bottom: bound the model the same way as a normal
+                                    // message, leaving the history alone when scrolled up.
+                                    if ui.get_chat_is_at_bottom()
+                                        && crate::ui::message_grouping::trim_chat_window_and_rebase(
+                                            &messages,
+                                            model,
+                                            &channel_id,
+                                        )
+                                    {
+                                        ui.set_has_more_older_messages(true);
+                                    }
                                 }
                             } else {
                                 // Unexpected model kind: keep the old full rebuild path.

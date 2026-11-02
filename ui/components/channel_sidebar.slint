@@ -132,7 +132,7 @@ export component ChannelSidebar inherits Rectangle {
                                     : (touch_area.has_hover ? AppTheme.interactive-hover : transparent));
                             border-radius: 4px;
                             opacity: (root.dragging_channel_idx == idx) ? 0.4 : 1.0;
-                            animate background, opacity { duration: 120ms; }
+                            animate background, opacity { duration: 80ms; }
 
                         // Category rendering
                         if channel.is_category : VerticalLayout {
@@ -166,7 +166,7 @@ export component ChannelSidebar inherits Rectangle {
                                         height: 11px;
                                         colorize: touch_area.has_hover ? AppTheme.text-strong : AppTheme.text-muted;
                                         image-fit: contain;
-                                        animate colorize { duration: 120ms; }
+                                        animate colorize { duration: 80ms; }
                                     }
                                 }
 
@@ -188,7 +188,7 @@ export component ChannelSidebar inherits Rectangle {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                     overflow: elide;
-                                    animate color { duration: 120ms; }
+                                    animate color { duration: 80ms; }
                                 }
                             }
                         }
@@ -244,7 +244,7 @@ export component ChannelSidebar inherits Rectangle {
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
-                                    animate color { duration: 120ms; }
+                                    animate color { duration: 80ms; }
                                 }
                             }
 
@@ -267,7 +267,7 @@ export component ChannelSidebar inherits Rectangle {
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                                 overflow: elide;
-                                animate color { duration: 120ms; }
+                                animate color { duration: 80ms; }
                             }
 
                             // Unread message count badge (red pill for DMs)
@@ -332,7 +332,7 @@ export component ChannelSidebar inherits Rectangle {
                                     border-width: (channel.is_speaking && !(channel.is_self_member && (root.is_muted || root.is_deafened))) ? 2px : 0px;
                                     border-color: #23A55A;
                                     background: transparent;
-                                    animate border-width, border-color { duration: 120ms; }
+                                    animate border-width, border-color { duration: 80ms; }
 
                                     Rectangle {
                                         x: 3px;
@@ -367,7 +367,7 @@ export component ChannelSidebar inherits Rectangle {
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                                 overflow: elide;
-                                animate color { duration: 120ms; }
+                                animate color { duration: 80ms; }
                             }
                             if channel.is_deafened : VerticalLayout {
                                 alignment: center;
@@ -516,8 +516,8 @@ export component ChannelSidebar inherits Rectangle {
                         border-width: 1px;
                         border-color: btn_webcam_sidebar_ta.has-hover ? #86efac : AppTheme.border-on-accent-muted;
                         background: btn_webcam_sidebar_ta.pressed ? #16a34a : (btn_webcam_sidebar_ta.has-hover ? #22c55e : AppTheme.surface-translucent);
-                        animate background { duration: 120ms; }
-                        animate border-color { duration: 120ms; }
+                        animate background { duration: 80ms; }
+                        animate border-color { duration: 80ms; }
 
                         Image {
                             x: (parent.width - self.width) / 2;
@@ -546,8 +546,8 @@ export component ChannelSidebar inherits Rectangle {
                         border-width: 1px;
                         border-color: btn_stream_sidebar_ta.has-hover ? (root.is_screen_sharing ? #fca5a5 : #fdba74) : AppTheme.border-on-accent-muted;
                         background: root.is_screen_sharing ? (btn_stream_sidebar_ta.pressed ? AppTheme.danger-pressed : (btn_stream_sidebar_ta.has-hover ? AppTheme.danger-bright : AppTheme.danger-action)) : (btn_stream_sidebar_ta.pressed ? #ea580c : (btn_stream_sidebar_ta.has-hover ? #f97316 : AppTheme.surface-translucent));
-                        animate background { duration: 120ms; }
-                        animate border-color { duration: 120ms; }
+                        animate background { duration: 80ms; }
+                        animate border-color { duration: 80ms; }
 
                         Image {
                             x: (parent.width - self.width) / 2;
@@ -580,8 +580,8 @@ export component ChannelSidebar inherits Rectangle {
                         border-width: 1px;
                         border-color: btn_leave_sidebar_ta.has-hover ? AppTheme.text-on-accent : AppTheme.border-on-accent-muted;
                         background: btn_leave_sidebar_ta.pressed ? AppTheme.danger-pressed : (btn_leave_sidebar_ta.has-hover ? AppTheme.danger-bright : AppTheme.surface-translucent);
-                        animate background { duration: 120ms; }
-                        animate border-color { duration: 120ms; }
+                        animate background { duration: 80ms; }
+                        animate border-color { duration: 80ms; }
 
                         HorizontalLayout {
                             padding-left: 8px;

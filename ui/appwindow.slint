@@ -1171,7 +1171,7 @@ export component AppWindow inherits Window {
                                         border-radius: 6px;
                                         border-width: 1px;
                                         border-color: re_qr_ta.has-hover ? AppTheme.info : AppTheme.border-subtle;
-                                        animate background { duration: 120ms; }
+                                        animate background { duration: 80ms; }
 
                                         HorizontalLayout {
                                             alignment: center;
@@ -1565,7 +1565,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_cam_header_ta.pressed ? #16a34a : (btn_cam_header_ta.has-hover ? #22c55e : AppTheme.surface-chat);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -1610,7 +1610,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_share_ta.pressed ? (root.is_screen_sharing ? AppTheme.danger-deep : #ea580c) : (btn_share_ta.has-hover ? (root.is_screen_sharing ? AppTheme.danger-medium : #f97316) : (root.is_screen_sharing ? AppTheme.danger-action : AppTheme.surface-chat));
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -1709,7 +1709,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_chat_ta.pressed ? AppTheme.surface-pressed : (btn_chat_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -1754,7 +1754,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_leave_ta.pressed ? AppTheme.danger-deep : (btn_leave_ta.has-hover ? AppTheme.danger-action : AppTheme.surface-chat);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -2902,7 +2902,7 @@ export component AppWindow inherits Window {
                                     background: root.is_in_dm_call
                                         ? (dm_call_btn_ta.pressed ? #c0392b : (dm_call_btn_ta.has-hover ? #e74c3c : #ed4245))
                                         : (dm_call_btn_ta.pressed ? AppTheme.accent-hover : (dm_call_btn_ta.has-hover ? AppTheme.accent : AppTheme.interactive-muted));
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     VerticalLayout {
                                         alignment: center;
@@ -2939,7 +2939,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_vroom_ta.pressed ? AppTheme.accent-hover : (btn_vroom_ta.has-hover ? AppTheme.accent : AppTheme.interactive-muted);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 10px;
@@ -3316,7 +3316,7 @@ export component AppWindow inherits Window {
                                         background: sb_cell_ta.has-hover ? AppTheme.interactive-selected : AppTheme.surface-elevated;
                                         border-width: 1px;
                                         border-color: sb_cell_ta.has-hover ? AppTheme.accent : AppTheme.border-subtle;
-                                        animate background { duration: 120ms; }
+                                        animate background { duration: 80ms; }
 
                                         VerticalLayout {
                                             alignment: center;
@@ -3539,7 +3539,7 @@ export component AppWindow inherits Window {
                                 height: 34px;
                                 border-radius: 6px;
                                 background: soundboard_btn_ta.has-hover ? AppTheme.interactive-hover : (root.show_soundboard_panel ? AppTheme.interactive-selected : transparent);
-                                animate background { duration: 120ms; }
+                                animate background { duration: 80ms; }
 
                                 Text {
                                     text: "🔊";
@@ -3566,7 +3566,7 @@ export component AppWindow inherits Window {
                                 height: 34px;
                                 border-radius: 6px;
                                 background: emoji_btn_ta.has-hover ? AppTheme.interactive-hover : (root.show_emoji_picker ? AppTheme.interactive-selected : transparent);
-                                animate background { duration: 120ms; }
+                                animate background { duration: 80ms; }
 
                                 Text {
                                     text: "😊";
