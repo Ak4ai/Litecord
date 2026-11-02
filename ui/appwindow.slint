@@ -348,6 +348,15 @@ export component AppWindow inherits Window {
     in-out property <bool> chat_is_at_bottom: false;
     in-out property <int> scroll_to_bottom_trigger: 0;
 
+    // Discord-style server-name tooltip shown while a guild icon is hovered.
+    in-out property <string> guild_tooltip_id: "";
+    in-out property <string> guild_tooltip_text: "";
+    in-out property <length> guild_tooltip_y: 0px;
+    changed guilds => {
+        root.guild_tooltip_id = "";
+        root.guild_tooltip_text = "";
+    }
+
     public function scroll_chat_to_bottom() {
         root.scroll_to_bottom_trigger += 1;
     }
@@ -1359,7 +1368,7 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        Rectangle {
+                                        guild_icon := Rectangle {
                                             height: 48px;
                                             width: 48px;
                                             background: (guild.id == root.active_guild_id) ? AppTheme.accent : (guild_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
@@ -1387,6 +1396,24 @@ export component AppWindow inherits Window {
 
                                             guild_ta := TouchArea {
                                                 mouse-cursor: pointer;
+
+                                                // Discord shows the server name in a dark pill to the
+                                                // right of the icon. The overlay rectangle lives at the
+                                                // window root so it paints above the channel sidebar.
+                                                changed has-hover => {
+                                                    if (self.has-hover) {
+                                                        if (root.dragging_guild_idx < 0) {
+                                                            root.guild_tooltip_id = guild.id;
+                                                            root.guild_tooltip_text = guild.name;
+                                                            root.guild_tooltip_y = guild_icon.absolute-position.y
+                                                                + (guild_icon.height - 32px) / 2;
+                                                        }
+                                                    } else if (root.guild_tooltip_id == guild.id) {
+                                                        root.guild_tooltip_id = "";
+                                                        root.guild_tooltip_text = "";
+                                                    }
+                                                }
+
                                                 pointer-event(event) => {
                                                     if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                                                         if (root.dragging_guild_idx >= 0 && root.drop_target_guild_idx >= 0 && root.dragging_guild_idx != root.drop_target_guild_idx) {
@@ -1403,6 +1430,8 @@ export component AppWindow inherits Window {
                                                         let diff_y = self.mouse-y - self.pressed-y;
                                                         if (root.dragging_guild_idx < 0 && (diff_y > 10px || diff_y < -10px)) {
                                                             root.dragging_guild_idx = idx;
+                                                            root.guild_tooltip_id = "";
+                                                            root.guild_tooltip_text = "";
                                                         }
                                                         if (root.dragging_guild_idx == idx) {
                                                             root.drop_target_guild_idx = max(0, min(root.guilds.length - 1, idx + round(diff_y / 58px)));
@@ -1411,6 +1440,8 @@ export component AppWindow inherits Window {
                                                 }
                                                 clicked => {
                                                     if (root.dragging_guild_idx < 0) {
+                                                        root.guild_tooltip_id = "";
+                                                        root.guild_tooltip_text = "";
                                                         root.active_guild_id = guild.id;
                                                         root.select_guild(guild.id);
                                                     }
@@ -3618,6 +3649,34 @@ export component AppWindow inherits Window {
         }
     }
     }
+    }
+
+    // Hover tooltip for the server rail, styled like Discord's floating label.
+    // Anchored at the window root so it can overflow the 72 px rail and paint
+    // above the channel sidebar.
+    if root.is_logged_in && root.guild_tooltip_id != "" && root.dragging_guild_idx < 0: Rectangle {
+        x: 68px;
+        y: max(0px, min(root.guild_tooltip_y, root.height - 40px));
+        width: min(guild_tooltip_label.preferred-width + 24px, 320px);
+        height: 32px;
+        background: #111214;
+        border-radius: 4px;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000066;
+        drop-shadow-offset-y: 2px;
+
+        guild_tooltip_label := Text {
+            x: 12px;
+            width: parent.width - 24px;
+            height: parent.height;
+            text: root.guild_tooltip_text;
+            color: #ffffff;
+            font-size: TypeScale.body;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
     }
 
     // Settings overlay: backend state stays on AppWindow.
