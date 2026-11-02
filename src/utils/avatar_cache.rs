@@ -147,9 +147,6 @@ fn load_disk_avatar(path: &Path) -> Option<Vec<u8>> {
         let _ = std::fs::remove_file(path);
         return None;
     }
-    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
-        let _ = file.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()));
-    }
     Some(rgba)
 }
 
@@ -302,18 +299,10 @@ impl AvatarCache {
         if is_new {
             let app = self.app.lock().ok().and_then(|slot| slot.clone());
             if let Some(app) = app {
-                let cached = self
-                    .images
-                    .lock()
-                    .is_ok_and(|images| images.entries.contains_key(url));
-                if cached {
-                    let url = url.to_owned();
-                    let cache = get_avatar_cache();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(image) = cache.get(&url) {
-                            pool_set(slot, &url, image);
-                        }
-                    });
+                // Fast path: if already in memory RAM, attach to pool immediately
+                let cached_img = self.get(url);
+                if let Some(image) = cached_img {
+                    pool_set(slot, url, image);
                 } else {
                     self.fetch(url, app);
                 }
@@ -340,6 +329,29 @@ impl AvatarCache {
             self.fetch(url, app);
         }
         slint::Image::default()
+    }
+
+    /// Pre-warms the memory cache from disk asynchronously on a background thread.
+    /// This prevents any cold-boot I/O delay or syscall spikes on the UI thread when opening DMs.
+    pub fn warm_up_from_disk(&self, urls: &[String]) {
+        let urls = urls.to_vec();
+        let cache = get_avatar_cache();
+        tokio::task::spawn_blocking(move || {
+            for url in urls {
+                if url.is_empty() {
+                    continue;
+                }
+                let already_cached = cache.images.lock().is_ok_and(|img| img.entries.contains_key(&url));
+                if !already_cached {
+                    let disk_path = avatar_disk_path(&cache.disk_dir, &url);
+                    if let Some(rgba) = load_disk_avatar(&disk_path) {
+                        if let Ok(mut images) = cache.images.lock() {
+                            images.insert(url, rgba);
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub fn hydrate(&self, messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {

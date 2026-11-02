@@ -370,14 +370,20 @@ export component AppWindow inherits Window {
         }
     }
     sidebar_fade_timer := Timer {
-        interval: 12ms;
+        interval: 32ms;
         running: false;
-        triggered => { root.sidebar_enter_hidden = false; }
+        triggered => {
+            self.running = false;
+            root.sidebar_enter_hidden = false;
+        }
     }
     header_fade_timer := Timer {
-        interval: 12ms;
+        interval: 32ms;
         running: false;
-        triggered => { root.header_enter_hidden = false; }
+        triggered => {
+            self.running = false;
+            root.header_enter_hidden = false;
+        }
     }
 
     // Discord-style server-name tooltip shown while a guild icon is hovered.
@@ -2946,8 +2952,18 @@ export component AppWindow inherits Window {
                             // Show "@" prefix for DMs, "#" for regular channels
                             Text {
                                 text: (root.active_guild_id == "@me") ? "@" : "#";
-                                opacity: root.header_enter_hidden ? 0.35 : 1.0;
-                                animate opacity { duration: 280ms; easing: ease-out; }
+                                opacity: 1.0;
+                                states [
+                                    hidden when root.header_enter_hidden: {
+                                        opacity: 0.15;
+                                        in {
+                                            animate opacity { duration: 0ms; }
+                                        }
+                                        out {
+                                            animate opacity { duration: 280ms; easing: ease-out; }
+                                        }
+                                    }
+                                ]
                                 color: AppTheme.text-subtle;
                                 font-size: TypeScale.heading;
                                 font-weight: 800;
@@ -2956,8 +2972,18 @@ export component AppWindow inherits Window {
 
                             Text {
                                 text: root.active_channel_name;
-                                opacity: root.header_enter_hidden ? 0.35 : 1.0;
-                                animate opacity { duration: 280ms; easing: ease-out; }
+                                opacity: 1.0;
+                                states [
+                                    hidden when root.header_enter_hidden: {
+                                        opacity: 0.15;
+                                        in {
+                                            animate opacity { duration: 0ms; }
+                                        }
+                                        out {
+                                            animate opacity { duration: 280ms; easing: ease-out; }
+                                        }
+                                    }
+                                ]
                                 color: AppTheme.text-strong;
                                 font-size: TypeScale.title;
                                 font-weight: 700;
@@ -3066,8 +3092,18 @@ export component AppWindow inherits Window {
 
                             // Messages Chat Feed View
                             chat_view := ChatMessagesView {
-                        opacity: root.chat_enter_hidden ? 0.35 : 1.0;
-                        animate opacity { duration: 280ms; easing: ease-out; }
+                        opacity: 1.0;
+                        states [
+                            hidden when root.chat_enter_hidden: {
+                                opacity: 0.15;
+                                in {
+                                    animate opacity { duration: 0ms; }
+                                }
+                                out {
+                                    animate opacity { duration: 280ms; easing: ease-out; }
+                                }
+                            }
+                        ]
                         vertical-stretch: 1;
                         messages: root.messages;
                         has_more_older_messages: root.has_more_older_messages;

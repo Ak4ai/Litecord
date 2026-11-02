@@ -1202,6 +1202,63 @@ pub async fn fetch_and_populate_dms(
         }
     });
 
+    // ⚡ Fast Path: Se os DMs já foram pre-aquecidos na RAM por prefetch_dms_cache, renderiza INSTANTANEAMENTE
+    let cached_opt = {
+        let guard = get_cached_dm_items().lock().ok();
+        guard.and_then(|items| if !items.is_empty() { Some(items.clone()) } else { None })
+    };
+
+    if let Some(cached_channels) = cached_opt {
+        info!("⚡ DMs hidratadas instantaneamente da memória RAM ({} canais)", cached_channels.len());
+        let current_c = active_channel_id.lock().unwrap().clone();
+        let target_ch_id = if current_c.is_empty() || !cached_channels.iter().any(|c| c.id == current_c.as_str()) {
+            cached_channels.first().map(|c| c.id.to_string())
+        } else {
+            Some(current_c)
+        };
+
+        let mut ui_channels = cached_channels.clone();
+        if let Some(cid) = &target_ch_id {
+            let remaining = crate::ui::helpers::clear_dm_unread(cid);
+            for c in ui_channels.iter_mut() {
+                if c.id == cid.as_str() {
+                    c.unread_count = 0;
+                }
+            }
+
+            let target_name = ui_channels.iter()
+                .find(|c| c.id == cid.as_str())
+                .map(|c| c.name.to_string())
+                .unwrap_or_else(|| "conversa".to_string());
+            *active_channel_id.lock().unwrap() = cid.clone();
+            let app_w_fast = app_weak.clone();
+            let cid_fast = cid.clone();
+            let ui_channels_fast = ui_channels.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_fast.upgrade() {
+                    ui.set_active_channel_id(cid_fast.into());
+                    ui.set_active_channel_name(crate::utils::styled_text::plain_display_name(&target_name).as_ref().into());
+                    let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_fast));
+                    ui.set_channels(model.into());
+                    ui.set_total_dm_unread_count(remaining);
+                }
+            });
+
+            load_messages_for_channel(http, app_weak.clone(), cid).await;
+        } else {
+            let app_w_fast = app_weak.clone();
+            let ui_channels_fast = ui_channels.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w_fast.upgrade() {
+                    let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_fast));
+                    ui.set_channels(model.into());
+                    ui.set_total_dm_unread_count(crate::ui::helpers::get_total_dm_unreads());
+                }
+            });
+        }
+        return;
+    }
+
     match http.get_user_dms().await {
         Ok(dms_json) => {
             info!("{} conversas de DM encontradas via REST!", dms_json.len());
@@ -1319,6 +1376,9 @@ pub async fn fetch_and_populate_dms(
 
             let app_w_ui = app_weak.clone();
             let ui_channels_clone = ui_channels.clone();
+            if let Ok(mut cached) = get_cached_dm_items().lock() {
+                *cached = ui_channels_clone.clone();
+            }
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w_ui.upgrade() {
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_channels_clone));
@@ -1370,24 +1430,119 @@ pub async fn fetch_and_populate_dms(
     }
 }
 
+pub static CACHED_DM_ITEMS: OnceLock<Mutex<Vec<ChannelItem>>> = OnceLock::new();
+
+pub fn get_cached_dm_items() -> &'static Mutex<Vec<ChannelItem>> {
+    CACHED_DM_ITEMS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 pub async fn prefetch_dms_cache(
     http: &DiscordHttpClient,
     guilds_map: Arc<Mutex<HashMap<String, GuildData>>>,
 ) {
     if let Ok(dms_json) = http.get_user_dms().await {
+        let mut dms_sorted = dms_json;
+        dms_sorted.sort_by(|a, b| {
+            let a_id: u64 = a["last_message_id"].as_str().unwrap_or("0").parse().unwrap_or(0);
+            let b_id: u64 = b["last_message_id"].as_str().unwrap_or("0").parse().unwrap_or(0);
+            b_id.cmp(&a_id)
+        });
+
         let mut channels_data: Vec<ChannelData> = Vec::new();
-        for dm in &dms_json {
+        let mut ui_channels: Vec<ChannelItem> = Vec::new();
+        let mut avatar_urls: Vec<String> = Vec::new();
+
+        for dm in &dms_sorted {
             let ch_id = dm["id"].as_str().unwrap_or("").to_string();
             if ch_id.is_empty() { continue; }
+            let ch_type = dm["type"].as_u64().unwrap_or(1);
+
+            let (ch_name, avatar_text) = if ch_type == 3 {
+                let name = if let Some(n) = dm["name"].as_str() {
+                    if !n.is_empty() { n.to_string() } else { "Grupo".to_string() }
+                } else if let Some(recipients) = dm["recipients"].as_array() {
+                    let names: Vec<String> = recipients.iter()
+                        .filter_map(|r| r["global_name"].as_str().or_else(|| r["username"].as_str()))
+                        .map(|s| s.to_string())
+                        .collect();
+                    if names.is_empty() { "Grupo".to_string() } else { names.join(", ") }
+                } else {
+                    "Grupo".to_string()
+                };
+                let initials = get_guild_initials(&name);
+                (name, initials)
+            } else {
+                let (name, initials) = if let Some(recipients) = dm["recipients"].as_array() {
+                    if let Some(first_user) = recipients.first() {
+                        let disp_name = first_user["global_name"].as_str()
+                            .unwrap_or_else(|| first_user["username"].as_str().unwrap_or("Amigo"));
+                        let inits = get_guild_initials(disp_name);
+                        (disp_name.to_string(), inits)
+                    } else {
+                        ("Amigo".to_string(), "DM".to_string())
+                    }
+                } else {
+                    ("Amigo".to_string(), "DM".to_string())
+                };
+                (name, initials)
+            };
+
+            let avatar_url = if ch_type == 3 {
+                crate::ui::message_grouping::group_icon_url(&ch_id, dm["icon"].as_str().unwrap_or(""))
+            } else {
+                dm["recipients"]
+                    .as_array()
+                    .and_then(|recipients| recipients.first())
+                    .map(|user| {
+                        let uid = user["id"].as_str().unwrap_or("").parse::<u64>().unwrap_or(0);
+                        gateway::register_user_avatar(uid, user["avatar"].as_str().unwrap_or(""));
+                        gateway::get_user_avatar_url(uid)
+                    })
+                    .unwrap_or_default()
+            };
+
+            if !avatar_url.is_empty() {
+                avatar_urls.push(avatar_url.clone());
+            }
+
             channels_data.push(ChannelData {
-                id: ch_id,
-                name: "DM".to_string(),
+                id: ch_id.clone(),
+                name: ch_name.clone(),
                 is_voice: false,
                 is_category: false,
                 parent_id: None,
                 position: 0,
             });
+
+            let unread_dm_count = crate::ui::helpers::get_dm_unread(&ch_id);
+
+            ui_channels.push(ChannelItem {
+                id: ch_id.into(),
+                name: crate::utils::styled_text::plain_display_name(&ch_name).as_ref().into(),
+                is_voice: false,
+                voice_count: 0,
+                is_voice_member: false,
+                parent_channel_id: "".into(),
+                avatar_text: avatar_text.into(),
+                avatar_slot: avatar_cache::get_avatar_cache().slot_for(&avatar_url),
+                avatar_url: avatar_url.into(),
+                is_category: false,
+                has_parent: false,
+                is_collapsed: false,
+                has_separator: false,
+                unread_count: unread_dm_count,
+                ..Default::default()
+            });
         }
+
+        // Pre-warm all DM avatar files from disk into memory RAM in the background thread
+        avatar_cache::get_avatar_cache().warm_up_from_disk(&avatar_urls);
+
+        // Store pre-built DM channels in cache
+        if let Ok(mut cached) = get_cached_dm_items().lock() {
+            *cached = ui_channels;
+        }
+
         if let Ok(mut gmap) = guilds_map.lock() {
             gmap.insert("@me".to_string(), GuildData {
                 id: "@me".to_string(),
@@ -1544,7 +1699,7 @@ fn paint_channel_messages(
                 ui.set_chat_painted_channel(ch_id_current.clone().into());
                 ui.set_chat_enter_hidden(true);
                 let app_fade = app_weak.clone();
-                slint::Timer::single_shot(std::time::Duration::from_millis(12), move || {
+                slint::Timer::single_shot(std::time::Duration::from_millis(32), move || {
                     if let Some(ui) = app_fade.upgrade() {
                         ui.set_chat_enter_hidden(false);
                     }

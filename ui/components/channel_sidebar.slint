@@ -85,9 +85,20 @@ export component ChannelSidebar inherits Rectangle {
     clip: true;
 
     VerticalBox {
-        y: root.content_hidden ? 6px : 0px;
-        opacity: root.content_hidden ? 0.35 : 1.0;
-        animate y, opacity { duration: 300ms; easing: ease-out; }
+        y: 0px;
+        opacity: 1.0;
+        states [
+            hidden when root.content_hidden: {
+                opacity: 0.15;
+                y: 6px;
+                in {
+                    animate opacity, y { duration: 0ms; }
+                }
+                out {
+                    animate opacity, y { duration: 300ms; easing: ease-out; }
+                }
+            }
+        ]
         padding: 8px;
         spacing: 6px;
 
