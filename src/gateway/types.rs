@@ -170,6 +170,7 @@ pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USERNAME: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static MY_VOICE_CHANNEL_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static IS_SELF_SPEAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static VAD_THRESHOLD: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
 pub static IS_TESTING_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static MIC_LOOPBACK_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
@@ -196,7 +197,7 @@ fn default_mic_volume() -> f32 {
 impl Default for GlobalAudioConfig {
     fn default() -> Self {
         Self {
-            vad_threshold: 0.05,
+            vad_threshold: 0.40, // -60 dBFS: Discord standard sensitivity threshold
             mic_volume: 1.0,
             input_device: String::new(),
             output_device: String::new(),
@@ -206,7 +207,12 @@ impl Default for GlobalAudioConfig {
 
 pub fn load_persisted_audio_config() -> GlobalAudioConfig {
     if let Ok(data) = std::fs::read_to_string(GLOBAL_AUDIO_CONFIG_FILE) {
-        if let Ok(cfg) = serde_json::from_str::<GlobalAudioConfig>(&data) {
+        if let Ok(mut cfg) = serde_json::from_str::<GlobalAudioConfig>(&data) {
+            // Migrate legacy linear threshold (e.g. 0.05) to Discord standard dB threshold 0.40 (-60 dB)
+            if cfg.vad_threshold < 0.15 {
+                cfg.vad_threshold = 0.40;
+                save_persisted_audio_config(&cfg);
+            }
             return cfg;
         }
     }
@@ -357,6 +363,43 @@ pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
     participants
 }
 
+/// True while this member's decoded audio is above the same threshold the voice
+/// room uses for its level bars. Reads the speaker queues without blocking: the
+/// audio callback must never wait on the UI refresh.
+pub fn is_voice_user_speaking(user_id: u64) -> bool {
+    let my_uid = get_my_user_id();
+    if user_id == 999999 || (my_uid != 0 && user_id == my_uid) {
+        return is_self_speaking();
+    }
+
+    let store = get_active_voice_participants_store();
+    let ssrcs: Vec<u32> = match store.try_lock() {
+        Ok(map) => map.iter().filter(|(_, &uid)| uid == user_id).map(|(&ssrc, _)| ssrc).collect(),
+        Err(_) => return false,
+    };
+    if ssrcs.is_empty() {
+        return false;
+    }
+
+    let speaker_queues = get_speaker_pcm_queues();
+    let queues = match speaker_queues.try_lock() {
+        Ok(queues) => queues,
+        Err(_) => return false,
+    };
+    for ssrc in ssrcs {
+        let Some(q) = queues.get(&ssrc) else { continue };
+        let sample_cnt = q.len().min(480);
+        if sample_cnt == 0 { continue; }
+        let sum_sq: f32 = q.iter().take(sample_cnt).map(|&(l, r)| { let s = (l + r) * 0.5; s * s }).sum();
+        let rms = (sum_sq / sample_cnt as f32).sqrt();
+        let level = if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) };
+        if level > 0.03 {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn set_my_user_id(id: u64) {
     MY_USER_ID.store(id, Ordering::Relaxed);
 }
@@ -383,6 +426,24 @@ pub fn set_my_voice_channel_id(cid: u64) {
     MY_VOICE_CHANNEL_ID.store(cid, Ordering::Relaxed);
 }
 
+/// Guild that owns the running voice session. Mute/deafen must address it, not the
+/// guild the user happens to be looking at.
+static MY_VOICE_GUILD_ID: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
+
+pub fn set_my_voice_guild_id(gid: &str) {
+    if let Ok(mut g) = MY_VOICE_GUILD_ID.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).lock() {
+        *g = gid.to_string();
+    }
+}
+
+pub fn get_my_voice_guild_id() -> String {
+    MY_VOICE_GUILD_ID
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(String::new())))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 static VOICE_SECRET_KEY: std::sync::OnceLock<Arc<std::sync::Mutex<Option<[u8; 32]>>>> = std::sync::OnceLock::new();
 
 #[allow(dead_code)]
@@ -405,6 +466,14 @@ pub fn set_self_mic_level(val: f32) {
 
 pub fn get_self_mic_level() -> f32 {
     f32::from_bits(SELF_MIC_LEVEL.load(Ordering::Relaxed))
+}
+
+pub fn set_self_speaking(val: bool) {
+    IS_SELF_SPEAKING.store(val, Ordering::Relaxed);
+}
+
+pub fn is_self_speaking() -> bool {
+    IS_SELF_SPEAKING.load(Ordering::Relaxed)
 }
 
 /// Signalled by the microphone callback whenever a full 20 ms frame (960 samples)
@@ -537,6 +606,10 @@ pub fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
 
 pub fn clear_voice_participants() {
     set_is_connected_to_voice(false);
+    // No channel is associated with the session anymore, so mute/deafen must not
+    // send a voice state update for someone else's channel.
+    set_my_voice_channel_id(0);
+    set_my_voice_guild_id("");
     if let Ok(mut map) = get_active_voice_participants_store().lock() {
         map.clear();
     }

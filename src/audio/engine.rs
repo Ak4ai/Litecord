@@ -18,13 +18,76 @@ fn voice_buffer_frames(rate: u32, supported: &cpal::SupportedBufferSize) -> u32 
     }
 }
 
+/// Speaker-only default. 2048 frames = four exact 512-frame PipeWire quanta,
+/// so the ring is not split into a fractional last period like 960/256 was.
+#[cfg(target_os = "linux")]
+const DEFAULT_VOICE_OUT_FRAMES: u32 = 2048;
+/// One 256-frame PipeWire quantum. Anything smaller is tighter than today and
+/// cannot absorb a stall, so it is rejected instead of honoured.
+#[cfg(target_os = "linux")]
+const MIN_VOICE_OUT_FRAMES: u32 = 256;
+
+/// Speaker-only override, read once per stream creation:
+/// `LITECORD_VOICE_OUT_FRAMES=<frames>`; `0` means `BufferSize::Default`
+/// (cpal asks for a 25 ms period / 100 ms ring); unset or invalid means
+/// [`DEFAULT_VOICE_OUT_FRAMES`]. The microphone path never reads this variable.
+#[cfg(target_os = "linux")]
+fn voice_output_frames(supported: &cpal::SupportedBufferSize) -> Option<u32> {
+    let requested = match std::env::var("LITECORD_VOICE_OUT_FRAMES") {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(0) => return None,
+            Ok(frames) if frames >= MIN_VOICE_OUT_FRAMES => frames,
+            Ok(frames) => {
+                log::warn!("LITECORD_VOICE_OUT_FRAMES={frames} é menor que {MIN_VOICE_OUT_FRAMES} frames; usando {DEFAULT_VOICE_OUT_FRAMES}");
+                DEFAULT_VOICE_OUT_FRAMES
+            }
+            Err(_) => {
+                log::warn!("LITECORD_VOICE_OUT_FRAMES inválido ({raw:?}); usando {DEFAULT_VOICE_OUT_FRAMES}");
+                DEFAULT_VOICE_OUT_FRAMES
+            }
+        },
+        Err(_) => DEFAULT_VOICE_OUT_FRAMES,
+    };
+    Some(match supported {
+        cpal::SupportedBufferSize::Range { min, max } => requested.clamp(*min, *max),
+        cpal::SupportedBufferSize::Unknown => requested,
+    })
+}
+
 /// Probe only when opening a Linux voice device; no periodic device work.
+/// The microphone keeps its nominal 20 ms through [`voice_buffer_frames`].
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_voice_stream_config(
     device: &cpal::Device, config: &cpal::SupportedStreamConfig, input: bool,
 ) -> cpal::StreamConfig {
     let frames = voice_buffer_frames(config.sample_rate().0, config.buffer_size());
+    voice_config_with_frames(device, config, Some(frames), input)
+}
+
+/// Speaker stream configuration. Kept apart from the microphone helper so the
+/// transmit path keeps its 20 ms ring no matter what the output override says.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_voice_output_config(
+    device: &cpal::Device, config: &cpal::SupportedStreamConfig,
+) -> cpal::StreamConfig {
+    let frames = voice_output_frames(config.buffer_size());
+    voice_config_with_frames(device, config, frames, false)
+}
+
+#[cfg(target_os = "linux")]
+fn voice_config_with_frames(
+    device: &cpal::Device, config: &cpal::SupportedStreamConfig,
+    frames: Option<u32>, input: bool,
+) -> cpal::StreamConfig {
+    let kind = if input { "entrada" } else { "saída" };
     let mut fixed: cpal::StreamConfig = config.clone().into();
+    let Some(frames) = frames else {
+        // `LITECORD_VOICE_OUT_FRAMES=0`: leave the size to the driver, as cpal's
+        // default does; no probe because there is nothing to validate.
+        fixed.buffer_size = cpal::BufferSize::Default;
+        info!("Buffer de voz Linux: padrão do driver ({kind})");
+        return fixed;
+    };
     fixed.buffer_size = cpal::BufferSize::Fixed(frames);
     let probe = match (input, config.sample_format()) {
         (true, cpal::SampleFormat::F32) => device.build_input_stream(&fixed, |_: &[f32], _| {}, |_| {}, None).map(|_| ()),
@@ -36,7 +99,7 @@ pub(crate) fn linux_voice_stream_config(
     };
     match probe {
         Ok(()) => {
-            info!("Buffer de voz Linux aceito: {} frames ({})", frames, if input { "entrada" } else { "saída" });
+            info!("Buffer de voz Linux aceito: {} frames ({kind})", frames);
             fixed
         },
         Err(error) => {
@@ -69,7 +132,77 @@ pub fn get_audio_devices_cache() -> Arc<std::sync::Mutex<Option<(Vec<String>, Ve
     CACHED_AUDIO_DEVICES.get_or_init(|| Arc::new(std::sync::Mutex::new(None))).clone()
 }
 
+#[cfg(target_os = "linux")]
+fn query_linux_friendly_audio_devices() -> (Vec<String>, Vec<String>) {
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
+
+    if let Ok(out) = std::process::Command::new("pactl").args(["list", "sources"]).output() {
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if let Some(desc) = trimmed.strip_prefix("device.description = \"") {
+                    if let Some(clean) = desc.strip_suffix('"') {
+                        let name = clean.to_string();
+                        if !inputs.contains(&name) && !name.starts_with("Monitor of") {
+                            inputs.push(name);
+                        }
+                    }
+                } else if let Some(desc) = trimmed.strip_prefix("Description: ") {
+                    let name = desc.to_string();
+                    if !inputs.contains(&name) && !name.starts_with("Monitor of") {
+                        inputs.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(out) = std::process::Command::new("pactl").args(["list", "sinks"]).output() {
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if let Some(desc) = trimmed.strip_prefix("device.description = \"") {
+                    if let Some(clean) = desc.strip_suffix('"') {
+                        let name = clean.to_string();
+                        if !outputs.contains(&name) {
+                            outputs.push(name);
+                        }
+                    }
+                } else if let Some(desc) = trimmed.strip_prefix("Description: ") {
+                    let name = desc.to_string();
+                    if !outputs.contains(&name) {
+                        outputs.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    (inputs, outputs)
+}
+
 pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        let (pw_inputs, pw_outputs) = query_linux_friendly_audio_devices();
+        if !pw_inputs.is_empty() || !pw_outputs.is_empty() {
+            let mut inputs = pw_inputs;
+            let mut outputs = pw_outputs;
+            if inputs.is_empty() {
+                inputs.push("Microfone Padrão do Sistema".to_string());
+            }
+            if outputs.is_empty() {
+                outputs.push("Alto-falantes Padrão do Sistema".to_string());
+            }
+            let result = (inputs, outputs);
+            if let Ok(mut cache) = get_audio_devices_cache().lock() {
+                *cache = Some(result.clone());
+            }
+            return result;
+        }
+    }
+
     let host = cpal::default_host();
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
@@ -77,8 +210,13 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     if let Ok(devices) = host.input_devices() {
         for dev in devices {
             if let Ok(name) = dev.name() {
-                if !inputs.contains(&name) {
-                    inputs.push(name);
+                let clean_name = if let Some(idx) = name.find(" {0.0.") {
+                    name[..idx].to_string()
+                } else {
+                    name
+                };
+                if !inputs.contains(&clean_name) {
+                    inputs.push(clean_name);
                 }
             }
         }
@@ -87,8 +225,13 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     if let Ok(devices) = host.output_devices() {
         for dev in devices {
             if let Ok(name) = dev.name() {
-                if !outputs.contains(&name) {
-                    outputs.push(name);
+                let clean_name = if let Some(idx) = name.find(" {0.0.") {
+                    name[..idx].to_string()
+                } else {
+                    name
+                };
+                if !outputs.contains(&clean_name) {
+                    outputs.push(clean_name);
                 }
             }
         }
@@ -109,16 +252,13 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     result
 }
 
-/// Publishes the mic level for the voice panel and the meter. Only the UI reads it,
-/// so while the window is hidden the async task that forwards it is not woken.
-fn report_mic_level(level_tx: &mpsc::Sender<f32>, level: f32) {
+/// Kept for backward-compatibility with capture thread handle
+#[allow(dead_code)]
+fn report_mic_level(_level_tx: &mpsc::Sender<f32>, level: f32) {
     gateway::set_self_mic_level(level);
-    if crate::ui::helpers::APP_IS_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
-        let _ = level_tx.try_send(level);
-    }
 }
 
-pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_samples: &[f32], level: f32) {
+pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
     for &s in pcm_samples {
         let clamped = s.clamp(-1.0, 1.0);
         if pcm_q.len() < 96000 { pcm_q.push_back(clamped); }
@@ -131,26 +271,67 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32], loop_s
     if pcm_q.len() >= 960 {
         gateway::MIC_FRAME_READY.notify_one();
     }
-    if gateway::is_testing_mic() {
-        let vad = gateway::get_vad_threshold();
-        let is_active = level >= vad;
-        pub static LAST_LOG: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
-        let log_mtx = LAST_LOG.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
-        if let Ok(mut last) = log_mtx.lock() {
-            if last.elapsed().as_millis() >= 1000 {
-                *last = std::time::Instant::now();
-                info!("🧪 [TEST MIC STATS] mic_level={:.3}, vad_threshold={:.3}, active={}", level, vad, is_active);
+
+    let in_call = gateway::is_connected_to_voice();
+    let is_testing = gateway::is_testing_mic();
+    let is_settings_open = crate::ui::helpers::MIC_METER_VISIBLE.load(std::sync::atomic::Ordering::Relaxed);
+
+    // If connected to voice, voice.rs already processes audio with VoiceProcessor and feeds loop_q + set_self_mic_level.
+    // If NOT connected to a voice channel, but either testing mic ("se ouvir") OR settings modal is open:
+    if !in_call && (is_testing || is_settings_open) {
+        static TEST_VOICE_PROC: std::sync::OnceLock<std::sync::Mutex<crate::audio::dsp::VoiceProcessor>> = std::sync::OnceLock::new();
+        let proc_mtx = TEST_VOICE_PROC.get_or_init(|| std::sync::Mutex::new(crate::audio::dsp::VoiceProcessor::new()));
+        static TEST_RESAMPLE_Q: std::sync::OnceLock<std::sync::Mutex<VecDeque<f32>>> = std::sync::OnceLock::new();
+        let q_mtx = TEST_RESAMPLE_Q.get_or_init(|| std::sync::Mutex::new(VecDeque::with_capacity(4800)));
+
+        let suppression_mode = crate::utils::video_settings::get_noise_suppression();
+        let enable_aec = crate::utils::video_settings::get_echo_cancellation();
+        let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
+        let vad_threshold = gateway::get_vad_threshold();
+        let vad_threshold_db = crate::audio::dsp::VolumeAnalyzer::ui_level_to_db(vad_threshold);
+
+        if let (Ok(mut proc), Ok(mut q_accum)) = (proc_mtx.lock(), q_mtx.lock()) {
+            for &s in pcm_samples {
+                q_accum.push_back(s);
+            }
+
+            while q_accum.len() >= 960 {
+                let mut frame = [0.0f32; 960];
+                for i in 0..960 {
+                    frame[i] = q_accum.pop_front().unwrap_or(0.0);
+                }
+
+                let metrics = proc.process_frame(&mut frame, &suppression_mode, enable_aec, enable_agc);
+                // Update UI meter with true post-DSP decibel level
+                gateway::set_self_mic_level(metrics.ui_level);
+
+                let passes_volume = metrics.volume_db >= vad_threshold_db;
+                let passes_neural = if suppression_mode == "advanced" || suppression_mode == "krisp" {
+                    metrics.vad_prob >= 0.35
+                } else {
+                    metrics.vad_prob >= 0.20 || metrics.volume_db >= -28.0
+                };
+                let is_active = passes_volume && passes_neural;
+                gateway::set_self_speaking(is_active);
+
+                if is_testing {
+                    if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
+                        if loop_q.len() > 6000 {
+                            let excess = loop_q.len() - 3500;
+                            loop_q.drain(0..excess);
+                        }
+                        for &s in frame.iter() {
+                            let sample_to_play = if is_active { s.clamp(-1.0, 1.0) } else { 0.0 };
+                            loop_q.push_back(sample_to_play);
+                        }
+                    }
+                }
             }
         }
-        if let Ok(mut loop_q) = gateway::get_mic_loopback_queue().lock() {
-            if loop_q.len() > 6000 {
-                let excess = loop_q.len() - 3500;
-                loop_q.drain(0..excess);
-            }
-            for &s in loop_samples {
-                let sample_to_play = if is_active { s.clamp(-1.0, 1.0) } else { 0.0 };
-                loop_q.push_back(sample_to_play);
-            }
+    } else if !in_call && !is_testing && !is_settings_open {
+        // Drain pcm_q when completely idle so samples never accumulate
+        if pcm_q.len() > 1920 {
+            pcm_q.clear();
         }
     }
 }
@@ -193,9 +374,60 @@ pub fn start_mic_capture(device_name: String, level_tx: mpsc::Sender<f32>) -> Mi
     MicCapture { _stop: stop_tx }
 }
 
+/// Selects a `SupportedStreamConfig` at 48000 Hz if the device supports it,
+/// falling back to the device's default configuration otherwise.
+/// On Linux (PipeWire/PulseAudio/ALSA), `default_input_config()` / `default_output_config()`
+/// often returns 44100 Hz as a legacy ALSA fallback even when the audio server runs at 48000 Hz.
+pub(crate) fn select_preferred_48khz_config(
+    device: &cpal::Device,
+    input: bool,
+) -> Option<cpal::SupportedStreamConfig> {
+    let default_cfg = if input {
+        device.default_input_config().ok()?
+    } else {
+        device.default_output_config().ok()?
+    };
+
+    if default_cfg.sample_rate().0 == 48000 {
+        return Some(default_cfg);
+    }
+
+    let target_rate = cpal::SampleRate(48000);
+    let default_channels = default_cfg.channels();
+    let default_format = default_cfg.sample_format();
+
+    let supported_ranges: Option<Vec<cpal::SupportedStreamConfigRange>> = if input {
+        device.supported_input_configs().ok().map(|it| it.collect())
+    } else {
+        device.supported_output_configs().ok().map(|it| it.collect())
+    };
+
+    if let Some(ranges) = supported_ranges {
+        let mut best_match: Option<cpal::SupportedStreamConfig> = None;
+        for range in ranges {
+            if range.min_sample_rate() <= target_rate && target_rate <= range.max_sample_rate() {
+                let candidate = range.with_sample_rate(target_rate);
+                if candidate.channels() == default_channels && candidate.sample_format() == default_format {
+                    return Some(candidate);
+                }
+                if candidate.sample_format() == cpal::SampleFormat::F32 && best_match.is_none() {
+                    best_match = Some(candidate);
+                } else if best_match.is_none() {
+                    best_match = Some(candidate);
+                }
+            }
+        }
+        if let Some(matched) = best_match {
+            return Some(matched);
+        }
+    }
+
+    Some(default_cfg)
+}
+
 fn open_mic_stream(
     device_name: String,
-    level_tx: mpsc::Sender<f32>,
+    _level_tx: mpsc::Sender<f32>,
 ) -> Option<cpal::Stream> {
     let host = cpal::default_host();
 
@@ -208,7 +440,7 @@ fn open_mic_stream(
 
     let (target_dev, config) = if loopback {
         let out = host.default_output_device()?;
-        let cfg = out.default_output_config().ok()?;
+        let cfg = select_preferred_48khz_config(&out, false)?;
         info!("🧪 [TEST MIC] Capturando a saída padrão por loopback como microfone: {}", out.name().unwrap_or_default());
         (out, cfg)
     } else {
@@ -220,7 +452,7 @@ fn open_mic_stream(
                 d.name().map(|n| n == device_name).unwrap_or(false)
             }).or_else(|| host.default_input_device())?
         };
-        let cfg = dev.default_input_config().ok()?;
+        let cfg = select_preferred_48khz_config(&dev, true)?;
         (dev, cfg)
     };
     let sample_rate = config.sample_rate().0;
@@ -247,25 +479,19 @@ fn open_mic_stream(
 
                     let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
-                    let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().sum::<f32>() / num_channels as f32) * mic_gain;
-                        sum_sq += s * s;
                         mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    report_mic_level(&level_tx, level);
-
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &mono_samples);
                         } else {
                             let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
-                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
                 },
@@ -287,25 +513,19 @@ fn open_mic_stream(
 
                     let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
-                    let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / num_channels as f32) * mic_gain;
-                        sum_sq += s * s;
                         mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    report_mic_level(&level_tx, level);
-
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &mono_samples);
                         } else {
                             let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
-                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
                 },
@@ -327,25 +547,19 @@ fn open_mic_stream(
 
                     let mic_gain = gateway::get_mic_volume();
                     let mut mono_samples = Vec::with_capacity(frames);
-                    let mut sum_sq = 0.0f32;
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / num_channels as f32) * mic_gain;
-                        sum_sq += s * s;
                         mono_samples.push(s);
                     }
 
-                    let rms = (sum_sq / frames as f32).sqrt();
-                    let level = (rms * 6.0).min(1.0);
-                    report_mic_level(&level_tx, level);
-
                     if let Ok(mut q) = q_arc.lock() {
                         if sample_rate == 48000 {
-                            push_to_mic_queues(&mut q, &mono_samples, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &mono_samples);
                         } else {
                             let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
-                            push_to_mic_queues(&mut q, &resampled_buf, &mono_samples, level);
+                            push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
                 },
@@ -367,6 +581,33 @@ fn open_mic_stream(
     }
 }
 
+/// Pops and resamples one output frame from the 48kHz `loop_q` at `out_sample_rate`
+/// using fractional phase tracking so that 44.1kHz devices never pitch-shift the user's voice down!
+#[inline]
+fn pop_loopback_resampled(
+    loop_q: &mut VecDeque<f32>,
+    out_sample_rate: u32,
+    phase: &mut f64,
+    prev_sample: &mut f32,
+    curr_sample: &mut f32,
+) -> f32 {
+    if out_sample_rate == 48000 || out_sample_rate == 0 {
+        return loop_q.pop_front().unwrap_or(0.0);
+    }
+    let step = 48000.0f64 / out_sample_rate as f64;
+    *phase += step;
+    let pops = *phase as usize;
+    if pops > 0 {
+        *phase -= pops as f64;
+        for _ in 0..pops {
+            *prev_sample = *curr_sample;
+            *curr_sample = loop_q.pop_front().unwrap_or(0.0);
+        }
+    }
+    let frac = (*phase as f32).clamp(0.0, 1.0);
+    *prev_sample * (1.0 - frac) + *curr_sample * frac
+}
+
 pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
     let host = cpal::default_host();
     let devices = host.output_devices().ok()?;
@@ -380,10 +621,10 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
     };
 
     let target_dev_name = target_dev.name().unwrap_or_else(|_| "desconhecido".to_string());
-    let config = match target_dev.default_output_config() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("❌ [LOOPBACK] Erro ao obter default_output_config para '{}': {:?}", target_dev_name, e);
+    let config = match select_preferred_48khz_config(&target_dev, false) {
+        Some(c) => c,
+        None => {
+            log::error!("❌ [LOOPBACK] Erro ao obter config de saída para '{}'", target_dev_name);
             return None;
         }
     };
@@ -398,6 +639,9 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&loop_q_arc);
             let mut is_started = false;
+            let mut phase = 0.0f64;
+            let mut prev_s = 0.0f32;
+            let mut curr_s = 0.0f32;
             target_dev.build_output_stream(
                 &config.into(),
                 move |output: &mut [f32], _| {
@@ -407,7 +651,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                     }
                     if let Ok(mut loop_q) = q_arc.lock() {
                         if !is_started {
-                            if loop_q.len() < 2000 {
+                            if loop_q.len() < 1920 {
                                 for s in output.iter_mut() { *s = 0.0; }
                                 return;
                             }
@@ -416,8 +660,8 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let frames = output.len() / channels.max(1);
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
-                            let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let s = pop_loopback_resampled(&mut loop_q, out_sample_rate, &mut phase, &mut prev_s, &mut curr_s);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             for ch in 0..channels {
                                 output[f * channels + ch] = sample;
@@ -429,7 +673,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         if let Ok(mut last) = out_log_mtx.lock() {
                             if last.elapsed().as_millis() >= 1000 {
                                 *last = std::time::Instant::now();
-                                info!("🎧 [LOOPBACK PLAYBACK F32] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
+                                info!("🎧 [LOOPBACK PLAYBACK F32] is_started={}, rate={}Hz, q_len={}, frames={}, out_rms={:.4}", is_started, out_sample_rate, loop_q.len(), frames, out_rms);
                             }
                         }
                     } else {
@@ -443,6 +687,9 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&loop_q_arc);
             let mut is_started = false;
+            let mut phase = 0.0f64;
+            let mut prev_s = 0.0f32;
+            let mut curr_s = 0.0f32;
             target_dev.build_output_stream(
                 &config.into(),
                 move |output: &mut [i16], _| {
@@ -452,7 +699,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                     }
                     if let Ok(mut loop_q) = q_arc.lock() {
                         if !is_started {
-                            if loop_q.len() < 2000 {
+                            if loop_q.len() < 1920 {
                                 for s in output.iter_mut() { *s = 0; }
                                 return;
                             }
@@ -461,8 +708,8 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let frames = output.len() / channels.max(1);
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
-                            let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let s = pop_loopback_resampled(&mut loop_q, out_sample_rate, &mut phase, &mut prev_s, &mut curr_s);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             let val = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
                             for ch in 0..channels {
@@ -475,7 +722,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         if let Ok(mut last) = out_log_mtx.lock() {
                             if last.elapsed().as_millis() >= 1000 {
                                 *last = std::time::Instant::now();
-                                info!("🎧 [LOOPBACK PLAYBACK I16] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
+                                info!("🎧 [LOOPBACK PLAYBACK I16] is_started={}, rate={}Hz, q_len={}, frames={}, out_rms={:.4}", is_started, out_sample_rate, loop_q.len(), frames, out_rms);
                             }
                         }
                     } else {
@@ -489,6 +736,9 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
         cpal::SampleFormat::I32 => {
             let q_arc = Arc::clone(&loop_q_arc);
             let mut is_started = false;
+            let mut phase = 0.0f64;
+            let mut prev_s = 0.0f32;
+            let mut curr_s = 0.0f32;
             target_dev.build_output_stream(
                 &config.into(),
                 move |output: &mut [i32], _| {
@@ -498,7 +748,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                     }
                     if let Ok(mut loop_q) = q_arc.lock() {
                         if !is_started {
-                            if loop_q.len() < 2000 {
+                            if loop_q.len() < 1920 {
                                 for s in output.iter_mut() { *s = 0; }
                                 return;
                             }
@@ -507,8 +757,8 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let frames = output.len() / channels.max(1);
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
-                            let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let s = pop_loopback_resampled(&mut loop_q, out_sample_rate, &mut phase, &mut prev_s, &mut curr_s);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             let val = (sample * 2147483647.0).clamp(-2147483648.0, 2147483647.0) as i32;
                             for ch in 0..channels {
@@ -521,7 +771,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         if let Ok(mut last) = out_log_mtx.lock() {
                             if last.elapsed().as_millis() >= 1000 {
                                 *last = std::time::Instant::now();
-                                info!("🎧 [LOOPBACK PLAYBACK I32] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
+                                info!("🎧 [LOOPBACK PLAYBACK I32] is_started={}, rate={}Hz, q_len={}, frames={}, out_rms={:.4}", is_started, out_sample_rate, loop_q.len(), frames, out_rms);
                             }
                         }
                     } else {
@@ -535,6 +785,9 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
         cpal::SampleFormat::U16 => {
             let q_arc = Arc::clone(&loop_q_arc);
             let mut is_started = false;
+            let mut phase = 0.0f64;
+            let mut prev_s = 0.0f32;
+            let mut curr_s = 0.0f32;
             target_dev.build_output_stream(
                 &config.into(),
                 move |output: &mut [u16], _| {
@@ -544,7 +797,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                     }
                     if let Ok(mut loop_q) = q_arc.lock() {
                         if !is_started {
-                            if loop_q.len() < 2000 {
+                            if loop_q.len() < 1920 {
                                 for s in output.iter_mut() { *s = 32768; }
                                 return;
                             }
@@ -553,8 +806,8 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         let frames = output.len() / channels.max(1);
                         let mut sum_sq = 0.0f32;
                         for f in 0..frames {
-                            let s = loop_q.pop_front().unwrap_or(0.0);
-                            let sample = (s * 3.0).clamp(-1.0, 1.0);
+                            let s = pop_loopback_resampled(&mut loop_q, out_sample_rate, &mut phase, &mut prev_s, &mut curr_s);
+                            let sample = s.clamp(-1.0, 1.0);
                             sum_sq += sample * sample;
                             let val = ((sample + 1.0) * 32767.5).clamp(0.0, 65535.0) as u16;
                             for ch in 0..channels {
@@ -567,7 +820,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
                         if let Ok(mut last) = out_log_mtx.lock() {
                             if last.elapsed().as_millis() >= 1000 {
                                 *last = std::time::Instant::now();
-                                info!("🎧 [LOOPBACK PLAYBACK U16] is_started={}, q_len={}, frames={}, out_rms={:.4}", is_started, loop_q.len(), frames, out_rms);
+                                info!("🎧 [LOOPBACK PLAYBACK U16] is_started={}, rate={}Hz, q_len={}, frames={}, out_rms={:.4}", is_started, out_sample_rate, loop_q.len(), frames, out_rms);
                             }
                         }
                     } else {

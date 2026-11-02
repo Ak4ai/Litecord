@@ -1,0 +1,247 @@
+// Community onboarding: the questionnaire Discord shows after joining a server
+// with onboarding enabled. Answers become roles and visible channels.
+import { ScrollView } from "std-widgets.slint";
+import { AppTheme, TypeScale } from "../theme.slint";
+import { Tr } from "tr.slint";
+
+export struct OnboardingOptionItem {
+    id: string,
+    title: string,
+    description: string,
+    selected: bool,
+}
+
+export struct OnboardingPromptItem {
+    id: string,
+    title: string,
+    single_select: bool,
+    required: bool,
+    options: [OnboardingOptionItem],
+}
+
+export component OnboardingView inherits Rectangle {
+    in property <string> guild_name;
+    in property <[OnboardingPromptItem]> prompts;
+    in property <bool> submitting: false;
+    in property <string> error_text: "";
+
+    callback toggle_option(int, int);
+    callback submit();
+    callback dismiss();
+
+    width: 100%;
+    height: 100%;
+    background: AppTheme.backdrop;
+
+    // Clicking outside the card skips the questionnaire for this session.
+    TouchArea {
+        clicked => { root.dismiss(); }
+    }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Math.min(560px, parent.width - 32px);
+        height: Math.min(640px, parent.height - 32px);
+        background: AppTheme.surface-elevated;
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: AppTheme.border-subtle;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: AppTheme.backdrop;
+
+                // Clicks inside the card must not reach the backdrop.
+                TouchArea { }
+
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 14px;
+
+                    Text {
+                        text: Tr.onboarding_title;
+                        color: AppTheme.text-strong;
+                        font-size: TypeScale.heading;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: root.guild_name;
+                        color: AppTheme.text-primary;
+                        font-size: TypeScale.title;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: Tr.onboarding_subtitle;
+                        color: AppTheme.text-secondary;
+                        font-size: TypeScale.body;
+                        wrap: word-wrap;
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+
+                        VerticalLayout {
+                            spacing: 20px;
+                            padding-right: 10px;
+
+                            for prompt[pi] in root.prompts : VerticalLayout {
+                                spacing: 8px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: prompt.title;
+                                        color: AppTheme.text-strong;
+                                        font-size: TypeScale.body;
+                                        font-weight: 600;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    if prompt.required : Text {
+                                        text: Tr.onboarding_required;
+                                        color: AppTheme.warning;
+                                        font-size: TypeScale.micro;
+                                        font-weight: 700;
+                                    }
+                                }
+
+                                Text {
+                                    text: prompt.single_select ? Tr.onboarding_single : Tr.onboarding_multi;
+                                    color: AppTheme.text-muted;
+                                    font-size: TypeScale.caption;
+                                }
+
+                                for option[oi] in prompt.options : Rectangle {
+                                    height: option.description == "" ? 44px : 62px;
+                                    border-radius: 8px;
+                                    background: option.selected
+                                        ? AppTheme.accent-subtle
+                                        : (opt_ta.has-hover ? AppTheme.interactive-hover : AppTheme.surface-input);
+                                    border-width: 1px;
+                                    border-color: option.selected ? AppTheme.accent-border-muted : AppTheme.border-subtle;
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 12px;
+                                        alignment: start;
+
+                                        Rectangle {
+                                            width: 20px;
+                                            height: 20px;
+                                            border-radius: prompt.single_select ? 10px : 4px;
+                                            border-width: 2px;
+                                            border-color: option.selected ? AppTheme.accent : AppTheme.surface-control;
+                                            background: option.selected ? AppTheme.accent : transparent;
+
+                                            Text {
+                                                text: "✓";
+                                                visible: option.selected;
+                                                color: AppTheme.text-on-accent;
+                                                font-size: TypeScale.caption;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+                                            horizontal-stretch: 1;
+
+                                            Text {
+                                                text: option.title;
+                                                color: AppTheme.text-primary;
+                                                font-size: TypeScale.body;
+                                                font-weight: 500;
+                                                overflow: elide;
+                                            }
+
+                                            if option.description != "" : Text {
+                                                text: option.description;
+                                                color: AppTheme.text-muted;
+                                                font-size: TypeScale.caption;
+                                                overflow: elide;
+                                            }
+                                        }
+                                    }
+
+                                    opt_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.toggle_option(pi, oi); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.error_text != "" : Text {
+                        text: root.error_text;
+                        color: AppTheme.danger;
+                        font-size: TypeScale.small;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Rectangle {
+                            height: 40px;
+                            horizontal-stretch: 1;
+                            border-radius: 8px;
+                            background: skip_ta.has-hover ? AppTheme.surface-control-hover : AppTheme.interactive-hover;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: Tr.onboarding_skip;
+                                    color: AppTheme.text-primary;
+                                    font-size: TypeScale.body;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            skip_ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.dismiss(); }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 40px;
+                            horizontal-stretch: 1;
+                            border-radius: 8px;
+                            background: root.submitting
+                                ? AppTheme.surface-disabled
+                                : (finish_ta.has-hover ? AppTheme.accent-hover : AppTheme.accent);
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.submitting ? Tr.onboarding_saving : Tr.onboarding_finish;
+                                    color: root.submitting ? AppTheme.text-muted : AppTheme.text-on-accent;
+                                    font-size: TypeScale.body;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            finish_ta := TouchArea {
+                                mouse-cursor: root.submitting ? default : pointer;
+                                clicked => {
+                                    if !root.submitting {
+                                        root.submit();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+    }
+}

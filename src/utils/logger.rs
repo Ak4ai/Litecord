@@ -110,6 +110,9 @@ fn has_stdout() -> bool {
 }
 
 pub fn init_logger() {
+    // Keep the previous run's log: when a call goes silent, the log of the session
+    // that had the problem is usually the one that was just replaced.
+    let _ = std::fs::rename("litecord_app.log", "litecord_app.prev.log");
     let log_file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("litecord_app.log").ok();
     let logger = AppLogger { file: Mutex::new(log_file) };
     let _ = log::set_boxed_logger(Box::new(logger));

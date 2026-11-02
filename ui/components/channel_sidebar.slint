@@ -8,6 +8,11 @@ export struct ChannelItem {
     is_voice: bool,
     voice_count: int,
     is_voice_member: bool,
+    // Live voice state for member rows: green ring while the member speaks and
+    // the red LIVE badge while they share their screen.
+    is_speaking: bool,
+    is_streaming: bool,
+    is_self_member: bool,
     parent_channel_id: string,
     avatar_text: string,
     avatar_url: string,
@@ -48,9 +53,13 @@ export component ChannelSidebar inherits Rectangle {
     in property <string> user_avatar_initials;
     in property <bool> user_avatar_has_image;
     in property <image> user_avatar_img;
+    in property <bool> is_screen_sharing: false;
     callback select_channel(string);
     callback toggle_category(string);
     callback leave_voice();
+    callback open_stream_modal();
+    callback open_camera_modal();
+    callback toggle_screen_share();
     callback toggle_user_menu();
     callback toggle_mute();
     callback toggle_deafen();
@@ -304,6 +313,8 @@ export component ChannelSidebar inherits Rectangle {
                         }
 
                         // Participants remain separate rows under their voice channel.
+                        // Discord marks the speaker with a green ring around the avatar and
+                        // a red LIVE pill next to the name of whoever is streaming.
                         if channel.is_voice_member : HorizontalLayout {
                             padding-left: channel.has_parent ? 38px : 28px;
                             padding-right: 8px;
@@ -311,26 +322,38 @@ export component ChannelSidebar inherits Rectangle {
 
                             VerticalLayout {
                                 alignment: center;
-                                width: 18px;
+                                width: 24px;
                                 Rectangle {
-                                    width: 18px;
-                                    height: 18px;
-                                    border-radius: 9px;
-                                    background: AppTheme.interactive-selected;
-                                    clip: true;
-                                    Text {
-                                        text: channel.avatar_text;
-                                        color: AppTheme.text-primary;
-                                        font-size: TypeScale.micro;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                    if channel.avatar_url != "" && root.avatar_pool_urls[channel.avatar_slot] == channel.avatar_url: Image {
-                                        source: root.avatar_pool[channel.avatar_slot];
-                                        width: 100%;
-                                        height: 100%;
-                                        image-fit: cover;
+                                    width: 24px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    border-width: (channel.is_speaking && !(channel.is_self_member && (root.is_muted || root.is_deafened))) ? 2px : 0px;
+                                    border-color: #23A55A;
+                                    background: transparent;
+                                    animate border-width, border-color { duration: 120ms; }
+
+                                    Rectangle {
+                                        x: 3px;
+                                        y: 3px;
+                                        width: 18px;
+                                        height: 18px;
+                                        border-radius: 9px;
+                                        background: AppTheme.interactive-selected;
+                                        clip: true;
+                                        Text {
+                                            text: channel.avatar_text;
+                                            color: AppTheme.text-primary;
+                                            font-size: TypeScale.micro;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        if channel.avatar_url != "" && root.avatar_pool_urls[channel.avatar_slot] == channel.avatar_url: Image {
+                                            source: root.avatar_pool[channel.avatar_slot];
+                                            width: 100%;
+                                            height: 100%;
+                                            image-fit: cover;
+                                        }
                                     }
                                 }
                             }
@@ -343,6 +366,35 @@ export component ChannelSidebar inherits Rectangle {
                                 horizontal-stretch: 1;
                                 overflow: elide;
                                 animate color { duration: 120ms; }
+                            }
+                            if channel.is_streaming : VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    height: 14px;
+                                    border-radius: 4px;
+                                    background: AppTheme.danger-action;
+                                    HorizontalLayout {
+                                        padding-left: 4px;
+                                        padding-right: 4px;
+                                        spacing: 3px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 4px;
+                                                height: 4px;
+                                                border-radius: 2px;
+                                                background: AppTheme.solid-white;
+                                            }
+                                        }
+                                        Text {
+                                            text: "LIVE";
+                                            color: AppTheme.text-on-accent;
+                                            font-size: TypeScale.micro;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -431,6 +483,72 @@ export component ChannelSidebar inherits Rectangle {
                 }
 
                 Rectangle { horizontal-stretch: 1; }
+
+                // Webcam Button
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: btn_webcam_sidebar_ta.has-hover ? #86efac : AppTheme.border-on-accent-muted;
+                        background: btn_webcam_sidebar_ta.pressed ? #16a34a : (btn_webcam_sidebar_ta.has-hover ? #22c55e : AppTheme.surface-translucent);
+                        animate background { duration: 120ms; }
+                        animate border-color { duration: 120ms; }
+
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 16px;
+                            height: 16px;
+                            source: @image-url("../../assets/camera.svg");
+                            colorize: AppTheme.text-on-accent;
+                            image-fit: contain;
+                        }
+
+                        btn_webcam_sidebar_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open_camera_modal(); }
+                        }
+                    }
+                }
+
+                // Stream / Screen Share Button
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: btn_stream_sidebar_ta.has-hover ? (root.is_screen_sharing ? #fca5a5 : #fdba74) : AppTheme.border-on-accent-muted;
+                        background: root.is_screen_sharing ? (btn_stream_sidebar_ta.pressed ? AppTheme.danger-pressed : (btn_stream_sidebar_ta.has-hover ? AppTheme.danger-bright : AppTheme.danger-action)) : (btn_stream_sidebar_ta.pressed ? #ea580c : (btn_stream_sidebar_ta.has-hover ? #f97316 : AppTheme.surface-translucent));
+                        animate background { duration: 120ms; }
+                        animate border-color { duration: 120ms; }
+
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 16px;
+                            height: 16px;
+                            source: @image-url("../../assets/monitor.svg");
+                            colorize: AppTheme.text-on-accent;
+                            image-fit: contain;
+                        }
+
+                        btn_stream_sidebar_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if root.is_screen_sharing {
+                                    root.toggle_screen_share();
+                                } else {
+                                    root.open_stream_modal();
+                                }
+                            }
+                        }
+                    }
+                }
 
                 VerticalLayout {
                     alignment: center;
