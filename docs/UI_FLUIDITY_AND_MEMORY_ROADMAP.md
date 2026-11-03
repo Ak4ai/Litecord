@@ -7,6 +7,8 @@
 **Escopo permitido:** renderização Slint, modelos de UI, pipeline de eventos do chat/sidebar, caches em RAM/disco e ciclo de vida de sessão.  
 **Escopo proibido (INTOCÁVEL):** caminho `LTPV`/transmissão P2P (`src/native_video/*`, `src/screen_capture/*` de captura/codificação), captura de microfone, DSP/AEC (`src/audio/*`), filas PCM e protocolo de voz (`src/gateway/voice.rs`).
 
+> **Estado do ciclo:** as fases 1–3 do plano original foram concluídas (F1–F19) e o binário está estável. **Ainda há bastante trabalho de performance pela frente:** medição controlada de frame time (`SLINT_DEBUG_PERFORMANCE`/`perf`), comparação software vs GPU, virtualização real da lista de chat e um teste de carga com 20 trocas de canal + rajada de mensagens. Esses itens estão detalhados na seção 5.3 e não bloqueiam o release atual.
+
 ---
 
 ## 1. Diagnóstico da Auditoria: por que o projeto parecia perder o rumo
