@@ -8,7 +8,7 @@ use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use log::{info, error, warn};
+use log::{debug, info, error, warn};
 
 use super::types::*;
 use super::formatting::*;
@@ -1297,7 +1297,6 @@ impl GatewayClient {
                     }
                     if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                         gvs.insert(vs.user_id, vs.channel_id.clone());
-                        info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", vs.user_id, vs.channel_id);
                     }
                     let is_muted = vs.self_mute.unwrap_or(false) || vs.mute.unwrap_or(false);
                     let is_deaf = vs.self_deaf.unwrap_or(false) || vs.deaf.unwrap_or(false);
@@ -1500,7 +1499,6 @@ impl GatewayClient {
                                         }
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
-                                            info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", u_id, c_str);
                                         }
                                         let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                         let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
@@ -1617,7 +1615,6 @@ impl GatewayClient {
                                 }
                                 if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                     gvs.insert(u_id, c_str.clone());
-                                    info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
                                 }
                                 let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                 let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
@@ -1634,7 +1631,7 @@ impl GatewayClient {
                         info!("📌 [READY_SUPPLEMENTAL] Encontrados {} guilds no READY_SUPPLEMENTAL!", guilds_arr.len());
                         for g in guilds_arr {
                             if let Some(vs_arr) = g["voice_states"].as_array() {
-                                info!("📌 [READY_SUPPLEMENTAL] Guild {} tem {} voice_states!", g["id"], vs_arr.len());
+                                debug!("📌 [READY_SUPPLEMENTAL] Guild {} tem {} voice_states!", g["id"], vs_arr.len());
                                 for vs in vs_arr {
                                     let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
                                         s.parse().unwrap_or(0)
@@ -1658,7 +1655,6 @@ impl GatewayClient {
                                         }
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
-                                            info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
                                         }
                                         let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                         let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
