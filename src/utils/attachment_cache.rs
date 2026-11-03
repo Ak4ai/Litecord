@@ -10,7 +10,7 @@ struct DecodedImage {
     buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
 }
 
-const MAX_FULL_CACHE_BYTES: usize = 16 * 1024 * 1024; // 16 MB budget for decoded image textures
+const MAX_FULL_CACHE_BYTES: usize = 12 * 1024 * 1024; // 12 MB budget for decoded image textures
 
 #[derive(Clone)]
 struct CacheEntry {
@@ -74,6 +74,13 @@ impl MemoryFullStore {
     fn clear(&mut self) {
         self.entries.clear();
         self.total_bytes = 0;
+    }
+
+    /// Drops one entry and returns the memory it held.
+    fn remove(&mut self, key: &str) {
+        if let Some(removed) = self.entries.remove(key) {
+            self.total_bytes = self.total_bytes.saturating_sub(removed.size_bytes);
+        }
     }
 }
 
@@ -166,7 +173,7 @@ fn flush_attachment_updates(app_weak: slint::Weak<crate::AppWindow>) {
     }
 }
 
-const UI_IMAGE_CACHE_BYTES: usize = 12 * 1024 * 1024;
+const UI_IMAGE_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
 struct UiImageCache {
@@ -196,6 +203,7 @@ fn ui_image_get(att_id: &str) -> Option<slint::Image> {
 fn ui_image_put(att_id: &str, image: slint::Image) {
     let size = image.size();
     let bytes = (size.width as usize) * (size.height as usize) * 4;
+    let mut evicted: Vec<String> = Vec::new();
     UI_IMAGES.with(|cell| {
         let mut cache = cell.borrow_mut();
         cache.clock = cache.clock.wrapping_add(1);
@@ -215,9 +223,20 @@ fn ui_image_put(att_id: &str, image: slint::Image) {
             };
             if let Some((_, removed_bytes, _)) = cache.entries.remove(&oldest) {
                 cache.bytes = cache.bytes.saturating_sub(removed_bytes);
+                evicted.push(oldest);
             }
         }
     });
+    // A `slint::Image` keeps the pixels alive, so an entry dropped here would
+    // still hold its memory in the global cache. Both caches counted the same
+    // bytes, so the real ceiling was the sum of the two budgets.
+    if !evicted.is_empty() {
+        if let Ok(mut full) = get_attachment_cache().full_cache.lock() {
+            for id in evicted {
+                full.remove(&id);
+            }
+        }
+    }
 }
 
 fn ui_image_clear() {

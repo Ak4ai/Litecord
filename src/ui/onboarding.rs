@@ -62,6 +62,20 @@ fn set_insert(set: &'static OnceLock<Mutex<HashSet<String>>>, guild_id: &str) {
     }
 }
 
+/// Forgets the questionnaires offered so far: they belong to the account that
+/// was signed in, so a new one is asked again.
+pub fn clear_session() {
+    if let Ok(mut cache) = cache().lock() {
+        cache.clear();
+    }
+    if let Ok(mut set) = handled().lock() {
+        set.clear();
+    }
+    if let Ok(mut set) = DISMISSED.get_or_init(|| Mutex::new(HashSet::new())).lock() {
+        set.clear();
+    }
+}
+
 /// The user pressed "Skip for now" (or closed the modal): do not ask again now.
 pub fn mark_dismissed(guild_id: &str) {
     set_insert(&DISMISSED, guild_id);

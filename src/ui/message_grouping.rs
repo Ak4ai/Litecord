@@ -8,10 +8,12 @@ const GROUP_WINDOW_SECONDS: i64 = 5 * 60;
 
 /// Rows kept in the chat model while the reader is at the bottom.
 ///
-/// The chat view is not virtualized yet, so every row stays instantiated. Live
-/// appends used to grow it without limit for the whole visit; keeping a window
-/// bounds the model while the rows that leave are far above the viewport.
-pub const MAX_CHAT_ROWS: usize = 300;
+/// The chat view is not virtualized yet, so every row stays instantiated: each
+/// one is a few dozen Slint items (hover area, texts, link and command
+/// buttons). Live appends used to grow it without limit for the whole visit;
+/// keeping a window bounds the model, the RAM and the layout work of the
+/// software renderer while the rows that leave are far above the viewport.
+pub const MAX_CHAT_ROWS: usize = 150;
 
 /// Hard cap while the user explicitly walks back through the history.
 ///
@@ -19,7 +21,7 @@ pub const MAX_CHAT_ROWS: usize = 300;
 /// grow the model up to this limit; after that the button is hidden so browsing
 /// history cannot grow the scene without bound. Returning to the present is
 /// unaffected because only live appends trim from the oldest end.
-pub const MAX_CHAT_ROWS_WITH_HISTORY: usize = 600;
+pub const MAX_CHAT_ROWS_WITH_HISTORY: usize = 300;
 
 /// Oldest row after a trim, so the pagination cursor can move back to it.
 pub struct TrimmedWindow {

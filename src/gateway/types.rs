@@ -695,18 +695,51 @@ fn load_persisted_user_directory() -> PersistedUserDirectory {
 }
 
 pub fn save_user_directory_cache() {
+    // Debounced: the directory holds up to a few thousand names and writing it
+    // on every lookup was blocking I/O in the middle of the UI work.
+    if USER_DIRECTORY_SAVE_PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let scheduled = tokio::runtime::Handle::try_current().ok().map(|handle| {
+        handle.spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            USER_DIRECTORY_SAVE_PENDING.store(false, Ordering::SeqCst);
+            write_user_directory_cache();
+        });
+    });
+    if scheduled.is_none() {
+        USER_DIRECTORY_SAVE_PENDING.store(false, Ordering::SeqCst);
+        write_user_directory_cache();
+    }
+}
+
+/// Set while a save of the user directory is already scheduled.
+static USER_DIRECTORY_SAVE_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Writes the user directory to disk. The file write runs on a blocking worker:
+/// it never blocks the UI thread nor a runtime worker that also serves the gateway.
+fn write_user_directory_cache() {
     let names = get_user_names_store().lock().ok().map(|m| m.clone()).unwrap_or_default();
     let avatars = USER_AVATARS.get().and_then(|s| s.lock().ok()).map(|m| m.clone()).unwrap_or_default();
     if names.is_empty() && avatars.is_empty() {
         return;
     }
-    let _ = std::fs::create_dir_all(".litecord_cache");
-    let dir = PersistedUserDirectory { names, avatars };
-    if let Ok(json) = serde_json::to_string(&dir) {
+    let Ok(json) = serde_json::to_string(&PersistedUserDirectory { names, avatars }) else {
+        return;
+    };
+    let write = move || {
+        let _ = std::fs::create_dir_all(".litecord_cache");
         let tmp = ".litecord_cache/users_cache.json.tmp";
         if std::fs::write(tmp, json).is_ok() {
             let _ = std::fs::rename(tmp, USER_DIRECTORY_CACHE_FILE);
         }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn_blocking(write);
+        }
+        Err(_) => write(),
     }
 }
 

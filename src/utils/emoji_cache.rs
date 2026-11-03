@@ -9,10 +9,57 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 struct DecodedEmoji {
     buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    last_used: u64,
+}
+
+/// Decoded emojis kept in RAM. The cache evicts the least recently used entry
+/// instead of dropping everything at once: a hard clear made a busy channel
+/// re-read and re-decode dozens of PNGs from disk in a burst.
+#[derive(Default)]
+struct MemoryStore {
+    entries: HashMap<String, DecodedEmoji>,
+    clock: u64,
+}
+
+/// Decoded emoji pixels are tiny (a 48x48 RGBA square is ~9 KB), so this holds
+/// far more than the previous 64 entries while staying well under a megabyte.
+const MAX_MEMORY_EMOJIS: usize = 512;
+
+impl MemoryStore {
+    fn get(&mut self, emoji_id: &str) -> Option<slint::Image> {
+        self.clock = self.clock.wrapping_add(1);
+        let entry = self.entries.get_mut(emoji_id)?;
+        entry.last_used = self.clock;
+        Some(slint::Image::from_rgba8(entry.buffer.clone()))
+    }
+
+    fn insert(&mut self, emoji_id: String, decoded: DecodedEmoji) {
+        self.clock = self.clock.wrapping_add(1);
+        let last_used = self.clock;
+        if !self.entries.contains_key(&emoji_id) && self.entries.len() >= MAX_MEMORY_EMOJIS {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(emoji_id, DecodedEmoji { last_used, ..decoded });
+    }
+
+    fn contains(&self, emoji_id: &str) -> bool {
+        self.entries.contains_key(emoji_id)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
 }
 
 pub struct EmojiCache {
-    memory_cache: Mutex<HashMap<String, DecodedEmoji>>,
+    memory_cache: Mutex<MemoryStore>,
     in_flight: Mutex<HashSet<String>>,
     active_channel: Mutex<String>,
     active_generation: AtomicU64,
@@ -41,7 +88,7 @@ pub fn get_emoji_cache() -> Arc<EmojiCache> {
         }
 
         Arc::new(EmojiCache {
-            memory_cache: Mutex::new(HashMap::with_capacity(64)),
+            memory_cache: Mutex::new(MemoryStore::default()),
             in_flight: Mutex::new(HashSet::new()),
             active_channel: Mutex::new(String::new()),
             active_generation: AtomicU64::new(1),
@@ -84,9 +131,9 @@ impl EmojiCache {
         }
 
         // 1. Check in-memory cache
-        if let Ok(guard) = self.memory_cache.lock() {
-            if let Some(dec) = guard.get(emoji_id) {
-                return Some(slint::Image::from_rgba8(dec.buffer.clone()));
+        if let Ok(mut guard) = self.memory_cache.lock() {
+            if let Some(image) = guard.get(emoji_id) {
+                return Some(image);
             }
         }
 
@@ -97,9 +144,6 @@ impl EmojiCache {
                 if let Some(dec) = decode_bytes_to_rgba(&bytes) {
                     let image = slint::Image::from_rgba8(dec.buffer.clone());
                     if let Ok(mut guard) = self.memory_cache.lock() {
-                        if guard.len() >= 64 {
-                            guard.clear();
-                        }
                         guard.insert(emoji_id.to_string(), dec);
                     }
                     return Some(image);
@@ -118,10 +162,8 @@ impl EmojiCache {
         if emoji_id.is_empty() {
             return None;
         }
-        let guard = self.memory_cache.lock().ok()?;
-        guard
-            .get(emoji_id)
-            .map(|dec| slint::Image::from_rgba8(dec.buffer.clone()))
+        let mut guard = self.memory_cache.lock().ok()?;
+        guard.get(emoji_id)
     }
 
     /// Drops decoded emojis from RAM (the PNG disk cache is kept).
@@ -142,7 +184,7 @@ impl EmojiCache {
             return;
         }
         if let Ok(guard) = self.memory_cache.lock() {
-            if guard.contains_key(emoji_id) {
+            if guard.contains(emoji_id) {
                 return;
             }
         }
@@ -171,10 +213,8 @@ impl EmojiCache {
             .ok()
             .flatten();
             if let Some(dec) = decoded {
+                let buffer = dec.buffer.clone();
                 if let Ok(mut guard) = cache_arc.memory_cache.lock() {
-                    if guard.len() >= 64 {
-                        guard.clear();
-                    }
                     guard.insert(id_str.clone(), dec);
                 }
                 let id_ui = id_str.clone();
@@ -183,7 +223,7 @@ impl EmojiCache {
                     if let Some(ui) = app_weak.upgrade() {
                         if let Some(img) = cache_ui.get_cached(&id_ui) {
                             crate::ui::helpers::refresh_channel_emoji(&ui, &id_ui, &img);
-                            crate::ui::helpers::refresh_emoji_in_messages(&ui, &id_ui, &img);
+                            crate::ui::helpers::queue_emoji_refresh(&app_weak, &id_ui, &buffer);
                         }
                     }
                 });
@@ -207,7 +247,7 @@ impl EmojiCache {
 
         // Check if already in memory
         if let Ok(guard) = self.memory_cache.lock() {
-            if guard.contains_key(emoji_id) {
+            if guard.contains(emoji_id) {
                 return;
             }
         }
@@ -252,24 +292,31 @@ impl EmojiCache {
                             // Save to disk cache
                             let _ = std::fs::write(&file_path, &bytes);
 
-                            // Decode in background thread
-                            if let Some(dec) = decode_bytes_to_rgba(&bytes) {
+                            // Decode on a blocking worker: the image crate is CPU heavy
+                            // and this runs inside the async runtime.
+                            let decoded = tokio::task::spawn_blocking(move || {
+                                decode_bytes_to_rgba(&bytes)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some(dec) = decoded {
+                                // The pixels travel as a raw buffer: a `slint::Image`
+                                // cannot be moved between threads, and building it
+                                // again on the UI thread could hit the disk when the
+                                // cache entry was evicted in between.
+                                let buffer = dec.buffer.clone();
                                 if let Ok(mut guard) = cache_arc.memory_cache.lock() {
-                                    if guard.len() >= 64 {
-                                        guard.clear();
-                                    }
                                     guard.insert(id_str.clone(), dec);
                                 }
 
                                 // Update Slint UI in place: sidebar slot and painted rows.
                                 let id_clone = id_str.clone();
-                                let cache_arc_ui = cache_arc.clone();
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = app_weak.upgrade() {
-                                        if let Some(img) = cache_arc_ui.get(&id_clone) {
-                                            crate::ui::helpers::refresh_channel_emoji(&ui, &id_clone, &img);
-                                            crate::ui::helpers::refresh_emoji_in_messages(&ui, &id_clone, &img);
-                                        }
+                                        let image = slint::Image::from_rgba8(buffer.clone());
+                                        crate::ui::helpers::refresh_channel_emoji(&ui, &id_clone, &image);
+                                        crate::ui::helpers::queue_emoji_refresh(&app_weak, &id_clone, &buffer);
                                     }
                                 });
                             }
@@ -298,7 +345,7 @@ fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedEmoji> {
             width,
             height,
         );
-        Some(DecodedEmoji { buffer })
+        Some(DecodedEmoji { buffer, last_used: 0 })
     } else {
         None
     }
@@ -311,24 +358,87 @@ pub struct CustomEmojiEntry {
     pub animated: bool,
 }
 
-static REGISTERED_CUSTOM_EMOJIS: OnceLock<Mutex<Vec<CustomEmojiEntry>>> = OnceLock::new();
+/// Custom emojis registered from the gateway payloads.
+///
+/// A map instead of a list: registering one emoji used to scan every known
+/// emoji, so a big account paid an O(n^2) cost on every `READY`.
+static REGISTERED_CUSTOM_EMOJIS: OnceLock<Mutex<HashMap<String, CustomEmojiEntry>>> = OnceLock::new();
+/// Cap of the registry: a large account sees thousands of custom emojis and the
+/// picker shows a fixed list, so the map is emptied when it grows too much.
+const MAX_REGISTERED_CUSTOM_EMOJIS: usize = 4096;
 
-pub fn get_custom_emojis_store() -> &'static Mutex<Vec<CustomEmojiEntry>> {
-    REGISTERED_CUSTOM_EMOJIS.get_or_init(|| Mutex::new(Vec::with_capacity(128)))
+pub fn get_custom_emojis_store() -> &'static Mutex<HashMap<String, CustomEmojiEntry>> {
+    REGISTERED_CUSTOM_EMOJIS.get_or_init(|| Mutex::new(HashMap::with_capacity(256)))
 }
 
 pub fn register_custom_emoji(id: &str, name: &str, animated: bool) {
+    if id.is_empty() {
+        return;
+    }
     if let Ok(mut store) = get_custom_emojis_store().lock() {
-        if !store.iter().any(|e| e.id == id) {
-            store.push(CustomEmojiEntry {
+        if store.len() >= MAX_REGISTERED_CUSTOM_EMOJIS && !store.contains_key(id) {
+            store.clear();
+        }
+        store.insert(
+            id.to_string(),
+            CustomEmojiEntry {
                 id: id.to_string(),
                 name: name.to_string(),
                 animated,
-            });
-        }
+            },
+        );
     }
 }
 
 pub fn get_all_custom_emojis() -> Vec<CustomEmojiEntry> {
-    get_custom_emojis_store().lock().map(|s| s.clone()).unwrap_or_default()
+    get_custom_emojis_store()
+        .lock()
+        .map(|s| s.values().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Forgets the registered custom emojis: they belong to the signed in account.
+pub fn clear_registered_custom_emojis() {
+    if let Ok(mut store) = get_custom_emojis_store().lock() {
+        store.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn emoji() -> DecodedEmoji {
+        DecodedEmoji {
+            buffer: slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(2, 2),
+            last_used: 0,
+        }
+    }
+
+    #[test]
+    fn memory_cache_evicts_only_the_least_recently_used_emoji() {
+        let mut store = MemoryStore::default();
+        for index in 0..MAX_MEMORY_EMOJIS {
+            store.insert(format!("e{index}"), emoji());
+        }
+        assert_eq!(store.entries.len(), MAX_MEMORY_EMOJIS);
+
+        // Using one emoji makes it the most recent one, so the next insert drops
+        // another entry instead of the whole cache.
+        assert!(store.get("e0").is_some());
+        store.insert("new".into(), emoji());
+        assert_eq!(store.entries.len(), MAX_MEMORY_EMOJIS);
+        assert!(store.entries.contains_key("e0"));
+        assert!(!store.entries.contains_key("e1"));
+    }
+
+    #[test]
+    fn custom_emoji_registry_is_bounded_and_cleared_with_the_session() {
+        for index in 0..(MAX_REGISTERED_CUSTOM_EMOJIS + 10) {
+            register_custom_emoji(&format!("{index}"), "emoji", false);
+        }
+        assert!(get_custom_emojis_store().lock().unwrap().len() <= MAX_REGISTERED_CUSTOM_EMOJIS);
+        clear_registered_custom_emojis();
+        assert!(get_custom_emojis_store().lock().unwrap().is_empty());
+    }
 }

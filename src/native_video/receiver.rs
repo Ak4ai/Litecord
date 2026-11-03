@@ -19,9 +19,7 @@ use super::h264::H264Depacketizer;
 use super::jitter::JitterBuffer;
 use super::{emit_frame, rtcp, rtp, user_for_video_ssrc};
 use crate::gateway::get_user_name;
-use crate::screen_capture::types::{
-    get_active_stream_frames, mark_stream_started, set_peer_streaming,
-};
+use crate::screen_capture::types::{mark_stream_started, set_peer_streaming};
 use crate::screen_capture::video_pipeline::{decode_video_frame, Decoded, StreamDecoders};
 use crate::screen_capture::watch::{is_wanted, set_wanted};
 
@@ -285,9 +283,6 @@ impl NativeVideoSession {
         match decoded {
             Decoded::Picture(buffer, _width, height) => {
                 self.mark_started(uid);
-                if let Ok(mut frames) = get_active_stream_frames().lock() {
-                    frames.insert(uid, buffer.clone());
-                }
                 let label = format!("{}p {:.1}fps (H.264)", height, fps_value.max(1.0));
                 emit_frame(uid, get_user_name(uid), label, buffer);
             }

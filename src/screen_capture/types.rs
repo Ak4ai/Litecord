@@ -268,9 +268,6 @@ pub fn trigger_stream_stopped(uid: u64) {
             map.insert(uid, false);
         }
     }
-    if let Ok(mut frames) = get_active_stream_frames().lock() {
-        frames.remove(&uid);
-    }
     let stream_ssrc: u32 = ((uid as u32) ^ 0x5354524D) | 0x8000_0000;
     if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
         queues.remove(&stream_ssrc);
@@ -503,12 +500,7 @@ pub fn get_broadcast_addresses() -> Vec<SocketAddr> {
     addrs
 }
 
-static ACTIVE_STREAM_FRAMES: OnceLock<Arc<Mutex<HashMap<u64, SharedPixelBuffer<Rgba8Pixel>>>>> = OnceLock::new();
 static ACTIVE_STREAM_USERS: OnceLock<Arc<Mutex<HashMap<u64, bool>>>> = OnceLock::new();
-
-pub fn get_active_stream_frames() -> Arc<Mutex<HashMap<u64, SharedPixelBuffer<Rgba8Pixel>>>> {
-    ACTIVE_STREAM_FRAMES.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
-}
 
 pub fn get_active_stream_users() -> Arc<Mutex<HashMap<u64, bool>>> {
     ACTIVE_STREAM_USERS.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
@@ -519,14 +511,6 @@ pub fn is_user_streaming(uid: u64) -> bool {
         users.get(&uid).copied().unwrap_or(false)
     } else {
         false
-    }
-}
-
-pub fn get_user_stream_frame(uid: u64) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    if let Ok(frames) = get_active_stream_frames().lock() {
-        frames.get(&uid).cloned()
-    } else {
-        None
     }
 }
 

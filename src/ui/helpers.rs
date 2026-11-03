@@ -79,10 +79,14 @@ pub fn reset_unread_and_dedup_state() {
 pub fn clear_session_caches() {
     avatar_cache::get_avatar_cache().clear_session();
     emoji_cache::get_emoji_cache().clear_memory();
+    emoji_cache::clear_registered_custom_emojis();
     attachment_cache::get_attachment_cache().clear_memory();
     crate::ui::data_loader::clear_session_caches();
     gateway::clear_user_directory();
     gateway::clear_guild_voice_states();
+    gateway::channel_names::clear();
+    crate::ui::invite_cards::clear_session();
+    crate::ui::onboarding::clear_session();
     if let Ok(mut pending) = HIDDEN_CHANNEL_ACTIVITY.lock() {
         pending.clear();
     }
@@ -342,6 +346,41 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
         })
         .collect();
     ui.set_channels(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+}
+
+/// Updates the talking and streaming state of the voice member rows in place.
+///
+/// The voice member rows have a stable id (`voice-member:<channel>:<user>`), so
+/// a change of speaker only touches that row: rebuilding the whole channel list
+/// (as the old fingerprint did) re-created every row of the sidebar.
+pub fn update_voice_member_rows(ui: &AppWindow, changed: &[(String, u64, bool, bool)]) {
+    if changed.is_empty() {
+        return;
+    }
+    let channels = ui.get_channels();
+    let row_count = channels.row_count();
+
+    // Index the rows once instead of scanning the list for every member.
+    let mut row_of: HashMap<String, usize> = HashMap::with_capacity(changed.len());
+    for index in 0..row_count {
+        if let Some(row) = channels.row_data(index) {
+            if row.is_voice_member {
+                row_of.entry(row.id.to_string()).or_insert(index);
+            }
+        }
+    }
+
+    for (channel_id, user_id, speaking, streaming) in changed {
+        let row_id = format!("voice-member:{channel_id}:{user_id}");
+        let Some(index) = row_of.get(&row_id).copied() else { continue };
+        let Some(mut row) = channels.row_data(index) else { continue };
+        if row.is_speaking == *speaking && row.is_streaming == *streaming {
+            continue;
+        }
+        row.is_speaking = *speaking;
+        row.is_streaming = *streaming;
+        channels.set_row_data(index, row);
+    }
 }
 
 pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
@@ -1478,68 +1517,164 @@ pub fn refresh_channel_emoji(ui: &AppWindow, emoji_id: &str, img: &slint::Image)
     }
 }
 
-/// Replaces an emoji image in every row already painted that uses it.
+/// Emoji images that finished decoding and still have to reach the chat rows.
+/// The pixels are kept as a raw buffer (which is `Send`) instead of a
+/// `slint::Image` (which is not), so the queue can live in a static.
+static PENDING_EMOJI_IMAGES: std::sync::LazyLock<Mutex<HashMap<String, slint::SharedPixelBuffer<slint::Rgba8Pixel>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Set while a refresh pass is already scheduled.
+static EMOJI_REFRESH_SCHEDULED: AtomicBool = AtomicBool::new(false);
+
+/// Queues an emoji image for the chat rows that use it.
 ///
-/// Used both by the async downloader and by the disk-hydration path; without
-/// this, an emoji decoded after the first paint would only appear in the
-/// sidebar and stay blank inside messages.
-pub fn refresh_emoji_in_messages(ui: &AppWindow, emoji_id: &str, img: &slint::Image) {
+/// A burst of decoded emojis used to trigger one full pass over the chat model
+/// per emoji (each pass cloning every line and block of every row). The
+/// pending images are now coalesced into a single pass.
+pub fn queue_emoji_refresh(
+    app_weak: &slint::Weak<AppWindow>,
+    emoji_id: &str,
+    buffer: &slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+) {
+    if emoji_id.is_empty() {
+        return;
+    }
+    if let Ok(mut pending) = PENDING_EMOJI_IMAGES.lock() {
+        pending.insert(emoji_id.to_string(), buffer.clone());
+    }
+    if EMOJI_REFRESH_SCHEDULED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let weak = app_weak.clone();
+    slint::Timer::single_shot(std::time::Duration::from_millis(60), move || {
+        EMOJI_REFRESH_SCHEDULED.store(false, Ordering::Release);
+        flush_emoji_refreshes(&weak);
+    });
+}
+
+/// Applies every queued emoji image to the chat rows that use it.
+fn flush_emoji_refreshes(app_weak: &slint::Weak<AppWindow>) {
+    let pending = {
+        let Ok(mut guard) = PENDING_EMOJI_IMAGES.lock() else { return; };
+        std::mem::take(&mut *guard)
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let Some(ui) = app_weak.upgrade() else { return; };
+    let images: HashMap<String, slint::Image> = pending
+        .into_iter()
+        .map(|(id, buffer)| (id, slint::Image::from_rgba8(buffer)))
+        .collect();
+    refresh_emojis_in_messages(&ui, &images);
+}
+
+/// Replaces emoji images in every row already painted that uses them.
+///
+/// Rows that do not use any of the given emojis are skipped without building
+/// new vectors, so a pass over a 300 message channel stays cheap.
+pub fn refresh_emojis_in_messages(ui: &AppWindow, images: &HashMap<String, slint::Image>) {
+    if images.is_empty() {
+        return;
+    }
     let messages = ui.get_messages();
     let row_count = messages.row_count();
 
     for idx in 0..row_count {
         let Some(mut msg) = messages.row_data(idx) else { continue };
-        let mut msg_changed = false;
 
+        // Fast path: most rows use none of these emojis. Checking without
+        // allocating keeps the pass free for the common case.
+        let uses_any = msg.content_lines.iter().any(|line| {
+            line.blocks.iter().any(|b| b.is_emoji && images.contains_key(b.emoji_id.as_str()))
+        }) || msg.embed_lines.iter().any(|line| {
+            line.blocks.iter().any(|b| b.is_emoji && images.contains_key(b.emoji_id.as_str()))
+        }) || msg.buttons.iter().any(|b| images.contains_key(b.emoji_id.as_str()));
+        if !uses_any {
+            continue;
+        }
+
+        let mut content_changed = false;
         let current_content_lines: Vec<MessageLine> = msg.content_lines.iter().collect();
         let mut updated_content_lines = Vec::with_capacity(current_content_lines.len());
         for line in current_content_lines {
             let blocks: Vec<MessageBlock> = line.blocks.iter().collect();
             let mut updated_blocks = Vec::with_capacity(blocks.len());
+            let mut line_changed = false;
             for mut block in blocks {
-                if block.is_emoji && block.emoji_id == emoji_id {
-                    block.emoji_img = img.clone();
-                    msg_changed = true;
+                if block.is_emoji {
+                    if let Some(img) = images.get(block.emoji_id.as_str()) {
+                        block.emoji_img = img.clone();
+                        line_changed = true;
+                    }
                 }
                 updated_blocks.push(block);
             }
-            updated_content_lines.push(MessageLine {
-                blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
-            });
+            if line_changed {
+                content_changed = true;
+                updated_content_lines.push(MessageLine {
+                    blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
+                });
+            } else {
+                // Unchanged line: keep the original model instead of rebuilding it.
+                updated_content_lines.push(line);
+            }
         }
 
+        let mut embed_changed = false;
         let current_embed_lines: Vec<MessageLine> = msg.embed_lines.iter().collect();
         let mut updated_embed_lines = Vec::with_capacity(current_embed_lines.len());
         for line in current_embed_lines {
             let blocks: Vec<MessageBlock> = line.blocks.iter().collect();
             let mut updated_blocks = Vec::with_capacity(blocks.len());
+            let mut line_changed = false;
             for mut block in blocks {
-                if block.is_emoji && block.emoji_id == emoji_id {
-                    block.emoji_img = img.clone();
-                    msg_changed = true;
+                if block.is_emoji {
+                    if let Some(img) = images.get(block.emoji_id.as_str()) {
+                        block.emoji_img = img.clone();
+                        line_changed = true;
+                    }
                 }
                 updated_blocks.push(block);
             }
-            updated_embed_lines.push(MessageLine {
-                blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
-            });
+            if line_changed {
+                embed_changed = true;
+                updated_embed_lines.push(MessageLine {
+                    blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
+                });
+            } else {
+                updated_embed_lines.push(line);
+            }
         }
 
+        let mut buttons_changed = false;
         let current_buttons: Vec<MessageButton> = msg.buttons.iter().collect();
         let mut updated_buttons = Vec::with_capacity(current_buttons.len());
         for mut button in current_buttons {
-            if button.emoji_id == emoji_id {
+            if let Some(img) = images.get(button.emoji_id.as_str()) {
                 button.emoji_img = img.clone();
-                msg_changed = true;
+                buttons_changed = true;
             }
             updated_buttons.push(button);
         }
 
-        if msg_changed {
+        if content_changed {
             msg.content_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_content_lines)));
+        }
+        if embed_changed {
             msg.embed_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_embed_lines)));
+        }
+        if buttons_changed {
             msg.buttons = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_buttons)));
+        }
+        if content_changed || embed_changed || buttons_changed {
             messages.set_row_data(idx, msg);
         }
     }
+}
+
+/// Replaces one emoji image in every row already painted that uses it.
+pub fn refresh_emoji_in_messages(ui: &AppWindow, emoji_id: &str, img: &slint::Image) {
+    let mut images = HashMap::new();
+    images.insert(emoji_id.to_string(), img.clone());
+    refresh_emojis_in_messages(ui, &images);
 }

@@ -90,12 +90,14 @@ export component ChannelSidebar inherits Rectangle {
         states [
             hidden when root.content_hidden: {
                 opacity: 0.15;
-                y: 6px;
+                // Only the opacity moves: animating `y` forced a re-layout of the
+                // whole channel list on every frame of the transition, which the
+                // software renderer pays for in full.
                 in {
-                    animate opacity, y { duration: 0ms; }
+                    animate opacity { duration: 0ms; }
                 }
                 out {
-                    animate opacity, y { duration: 300ms; easing: ease-out; }
+                    animate opacity { duration: 280ms; easing: ease-out; }
                 }
             }
         ]

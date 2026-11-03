@@ -62,9 +62,26 @@ pub fn save_session_snapshot(
     let mut guild_channels = HashMap::new();
     if let Some(gmap_arc) = guilds_map {
         if let Ok(gmap) = gmap_arc.lock() {
-            for (gid, gdata) in gmap.iter() {
-                if !gdata.channels.is_empty() {
-                    guild_channels.insert(gid.clone(), gdata.channels.clone());
+            // Only the servers the user actually opened keep their channel list in
+            // the snapshot: the file is read on every start, and the channel list
+            // of every server of a big account is a lot of JSON to parse for
+            // nothing. The first server of the rail is always kept, because it is
+            // the one that opens at startup.
+            let mut visited: Vec<String> = LAST_CHANNEL_BY_GUILD
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .ok()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default();
+            if let Some(first) = saved_guilds.first() {
+                visited.retain(|id| id != &first.id);
+                visited.insert(0, first.id.clone());
+            }
+            for gid in visited.into_iter().take(MAX_SNAPSHOT_GUILD_CHANNELS) {
+                if let Some(gdata) = gmap.get(&gid) {
+                    if !gdata.channels.is_empty() {
+                        guild_channels.insert(gid, gdata.channels.clone());
+                    }
                 }
             }
         }
@@ -154,26 +171,38 @@ pub async fn fetch_and_populate_guilds(
                 hydrated_first_guild = snapshot.guilds.first().map(|g| g.id.clone());
                 let cached_guilds = snapshot.guilds.clone();
                 let app_w_cache = app_weak.clone();
+                // Decoding the icons (PNG decode plus a Lanczos3 resize) used to run
+                // inside the UI thread: with dozens of servers it froze the window
+                // for hundreds of milliseconds right after the login.
+                let scale = app_weak.upgrade().map(|ui| ui.window().scale_factor()).unwrap_or(1.0);
+                let icon_buffers = decode_guild_icons(
+                    cached_guilds
+                        .iter()
+                        .enumerate()
+                        .map(|(index, raw)| (index, raw.icon_path.clone()))
+                        .collect(),
+                    scale,
+                )
+                .await;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w_cache.upgrade() {
-                        let scale = ui.window().scale_factor();
-                        let ui_guilds: Vec<GuildItem> = cached_guilds.into_iter().map(|raw| {
-                            let mut has_image = false;
-                            let mut icon_image = Image::default();
-                            if let Some(ref path_str) = raw.icon_path {
-                                if let Some(img) = load_rounded_guild_icon(path_str, scale) {
-                                    has_image = true;
-                                    icon_image = img;
+                        let ui_guilds: Vec<GuildItem> = cached_guilds
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, raw)| {
+                                let icon_image = icon_buffers
+                                    .get(&index)
+                                    .map(|buffer| Image::from_rgba8(buffer.clone()))
+                                    .unwrap_or_default();
+                                GuildItem {
+                                    id: raw.id.into(),
+                                    name: raw.name.into(),
+                                    icon: raw.icon.into(),
+                                    has_image: icon_buffers.contains_key(&index),
+                                    icon_image,
                                 }
-                            }
-                            GuildItem {
-                                id: raw.id.into(),
-                                name: raw.name.into(),
-                                icon: raw.icon.into(),
-                                has_image,
-                                icon_image,
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         let model = std::rc::Rc::new(slint::VecModel::from(ui_guilds));
                         ui.set_guilds(model.into());
                     }
@@ -292,25 +321,36 @@ pub async fn fetch_and_populate_guilds(
 
             let raw_guilds_clone = raw_guilds.clone();
             let app_w = app_weak.clone();
+            // Same as the snapshot path: the icons are decoded off the UI thread.
+            let scale = app_weak.upgrade().map(|ui| ui.window().scale_factor()).unwrap_or(1.0);
+            let icon_buffers = decode_guild_icons(
+                raw_guilds
+                    .iter()
+                    .enumerate()
+                    .map(|(index, raw)| (index, raw.icon_path.clone()))
+                    .collect(),
+                scale,
+            )
+            .await;
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
-                    let ui_guilds: Vec<GuildItem> = raw_guilds_clone.into_iter().map(|raw| {
-                        let mut has_image = false;
-                        let mut icon_image = Image::default();
-                        if let Some(ref path_str) = raw.icon_path {
-                            if let Some(img) = load_rounded_guild_icon(path_str, ui.window().scale_factor()) {
-                                has_image = true;
-                                icon_image = img;
+                    let ui_guilds: Vec<GuildItem> = raw_guilds_clone
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, raw)| {
+                            let icon_image = icon_buffers
+                                .get(&index)
+                                .map(|buffer| Image::from_rgba8(buffer.clone()))
+                                .unwrap_or_default();
+                            GuildItem {
+                                id: raw.id.into(),
+                                name: raw.name.into(),
+                                icon: raw.icon.into(),
+                                has_image: icon_buffers.contains_key(&index),
+                                icon_image,
                             }
-                        }
-                        GuildItem {
-                            id: raw.id.into(),
-                            name: raw.name.into(),
-                            icon: raw.icon.into(),
-                            has_image,
-                            icon_image,
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     let model = std::rc::Rc::new(slint::VecModel::from(ui_guilds));
                     ui.set_guilds(model.into());
@@ -387,9 +427,11 @@ pub async fn fetch_and_populate_guilds(
 // Revisiting a channel paints the last batch at once; the network answer only
 // replaces it when something actually changed. Everything is raw JSON, so the
 // cache costs a few hundred KB instead of a second copy of the UI models.
-const MESSAGE_CACHE_CHANNELS: usize = 32;
+const MESSAGE_CACHE_CHANNELS: usize = 16;
 const MESSAGE_CACHE_FRESH_AFTER: Duration = Duration::from_secs(30);
 const GUILD_REFRESH_AFTER: Duration = Duration::from_secs(180);
+/// Servers whose channel list is written to the boot snapshot.
+const MAX_SNAPSHOT_GUILD_CHANNELS: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct CompactCachedMessage {
@@ -571,15 +613,21 @@ pub fn clear_session_caches() {
     {
         map.clear();
     }
-    if let Ok(mut set) = PRELOADED_GUILDS
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-        .lock()
-    {
-        set.clear();
-    }
     if let Ok(mut map) = get_oldest_message_map().lock() {
         map.clear();
     }
+    // The pre-warmed DM list belongs to the account that was signed in: the new
+    // one must not see those conversations while it logs in.
+    if let Ok(mut items) = get_cached_dm_items().lock() {
+        items.clear();
+    }
+    // The boot snapshot (servers, channels, last read channel) is per account too.
+    if let Ok(mut slot) = SNAPSHOT_GUILDS.get_or_init(Default::default).lock() {
+        slot.0.clear();
+        slot.1.clear();
+    }
+    let _ = std::fs::remove_file(".litecord_cache/session_state.json");
+    let _ = std::fs::remove_file(".litecord_cache/session_state.json.tmp");
 }
 
 /// Remembers the channel the user was reading, so returning to a server reopens it.
@@ -915,11 +963,15 @@ pub async fn fetch_and_populate_channels(
         show_guild_channels(&app_weak, &active_guild_id, guild_id, &channels_data);
     }
 
-    // Members and bot commands are not needed to read the chat: they load in the background.
+    // The bot commands are not needed to read the chat: they load in the background.
+    // The member list is NOT preloaded on purpose: it used to pull up to 1000
+    // members per server over REST, filling the user directory (and overflowing
+    // its cap) only to name the people of a voice channel. Names now come from the
+    // gateway payloads, from the message authors and from the on-demand lookup of
+    // the members that are actually in voice.
     {
         let (http, app_w, guild_id) = (http.clone(), app_weak.clone(), guild_id.to_string());
         tokio::spawn(async move {
-            preload_guild_members(&http, &guild_id).await;
             load_guild_command_index(&http, app_w, &guild_id).await;
         });
     }
@@ -1135,52 +1187,6 @@ fn spawn_resolve_voice_users(
             }
         });
     });
-}
-
-static PRELOADED_GUILDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
-
-/// Names of the server's members and bots, for mentions and voice rows.
-async fn preload_guild_members(http: &DiscordHttpClient, guild_id: &str) {
-    let set = PRELOADED_GUILDS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    if let Ok(mut lock) = set.lock() {
-        if lock.contains(guild_id) {
-            return;
-        }
-        lock.insert(guild_id.to_string());
-    }
-
-    if let Ok(members) = http.get_guild_members(guild_id).await {
-        for m in members {
-            let uid_str = m["user"]["id"].as_str().unwrap_or("");
-            if let Ok(uid) = uid_str.parse::<u64>() {
-                let mut display_name = String::new();
-                if let Some(nick) = m["nick"].as_str() {
-                    if !nick.is_empty() { display_name = nick.to_string(); }
-                }
-                if display_name.is_empty() {
-                    if let Some(gname) = m["user"]["global_name"].as_str() {
-                        if !gname.is_empty() { display_name = gname.to_string(); }
-                    }
-                }
-                if display_name.is_empty() {
-                    if let Some(uname) = m["user"]["username"].as_str() {
-                        if !uname.is_empty() { display_name = uname.to_string(); }
-                    }
-                }
-                if !display_name.is_empty() {
-                    gateway::register_user_name(uid, display_name);
-                }
-                gateway::register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
-            }
-        }
-        gateway::save_user_directory_cache();
-        info!("✅ Membros e Bots do servidor {} pre-carregados via REST API com SUCESSO!", guild_id);
-    }
-
-    #[cfg(target_os = "linux")]
-    unsafe {
-        libc::malloc_trim(0);
-    }
 }
 
 pub async fn fetch_and_populate_dms(
@@ -1884,8 +1890,20 @@ pub fn trigger_update_check(app_weak: slint::Weak<AppWindow>) {
 /// pixels: the software renderer would otherwise shrink the full-size icon on every
 /// frame without smoothing, which made the edges jagged. It also keeps less in memory.
 fn decode_rounded_guild_icon_buffer(bytes: &[u8], scale_factor: f32) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    decode_guild_icon_to_side(bytes, guild_icon_side(scale_factor))
+}
+
+/// Physical side of the guild icon tile for a scale factor.
+fn guild_icon_side(scale_factor: f32) -> u32 {
     const TILE_LOGICAL_PX: f32 = 48.0;
-    let side = (TILE_LOGICAL_PX * scale_factor.clamp(1.0, 4.0)).round() as u32;
+    (TILE_LOGICAL_PX * scale_factor.clamp(1.0, 4.0)).round() as u32
+}
+
+/// Decodes an icon into RGBA pixels of exactly `side` x `side`.
+fn decode_guild_icon_to_side(
+    bytes: &[u8],
+    side: u32,
+) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
     let decoded = image::load_from_memory(bytes).ok()?;
     let rgba = if decoded.width() > side || decoded.height() > side {
         decoded.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3).to_rgba8()
@@ -1896,7 +1914,77 @@ fn decode_rounded_guild_icon_buffer(bytes: &[u8], scale_factor: f32) -> Option<s
     Some(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h))
 }
 
-fn load_rounded_guild_icon(path: &str, scale_factor: f32) -> Option<Image> {
+/// Marker of the raw icon cache: it stores the pixels already scaled and
+/// rounded, so a restart does not decode and resize the PNG again.
+const GUILD_ICON_RAW_MAGIC: &[u8; 4] = b"LGR1";
+
+/// Path of the raw (already scaled) icon cache next to the downloaded image.
+fn guild_icon_raw_path(source: &std::path::Path) -> std::path::PathBuf {
+    let mut path = source.to_path_buf();
+    path.set_extension("rgba");
+    path
+}
+
+/// Reads the icon of `path` as raw RGBA pixels of `side` x `side`.
+///
+/// The raw cache avoids a PNG decode plus a `Lanczos3` resize on every start.
+/// The caller must run this off the UI thread: decoding a full size icon takes
+/// tens of milliseconds and the software renderer would stutter.
+fn load_guild_icon_buffer(
+    path: &std::path::Path,
+    side: u32,
+) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    let raw_path = guild_icon_raw_path(path);
+    if let Ok(bytes) = std::fs::read(&raw_path) {
+        let expected = 8 + (side as usize * side as usize * 4);
+        if bytes.len() == expected && &bytes[..4] == GUILD_ICON_RAW_MAGIC {
+            let stored_side = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+            if stored_side == side {
+                return Some(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &bytes[8..],
+                    side,
+                    side,
+                ));
+            }
+        }
+    }
+
     let bytes = std::fs::read(path).ok()?;
-    decode_rounded_guild_icon_buffer(&bytes, scale_factor).map(Image::from_rgba8)
+    let buffer = decode_guild_icon_to_side(&bytes, side)?;
+    // Save the scaled pixels for the next start.
+    let mut raw = Vec::with_capacity(8 + buffer.as_bytes().len());
+    raw.extend_from_slice(GUILD_ICON_RAW_MAGIC);
+    raw.extend_from_slice(&side.to_le_bytes());
+    raw.extend_from_slice(buffer.as_bytes());
+    let _ = std::fs::write(&raw_path, raw);
+    Some(buffer)
+}
+
+/// Decodes the icons of `guilds` off the UI thread.
+///
+/// Returns the pixels by index of the guild list; guilds without a cached
+/// image are simply missing from the map.
+async fn decode_guild_icons(
+    guilds: Vec<(usize, Option<String>)>,
+    scale_factor: f32,
+) -> HashMap<usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    let side = guild_icon_side(scale_factor);
+    let paths: Vec<(usize, std::path::PathBuf)> = guilds
+        .into_iter()
+        .filter_map(|(index, path)| path.map(|p| (index, std::path::PathBuf::from(p))))
+        .collect();
+    if paths.is_empty() {
+        return HashMap::new();
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut decoded = HashMap::new();
+        for (index, path) in paths {
+            if let Some(buffer) = load_guild_icon_buffer(&path, side) {
+                decoded.insert(index, buffer);
+            }
+        }
+        decoded
+    })
+    .await
+    .unwrap_or_default()
 }

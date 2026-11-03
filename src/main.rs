@@ -2044,7 +2044,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Fast enough for the speaking ring to track the voice; the fingerprint
         // below still avoids touching the UI when nothing changed.
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
-        let mut last_fingerprint: Vec<(String, Vec<(u64, String, bool, bool, bool, bool)>)> = Vec::new();
+        // Structural state: who is in which voice channel and with which flags.
+        let mut last_members: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::new();
+        // Ephemeral state: who is talking or streaming right now.
+        let mut last_speaking: HashMap<String, HashMap<u64, (bool, bool)>> = HashMap::new();
         let mut last_gid = String::new();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -2067,7 +2070,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(chans) = channels_opt {
                 let my_uid = gateway::get_my_user_id();
-                let mut current_fingerprint = Vec::with_capacity(chans.len());
+                let mut current_members: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::with_capacity(chans.len());
+                let mut current_speaking: HashMap<String, HashMap<u64, (bool, bool)>> = HashMap::new();
                 for ch in &chans {
                     let participants = if ch.is_voice {
                         gateway::get_voice_channel_participants(&ch.id)
@@ -2088,13 +2092,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         Vec::new()
                     };
-                    current_fingerprint.push((ch.id.clone(), participants));
+                    let mut structural: Vec<(u64, String, bool, bool)> = Vec::with_capacity(participants.len());
+                    for (uid, name, speaking, streaming, muted, is_deaf) in &participants {
+                        structural.push((*uid, name.clone(), *muted, *is_deaf));
+                        current_speaking
+                            .entry(ch.id.clone())
+                            .or_default()
+                            .insert(*uid, (*speaking, *streaming));
+                    }
+                    current_members.push((ch.id.clone(), structural));
                 }
 
                 let guild_changed = gid != last_gid;
-                if guild_changed || current_fingerprint != last_fingerprint {
+                if guild_changed || current_members != last_members {
+                    // Somebody joined, left or changed a flag: the list of rows
+                    // itself changed, so it is rebuilt once.
                     last_gid = gid;
-                    last_fingerprint = current_fingerprint;
+                    last_members = current_members;
+                    last_speaking = current_speaking;
 
                     let ui_channels = {
                         let cats_guard = get_collapsed_categories().lock().unwrap().clone();
@@ -2129,6 +2144,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     });
+                } else {
+                    // Only the talking state changed: the voice member rows are
+                    // updated in place, without rebuilding the whole channel list.
+                    let mut changed: Vec<(String, u64, bool, bool)> = Vec::new();
+                    for (channel_id, members) in &current_speaking {
+                        let previous = last_speaking.get(channel_id);
+                        for (uid, state) in members {
+                            if previous.and_then(|m| m.get(uid)) != Some(state) {
+                                changed.push((channel_id.clone(), *uid, state.0, state.1));
+                            }
+                        }
+                    }
+                    if !changed.is_empty() {
+                        last_speaking = current_speaking;
+                        let app_w = app_weak_ch_badges.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w.upgrade() {
+                                crate::ui::helpers::update_voice_member_rows(&ui, &changed);
+                            }
+                        });
+                    }
                 }
             }
         }

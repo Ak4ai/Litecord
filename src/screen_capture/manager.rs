@@ -1492,9 +1492,6 @@ impl ScreenCaptureManager {
                                         SharedPixelBuffer::<Rgba8Pixel>::new(1, 1)
                                     }
                                 };
-                                if let Ok(mut f_map) = get_active_stream_frames().lock() {
-                                    f_map.insert(peer_uid, pixel_buffer.clone());
-                                }
                                 let quality_label = format!("{}p {}fps (H.264)", h, peer_fps);
 
                                 // Non-blocking Fine Audio-Video Lip Sync Telemetry

@@ -396,6 +396,38 @@ O ponto importante: **a formatação acontece antes de saber se o canal está at
 
 ---
 
+### F17 — Varredura de desempenho, fluidez e RAM (2026-11-03)
+
+Revisão completa de todas as áreas do programa (UI, gateway, caches, sessão, mídia) aplicada de uma vez. Nenhuma alteração em LTPV, captura de microfone, DSP/AEC ou no caminho de áudio.
+
+**Fluidez (thread da UI):**
+
+- `src/ui/helpers.rs` — novo `refresh_emojis_in_messages`: antes, cada emoji decodificado disparava um passe completo sobre as linhas do chat, clonando `content_lines`, `embed_lines` e `buttons` de **todas** as linhas mesmo quando a linha não usava aquele emoji. Agora há um fast-path somente-leitura (`uses_any`) que descarta a linha sem alocar, e as linhas sem alteração reaproveitam o modelo original em vez de reconstruir `VecModel`. As imagens prontas são agrupadas por `queue_emoji_refresh` (timer de 60 ms) em um único passe.
+- `src/utils/emoji_cache.rs` — o caminho de download usa `get_cached` (nunca `get`, que podia reler e decodificar o PNG do disco dentro da thread da UI) e decodifica em `spawn_blocking`; a imagem é construída uma única vez na thread da UI.
+- `src/ui/data_loader.rs` — novo `decode_guild_icons`: os ícones de servidor (decode PNG + resize `Lanczos3`) eram decodificados **dentro** de `invoke_from_event_loop`, congelando a janela por centenas de ms no login e na resposta REST. Agora são decodificados em `spawn_blocking` e só entra na UI o buffer já decodificado. Além disso há um cache `.rgba` com os pixels já escalados (`guild_icon_raw_path`), de modo que o próximo arranque não repete nem o decode nem o resize.
+- `src/main.rs` — o laço de badges de voz (250 ms) separa o estado estrutural (quem está em qual canal e com quais flags) do efêmero (quem está falando). Uma mudança de falante não reconstrói mais a lista de canais: atualiza só a linha afetada (`helpers::update_voice_member_rows`, id estável `voice-member:<canal>:<usuário>`).
+- `ui/components/channel_sidebar.slint` — a transição de servidor anima **apenas `opacity`**: animar `y` obrigava a refazer o layout de toda a lista de canais em cada frame da transição.
+
+**RAM:**
+
+- `src/ui/message_grouping.rs` — `MAX_CHAT_ROWS` 300 → **150** e `MAX_CHAT_ROWS_WITH_HISTORY` 600 → **300**. A vista de chat não é virtualizada: cada linha são dezenas de elementos Slint (área de hover, textos, botões de link/comando), então a janela instanciada cai pela metade.
+- `src/utils/emoji_cache.rs` — `EmojiCache` passa de `HashMap` com `clear()` massivo para **LRU** de 512 entradas (antes 64 e limpeza total ao chegar no topo, o que causava rajadas de re-decode). `REGISTERED_CUSTOM_EMOJIS` passa de `Vec` com busca linear (O(n²) em cada `READY`) para `HashMap` limitado a 4096.
+- `src/utils/attachment_cache.rs` — os dois caches (global de 16 MiB e thread-local de 12 MiB) contavam **os mesmos bytes**: um `slint::Image` mantém os pixels vivos, então o teto real era ~28 MiB. Agora o cache thread-local (8 MiB) invalida a entrada global expulsa e o orçamento global cai para 12 MiB: o teto real é ~12 MiB.
+- `src/screen_capture/types.rs` — removido `ACTIVE_STREAM_FRAMES`: era só escrito (nunca lido; `get_user_stream_frame` não tinha chamadores) e mantinha um frame RGBA completo por peer (8 MiB em 1080p) para sempre. A janela principal já guarda a cópia em `remote_stream_frame` e o popout usa essa.
+- `src/ui/data_loader.rs` — `MESSAGE_CACHE_CHANNELS` 32 → **16** e o snapshot de boot grava a lista de canais de **8 servidores** (os visitados) em vez de todos: o arquivo é lido e parseado a cada arranque.
+- `src/ui/helpers.rs` — `update_voice_member_rows` atualiza linhas no lugar em vez de recriar o modelo inteiro.
+
+**Rede, arranque e CPU em segundo plano:**
+
+- `src/ui/data_loader.rs` — removido `preload_guild_members`: baixava até 1.000 membros por servidor via REST em cada primeira visita, enchia o diretório de nomes (que ao estourar o limite é limpo inteiro) e provocava `malloc_trim`. Os nomes agora vêm dos payloads do gateway, dos autores das mensagens e da resolução sob demanda de `spawn_resolve_voice_users`.
+- `src/gateway/types.rs` — `save_user_directory_cache` com **debounce de 2 s** e escrita em `spawn_blocking`: antes escrevia o JSON completo com `std::fs::write` em um worker do runtime.
+- `src/ui/invite_cards.rs` — usa `network_settings::shared_http_client()` em vez de construir um `reqwest::Client` novo (backend TLS + pool de conexões) por cada cartão de convite.
+- `src/ui/helpers.rs` / `src/ui/data_loader.rs` / `src/gateway/channel_names.rs` / `src/ui/onboarding.rs` / `src/ui/invite_cards.rs` / `src/utils/emoji_cache.rs` — `clear_session_caches()` agora limpa também a lista de DMs pré-aquecida, o snapshot de boot (e o arquivo dele), os nomes de canais, os questionários de onboarding, os cartões de convite e os emojis customizados: a troca de conta não herda mais dados da anterior.
+
+**Verificado no código, sem alteração necessária:** o corte de texto de `formatting.rs` (`INLINE_TEXT_MAX_CHARS = 40`) só se aplica a linhas mistas (com link/comando/emoji) e move o texto para a própria linha; uma linha de texto puro nunca é cortada, então não gera fragmentos extras na árvore Slint.
+
+---
+
 ## 4. Mapa de memória
 
 ### 4.1 Orçamentos atuais
@@ -618,7 +650,8 @@ Fases 1 e parte da Fase 2 aplicadas em `main` (commits `91eee39`, `f52b5b0` e o 
 | F11 — trim periódico de 45 s | feito | `src/main.rs`: loop removido; os trims por evento (startup, troca de canal, esconder na bandeja, logout) continuam |
 | F4 — janela de chat limitada | feito (janela, não virtualização) | `src/ui/message_grouping.rs` (`MAX_CHAT_ROWS = 300`, `MAX_CHAT_ROWS_WITH_HISTORY = 600`, `trim_chat_window`, `trim_chat_window_and_rebase` + teste), `src/main.rs`: appends em vivo podam só com o leitor no fim, movem o cursor de `OLDEST_MESSAGE_MAP` para a nova primeira linha e re-agrupam a linha 0; “carregar anteriores” cresce até 600 linhas e então esconde o botão, evitando crescimento sem limite na árvore não virtualizada |
 | F13 — animações/sombras no backend software | feito (parcial) | `ui/components/channel_sidebar.slint` e `ui/appwindow.slint`: hover/seleção de 120 ms → 80 ms (23 animações). As `drop-shadow` de 10–24 px ficaram como estão: trocar por 9-slice ou removê-las exige validação visual claro/escuro |
-| F16 — fade de entrada ao trocar de canal/servidor | feito | `ui/appwindow.slint` (`chat_enter_opacity`, `sidebar_enter_opacity`, `header_enter_opacity`, `ChatMessagesView`/textos com `animate opacity`), `ui/components/channel_sidebar.slint` (`content_opacity`), `src/ui/data_loader.rs` (`paint_channel_messages` anima só quando o canal pintado muda) |
+| F16 — fade de entrada ao trocar de canal/servidor | feito | `ui/appwindow.slint` (`chat_enter_hidden`, `sidebar_enter_hidden`, `header_enter_hidden` com `states`/`in-out` de 0 ms + fade), `ui/components/channel_sidebar.slint` (`content_hidden`), `src/ui/data_loader.rs` (`paint_channel_messages` anima só quando o canal pintado muda) |
+| F17 — varredura de desempenho/fluidez/RAM | feito | `src/ui/helpers.rs` (fast-path de emojis, `queue_emoji_refresh`, `update_voice_member_rows`, limpeza de sessão), `src/utils/emoji_cache.rs` (LRU + registro em `HashMap` + `spawn_blocking`), `src/ui/data_loader.rs` (`decode_guild_icons` fora da UI + cache `.rgba`, sem `preload_guild_members`, snapshot com 8 servidores), `src/gateway/types.rs` (debounce + `spawn_blocking` do diretório de usuários), `src/utils/attachment_cache.rs` (caches unificados, ~12 MiB de teto), `src/screen_capture/types.rs` (sem `ACTIVE_STREAM_FRAMES`), `src/ui/message_grouping.rs` (`MAX_CHAT_ROWS` 150/300), `src/main.rs` (badges de voz sem rebuild), `ui/components/channel_sidebar.slint` (sem animação de `y`) |
 
 **Validação:** `cargo check --bin litecord`, `cargo build --release --bin litecord` e `cargo test --bin litecord` (10 testes de agrupamento + 6 do gateway, incluindo o de formatação por canal) limpos, somente warnings pré-existentes. Smoke tests de 15–30 s com o binário release recém-compilado: login OK e nenhum panic; o RSS de platô variou entre ≈144 e ≈178 MiB conforme o canal em que a sessão abriu, então serve como sanidade e não como ganho medido.
 
