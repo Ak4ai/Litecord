@@ -563,6 +563,63 @@ mod tests {
     }
 
     #[test]
+    fn trim_and_rebase_promotes_the_new_first_row_to_header_and_moves_the_cursor() {
+        use slint::Model;
+
+        // Four consecutive messages of the same author in the same minute: only
+        // the first one carries the header and the day separator, the rest are
+        // grouped continuation rows.
+        let mut rows: Vec<ChatMessage> = (10..14)
+            .map(|id| ChatMessage {
+                id: id.to_string().into(),
+                author: "Ana".into(),
+                author_id: "1".into(),
+                created_at: format!("2026-09-24T12:00:0{}Z", id - 10).into(),
+                ..Default::default()
+            })
+            .collect();
+        regroup_messages(&mut rows);
+        assert!(rows[0].show_header, "first row starts the group");
+        for row in &rows[1..] {
+            assert!(!row.show_header, "continuation rows have no header");
+            assert!(row.day_label.is_empty(), "only the first row carries the day");
+        }
+
+        let channel_id = "channel-rebase";
+        let vec_model = std::rc::Rc::new(slint::VecModel::from(rows));
+        let model: slint::ModelRc<ChatMessage> = vec_model.clone().into();
+
+        // Drop the two oldest rows: the new row 0 ("12") was a continuation and
+        // must become a full header so the top of the chat is not orphaned.
+        let trimmed = trim_chat_window(&vec_model, 2).expect("two rows are dropped");
+        assert_eq!(trimmed.oldest_id.as_deref(), Some("12"));
+        if let Some(oldest_id) = trimmed.oldest_id {
+            if let Ok(mut map) = crate::ui::data_loader::get_oldest_message_map().lock() {
+                map.insert(channel_id.to_string(), oldest_id);
+            }
+        }
+        regroup_message_at(&model, 0);
+
+        assert_eq!(model.row_count(), 2);
+        let first = model.row_data(0).unwrap();
+        assert_eq!(first.id.as_str(), "12");
+        assert!(first.show_header, "the new first row is promoted to header");
+        assert!(!first.day_label.is_empty(), "the new first row keeps its day label");
+
+        let second = model.row_data(1).unwrap();
+        assert_eq!(second.id.as_str(), "13");
+        assert!(!second.show_header, "the following row stays grouped");
+        assert!(second.day_label.is_empty());
+
+        let cursor = crate::ui::data_loader::get_oldest_message_map()
+            .lock()
+            .unwrap()
+            .get(channel_id)
+            .cloned();
+        assert_eq!(cursor.as_deref(), Some("12"), "the pagination cursor moves with the window");
+    }
+
+    #[test]
     fn incremental_delete_matches_full_regroup() {
         use slint::Model;
 

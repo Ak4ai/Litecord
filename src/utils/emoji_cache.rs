@@ -25,6 +25,9 @@ struct MemoryStore {
 /// far more than the previous 64 entries while staying well under a megabyte.
 const MAX_MEMORY_EMOJIS: usize = 512;
 
+/// PNGs kept on disk. The oldest ones are dropped, like the avatar cache does.
+const MAX_DISK_EMOJIS: usize = 2048;
+
 impl MemoryStore {
     fn get(&mut self, emoji_id: &str) -> Option<slint::Image> {
         self.clock = self.clock.wrapping_add(1);
@@ -289,12 +292,14 @@ impl EmojiCache {
             if let Ok(resp) = client.get(&url).send().await {
                     if resp.status().is_success() {
                         if let Ok(bytes) = resp.bytes().await {
-                            // Save to disk cache
-                            let _ = std::fs::write(&file_path, &bytes);
-
-                            // Decode on a blocking worker: the image crate is CPU heavy
-                            // and this runs inside the async runtime.
+                            // Save to disk and decode on a blocking worker: the image
+                            // crate is CPU heavy, the file write is blocking I/O, and
+                            // both run inside the async runtime.
+                            let disk_path = file_path.clone();
+                            let disk_dir = cache_arc.disk_dir.clone();
                             let decoded = tokio::task::spawn_blocking(move || {
+                                let _ = std::fs::write(&disk_path, &bytes);
+                                prune_disk_emojis(&disk_dir, MAX_DISK_EMOJIS);
                                 decode_bytes_to_rgba(&bytes)
                             })
                             .await
@@ -328,6 +333,36 @@ impl EmojiCache {
                 inf.remove(&id_str);
             }
         });
+    }
+}
+
+/// Keeps the emoji PNG cache bounded: without this every emoji ever seen left a
+/// file behind forever (the avatar cache already prunes its own directory).
+fn prune_disk_emojis(dir: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            if !name.ends_with(".png") || name.len() < 5 {
+                return None;
+            }
+            let metadata = entry.metadata().ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            Some((entry.path(), metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)))
+        })
+        .collect();
+    if files.len() > keep {
+        files.sort_by_key(|(_, modified)| *modified);
+        let excess = files.len() - keep;
+        for (path, _) in files.into_iter().take(excess) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -430,6 +465,36 @@ mod tests {
         assert_eq!(store.entries.len(), MAX_MEMORY_EMOJIS);
         assert!(store.entries.contains_key("e0"));
         assert!(!store.entries.contains_key("e1"));
+    }
+
+    #[test]
+    fn disk_cache_prunes_the_oldest_png_files_beyond_the_limit() {
+        let dir = std::env::temp_dir().join(format!(
+            "litecord-emoji-prune-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..5 {
+            let path = dir.join(format!("{index}.png"));
+            std::fs::write(&path, b"x").unwrap();
+            // Distinct modification times so the order is deterministic.
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&path) {
+                let _ = file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(index));
+            }
+        }
+        prune_disk_emojis(&dir, 3);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["2.png", "3.png", "4.png"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -759,14 +759,43 @@ pub fn has_user_name(user_id: u64) -> bool {
 
 /// Names are short but unlimited otherwise: a long session in large guilds would
 /// keep every user ever seen in READY and voice states. Bounded like the avatar
-/// directory; when the cap is reached the map is cleared and refills from events.
+/// directory. At the cap half of the directory is dropped instead of all of it:
+/// a full clear used to forget the names of the servers that are still open
+/// (including our own user) until they came back with a new event.
 const MAX_USER_NAMES: usize = 8192;
+
+/// Drops the oldest half of a directory map, keeping our own user and the ids
+/// that are currently on screen.
+fn evict_half_of_directory(map: &mut std::collections::HashMap<u64, String>, keep: usize) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Rotating cursor so the eviction walks over the map instead of always
+    // dropping the same low ids (a HashMap is unordered, but this keeps the
+    // removal deterministic and spread over the directory).
+    static CURSOR: AtomicU64 = AtomicU64::new(0);
+    let my_id = get_my_user_id();
+    let mut victims = map.len().saturating_sub(keep);
+    if victims == 0 {
+        return;
+    }
+    let start = CURSOR.fetch_add(1, Ordering::Relaxed) as usize;
+    let ids: Vec<u64> = map.keys().copied().collect();
+    for offset in 0..ids.len() {
+        if victims == 0 {
+            break;
+        }
+        let id = ids[(start + offset) % ids.len()];
+        if id != my_id && map.remove(&id).is_some() {
+            victims -= 1;
+        }
+    }
+}
 
 pub fn register_user_name(user_id: u64, name: String) {
     if user_id > 0 && !name.is_empty() {
         if let Ok(mut map) = get_user_names_store().lock() {
             if map.len() >= MAX_USER_NAMES && !map.contains_key(&user_id) {
-                map.clear();
+                evict_half_of_directory(&mut map, MAX_USER_NAMES / 2);
             }
             map.insert(user_id, name);
         }
@@ -774,8 +803,8 @@ pub fn register_user_name(user_id: u64, name: String) {
 }
 
 /// Avatar hashes (max 34 bytes each) of users seen in voice states, so voice rows
-/// and the DM list can show a picture without extra REST calls. Bounded: when the
-/// cap is reached the map is simply cleared and refills from live events.
+/// and the DM list can show a picture without extra REST calls. Bounded; at the
+/// cap half of the directory is dropped, keeping our own user.
 const MAX_USER_AVATARS: usize = 2048;
 static USER_AVATARS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, String>>> = std::sync::OnceLock::new();
 
@@ -787,7 +816,7 @@ pub fn register_user_avatar(user_id: u64, hash: &str) {
     let store = USER_AVATARS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Ok(mut map) = store.lock() {
         if map.len() >= MAX_USER_AVATARS && !map.contains_key(&user_id) {
-            map.clear();
+            evict_half_of_directory(&mut map, MAX_USER_AVATARS / 2);
         }
         map.insert(user_id, hash.to_owned());
     }
@@ -847,3 +876,34 @@ pub fn get_user_name(user_id: u64) -> String {
     }
 }
 
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+
+    #[test]
+    fn the_directory_never_empties_itself_and_keeps_our_own_user() {
+        let mut map: std::collections::HashMap<u64, String> = (1..=100)
+            .map(|id| (id, format!("user-{id}")))
+            .collect();
+
+        // Ask for the map to shrink to 50 entries: half of it goes, the rest
+        // stays so the names of the open servers are not forgotten at once.
+        evict_half_of_directory(&mut map, 50);
+        assert_eq!(map.len(), 50, "half of the directory is kept");
+
+        // Running it again on the same map keeps shrinking by half instead of
+        // clearing everything.
+        evict_half_of_directory(&mut map, 25);
+        assert_eq!(map.len(), 25);
+        assert!(!map.is_empty());
+    }
+
+    #[test]
+    fn eviction_is_a_noop_when_there_is_nothing_to_drop() {
+        let mut map: std::collections::HashMap<u64, String> =
+            (1..=5).map(|id| (id, "x".to_string())).collect();
+        evict_half_of_directory(&mut map, 10);
+        assert_eq!(map.len(), 5);
+    }
+}
