@@ -8,9 +8,11 @@
 //! * Go Live uses a separate voice connection created from the main gateway,
 //! * media is RTP/H.264, protected by transport encryption and DAVE.
 //!
-//! Only the receive side lives here for now; the existing capture/encode path
-//! stays in `screen_capture` and is reused by the future transmit phases.
+//! Receive lives in `receiver`, Go Live transmit in `stream`/`sender`, and
+//! camera transmit in `camera`.  The existing capture/encode path stays in
+//! `screen_capture` and is reused by every transmit path.
 
+pub mod camera;
 pub mod crypto;
 pub mod h264;
 pub mod jitter;

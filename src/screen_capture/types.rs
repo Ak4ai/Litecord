@@ -355,26 +355,65 @@ pub struct CameraItemInfo {
     pub index: u32,
 }
 
+/// Cameras that can actually deliver colour pictures.
+///
+/// A UVC webcam usually exposes several `/dev/videoN` nodes: the capture
+/// node(s) plus metadata nodes that only advertise `GREY`/`Y8`.  The
+/// `cameras` crate turns every unknown FourCC into `Mjpeg`, so probing alone
+/// cannot tell them apart; opening a metadata node then produces JPEG decode
+/// errors and no frames ever reach the encoder.  Filter them with a real V4L2
+/// query on Linux.
+#[cfg(target_os = "linux")]
+fn is_colour_capture_device(id: &cameras::DeviceId) -> bool {
+    use v4l::prelude::*;
+    use v4l::video::Capture;
+
+    let Ok(device) = v4l::Device::with_path(&id.0) else {
+        return false;
+    };
+    let Ok(formats) = device.enum_formats() else {
+        return false;
+    };
+    formats.iter().any(|format| {
+        matches!(
+            &format.fourcc.repr,
+            b"MJPG" | b"JPEG" | b"YUYV" | b"YUY2" | b"NV12" | b"RGB3" | b"BGR3"
+                | b"AB24" | b"RGBA" | b"BA24" | b"BGRA"
+        )
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_colour_capture_device(_id: &cameras::DeviceId) -> bool {
+    true
+}
+
+/// Device list used by both the picker and the capture worker.  Indices must
+/// match, otherwise the UI can select one node and the encoder open another.
+pub fn list_camera_devices() -> Vec<cameras::Device> {
+    cameras::devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|device| is_colour_capture_device(&device.id))
+        .filter(|device| {
+            // A node that cannot enumerate a single format is not a camera.
+            cameras::probe(device)
+                .map(|caps| !caps.formats.is_empty())
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 pub fn list_cameras() -> Vec<CameraItemInfo> {
-    let mut result = Vec::new();
-    if let Ok(devs) = cameras::devices() {
-        for (i, dev) in devs.into_iter().enumerate() {
-            // Filtrar nodos de hardware sin formatos válidos (p. ej. nodos de metadatos V4L2 en Linux)
-            if let Ok(caps) = cameras::probe(&dev) {
-                if caps.formats.is_empty() {
-                    log::debug!("📷 [CAMERAS] Ignorando dispositivo '{}' (sin formatos de vídeo reportados)", dev.name);
-                    continue;
-                }
-            }
-            let name = dev.name.clone();
-            result.push(CameraItemInfo {
-                id: format!("{}", i),
-                name,
-                index: i as u32,
-            });
-        }
-    }
-    result
+    list_camera_devices()
+        .into_iter()
+        .enumerate()
+        .map(|(i, dev)| CameraItemInfo {
+            id: i.to_string(),
+            name: dev.name,
+            index: i as u32,
+        })
+        .collect()
 }
 
 /// Thread-safe shared frame buffer for double-buffered local stream rendering.

@@ -454,14 +454,17 @@ impl AttachmentCache {
             if let Ok(resp) = client.get(&url_str).send().await {
                 if resp.status().is_success() {
                     if let Ok(bytes) = resp.bytes().await {
-                        // Save to %TEMP%
-                        let _ = std::fs::write(&file_path, &bytes);
-
+                        // Images are persisted as the already-downscaled JPEG the UI
+                        // uses, not the original upload. Non-images keep the raw file.
                         if let Some(dec) = decode_bytes_to_rgba(&bytes) {
+                            let disk_bytes = encode_thumbnail_jpeg(&dec).unwrap_or_else(|| bytes.to_vec());
+                            let _ = std::fs::write(&file_path, &disk_bytes);
                             if let Ok(mut guard) = cache_arc.full_cache.lock() {
                                 guard.insert(id_str.clone(), dec);
                             }
                             queue_attachment_update(&id_str, app_weak.clone());
+                        } else {
+                            let _ = std::fs::write(&file_path, &bytes);
                         }
                     }
                 }
@@ -497,6 +500,24 @@ fn decode_bytes_to_rgba(bytes: &[u8]) -> Option<DecodedImage> {
     } else {
         None
     }
+}
+
+/// Re-encodes the already-downscaled bitmap as a small JPEG. The disk cache
+/// used to keep the original upload (often 1–3 MB) and re-decoded it on every
+/// start just to throw most of its pixels away. A ~1024 px JPEG is a fraction of
+/// the size and decodes in a few milliseconds.
+fn encode_thumbnail_jpeg(decoded: &DecodedImage) -> Option<Vec<u8>> {
+    let width = decoded.buffer.width();
+    let height = decoded.buffer.height();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let rgba = decoded.buffer.as_bytes().to_vec();
+    let img = image::RgbaImage::from_raw(width, height, rgba)?;
+    let mut out = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82);
+    encoder.encode_image(&image::DynamicImage::ImageRgba8(img)).ok()?;
+    Some(out)
 }
 
 fn decode_bytes_to_minecraft_pixel_art(bytes: &[u8]) -> Option<DecodedImage> {

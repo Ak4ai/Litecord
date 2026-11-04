@@ -299,10 +299,22 @@ impl AvatarCache {
         if is_new {
             let app = self.app.lock().ok().and_then(|slot| slot.clone());
             if let Some(app) = app {
-                // Fast path: if already in memory RAM, attach to pool immediately
+                // Fast path: if already in memory RAM, attach to pool immediately.
+                // `slot_for` also runs from tokio workers while the DM/guild lists
+                // are built. `pool_set` touches Slint models, so it must be
+                // dispatched to the UI thread; calling it directly from a worker
+                // silently did nothing and left already-cached avatars blank.
                 let cached_img = self.get(url);
-                if let Some(image) = cached_img {
-                    pool_set(slot, url, image);
+                if cached_img.is_some() {
+                    // `slint::Image` is not Send in this backend, so the UI
+                    // closure looks the thumbnail up again on the UI thread.
+                    let cache = get_avatar_cache();
+                    let slot_url = url.to_owned();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(image) = cache.get(&slot_url) {
+                            pool_set(slot, &slot_url, image);
+                        }
+                    });
                 } else {
                     self.fetch(url, app);
                 }
@@ -334,7 +346,16 @@ impl AvatarCache {
     /// Pre-warms the memory cache from disk asynchronously on a background thread.
     /// This prevents any cold-boot I/O delay or syscall spikes on the UI thread when opening DMs.
     pub fn warm_up_from_disk(&self, urls: &[String]) {
-        let urls = urls.to_vec();
+        // Cap the pre-warm: eagerly decoding every cached avatar on a large
+        // account caused a startup CPU/RAM spike for images most rows never
+        // display. The rest load on demand.
+        let mut seen = HashSet::new();
+        let urls: Vec<String> = urls
+            .iter()
+            .filter(|url| !url.is_empty() && seen.insert((*url).clone()))
+            .take(128)
+            .cloned()
+            .collect();
         let cache = get_avatar_cache();
         tokio::task::spawn_blocking(move || {
             for url in urls {

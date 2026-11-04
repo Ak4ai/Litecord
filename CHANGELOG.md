@@ -5,6 +5,116 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Icono de bandeja y barra de tareas
+
+- **El icono de la bandeja y el de la barra de tareas reflejan lo que está
+  pasando**: verde mientras hay una llamada de voz (canal de servidor o DM) y
+  rojo mientras la webcam o la compartición de pantalla están en vivo. Sin
+  llamada ni transmisión vuelve al icono normal.
+- **Encima del color se dibuja el estado de audio**: un micrófono tachado si
+  estás muteado y auriculares tachados si estás ensordecido, tanto en la
+  bandeja como en la barra de tareas.
+- El botón del panel de sonidos queda a la izquierda del de la webcam en la
+  cabecera de la sala de voz.
+
+### Chat, canales y transmisiones
+
+- **El chat se desvanece al salir de un canal**: antes solo había fade-in al
+  entrar; ahora el contenido del canal que se abandona baja de opacidad
+  mientras se carga el siguiente y luego vuelve a aparecer con el fade-in.
+- **El badge LIVE de un compañero abre su transmisión**: al hacer clic (con
+  hover en la fila y en la barra lateral) se enfoca la sala de voz, se
+  despliega el stream y se pide la suscripción, aunque el usuario esté mirando
+  un canal de texto.
+- **Volver a hacer clic en el canal de voz actual ya no reconecta**: solo
+  vuelve a enfocar la llamada, sin cortar el audio ni repetir el sonido de
+  entrada.
+- **Sliders de volumen**: el relleno de color progresa desde la izquierda
+  dentro del riel y las marcas de 50/100/125/150/200 % quedan visibles encima
+  del relleno.
+- **Editar y eliminar canales** siguen el permiso `GESTIONAR CANALES`; cuando
+  los roles del miembro todavía no se habían cargado, la opción ya no quedaba
+  deshabilitada por error. Los cambios se reflejan también en el mapa del
+  servidor, así que no reaparecen al cambiar de canal.
+- **Arrastrar miembros a otros canales de voz** permite el movimiento cuando
+  Discord confirma el permiso; los rechazos ahora quedan registrados en el
+  log. No es posible mover a un usuario a otro servidor: Discord no lo permite
+  ni siquiera desde el cliente oficial.
+- **El botón del panel de sonidos** quedó junto a "Voz conectada", a la
+  izquierda de la webcam, y ya no en la cabecera superior.
+
+### Transmisión de webcam
+
+- **La cámara ahora viaja por la conexión de voz, como en el cliente
+  oficial**, en lugar de pedir un Go Live aparte. Se anuncian los SSRC de vídeo
+  que asigna el servidor (opcode 12), se marca `self_video` en la puerta de
+  enlace principal para que los demás vean la cámara y el vídeo H.264 sale por
+  el mismo socket, clave y sesión DAVE que el micrófono.
+- **La cámara usa el contador de nonce del micrófono**, y se atienden los
+  PLI/FIR que llegan por el socket de voz para pedir un cuadro clave cuando
+  alguien empieza a mirar.
+- **Los demás vuelven a ver la cámara**: el comando que publica `self_video`
+  en la puerta de enlace principal se registraba en un canal interno que nadie
+  había conectado, así que la marca nunca llegaba a Discord y los demás
+  clientes no mostraban ni suscribían el vídeo.
+- **Indicador verde de cámara** junto al nombre: se muestra a la izquierda del
+  `LIVE` rojo de pantalla cuando ambas transmisiones están activas, y solo él
+  cuando únicamente la webcam está encendida.
+- Al terminar la llamada o apagar la cámara se envía `video_ssrc: 0` y se
+  limpia `self_video`; al reconectar la voz, la cámara vuelve sola.
+- **Se descartan los nodos de metadatos de la webcam** (`/dev/videoN` que solo
+  exponen `GREY`). Antes el selector podía abrir uno de ellos como si fuera
+  MJPEG: la captura no producía ningún cuadro, el emisor esperaba para siempre
+  y quien intentaba ver la cámara se quedaba cargando. Ahora la lista y el
+  trabajador de captura usan el mismo filtro V4L2 y caen en la cámara real.
+
+### Sonido de las transmisiones y FPS en Linux
+
+- **El audio del sistema vuelve a viajar con la transmisión.** La captura
+  usaba `gst-launch-1.0 pulsesrc`, que no existe en muchas instalaciones de
+  PipeWire; el proceso moría y no se enviaba ni un paquete. Ahora se usa
+  `parec` sobre el monitor del sink auxiliar (con latencia baja para que no se
+  suspenda), y `pw-record`/GStreamer quedan como respaldo. El ruido blanco que
+  oían los espectadores era el micrófono: `pw-record` no resuelve los monitores
+  de PipeWire y caía en la fuente por defecto, además de escribir una cabecera
+  AU que se leía como muestras.
+- **El audio se aísla del sonido de la llamada**: las aplicaciones que no son
+  Litecord se mueven a un sink auxiliar que se captura y se escucha por
+  loopback en el dispositivo real. La voz de la llamada no vuelve a los
+  espectadores.
+- **Codificación H.264 por VA-API en Linux** cuando la GPU Intel/AMD expone
+  `h264_vaapi` (FFmpeg). La web y las transmisiones de pantalla dejan de
+  depender de OpenH264 en CPU, que a 1080p solo llegaba a ~15–20 FPS; también
+  se repiten SPS/PPS en los keyframes para quien entra a mitad de stream.
+
+### Volumen y menú de usuario
+
+- El menú contextual de un participante muestra **dos sliders
+  independientes**: voz y stream (el de stream solo aparece mientras
+  transmite). Antes uno reemplazaba al otro.
+- Todos los sliders de volumen (fila de participante, menú contextual, tarjeta
+  de stream y ventana destacada) usan la misma escala 0–200 % con marcas en
+  50, 100, 125, 150 y 200 %.
+- Arrastrar un participante a otro canal de voz sigue disponible cuando se
+  tiene `MOVE_MEMBERS`, con resaltado del canal destino.
+
+### Servidores, roles y comandos
+
+- **Gestión real de roles**: el menú de usuario permite asignar y quitar roles
+  con checkboxes, respetando `MANAGE_ROLES`, la posición jerárquica, el dueño y
+  los roles gestionados por integraciones.
+- **RBAC en vivo**: los eventos de rol y de miembro actualizan el store local y
+  el color/badge de las filas de voz sin esperar a otro READY.
+- **Arrastrar miembros entre canales de voz**: se arrastra una fila de
+  participante sobre otro canal de voz (o sus participantes); requiere
+  `MOVE_MEMBERS` y jerarquía estricta.
+- **Comandos más completos**: se cargan juntos los comandos del servidor y los
+  globales/de usuario, también en DMs; se evita conservar comandos del servidor
+  anterior y se envían los argumentos con el tipo correcto (texto, entero,
+  booleano, usuario, canal, rol o número).
+
 ## [v1.3.1-beta] - 2026-10-26
 
 **Em resumo:** transmissões que não engasgam em notebooks com duas placas de vídeo nem com espectadores no celular, voz que se recupera sozinha quando o dispositivo de áudio, a sinalização ou a criptografia DAVE falham, uma tela de configurações nova, janela que reabre onde ficou, cards de convite e de evento no chat, e muitas correções de interface vindas de contribuidores. Parado, o Litecord continua em ~40 MB e 0,2% de CPU com a janela aberta.

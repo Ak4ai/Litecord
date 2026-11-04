@@ -65,7 +65,9 @@ pub fn stop_sender(stream_key: &str) {
     }
 }
 
-/// Starts outbound native RTP H.264 transmission over the established stream UDP socket.
+/// Starts outbound native RTP H.264 transmission over an established UDP socket
+/// (the dedicated Go Live stream socket or the parent voice socket for camera).
+#[allow(clippy::too_many_arguments)]
 pub fn start_sender(
     socket: Arc<UdpSocket>,
     target_addr: SocketAddr,
@@ -75,13 +77,22 @@ pub fn start_sender(
     video_ssrc: u32,
     stream_key: String,
     dave: Arc<Mutex<Option<DaveSession>>>,
+    // The parent voice connection already has an audio sender using this key:
+    // video packets must take their own values from the same counter, or two
+    // packets would be encrypted with the same nonce.
+    nonce_counter: Arc<AtomicU32>,
+    // A Go Live connection owns its UDP socket, so it can read RTCP feedback
+    // here.  The parent camera shares the voice socket with the audio receive
+    // loop, which handles RTCP instead.
+    listen_for_rtcp: bool,
+    // Go Live carries system/application audio as soundshare.  The camera does
+    // not: the microphone already sends Opus on this same SSRC.
+    send_audio: bool,
 ) {
     stop_sender("");
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
     *FRAME_TX.lock().unwrap() = Some(tx);
-    let (atx, mut arx) = mpsc::channel::<Vec<u8>>(32);
-    *AUDIO_TX.lock().unwrap() = Some(atx);
     *ACTIVE_STREAM_KEY.lock().unwrap() = Some(stream_key.clone());
     IS_BROADCASTING.store(true, Ordering::SeqCst);
 
@@ -89,65 +100,67 @@ pub fn start_sender(
     crate::screen_capture::types::request_intra_keyframe();
 
     let stream_start = Instant::now();
-    let nonce_counter = Arc::new(AtomicU32::new(1));
     let total_packets = Arc::new(AtomicU32::new(0));
     let total_octets = Arc::new(AtomicU32::new(0));
 
-    let socket_send_audio = Arc::clone(&socket);
-    let dave_audio = Arc::clone(&dave);
-    let key_audio = key.clone();
-    let nonce_counter_audio = Arc::clone(&nonce_counter);
-
     // 1b. Outbound Audio RTP Worker Task (Opus 48 kHz stereo for Go Live soundshare)
-    tokio::spawn(async move {
-        info!(
-            "🔊 [GO LIVE TX] Pumping de áudio nativo Opus iniciado para {} (SSRC={}, mode={:?})",
-            target_addr, audio_ssrc, mode
-        );
-        let mut audio_seq: u16 = 0;
-        let mut audio_ts: u32 = 0;
+    if send_audio {
+        let (atx, mut arx) = mpsc::channel::<Vec<u8>>(32);
+        *AUDIO_TX.lock().unwrap() = Some(atx);
+        let socket_send_audio = Arc::clone(&socket);
+        let dave_audio = Arc::clone(&dave);
+        let key_audio = key.clone();
+        let nonce_counter_audio = Arc::clone(&nonce_counter);
+        tokio::spawn(async move {
+            info!(
+                "🔊 [GO LIVE TX] Pumping de áudio nativo Opus iniciado para {} (SSRC={}, mode={:?})",
+                target_addr, audio_ssrc, mode
+            );
+            let mut audio_seq: u16 = 0;
+            let mut audio_ts: u32 = 0;
 
-        while let Some(opus_frame) = arx.recv().await {
-            if !IS_BROADCASTING.load(Ordering::Relaxed) {
-                break;
-            }
+            while let Some(opus_frame) = arx.recv().await {
+                if !IS_BROADCASTING.load(Ordering::Relaxed) {
+                    break;
+                }
 
-            // Apply DAVE end-to-end audio encryption if active
-            let encrypted_payload = if let Ok(mut dg) = dave_audio.lock() {
-                if let Some(ref mut d) = *dg {
-                    if d.is_ready() {
-                        d.encrypt(MediaType::AUDIO, Codec::OPUS, &opus_frame)
-                            .ok()
-                            .map(|cow| cow.into_owned())
+                // Apply DAVE end-to-end audio encryption if active
+                let encrypted_payload = if let Ok(mut dg) = dave_audio.lock() {
+                    if let Some(ref mut d) = *dg {
+                        if d.is_ready() {
+                            d.encrypt(MediaType::AUDIO, Codec::OPUS, &opus_frame)
+                                .ok()
+                                .map(|cow| cow.into_owned())
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
                 } else {
                     None
+                };
+                let payload_to_send = encrypted_payload.as_deref().unwrap_or(&opus_frame);
+
+                // Construct 12-byte RTP header (PT=120 Discord Opus)
+                let mut rtp_header = [0u8; 12];
+                rtp_header[0] = 0x80; // V=2, P=0, X=0, CC=0
+                rtp_header[1] = 120;  // Payload Type 120 (Opus)
+                rtp_header[2..4].copy_from_slice(&audio_seq.to_be_bytes());
+                rtp_header[4..8].copy_from_slice(&audio_ts.to_be_bytes());
+                rtp_header[8..12].copy_from_slice(&audio_ssrc.to_be_bytes());
+
+                audio_seq = audio_seq.wrapping_add(1);
+                audio_ts = audio_ts.wrapping_add(960); // 20ms @ 48kHz = 960 samples
+
+                let cnt = nonce_counter_audio.fetch_add(1, Ordering::Relaxed);
+                if let Some(encrypted) = protect_rtp(&key_audio, mode, &rtp_header, payload_to_send, cnt) {
+                    let _ = socket_send_audio.send_to(&encrypted, target_addr).await;
                 }
-            } else {
-                None
-            };
-            let payload_to_send = encrypted_payload.as_deref().unwrap_or(&opus_frame);
-
-            // Construct 12-byte RTP header (PT=120 Discord Opus)
-            let mut rtp_header = [0u8; 12];
-            rtp_header[0] = 0x80; // V=2, P=0, X=0, CC=0
-            rtp_header[1] = 120;  // Payload Type 120 (Opus)
-            rtp_header[2..4].copy_from_slice(&audio_seq.to_be_bytes());
-            rtp_header[4..8].copy_from_slice(&audio_ts.to_be_bytes());
-            rtp_header[8..12].copy_from_slice(&audio_ssrc.to_be_bytes());
-
-            audio_seq = audio_seq.wrapping_add(1);
-            audio_ts = audio_ts.wrapping_add(960); // 20ms @ 48kHz = 960 samples
-
-            let cnt = nonce_counter_audio.fetch_add(1, Ordering::Relaxed);
-            if let Some(encrypted) = protect_rtp(&key_audio, mode, &rtp_header, payload_to_send, cnt) {
-                let _ = socket_send_audio.send_to(&encrypted, target_addr).await;
             }
-        }
-        info!("🛑 [GO LIVE TX] Worker de envio de áudio finalizado.");
-    });
+            info!("🛑 [GO LIVE TX] Worker de envio de áudio finalizado.");
+        });
+    }
     let socket_send = Arc::clone(&socket);
     let socket_send_rtcp = Arc::clone(&socket);
     let socket_recv = Arc::clone(&socket);
@@ -179,9 +192,15 @@ pub fn start_sender(
             let dave_encrypted = if let Ok(mut dg) = dave.lock() {
                 if let Some(ref mut d) = *dg {
                     if d.is_ready() {
-                        d.encrypt(MediaType::VIDEO, Codec::H264, &frame)
-                            .ok()
-                            .map(|cow| cow.into_owned())
+                        match d.encrypt(MediaType::VIDEO, Codec::H264, &frame) {
+                            Ok(cow) => Some(cow.into_owned()),
+                            Err(error) => {
+                                if frame_count % 120 == 0 {
+                                    warn!("⚠️ [GO LIVE TX] DAVE não conseguiu cifrar o vídeo: {:?}", error);
+                                }
+                                None
+                            }
+                        }
                     } else {
                         None
                     }
@@ -209,6 +228,13 @@ pub fn start_sender(
             }
 
             frame_count += 1;
+            if frame_count == 1 {
+                info!(
+                    "🎬 [GO LIVE TX] Primeiro frame H.264 enviado ({} bytes, SSRC={})",
+                    frame.len(),
+                    video_ssrc
+                );
+            }
             if frame_count % 300 == 0 {
                 info!(
                     "🎬 [GO LIVE TX] {} frames H.264 transmitidos com sucesso para Discord!",
@@ -254,24 +280,26 @@ pub fn start_sender(
     });
 
     // 2. Inbound RTCP Receiver Task (Handling PLI/FIR requests from Discord)
-    tokio::spawn(async move {
-        let mut buf = [0u8; 2048];
-        while IS_BROADCASTING.load(Ordering::Relaxed) {
-            match socket_recv.recv_from(&mut buf).await {
-                Ok((len, _from)) => {
-                    if is_rtcp(&buf[..len]) {
-                        // Discord sends RTCP Feedback (PLI=1 / FIR=4) when viewers connect
-                        crate::screen_capture::types::request_intra_keyframe();
+    if listen_for_rtcp {
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            while IS_BROADCASTING.load(Ordering::Relaxed) {
+                match socket_recv.recv_from(&mut buf).await {
+                    Ok((len, _from)) => {
+                        if is_rtcp(&buf[..len]) && crate::native_video::rtcp::wants_keyframe(&buf[..len]) {
+                            // Discord sends RTCP Feedback (PLI=1 / FIR=4) when viewers connect
+                            crate::screen_capture::types::request_intra_keyframe();
+                        }
                     }
-                }
-                Err(_) => {
-                    if !IS_BROADCASTING.load(Ordering::Relaxed) {
-                        break;
+                    Err(_) => {
+                        if !IS_BROADCASTING.load(Ordering::Relaxed) {
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 
     info!("✅ [GO LIVE TX] Transmissão nativa ativa key={}", stream_key_clone);
 }

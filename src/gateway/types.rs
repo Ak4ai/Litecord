@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use log::info;
@@ -137,6 +137,11 @@ pub enum GatewayEvent {
     CallEnded {
         channel_id: String,
     },
+    SoundboardSoundPlayed {
+        channel_id: String,
+        sound_id: String,
+        user_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -148,9 +153,19 @@ pub enum GatewayCommand {
         self_mute: bool,
         self_deaf: bool,
     },
+    /// Turns the camera flag of our current voice state on/off without
+    /// changing the channel.  Official clients use the same op 4 update.
+    SetSelfVideo {
+        enabled: bool,
+    },
     SubscribeGuild {
         guild_id: String,
         channel_ids: Vec<String>,
+    },
+    SendSoundboardSound {
+        channel_id: String,
+        sound_id: String,
+        source_guild_id: Option<String>,
     },
 }
 
@@ -660,6 +675,35 @@ pub fn remove_user_voice_audio_flags(user_id: u64) {
     if let Ok(mut map) = get_guild_voice_audio_flags_store().lock() {
         map.remove(&user_id);
     }
+    if let Ok(mut map) = get_guild_voice_server_muted_store().lock() {
+        map.remove(&user_id);
+    }
+}
+
+pub static GUILD_VOICE_SERVER_MUTED: std::sync::OnceLock<Arc<std::sync::Mutex<std::collections::HashMap<u64, bool>>>> = std::sync::OnceLock::new();
+
+pub fn get_guild_voice_server_muted_store() -> Arc<std::sync::Mutex<std::collections::HashMap<u64, bool>>> {
+    GUILD_VOICE_SERVER_MUTED.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))).clone()
+}
+
+/// True when a moderator (not the user) muted them in the server.
+pub fn set_user_server_muted(user_id: u64, server_muted: bool) {
+    if user_id == 0 { return; }
+    if let Ok(mut map) = get_guild_voice_server_muted_store().lock() {
+        if server_muted {
+            map.insert(user_id, true);
+        } else {
+            map.remove(&user_id);
+        }
+    }
+}
+
+pub fn is_user_server_muted(user_id: u64) -> bool {
+    if user_id == 0 { return false; }
+    get_guild_voice_server_muted_store()
+        .lock()
+        .map(|m| m.get(&user_id).copied().unwrap_or(false))
+        .unwrap_or(false)
 }
 
 pub fn sync_voice_channel_participants(channel_id: &str) {
@@ -860,6 +904,13 @@ pub fn clear_guild_voice_states() {
             map.clear();
         }
     }
+    if let Some(store) = GUILD_VOICE_SERVER_MUTED.get() {
+        if let Ok(mut map) = store.lock() {
+            map.clear();
+        }
+    }
+    clear_guild_roles();
+    clear_channel_overwrites();
 }
 
 pub fn get_user_name(user_id: u64) -> String {
@@ -905,5 +956,447 @@ mod directory_tests {
             (1..=5).map(|id| (id, "x".to_string())).collect();
         evict_half_of_directory(&mut map, 10);
         assert_eq!(map.len(), 5);
+    }
+}
+
+// ── Guild roles / permissions ────────────────────────────────────────────────
+// Discord's permission bits we currently gate UI actions with.
+pub const PERM_CREATE_INSTANT_INVITE: u64 = 1 << 0;
+pub const PERM_ADMINISTRATOR: u64 = 1 << 3;
+pub const PERM_KICK_MEMBERS: u64 = 1 << 1;
+pub const PERM_BAN_MEMBERS: u64 = 1 << 2;
+pub const PERM_MUTE_MEMBERS: u64 = 1 << 22;
+pub const PERM_DEAFEN_MEMBERS: u64 = 1 << 23;
+pub const PERM_MOVE_MEMBERS: u64 = 1 << 24;
+pub const PERM_MANAGE_CHANNELS: u64 = 1 << 4;
+pub const PERM_MANAGE_GUILD: u64 = 1 << 5;
+pub const PERM_MANAGE_ROLES: u64 = 1 << 28;
+
+#[derive(Clone, Debug)]
+pub struct RoleInfo {
+    pub id: String,
+    pub name: String,
+    pub color: u32,
+    pub position: i64,
+    pub permissions: u64,
+    /// Managed roles belong to integrations (bots, boosts). Discord rejects
+    /// assigning or removing them manually even for administrators.
+    pub managed: bool,
+}
+
+#[derive(Default)]
+pub struct GuildRoleStore {
+    pub roles: HashMap<String, RoleInfo>,
+    pub member_roles: HashMap<u64, Vec<String>>,
+    pub owner_id: u64,
+}
+
+static GUILD_ROLES: OnceLock<Arc<Mutex<HashMap<String, GuildRoleStore>>>> = OnceLock::new();
+
+pub fn get_guild_roles_store() -> Arc<Mutex<HashMap<String, GuildRoleStore>>> {
+    GUILD_ROLES.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+pub fn register_guild_role(guild_id: &str, role: RoleInfo) {
+    if guild_id.is_empty() || role.id.is_empty() { return; }
+    if let Ok(mut store) = get_guild_roles_store().lock() {
+        store.entry(guild_id.to_string()).or_default().roles.insert(role.id.clone(), role);
+    }
+}
+
+pub fn register_member_roles(guild_id: &str, user_id: u64, roles: Vec<String>, owner_id: u64) {
+    if guild_id.is_empty() || user_id == 0 { return; }
+    if let Ok(mut store) = get_guild_roles_store().lock() {
+        let entry = store.entry(guild_id.to_string()).or_default();
+        if owner_id != 0 { entry.owner_id = owner_id; }
+        entry.member_roles.insert(user_id, roles);
+    }
+}
+
+pub fn member_roles(guild_id: &str, user_id: u64) -> Vec<String> {
+    get_guild_roles_store()
+        .lock()
+        .ok()
+        .and_then(|s| s.get(guild_id).and_then(|g| g.member_roles.get(&user_id).cloned()))
+        .unwrap_or_default()
+}
+
+/// Whether the role store actually knows this member (owner or a registered
+/// member entry).  Without that data a deny is indistinguishable from "not
+/// loaded yet", so callers can be optimistic instead of hiding actions.
+pub fn member_roles_known(guild_id: &str, user_id: u64) -> bool {
+    let store = get_guild_roles_store();
+    let Ok(guard) = store.lock() else { return false };
+    let Some(guild) = guard.get(guild_id) else { return false };
+    guild.owner_id == user_id || guild.member_roles.contains_key(&user_id)
+}
+
+/// All roles in the guild, highest first. Excludes nothing: callers decide what
+/// is assignable with `can_manage_role`.
+pub fn guild_roles(guild_id: &str) -> Vec<RoleInfo> {
+    let store = get_guild_roles_store();
+    let Ok(guard) = store.lock() else { return Vec::new() };
+    let Some(guild) = guard.get(guild_id) else { return Vec::new() };
+    let mut roles: Vec<RoleInfo> = guild.roles.values().cloned().collect();
+    roles.sort_by(|a, b| b.position.cmp(&a.position).then_with(|| a.name.cmp(&b.name)));
+    roles
+}
+
+/// Roles below the actor's highest role, excluding managed/integration roles,
+/// @everyone and roles the actor cannot touch because of target hierarchy.
+pub fn assignable_roles(
+    guild_id: &str,
+    actor: u64,
+    target: u64,
+) -> Vec<(RoleInfo, bool)> {
+    if actor == 0 || target == 0 {
+        return Vec::new();
+    }
+
+    // Collect under the lock, then evaluate hierarchy with the lock released:
+    // the permission helpers take the same mutex.
+    let (owner, roles, assigned) = {
+        let store = get_guild_roles_store();
+        let Ok(guard) = store.lock() else { return Vec::new() };
+        let Some(guild) = guard.get(guild_id) else { return Vec::new() };
+        let assigned: HashSet<String> = guild
+            .member_roles
+            .get(&target)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        (
+            guild.owner_id,
+            guild.roles.values().cloned().collect::<Vec<_>>(),
+            assigned,
+        )
+    };
+
+    if actor != owner && target == owner {
+        return Vec::new();
+    }
+    if actor != target && !can_moderate_member(guild_id, actor, target, PERM_MANAGE_ROLES) {
+        return Vec::new();
+    }
+    if !has_guild_permission(guild_id, actor, PERM_MANAGE_ROLES) {
+        return Vec::new();
+    }
+
+    let actor_position = highest_role_position(guild_id, actor);
+    let target_position = highest_role_position(guild_id, target);
+    let mut roles: Vec<(RoleInfo, bool)> = roles
+        .into_iter()
+        .filter(|role| role.id != guild_id && !role.managed)
+        .filter(|role| actor == owner || role.position < actor_position)
+        .filter(|_role| actor == target || target_position < actor_position)
+        .map(|role| {
+            let assigned = assigned.contains(&role.id);
+            (role, assigned)
+        })
+        .collect();
+    roles.sort_by(|a, b| b.0.position.cmp(&a.0.position).then_with(|| a.0.name.cmp(&b.0.name)));
+    roles
+}
+
+pub fn can_manage_role(guild_id: &str, actor: u64, target: u64, role_id: &str) -> bool {
+    assignable_roles(guild_id, actor, target)
+        .into_iter()
+        .any(|(role, _)| role.id == role_id)
+}
+
+/// Mirrors a successful Discord role update into the local store so the menu
+/// and role colors do not stay stale until the next READY.
+pub fn set_member_role_local(guild_id: &str, user_id: u64, role_id: &str, assigned: bool) {
+    if guild_id.is_empty() || user_id == 0 || role_id.is_empty() {
+        return;
+    }
+    let store = get_guild_roles_store();
+    let Ok(mut guard) = store.lock() else { return };
+    let Some(guild) = guard.get_mut(guild_id) else { return };
+    let roles = guild.member_roles.entry(user_id).or_default();
+    if assigned {
+        if !roles.iter().any(|id| id == role_id) {
+            roles.push(role_id.to_string());
+        }
+    } else {
+        roles.retain(|id| id != role_id);
+    }
+}
+
+pub fn remove_guild_role_local(guild_id: &str, role_id: &str) {
+    let store = get_guild_roles_store();
+    let Ok(mut guard) = store.lock() else { return };
+    let Some(guild) = guard.get_mut(guild_id) else { return };
+    guild.roles.remove(role_id);
+    for roles in guild.member_roles.values_mut() {
+        roles.retain(|id| id != role_id);
+    }
+}
+
+pub fn member_role_names(guild_id: &str, user_id: u64) -> Vec<String> {
+    let store = get_guild_roles_store();
+    let Ok(guard) = store.lock() else { return Vec::new() };
+    let Some(guild) = guard.get(guild_id) else { return Vec::new() };
+    let Some(ids) = guild.member_roles.get(&user_id) else { return Vec::new() };
+    let mut roles: Vec<(i64, String)> = ids
+        .iter()
+        .filter_map(|id| guild.roles.get(id).map(|r| (r.position, r.name.clone())))
+        .collect();
+    roles.sort_by(|a, b| b.0.cmp(&a.0));
+    roles.into_iter().map(|(_, name)| name).collect()
+}
+
+/// Union of @everyone and the member's role permissions, with the owner and
+/// administrator role overriding everything.
+pub fn has_guild_permission(guild_id: &str, user_id: u64, permission: u64) -> bool {
+    let store = get_guild_roles_store();
+    let Ok(guard) = store.lock() else { return false };
+    let Some(guild) = guard.get(guild_id) else { return false };
+    if user_id != 0 && guild.owner_id == user_id { return true; }
+
+    let mut perms = 0u64;
+    if let Some(everyone) = guild.roles.get(guild_id) {
+        perms |= everyone.permissions;
+    } else if let Some(everyone) = guild.roles.values().find(|r| r.name == "@everyone") {
+        perms |= everyone.permissions;
+    }
+    if let Some(ids) = guild.member_roles.get(&user_id) {
+        for id in ids {
+            if let Some(role) = guild.roles.get(id) {
+                perms |= role.permissions;
+            }
+        }
+    }
+    perms & PERM_ADMINISTRATOR != 0 || perms & permission != 0
+}
+
+pub fn clear_guild_roles() {
+    if let Some(store) = GUILD_ROLES.get() {
+        if let Ok(mut map) = store.lock() {
+            map.clear();
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ChannelOverwrite {
+    pub id: String,
+    /// 0 = role, 1 = member
+    pub kind: u64,
+    pub allow: u64,
+    pub deny: u64,
+}
+
+pub static GUILD_CHANNEL_OVERWRITES: OnceLock<Arc<Mutex<HashMap<String, HashMap<String, Vec<ChannelOverwrite>>>>>> = OnceLock::new();
+
+pub fn get_channel_overwrites_store() -> Arc<Mutex<HashMap<String, HashMap<String, Vec<ChannelOverwrite>>>>> {
+    GUILD_CHANNEL_OVERWRITES
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+pub fn register_channel_overwrites(guild_id: &str, channel_id: &str, overwrites: Vec<ChannelOverwrite>) {
+    if guild_id.is_empty() || channel_id.is_empty() { return; }
+    if let Ok(mut store) = get_channel_overwrites_store().lock() {
+        store.entry(guild_id.to_string()).or_default().insert(channel_id.to_string(), overwrites);
+    }
+}
+
+fn base_permissions(guild_id: &str, user_id: u64) -> (u64, bool) {
+    let store = get_guild_roles_store();
+    let Ok(guard) = store.lock() else { return (0, false) };
+    let Some(guild) = guard.get(guild_id) else { return (0, false) };
+    if user_id != 0 && guild.owner_id == user_id {
+        return (u64::MAX, true);
+    }
+    let mut perms = 0u64;
+    if let Some(everyone) = guild.roles.get(guild_id) {
+        perms |= everyone.permissions;
+    }
+    if let Some(ids) = guild.member_roles.get(&user_id) {
+        for id in ids {
+            if let Some(role) = guild.roles.get(id) {
+                perms |= role.permissions;
+            }
+        }
+    }
+    let bypass = perms & PERM_ADMINISTRATOR != 0;
+    (perms, bypass)
+}
+
+/// Full permission computation for a channel, including @everyone, role and
+/// member overwrites in Discord's order. `channel_id` empty means guild-level.
+pub fn has_channel_permission(guild_id: &str, user_id: u64, channel_id: &str, permission: u64) -> bool {
+    let (mut perms, bypass) = base_permissions(guild_id, user_id);
+    if bypass { return true; }
+    if channel_id.is_empty() { return perms & permission != 0; }
+
+    let store = get_channel_overwrites_store();
+    let guard = match store.lock() { Ok(g) => g, Err(_) => return perms & permission != 0 };
+    let Some(overwrites) = guard.get(guild_id).and_then(|m| m.get(channel_id)) else {
+        return perms & permission != 0;
+    };
+
+    // Role/member membership comes from the role store.
+    let role_store = get_guild_roles_store();
+    let roles = role_store
+        .lock()
+        .ok()
+        .and_then(|s| s.get(guild_id).and_then(|g| g.member_roles.get(&user_id).cloned()))
+        .unwrap_or_default();
+
+    let mut everyone = (0u64, 0u64);
+    let mut role_allow = 0u64;
+    let mut role_deny = 0u64;
+    let mut member = (0u64, 0u64);
+    for ow in overwrites {
+        if ow.kind == 0 && ow.id == guild_id {
+            everyone.0 |= ow.deny;
+            everyone.1 |= ow.allow;
+        } else if ow.kind == 0 && roles.iter().any(|r| r == &ow.id) {
+            role_deny |= ow.deny;
+            role_allow |= ow.allow;
+        } else if ow.kind == 1 && ow.id.parse::<u64>().ok() == Some(user_id) {
+            member.0 |= ow.deny;
+            member.1 |= ow.allow;
+        }
+    }
+    perms = (perms & !everyone.0) | everyone.1;
+    perms = (perms & !role_deny) | role_allow;
+    perms = (perms & !member.0) | member.1;
+    perms & permission != 0
+}
+
+pub fn highest_role_position(guild_id: &str, user_id: u64) -> i64 {
+    let store = get_guild_roles_store();
+    let Ok(guard) = store.lock() else { return 0 };
+    let Some(guild) = guard.get(guild_id) else { return 0 };
+    let mut top = 0i64;
+    if let Some(ids) = guild.member_roles.get(&user_id) {
+        for id in ids {
+            if let Some(role) = guild.roles.get(id) {
+                top = top.max(role.position);
+            }
+        }
+    }
+    top
+}
+
+/// True when `actor` may moderate `target`: owner/admin always, otherwise the
+/// actor needs the permission and a strictly higher top role.
+pub fn can_moderate_member(guild_id: &str, actor: u64, target: u64, permission: u64) -> bool {
+    if actor == 0 || target == 0 || actor == target { return false; }
+    let store = get_guild_roles_store();
+    let owner = store.lock().ok().and_then(|s| s.get(guild_id).map(|g| g.owner_id)).unwrap_or(0);
+    if actor == owner { return true; }
+    if target == owner { return false; }
+    if !has_guild_permission(guild_id, actor, permission) { return false; }
+    let (actor_pos, target_pos) = (highest_role_position(guild_id, actor), highest_role_position(guild_id, target));
+    // Equal top role cannot moderate each other.
+    actor_pos > target_pos || actor_pos == 0
+}
+
+pub fn clear_channel_overwrites() {
+    if let Some(store) = GUILD_CHANNEL_OVERWRITES.get() {
+        if let Ok(mut map) = store.lock() { map.clear(); }
+    }
+}
+
+/// Highest role of a member, preferring a colored role for display.
+pub fn member_display_role(guild_id: &str, user_id: u64) -> Option<(String, u32)> {
+    let store = get_guild_roles_store();
+    let guard = store.lock().ok()?;
+    let guild = guard.get(guild_id)?;
+    let ids = guild.member_roles.get(&user_id)?;
+    let mut best: Option<&RoleInfo> = None;
+    for id in ids {
+        if let Some(role) = guild.roles.get(id) {
+            if role.name == "@everyone" { continue; }
+            match best {
+                None => best = Some(role),
+                Some(current) => {
+                    let better = role.position > current.position
+                        || (role.position == current.position && role.color != 0 && current.color == 0);
+                    if better { best = Some(role); }
+                }
+            }
+        }
+    }
+    best.map(|r| (r.name.clone(), r.color))
+}
+
+static USER_DISPLAY_ROLES: OnceLock<Arc<Mutex<HashMap<u64, (String, u32)>>>> = OnceLock::new();
+
+pub fn get_user_display_role(user_id: u64) -> Option<(String, u32)> {
+    USER_DISPLAY_ROLES
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&user_id).cloned())
+}
+
+pub fn refresh_user_display_role(guild_id: &str, user_id: u64) {
+    if let Some(role) = member_display_role(guild_id, user_id) {
+        let store = USER_DISPLAY_ROLES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
+        if let Ok(mut m) = store.lock() {
+            m.insert(user_id, role);
+        }
+    }
+}
+
+#[cfg(test)]
+mod role_hierarchy_tests {
+    use super::*;
+
+    fn role(id: &str, position: i64, permissions: u64, managed: bool) -> RoleInfo {
+        RoleInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            color: 0,
+            position,
+            permissions,
+            managed,
+        }
+    }
+
+    #[test]
+    fn assignable_roles_respects_permissions_hierarchy_and_managed_roles() {
+        let guild = "role-test-guild";
+        let actor = 10;
+        let target = 20;
+        register_guild_role(guild, role(guild, 0, 0, false));
+        register_guild_role(guild, role("manager", 50, PERM_MANAGE_ROLES, false));
+        register_guild_role(guild, role("moderator", 20, 0, false));
+        register_guild_role(guild, role("target", 10, 0, false));
+        register_guild_role(guild, role("bot", 5, 0, true));
+        register_member_roles(guild, actor, vec!["manager".into()], 0);
+        register_member_roles(guild, target, vec!["target".into()], 0);
+
+        let assignable: Vec<String> = assignable_roles(guild, actor, target)
+            .into_iter()
+            .map(|(role, _)| role.id)
+            .collect();
+        assert!(assignable.contains(&"moderator".to_string()));
+        assert!(assignable.contains(&"target".to_string()));
+        assert!(!assignable.contains(&guild.to_string()), "@everyone is not assignable");
+        assert!(!assignable.contains(&"bot".to_string()), "managed roles are not assignable");
+        assert!(!assignable.contains(&"manager".to_string()), "equal/higher role is protected");
+        assert!(can_manage_role(guild, actor, target, "moderator"));
+        assert!(!can_manage_role(guild, actor, target, "manager"));
+    }
+
+    #[test]
+    fn local_role_updates_are_reflected_immediately() {
+        let guild = "role-test-local";
+        register_guild_role(guild, role(guild, 0, 0, false));
+        register_guild_role(guild, role("helper", 5, 0, false));
+        register_member_roles(guild, 30, vec![], 0);
+        assert!(member_role_names(guild, 30).is_empty());
+
+        set_member_role_local(guild, 30, "helper", true);
+        assert_eq!(member_role_names(guild, 30), vec!["helper"]);
+        set_member_role_local(guild, 30, "helper", false);
+        assert!(member_role_names(guild, 30).is_empty());
     }
 }

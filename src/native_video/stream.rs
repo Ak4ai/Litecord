@@ -24,7 +24,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::receiver::{NativeVideoContext, NativeVideoSession};
 use super::{handle_video_state, media_sink_wants};
 
-type VoiceSink = futures_util::stream::SplitSink<
+pub(crate) type VoiceSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
@@ -890,6 +890,9 @@ pub async fn connect_stream_sender(
                                 video_ssrc,
                                 stream_key.clone(),
                                 Arc::clone(&dave),
+                                Arc::new(std::sync::atomic::AtomicU32::new(1)),
+                                true,
+                                true,
                             );
                         }
                     }

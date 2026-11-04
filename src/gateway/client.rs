@@ -115,6 +115,26 @@ pub enum StreamControlMsg {
 
 static STREAM_CONTROL_TX: std::sync::Mutex<Option<mpsc::UnboundedSender<StreamControlMsg>>> = std::sync::Mutex::new(None);
 static ACTIVE_OUTBOUND_STREAM_KEY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Command channel of the live gateway client, so non-gateway modules (the
+/// camera pump) can update our voice state without owning the WebSocket.
+static GATEWAY_CMD_TX: std::sync::Mutex<Option<mpsc::Sender<GatewayCommand>>> = std::sync::Mutex::new(None);
+
+pub fn install_command_sender(tx: mpsc::Sender<GatewayCommand>) {
+    if let Ok(mut guard) = GATEWAY_CMD_TX.lock() {
+        *guard = Some(tx);
+    }
+}
+
+/// Publishes camera state (`self_video`) on the main gateway.  Discord clients
+/// show the camera tile from this flag, and the server keeps it across a voice
+/// gateway reconnect.
+pub fn set_self_video(enabled: bool) {
+    if let Ok(guard) = GATEWAY_CMD_TX.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.try_send(GatewayCommand::SetSelfVideo { enabled });
+        }
+    }
+}
 
 /// Initiates Go Live screen broadcast via main gateway Opcode 18 (Stream Create).
 pub fn create_stream(guild_id: Option<String>, channel_id: u64) {
@@ -196,6 +216,7 @@ const HANDLED_EVENTS: &[&str] = &[
     "GUILD_MEMBERS_CHUNK",
     "VOICE_STATE_UPDATE",
     "VOICE_SERVER_UPDATE",
+    "VOICE_CHANNEL_EFFECT_SEND",
     "MESSAGE_CREATE",
     "MESSAGE_UPDATE",
     "MESSAGE_DELETE",
@@ -270,12 +291,66 @@ fn permission_change(text: &str, my_user_id: u64) -> Option<String> {
         id: Cow<'a, str>,
     }
     let e: Event = serde_json::from_str(text).ok()?;
+    apply_role_store_event(text);
     let guild = match e.t.as_ref() {
         "GUILD_UPDATE" => e.d.id,
         "GUILD_MEMBER_UPDATE" => e.d.user.filter(|u| u.id.parse() == Ok(my_user_id)).and(e.d.guild_id),
         _ => e.d.guild_id,
     };
     guild.map(Cow::into_owned)
+}
+
+/// PERMISSION_EVENTS are deliberately read only for their ids, but role and
+/// membership changes also need to update the local RBAC store. Without this,
+/// a role added through the context menu or by another client would keep the
+/// old hierarchy until the next READY.
+fn apply_role_store_event(text: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { return };
+    let event = value["t"].as_str().unwrap_or("");
+    let data = &value["d"];
+    let guild_id = data["guild_id"].as_str().unwrap_or("");
+    if guild_id.is_empty() {
+        return;
+    }
+    match event {
+        "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
+            let role = &data["role"];
+            let role_id = role["id"].as_str().unwrap_or("");
+            if role_id.is_empty() {
+                return;
+            }
+            register_guild_role(guild_id, RoleInfo {
+                id: role_id.to_string(),
+                name: role["name"].as_str().unwrap_or("").to_string(),
+                color: role["color"].as_u64().unwrap_or(0) as u32,
+                position: role["position"].as_i64().unwrap_or(0),
+                permissions: role["permissions"]
+                    .as_str()
+                    .and_then(|p| p.parse::<u64>().ok())
+                    .unwrap_or(0),
+                managed: role["managed"].as_bool().unwrap_or(false),
+            });
+        }
+        "GUILD_ROLE_DELETE" => {
+            if let Some(role_id) = data["role_id"].as_str() {
+                remove_guild_role_local(guild_id, role_id);
+            }
+        }
+        "GUILD_MEMBER_UPDATE" => {
+            let user_id = data["user"]["id"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .unwrap_or(0);
+            if let Some(roles) = data["roles"].as_array() {
+                let roles = roles
+                    .iter()
+                    .filter_map(|role| role.as_str().map(str::to_owned))
+                    .collect();
+                register_member_roles(guild_id, user_id, roles, 0);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The resume URL READY gives, with the query the first connection used.
@@ -402,6 +477,26 @@ struct StrictReadyGuild<'a> {
     voice_states: Vec<StrictReadyVoiceState<'a>>,
     #[serde(default, borrow)]
     channels: Vec<StrictReadyChannel<'a>>,
+    #[serde(default, borrow)]
+    roles: Vec<StrictReadyRole<'a>>,
+    #[serde(default, borrow)]
+    owner_id: Option<std::borrow::Cow<'a, str>>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyRole<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    name: std::borrow::Cow<'a, str>,
+    #[serde(default)]
+    color: u32,
+    #[serde(default)]
+    position: i64,
+    #[serde(default, borrow)]
+    permissions: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default)]
+    managed: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -410,6 +505,8 @@ struct StrictReadyMember<'a> {
     user: Option<StrictReadyUser<'a>>,
     #[serde(default, borrow)]
     nick: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    roles: Vec<std::borrow::Cow<'a, str>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -442,6 +539,31 @@ struct StrictReadyVoiceState<'a> {
     deaf: Option<bool>,
     #[serde(default, borrow)]
     member: Option<StrictReadyMember<'a>>,
+}
+
+fn parse_channel_overwrites(ch: &Value) -> Vec<ChannelOverwrite> {
+    ch["permission_overwrites"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|ow| {
+                    let id = ow["id"].as_str()?.to_string();
+                    let bits = |key: &str| -> u64 {
+                        ow[key]
+                            .as_u64()
+                            .or_else(|| ow[key].as_str().and_then(|s| s.parse().ok()))
+                            .unwrap_or(0)
+                    };
+                    Some(ChannelOverwrite {
+                        id,
+                        kind: ow["type"].as_u64().unwrap_or(0),
+                        allow: bits("allow"),
+                        deny: bits("deny"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn sort_gateway_channels(raw_channels: Vec<(String, String, u64, Option<String>, i64)>) -> Vec<ChannelData> {
@@ -707,6 +829,32 @@ impl GatewayClient {
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
+                    GatewayCommand::SetSelfVideo { enabled } => {
+                        // Camera on/off is a voice state update on the same channel:
+                        // it must not touch the session, credentials or audio.
+                        let channel = client_cmd.voice_channel_id.lock().unwrap().clone();
+                        let Some(channel) = channel else { continue };
+                        let guild = client_cmd.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
+                        let effective_gid = if guild.trim().is_empty() || guild == "@me" {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::json!(guild)
+                        };
+                        let payload = serde_json::json!({
+                            "op": 4,
+                            "d": {
+                                "guild_id": effective_gid,
+                                "channel_id": channel,
+                                "self_mute": *client_cmd.voice_self_mute.lock().unwrap(),
+                                "self_deaf": is_self_deaf(),
+                                "self_video": enabled
+                            }
+                        });
+                        info!("📷 [CAMERA] OP 4 VoiceStateUpdate self_video={}", enabled);
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let _ = tx.send(Message::Text(payload.to_string().into())).await;
+                        }
+                    }
                     GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
                         *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
 
@@ -801,6 +949,23 @@ impl GatewayClient {
                                     }
                                 });
                             }
+                        }
+                    }
+                    GatewayCommand::SendSoundboardSound { channel_id, sound_id, source_guild_id } => {
+                        if channel_id.is_empty() || sound_id.is_empty() {
+                            continue;
+                        }
+                        let payload = serde_json::json!({
+                            "op": 31,
+                            "d": {
+                                "channel_id": channel_id,
+                                "sound_id": sound_id,
+                                "source_guild_id": source_guild_id
+                            }
+                        });
+                        info!("📢 [SOUNDBOARD] Enviando OP 31: {}", payload);
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let _ = tx.send(Message::Text(payload.to_string().into())).await;
                         }
                     }
                     GatewayCommand::SubscribeGuild { guild_id, channel_ids } => {
@@ -1252,6 +1417,7 @@ impl GatewayClient {
         }
 
         // Parse guilds
+        let mut stale_self_voice: Option<String> = None;
         for g in d.guilds {
             // Emojis
             for em in g.emojis {
@@ -1259,11 +1425,32 @@ impl GatewayClient {
                 crate::utils::emoji_cache::register_custom_emoji(&em.id, &em.name, anim);
             }
 
+            // Roles and member role assignments (used by context-menu moderation)
+            let gid = g.id.as_ref();
+            let owner_id = g.owner_id.as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            for role in &g.roles {
+                register_guild_role(gid, RoleInfo {
+                    id: role.id.to_string(),
+                    name: role.name.to_string(),
+                    color: role.color,
+                    position: role.position,
+                    permissions: role.permissions.as_deref().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0),
+                    managed: role.managed.unwrap_or(false),
+                });
+            }
+
             // Members included in READY guild object
             for m in g.members {
                 if let Some(u) = m.user {
                     let u_id: u64 = u.id.parse().unwrap_or(0);
                     if u_id > 0 {
+                        register_member_roles(
+                            gid,
+                            u_id,
+                            m.roles.iter().map(|r| r.to_string()).collect(),
+                            owner_id,
+                        );
+                        refresh_user_display_role(gid, u_id);
                         let dname = m.nick
                             .as_deref()
                             .filter(|s| !s.is_empty())
@@ -1281,6 +1468,14 @@ impl GatewayClient {
             // Voice states
             for vs in g.voice_states {
                 if vs.user_id > 0 && !vs.channel_id.is_empty() {
+                    // A previous run can leave us in a channel server-side until the
+                    // old session times out.  On a fresh READY with no live voice
+                    // session, tell Discord to drop that ghost and do not list
+                    // ourselves in the channel.
+                    if vs.user_id == uid_num && !is_connected_to_voice() {
+                        stale_self_voice = Some(gid.to_string());
+                        continue;
+                    }
                     if let Some(m) = vs.member {
                         let dname = m.nick
                             .as_deref()
@@ -1301,6 +1496,7 @@ impl GatewayClient {
                     let is_muted = vs.self_mute.unwrap_or(false) || vs.mute.unwrap_or(false);
                     let is_deaf = vs.self_deaf.unwrap_or(false) || vs.deaf.unwrap_or(false);
                     set_user_voice_audio_flags(vs.user_id, is_muted, is_deaf);
+                    set_user_server_muted(vs.user_id, vs.mute.unwrap_or(false) && !vs.self_mute.unwrap_or(false));
                     let self_stream = vs.self_stream.unwrap_or(false);
                     let self_video = vs.self_video.unwrap_or(false);
                     crate::screen_capture::types::set_user_stream_flags(vs.user_id, self_stream, self_video);
@@ -1331,6 +1527,31 @@ impl GatewayClient {
                     let guild = GuildData { id: gid, name: gname, channels };
                     let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
                 }
+            }
+        }
+
+        // Clear a voice state left by a previous run.  The main gateway only
+        // reports it again until Discord expires the old session; leaving it
+        // makes the user appear connected in a channel after reopening.
+        if let Some(ghost_gid) = stale_self_voice {
+            warn!(
+                "🚪 [VOICE] Estado de voz fantasma detectado no servidor {}; enviando saída.",
+                ghost_gid
+            );
+            if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                gvs.remove(&uid_num);
+            }
+            let payload = serde_json::json!({
+                "op": 4,
+                "d": {
+                    "guild_id": ghost_gid,
+                    "channel_id": serde_json::Value::Null,
+                    "self_mute": false,
+                    "self_deaf": false
+                }
+            });
+            if let Some(tx) = self.ws_tx.lock().await.as_ref() {
+                let _ = tx.send(Message::Text(payload.to_string().into())).await;
             }
         }
 
@@ -1449,10 +1670,34 @@ impl GatewayClient {
                                 }
                             }
 
+                            let gid_json = g["id"].as_str().unwrap_or("");
+                            let owner_json = g["owner_id"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                            if let Some(roles_arr) = g["roles"].as_array() {
+                                for role in roles_arr {
+                                    let rid = role["id"].as_str().unwrap_or("");
+                                    if !rid.is_empty() {
+                                        register_guild_role(gid_json, RoleInfo {
+                                            id: rid.to_string(),
+                                            name: role["name"].as_str().unwrap_or("").to_string(),
+                                            color: role["color"].as_u64().unwrap_or(0) as u32,
+                                            position: role["position"].as_i64().unwrap_or(0),
+                                            permissions: role["permissions"].as_str().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0),
+                                            managed: role["managed"].as_bool().unwrap_or(false),
+                                        });
+                                    }
+                                }
+                            }
+
                             if let Some(members_arr) = g["members"].as_array() {
                                 for m in members_arr {
                                     let uid_str = m["user"]["id"].as_str().unwrap_or("");
                                     if let Ok(uid) = uid_str.parse::<u64>() {
+                                        let member_roles: Vec<String> = m["roles"]
+                                            .as_array()
+                                            .map(|arr| arr.iter().filter_map(|r| r.as_str().map(|s| s.to_string())).collect())
+                                            .unwrap_or_default();
+                                        register_member_roles(gid_json, uid, member_roles, owner_json);
+                                        refresh_user_display_role(gid_json, uid);
                                         let mut display_name = String::new();
                                         if let Some(nick) = m["nick"].as_str() {
                                             if !nick.is_empty() { display_name = nick.to_string(); }
@@ -1503,6 +1748,7 @@ impl GatewayClient {
                                         let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                         let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
                                         set_user_voice_audio_flags(u_id, is_muted, is_deaf);
+                                        set_user_server_muted(u_id, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
                                         let self_stream = vs["self_stream"].as_bool().unwrap_or(false);
                                         let self_video = vs["self_video"].as_bool().unwrap_or(false);
                                         crate::screen_capture::types::set_user_stream_flags(u_id, self_stream, self_video);
@@ -1518,6 +1764,12 @@ impl GatewayClient {
                             let gname = g["name"].as_str().unwrap_or("Servidor").to_string();
                             if !gid.is_empty() {
                                 if let Some(chans_arr) = g["channels"].as_array() {
+                                    for ch in chans_arr {
+                                        let cid = ch["id"].as_str().unwrap_or("");
+                                        if !cid.is_empty() {
+                                            register_channel_overwrites(&gid, cid, parse_channel_overwrites(ch));
+                                        }
+                                    }
                                     let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = chans_arr
                                         .iter()
                                         .map(|ch| {
@@ -1619,6 +1871,7 @@ impl GatewayClient {
                                 let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                 let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
                                 set_user_voice_audio_flags(u_id, is_muted, is_deaf);
+                                set_user_server_muted(u_id, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
                                 crate::screen_capture::types::set_user_stream_flags(
                                     u_id,
                                     vs["self_stream"].as_bool().unwrap_or(false),
@@ -1659,6 +1912,7 @@ impl GatewayClient {
                                         let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                         let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
                                         set_user_voice_audio_flags(u_id, is_muted, is_deaf);
+                                        set_user_server_muted(u_id, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
                                         crate::screen_capture::types::set_user_stream_flags(
                                             u_id,
                                             vs["self_stream"].as_bool().unwrap_or(false),
@@ -1702,6 +1956,28 @@ impl GatewayClient {
                     if updated {
                         save_user_directory_cache();
                         let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
+                    }
+                }
+                "VOICE_CHANNEL_EFFECT_SEND" => {
+                    let sound_id = v["d"]["sound_id"].as_str().unwrap_or("").to_string();
+                    if !sound_id.is_empty() {
+                        let channel_id = v["d"]["channel_id"]
+                            .as_str()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| {
+                                v["d"]["channel_id"].as_u64().map(|n| n.to_string()).unwrap_or_default()
+                            });
+                        let user_id = v["d"]["user_id"]
+                            .as_str()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| {
+                                v["d"]["user_id"].as_u64().map(|n| n.to_string()).unwrap_or_default()
+                            });
+                        let _ = self.event_tx.send(GatewayEvent::SoundboardSoundPlayed {
+                            channel_id,
+                            sound_id,
+                            user_id,
+                        }).await;
                     }
                 }
                 "VOICE_STATE_UPDATE" => {
@@ -1757,6 +2033,7 @@ impl GatewayClient {
                             let is_muted = v["d"]["self_mute"].as_bool().unwrap_or(false) || v["d"]["mute"].as_bool().unwrap_or(false);
                             let is_deaf = v["d"]["self_deaf"].as_bool().unwrap_or(false) || v["d"]["deaf"].as_bool().unwrap_or(false);
                             set_user_voice_audio_flags(event_uid, is_muted, is_deaf);
+                            set_user_server_muted(event_uid, v["d"]["mute"].as_bool().unwrap_or(false) && !v["d"]["self_mute"].as_bool().unwrap_or(false));
                         }
                         let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
 
@@ -2176,6 +2453,20 @@ impl GatewayClient {
                     let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
                     info!("📞 {} recebido bruto: {:?}", t, v["d"]);
 
+                    // A CALL_UPDATE with ringing=false means the call stopped
+                    // ringing: it was rejected, cancelled or answered elsewhere.
+                    // Treating it as a new incoming call made the rejected call
+                    // pop up again (and look accepted).
+                    let ringing = v["d"]["ringing"]
+                        .as_bool()
+                        .unwrap_or(t == "CALL_CREATE");
+                    if !ringing {
+                        if !channel_id.is_empty() {
+                            let _ = self.event_tx.send(GatewayEvent::CallEnded { channel_id }).await;
+                        }
+                        return;
+                    }
+
                     // Extrai IDs dos usuários presentes nos voice_states da chamada
                     let voice_uids: Vec<String> = v["d"]["voice_states"]
                         .as_array()
@@ -2234,7 +2525,42 @@ impl GatewayClient {
                 "GUILD_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let name = v["d"]["name"].as_str().unwrap_or("Servidor").to_string();
+                    if !id.is_empty() {
+                        let owner = v["d"]["owner_id"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                        if let Some(roles_arr) = v["d"]["roles"].as_array() {
+                            for role in roles_arr {
+                                let rid = role["id"].as_str().unwrap_or("");
+                                if !rid.is_empty() {
+                                    register_guild_role(&id, RoleInfo {
+                                        id: rid.to_string(),
+                                        name: role["name"].as_str().unwrap_or("").to_string(),
+                                        color: role["color"].as_u64().unwrap_or(0) as u32,
+                                        position: role["position"].as_i64().unwrap_or(0),
+                                        permissions: role["permissions"].as_str().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0),
+                                        managed: role["managed"].as_bool().unwrap_or(false),
+                                    });
+                                }
+                            }
+                        }
+                        if let Some(members_arr) = v["d"]["members"].as_array() {
+                            for m in members_arr {
+                                if let Ok(uid) = m["user"]["id"].as_str().unwrap_or("").parse::<u64>() {
+                                    let roles = m["roles"].as_array()
+                                        .map(|a| a.iter().filter_map(|r| r.as_str().map(|s| s.to_string())).collect())
+                                        .unwrap_or_default();
+                                    register_member_roles(&id, uid, roles, owner);
+                                    refresh_user_display_role(&id, uid);
+                                }
+                            }
+                        }
+                    }
                     let channels = if let Some(chans_arr) = v["d"]["channels"].as_array() {
+                        for ch in chans_arr {
+                            let cid = ch["id"].as_str().unwrap_or("");
+                            if !cid.is_empty() {
+                                register_channel_overwrites(&id, cid, parse_channel_overwrites(ch));
+                            }
+                        }
                         let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = chans_arr
                             .iter()
                             .map(|ch| {
@@ -2303,6 +2629,7 @@ impl GatewayClient {
                                 let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
                                 let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
                                 set_user_voice_audio_flags(uid, is_muted, is_deaf);
+                                set_user_server_muted(uid, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
                                 crate::screen_capture::types::set_user_stream_flags(
                                     uid,
                                     vs["self_stream"].as_bool().unwrap_or(false),

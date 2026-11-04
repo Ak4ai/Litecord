@@ -45,6 +45,18 @@ export struct SoundboardRow {
     sounds: [SoundboardItem],
 }
 
+export struct ContextMenuItem {
+    id: string,
+    label: string,
+    icon: string,
+    danger: bool,
+    checked: bool,
+    enabled: bool,
+    // 0 = normal item, 1 = separator, 2 = section title
+    kind: int,
+    submenu: bool,
+}
+
 struct GuildItem {
     id: string,
     name: string,
@@ -63,10 +75,15 @@ struct VoiceParticipant {
     audio_level: float,
     is_muted: bool,
     is_deafened: bool,
+    is_server_muted: bool,
+    role_name: string,
+    role_color: color,
     volume: float,
     priority: int,
     is_self: bool,
     is_streaming: bool,
+    is_screen_streaming: bool,
+    is_camera_streaming: bool,
     is_stream_hidden: bool,
 }
 
@@ -96,6 +113,146 @@ export struct AccountItem {
     tag: string,
     avatar_initials: string,
     is_active: bool,
+}
+
+// Voice/stream volume slider with the Discord boost range (0–200%) and ticks
+// at 50, 100, 125, 150 and 200.  `show-labels` is used in the context menu,
+// where there is room for the percentages; rows keep only the marks.
+component VolumeSlider inherits Rectangle {
+    in property <float> value: 1.0;
+    in property <length> track-length: 110px;
+    in property <bool> show-labels: false;
+    callback changed(float);
+
+    width: show-labels ? track-length + 28px : track-length;
+    height: show-labels ? 30px : 18px;
+
+    // Track first, then the coloured progress, then the ticks on top of it.
+    // Without clipping the fill could paint outside the rounded track.
+    Rectangle {
+        x: 0;
+        y: 7px;
+        width: track-length;
+        height: 4px;
+        background: #3f4147;
+        border-radius: 2px;
+        clip: true;
+
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width * (value.clamp(0.0, 2.0) / 2.0);
+            height: parent.height;
+            background: value <= 0.01 ? AppTheme.danger : AppTheme.accent;
+            border-radius: 2px;
+        }
+    }
+
+    // Tick marks: 50%, 100%, 125%, 150%, 200%, above the filled part.
+    Rectangle {
+        x: track-length * 0.25 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length * 0.50 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length * 0.625 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length * 0.75 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length - 1px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+
+    // Thumb
+    Rectangle {
+        x: (value.clamp(0.0, 2.0) / 2.0) * track-length - 4px;
+        y: 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: AppTheme.text-strong;
+    }
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: track-length;
+        height: 18px;
+        mouse-cursor: pointer;
+        clicked => {
+            changed((self.mouse-x / track-length).clamp(0.0, 1.0) * 2.0);
+        }
+        moved => {
+            if (self.pressed) {
+                changed((self.mouse-x / track-length).clamp(0.0, 1.0) * 2.0);
+            }
+        }
+    }
+
+    if show-labels : HorizontalLayout {
+        x: 0;
+        y: 17px;
+        width: track-length;
+        height: 12px;
+        Text {
+            horizontal-stretch: 1;
+            text: "50%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "100%";
+            color: #DBDEE1;
+            font-size: 8px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "125%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "150%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "200%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+    }
 }
 
 
@@ -166,6 +323,48 @@ export component AppWindow inherits Window {
     callback toggle_voice_focus();
     callback open_link(string /* url */);
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
+    callback open_image_viewer(image);
+    in-out property <bool> show_image_viewer: false;
+    in-out property <image> image_viewer_source;
+
+    // Discord-style context menus. Rust fills the model; Slint only paints it.
+    callback request_context_menu(string /* id */, length /* x */, length /* y */);
+    callback context_menu_action(string /* action id */);
+    in-out property <bool> context_menu_open: false;
+    in-out property <length> context_menu_x: 0px;
+    in-out property <length> context_menu_y: 0px;
+    in-out property <string> context_menu_title: "";
+    in-out property <[ContextMenuItem]> context_menu_items: [];
+    in-out property <bool> context_menu_submenu_open: false;
+    in-out property <string> context_menu_submenu_title: "";
+    in-out property <[ContextMenuItem]> context_menu_submenu_items: [];
+    callback context_menu_submenu_request(string);
+    // Voice and stream have independent sliders: a user can be streaming while
+    // you still want to tune their microphone separately.
+    in-out property <bool> context_menu_show_voice_slider: false;
+    in-out property <string> context_menu_voice_slider_label: "";
+    in-out property <float> context_menu_voice_slider_value: 1.0;
+    callback context_menu_voice_slider_changed(float);
+    in-out property <bool> context_menu_show_stream_slider: false;
+    in-out property <string> context_menu_stream_slider_label: "";
+    in-out property <float> context_menu_stream_slider_value: 1.0;
+    callback context_menu_stream_slider_changed(float);
+
+    // Channel/server edition and confirmation dialogs.
+    callback edit_modal_save();
+    callback edit_modal_cancel();
+    in-out property <bool> show_edit_modal: false;
+    in-out property <string> edit_modal_title: "";
+    in-out property <string> edit_name: "";
+    in-out property <string> edit_topic: "";
+    in-out property <bool> edit_nsfw: false;
+    in-out property <bool> edit_show_topic: false;
+
+    callback confirm_modal_accept();
+    callback confirm_modal_cancel();
+    in-out property <bool> show_confirm_modal: false;
+    in-out property <string> confirm_title: "";
+    in-out property <string> confirm_message: "";
     callback set_vad_threshold(float /* threshold */);
     callback set_mic_volume(float /* volume */);
     callback toggle_test_mic();
@@ -182,8 +381,10 @@ export component AppWindow inherits Window {
     callback check_for_updates();
     callback reorder_guild(int, int);
     callback reorder_channel(int, int);
+    callback move_voice_member(string /* source row */, string /* target voice channel */);
     // Row a channel dragged from row `from` by `dy` would land on (rows differ in height).
     pure callback channel_drop_row(int, length) -> int;
+    pure callback voice_member_drop_row(int, length) -> int;
     in-out property <int> dragging_guild_idx: -1;
     in-out property <int> drop_target_guild_idx: -1;
     callback load_older_messages();
@@ -407,6 +608,9 @@ export component AppWindow inherits Window {
 
     changed active_channel_id => {
         root.scroll_chat_to_bottom();
+        // Fade the outgoing chat out while the new channel loads; the loader
+        // then clears this flag and the new messages fade in.
+        root.chat_enter_hidden = true;
         root.header_enter_hidden = true;
         header_fade_timer.start();
     }
@@ -588,6 +792,8 @@ export component AppWindow inherits Window {
     in-out property <bool> is_deafened: false;
     in-out property <bool> is_in_voice: false;
     in-out property <bool> is_voice_connecting: false;
+    // Toggled by a UI timer while connecting/ringing to drive the pulse.
+    in-out property <bool> call_pulse: false;
     in-out property <string> current_voice_channel: "";
     in-out property <bool> is_voice_focused: false;
     in-out property <[VoiceParticipant]> voice_participants: [];
@@ -1459,6 +1665,13 @@ export component AppWindow inherits Window {
                                                 }
 
                                                 pointer-event(event) => {
+                                                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                                                        root.request_context_menu(
+                                                            "guild:" + guild.id,
+                                                            self.absolute-position.x + self.mouse-x,
+                                                            self.absolute-position.y + self.mouse-y
+                                                        );
+                                                    }
                                                     if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                                                         if (root.dragging_guild_idx >= 0 && root.drop_target_guild_idx >= 0 && root.dragging_guild_idx != root.drop_target_guild_idx) {
                                                             root.reorder_guild(root.dragging_guild_idx, root.drop_target_guild_idx);
@@ -1532,13 +1745,23 @@ export component AppWindow inherits Window {
                 select_channel(id) => { root.select_channel(id); }
                 toggle_category(id) => { root.toggle_category(id); }
                 reorder_channel(from, to) => { root.reorder_channel(from, to); }
+                move_voice_member(source, target_channel) => { root.move_voice_member(source, target_channel); }
+                request_context_menu(id, x, y) => { root.request_context_menu("channel:" + id, x, y); }
                 channel_drop_row(from, dy) => { return root.channel_drop_row(from, dy); }
+                voice_member_drop_row(from, dy) => { return root.voice_member_drop_row(from, dy); }
                 leave_voice => { root.leave_voice(); }
                 toggle_mute => { root.toggle_mute(); }
                 toggle_deafen => { root.toggle_deafen(); }
                 open_settings => { root.open_settings(); }
                 toggle_user_menu => { root.show_user_menu = !root.show_user_menu; }
                 is_screen_sharing: root.is_screen_sharing;
+                soundboard_open: root.show_soundboard_panel;
+                toggle_soundboard_panel => {
+                    root.toggle_soundboard_panel();
+                }
+                open_stream(uid) => {
+                    root.unhide_stream(uid);
+                }
                 open_stream_modal => {
                     root.stream_source_tab = "screens";
                     root.open_stream_modal();
@@ -1889,6 +2112,8 @@ export component AppWindow inherits Window {
                                     background: AppTheme.surface-sidebar;
                                     border-width: 2px;
                                     border-color: AppTheme.accent;
+                                    opacity: root.call_pulse ? 0.35 : 1.0;
+                                    animate opacity { duration: 650ms; easing: ease-in-out; }
 
                                     Image {
                                         source: @image-url("../assets/speaker.svg");
@@ -2028,6 +2253,15 @@ export component AppWindow inherits Window {
                                         // The top bar is declared after this, so its buttons still win.
                                         TouchArea {
                                             mouse-cursor: pointer;
+                                            pointer-event(event) => {
+                                                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                                                    root.request_context_menu(
+                                                        "channel:voice-member::" + p.user_id,
+                                                        self.absolute-position.x + self.mouse-x,
+                                                        self.absolute-position.y + self.mouse-y
+                                                    );
+                                                }
+                                            }
                                             clicked => { root.focus_stream(p.user_id); }
                                         }
 
@@ -2158,36 +2392,12 @@ export component AppWindow inherits Window {
 
                                                                 VerticalLayout {
                                                                     alignment: center;
-                                                                    Rectangle {
-                                                                        width: 55px;
-                                                                        height: 5px;
-                                                                        background: AppTheme.interactive-hover;
-                                                                        border-radius: 2.5px;
-
-                                                                        // Progress fill
-                                                                        Rectangle {
-                                                                            x: 0;
-                                                                            y: 0;
-                                                                            width: parent.width * (root.stream_remote_volume.clamp(0.0, 1.0));
-                                                                            height: 100%;
-                                                                            background: root.stream_remote_volume <= 0.01 ? AppTheme.danger : AppTheme.accent;
-                                                                            border-radius: 2.5px;
-                                                                        }
-
-                                                                        TouchArea {
-                                                                            mouse-cursor: pointer;
-                                                                            clicked => {
-                                                                                let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                                                                root.stream_remote_volume = new_vol;
-                                                                                root.set_stream_volume(p.user_id, new_vol);
-                                                                            }
-                                                                            moved => {
-                                                                                if self.pressed {
-                                                                                    let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                                                                    root.stream_remote_volume = new_vol;
-                                                                                    root.set_stream_volume(p.user_id, new_vol);
-                                                                                }
-                                                                            }
+                                                                    VolumeSlider {
+                                                                        track-length: 110px;
+                                                                        value: root.stream_remote_volume;
+                                                                        changed(val) => {
+                                                                            root.stream_remote_volume = val;
+                                                                            root.set_stream_volume(p.user_id, val);
                                                                         }
                                                                     }
                                                                 }
@@ -2565,7 +2775,7 @@ export component AppWindow inherits Window {
                                                      spacing: 8px;
                                                      Text {
                                                          text: p.username;
-                                                         color: p.is_self ? AppTheme.accent-medium : (p.is_speaking ? AppTheme.text-on-accent : AppTheme.text-primary);
+                                                         color: (p.role_name != "" && p.role_color != #000000) ? p.role_color : (p.is_self ? AppTheme.accent-medium : (p.is_speaking ? AppTheme.text-on-accent : AppTheme.text-primary));
                                                          font-weight: 700;
                                                          font-size: TypeScale.title;
                                                          vertical-alignment: center;
@@ -2581,6 +2791,23 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: root.tr_badge_you;
                                                                  color: AppTheme.text-on-accent;
+                                                                 font-size: TypeScale.micro;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
+
+                                                     if p.role_name != "" : Rectangle {
+                                                         background: #00000055;
+                                                         border-radius: 4px;
+                                                         height: 16px;
+                                                         HorizontalLayout {
+                                                             padding-left: 6px;
+                                                             padding-right: 6px;
+                                                             Text {
+                                                                 text: p.role_name;
+                                                                 color: (p.role_color != #000000) ? p.role_color : AppTheme.text-muted;
                                                                  font-size: TypeScale.micro;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
@@ -2607,9 +2834,50 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
+                                                     // Camera badge: green and to the left of the screen
+                                                     // LIVE badge, because both can be active at once.
+                                                     if p.is_camera_streaming: Rectangle {
+                                                         horizontal-stretch: 0;
+                                                         background: camera_badge_ta.has-hover ? AppTheme.success-hover : AppTheme.success;
+                                                         border-radius: 4px;
+                                                         height: 22px;
+                                                         min-width: 50px;
+                                                         HorizontalLayout {
+                                                             padding-left: 7px;
+                                                             padding-right: 8px;
+                                                             spacing: 4px;
+                                                             VerticalLayout {
+                                                                 alignment: center;
+                                                                 Image {
+                                                                     source: @image-url("../assets/camera.svg");
+                                                                     width: 13px;
+                                                                     height: 13px;
+                                                                     colorize: AppTheme.solid-white;
+                                                                     image-fit: contain;
+                                                                 }
+                                                             }
+                                                             Text {
+                                                                 text: Tr.live_badge;
+                                                                 color: AppTheme.text-on-accent;
+                                                                 font-size: TypeScale.caption;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+
+                                                         camera_badge_ta := TouchArea {
+                                                             mouse-cursor: pointer;
+                                                             x: -4px;
+                                                             y: -4px;
+                                                             width: parent.width + 8px;
+                                                             height: parent.height + 8px;
+                                                             clicked => { root.unhide_stream(p.user_id); }
+                                                         }
+                                                     }
+
                                                      // Discord-style LIVE badge: solid red, next to the name,
                                                      // and the way to open the stream when it is hidden.
-                                                     if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
+                                                     if p.is_screen_streaming || (p.is_streaming && !p.is_camera_streaming): Rectangle {
                                                          horizontal-stretch: 0;
                                                          background: live_badge_ta.has-hover ? AppTheme.danger-action-hover : AppTheme.danger-action;
                                                          border-radius: 4px;
@@ -2688,7 +2956,7 @@ export component AppWindow inherits Window {
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Text {
-                                                                 text: Tr.label_muted_caps;
+                                                                 text: (p.is_server_muted ? "SV · " : "") + Tr.label_muted_caps;
                                                                  color: AppTheme.danger;
                                                                  font-size: TypeScale.caption;
                                                                  font-weight: 700;
@@ -2824,10 +3092,8 @@ export component AppWindow inherits Window {
                                                       // Slider (0% to 200% with amplification boost like Discord)
                                                       VerticalLayout {
                                                           alignment: center;
-                                                          Slider {
-                                                              width: 110px;
-                                                              minimum: 0.0;
-                                                              maximum: 2.0;
+                                                          VolumeSlider {
+                                                              track-length: 110px;
                                                               value: p.volume;
                                                               changed(val) => { root.set_user_volume(p.user_id, val); }
                                                           }
@@ -3097,7 +3363,7 @@ export component AppWindow inherits Window {
                             hidden when root.chat_enter_hidden: {
                                 opacity: 0.15;
                                 in {
-                                    animate opacity { duration: 0ms; }
+                                    animate opacity { duration: 140ms; easing: ease-in; }
                                 }
                                 out {
                                     animate opacity { duration: 280ms; easing: ease-out; }
@@ -3113,6 +3379,10 @@ export component AppWindow inherits Window {
                         load_older_messages => { root.load_older_messages(); }
                         open_link(url) => { root.open_link(url); }
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
+                        open_image(img) => {
+                            root.image_viewer_source = img;
+                            root.show_image_viewer = true;
+                        }
                         click_command(cmd) => {
                             root.click_command(cmd);
                         }
@@ -3333,126 +3603,17 @@ export component AppWindow inherits Window {
                                             animate background { duration: 100ms; }
 
                                             Text {
-                                                text: e.code;
-                                                font-size: 20px;
+                                                text: e.is_custom ? ":" + e.name + ":" : e.code;
+                                                font-size: e.is_custom ? 10px : 20px;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
+                                                overflow: elide;
                                             }
 
                                             emoji_cell_ta := TouchArea {
                                                 mouse-cursor: pointer;
                                                 clicked => { root.select_emoji(e.code); }
                                             }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Discord-style Soundboard Panel Box
-                    if root.show_soundboard_panel : Rectangle {
-                        height: 220px;
-                        background: AppTheme.surface-sidebar;
-                        border-top-left-radius: 8px;
-                        border-top-right-radius: 8px;
-                        border-width: 1px;
-                        border-color: AppTheme.border-subtle;
-                        drop-shadow-blur: 10px;
-                        drop-shadow-color: AppTheme.surface-scrim;
-
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 8px;
-
-                            HorizontalLayout {
-                                spacing: 8px;
-                                alignment: space-between;
-
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {
-                                        text: "Painel de Sons";
-                                        color: AppTheme.text-strong;
-                                        font-size: 13px;
-                                        font-weight: 700;
-                                        vertical-alignment: center;
-                                    }
-                                    Rectangle {
-                                        background: AppTheme.surface-control;
-                                        border-radius: 4px;
-                                        height: 18px;
-                                        Text {
-                                            text: "Nitro-Free";
-                                            color: AppTheme.accent;
-                                            font-size: 10px;
-                                            font-weight: 800;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-
-                                Rectangle {
-                                    width: 22px;
-                                    height: 22px;
-                                    border-radius: 11px;
-                                    background: close_sb_ta.has-hover ? AppTheme.interactive-hover : transparent;
-
-                                    Image {
-                                        source: @image-url("../assets/x.svg");
-                                        width: 10px;
-                                        height: 10px;
-                                        colorize: AppTheme.text-muted;
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
-                                    }
-
-                                    close_sb_ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.show_soundboard_panel = false; }
-                                    }
-                                }
-                            }
-
-                            // Soundboard 2-row Grid
-                            VerticalLayout {
-                                vertical-stretch: 1;
-                                spacing: 6px;
-
-                                for srow in root.soundboard_rows: HorizontalLayout {
-                                    spacing: 8px;
-                                    for s in srow.sounds: Rectangle {
-                                        horizontal-stretch: 1;
-                                        height: 64px;
-                                        border-radius: 6px;
-                                        background: sb_cell_ta.has-hover ? AppTheme.interactive-selected : AppTheme.surface-elevated;
-                                        border-width: 1px;
-                                        border-color: sb_cell_ta.has-hover ? AppTheme.accent : AppTheme.border-subtle;
-                                        animate background { duration: 80ms; }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 4px;
-
-                                            Text {
-                                                text: s.icon;
-                                                font-size: 20px;
-                                                horizontal-alignment: center;
-                                            }
-
-                                            Text {
-                                                text: s.name;
-                                                color: AppTheme.text-strong;
-                                                font-size: 11px;
-                                                font-weight: 600;
-                                                horizontal-alignment: center;
-                                                overflow: elide;
-                                            }
-                                        }
-
-                                        sb_cell_ta := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => { root.play_soundboard_sound(s.id); }
                                         }
                                     }
                                 }
@@ -3639,33 +3800,6 @@ export component AppWindow inherits Window {
                                         } else if (root.chat_input_text != "") {
                                             root.send_message(root.chat_input_text);
                                             root.chat_input_text = "";
-                                            root.show_command_suggestions = false;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Soundboard trigger button
-                            Rectangle {
-                                width: 34px;
-                                height: 34px;
-                                border-radius: 6px;
-                                background: soundboard_btn_ta.has-hover ? AppTheme.interactive-hover : (root.show_soundboard_panel ? AppTheme.interactive-selected : transparent);
-                                animate background { duration: 80ms; }
-
-                                Text {
-                                    text: "🔊";
-                                    font-size: 16px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                soundboard_btn_ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.show_soundboard_panel = !root.show_soundboard_panel;
-                                        if (root.show_soundboard_panel) {
-                                            root.show_emoji_picker = false;
                                             root.show_command_suggestions = false;
                                         }
                                     }
@@ -4280,6 +4414,534 @@ export component AppWindow inherits Window {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                 root.drag_resize("top-right");
+            }
+        }
+    }
+
+    // Drives the "connecting / waiting for answer" pulse without touching Rust.
+    Timer {
+        interval: 700ms;
+        running: root.is_voice_connecting || (root.is_in_dm_call && root.voice_participants.length == 0);
+        triggered => { root.call_pulse = !root.call_pulse; }
+    }
+
+    // Channel / server edit dialog.
+    if root.show_edit_modal : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9600;
+        background: #00000099;
+
+        Rectangle {
+            width: 380px;
+            height: 260px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: AppTheme.surface-sidebar;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: AppTheme.border-subtle;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: root.edit_modal_title;
+                    color: AppTheme.text-strong;
+                    font-size: TypeScale.title;
+                    font-weight: 700;
+                }
+
+                Text { text: "Nombre"; color: AppTheme.text-muted; font-size: TypeScale.small; }
+                LineEdit {
+                    text <=> root.edit_name;
+                    placeholder-text: "Nombre";
+                }
+
+                if root.edit_show_topic : Text {
+                    text: "Tema (opcional)";
+                    color: AppTheme.text-muted;
+                    font-size: TypeScale.small;
+                }
+                if root.edit_show_topic : LineEdit {
+                    text <=> root.edit_topic;
+                    placeholder-text: "Tema del canal";
+                }
+                if root.edit_show_topic : CheckBox {
+                    text: "Canal NSFW";
+                    checked <=> root.edit_nsfw;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        clicked => { root.edit_modal_cancel(); }
+                    }
+                    Button {
+                        text: "Guardar";
+                        primary: true;
+                        clicked => { root.edit_modal_save(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Destructive-action confirmation.
+    if root.show_confirm_modal : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9700;
+        background: #00000099;
+
+        Rectangle {
+            width: 360px;
+            height: 190px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: AppTheme.surface-sidebar;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: AppTheme.border-subtle;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+
+                Text {
+                    text: root.confirm_title;
+                    color: AppTheme.text-strong;
+                    font-size: TypeScale.title;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.confirm_message;
+                    color: AppTheme.text-muted;
+                    font-size: TypeScale.body;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        clicked => { root.confirm_modal_cancel(); }
+                    }
+                    Button {
+                        text: "Confirmar";
+                        primary: true;
+                        clicked => { root.confirm_modal_accept(); }
+                    }
+                }
+            }
+        }
+    }
+
+                    // Discord-style Soundboard Panel Box
+                    if root.show_soundboard_panel : Rectangle {
+                        x: 72px + root.channel_sidebar_width + 8px;
+                        y: root.height - 292px;
+                        width: root.width - (72px + root.channel_sidebar_width) - 16px;
+                        z: 9400;
+                        height: 220px;
+                        background: AppTheme.surface-sidebar;
+                        border-top-left-radius: 8px;
+                        border-top-right-radius: 8px;
+                        border-width: 1px;
+                        border-color: AppTheme.border-subtle;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: AppTheme.surface-scrim;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Painel de Sons";
+                                        color: AppTheme.text-strong;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        background: AppTheme.surface-control;
+                                        border-radius: 4px;
+                                        height: 18px;
+                                        Text {
+                                            text: "Nitro-Free";
+                                            color: AppTheme.accent;
+                                            font-size: 10px;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: close_sb_ta.has-hover ? AppTheme.interactive-hover : transparent;
+
+                                    Image {
+                                        source: @image-url("../assets/x.svg");
+                                        width: 10px;
+                                        height: 10px;
+                                        colorize: AppTheme.text-muted;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    close_sb_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.show_soundboard_panel = false; }
+                                    }
+                                }
+                            }
+
+                            // Soundboard 2-row Grid
+                            VerticalLayout {
+                                vertical-stretch: 1;
+                                spacing: 6px;
+
+                                for srow in root.soundboard_rows: HorizontalLayout {
+                                    spacing: 8px;
+                                    for s in srow.sounds: Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 64px;
+                                        border-radius: 6px;
+                                        background: sb_cell_ta.has-hover ? AppTheme.interactive-selected : AppTheme.surface-elevated;
+                                        border-width: 1px;
+                                        border-color: sb_cell_ta.has-hover ? AppTheme.accent : AppTheme.border-subtle;
+                                        animate background { duration: 80ms; }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+
+                                            Text {
+                                                text: s.icon;
+                                                font-size: 20px;
+                                                horizontal-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: s.name;
+                                                color: AppTheme.text-strong;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        sb_cell_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.play_soundboard_sound(s.id); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+    // Context menu overlay. The transparent layer closes on any outside click;
+    // the menu itself is drawn after it so it wins the pointer.
+    if root.context_menu_open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9500;
+        background: transparent;
+
+        close_context_ta := TouchArea {
+            clicked => { root.context_menu_open = false; }
+        }
+
+        Rectangle {
+            x: min(root.context_menu_x, root.width - 240px);
+            y: min(root.context_menu_y, root.height - 40px);
+            width: 230px;
+            height: menu_layout.preferred-height + 12px;
+            background: #232428;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #3f4147;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            clip: true;
+
+            menu_layout := VerticalLayout {
+                padding: 6px;
+                spacing: 1px;
+
+                if root.context_menu_title != "" : Text {
+                    height: 20px;
+                    text: root.context_menu_title;
+                    color: #949BA4;
+                    font-size: 11px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+
+                if root.context_menu_show_voice_slider : VerticalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 2px;
+                    Text {
+                        text: root.context_menu_voice_slider_label;
+                        color: #DBDEE1;
+                        font-size: 11px;
+                    }
+                    VolumeSlider {
+                        track-length: 174px;
+                        show-labels: true;
+                        value: root.context_menu_voice_slider_value;
+                        changed(val) => {
+                            root.context_menu_voice_slider_value = val;
+                            root.context_menu_voice_slider_changed(val);
+                        }
+                    }
+                }
+
+                if root.context_menu_show_stream_slider : VerticalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 2px;
+                    Text {
+                        text: root.context_menu_stream_slider_label;
+                        color: #DBDEE1;
+                        font-size: 11px;
+                    }
+                    VolumeSlider {
+                        track-length: 174px;
+                        show-labels: true;
+                        value: root.context_menu_stream_slider_value;
+                        changed(val) => {
+                            root.context_menu_stream_slider_value = val;
+                            root.context_menu_stream_slider_changed(val);
+                        }
+                    }
+                }
+
+                for item in root.context_menu_items: Rectangle {
+                    height: item.kind == 1 ? 7px : (item.kind == 2 ? 22px : 28px);
+                    background: (item.kind == 0 && ctx_item_ta.has-hover && item.enabled) ? #3f4147 : transparent;
+                    border-radius: 4px;
+
+                    if item.kind == 1 : Rectangle {
+                        y: 3px;
+                        height: 1px;
+                        background: #3f4147;
+                    }
+
+                    if item.kind == 2 : Text {
+                        text: item.label;
+                        color: #949BA4;
+                        font-size: 10px;
+                        font-weight: 800;
+                        vertical-alignment: center;
+                    }
+
+                    if item.kind == 0 : HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            width: 18px;
+                            text: item.checked ? "✓" : item.icon;
+                            color: item.danger ? #F23F43 : #DBDEE1;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: item.label;
+                            color: !item.enabled ? #6D6F78 : (item.danger ? #F23F43 : #DBDEE1);
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if item.submenu : Text {
+                            text: "›";
+                            color: #949BA4;
+                            font-size: 15px;
+                            vertical-alignment: center;
+                        }
+
+                    }
+
+                    ctx_item_ta := TouchArea {
+                        enabled: item.kind == 0 && item.enabled;
+                        mouse-cursor: item.enabled ? pointer : default;
+                        clicked => {
+                            if (item.kind == 0 && item.enabled) {
+                                if (item.submenu) {
+                                    root.context_menu_submenu_request(item.id);
+                                } else {
+                                    root.context_menu_open = false;
+                                    root.context_menu_submenu_open = false;
+                                    root.context_menu_action(item.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Nested submenu, drawn to the right of the main menu.
+        if root.context_menu_submenu_open : Rectangle {
+            x: min(root.context_menu_x + 236px, root.width - 240px);
+            y: min(root.context_menu_y, root.height - 40px);
+            width: 220px;
+            height: submenu_layout.preferred-height + 12px;
+            background: #232428;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #3f4147;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            clip: true;
+
+            submenu_layout := VerticalLayout {
+                padding: 6px;
+                spacing: 1px;
+
+                if root.context_menu_submenu_title != "" : Text {
+                    height: 20px;
+                    text: root.context_menu_submenu_title;
+                    color: #949BA4;
+                    font-size: 11px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+
+                for item in root.context_menu_submenu_items: Rectangle {
+                    height: item.kind == 1 ? 7px : (item.kind == 2 ? 22px : 28px);
+                    background: (item.kind == 0 && ctx_sub_item_ta.has-hover && item.enabled) ? #3f4147 : transparent;
+                    border-radius: 4px;
+
+                    if item.kind == 1 : Rectangle {
+                        y: 3px;
+                        height: 1px;
+                        background: #3f4147;
+                    }
+
+                    if item.kind == 2 : Text {
+                        text: item.label;
+                        color: #949BA4;
+                        font-size: 10px;
+                        font-weight: 800;
+                        vertical-alignment: center;
+                    }
+
+                    if item.kind == 0 : HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            width: 18px;
+                            text: item.checked ? "✓" : item.icon;
+                            color: item.danger ? #F23F43 : #DBDEE1;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: item.label;
+                            color: !item.enabled ? #6D6F78 : (item.danger ? #F23F43 : #DBDEE1);
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+
+                    ctx_sub_item_ta := TouchArea {
+                        enabled: item.kind == 0 && item.enabled;
+                        mouse-cursor: item.enabled ? pointer : default;
+                        clicked => {
+                            if (item.kind == 0 && item.enabled) {
+                                root.context_menu_open = false;
+                                root.context_menu_submenu_open = false;
+                                root.context_menu_action(item.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Full-window lightbox (opened by clicking a downloaded attachment).
+    if root.show_image_viewer : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9000;
+        background: #000000E6;
+
+        Image {
+            x: 24px;
+            y: 24px;
+            width: parent.width - 48px;
+            height: parent.height - 48px;
+            source: root.image_viewer_source;
+            image-fit: contain;
+        }
+
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.show_image_viewer = false; }
+        }
+
+        Rectangle {
+            x: parent.width - 52px;
+            y: 14px;
+            width: 34px;
+            height: 34px;
+            border-radius: 17px;
+            background: #FFFFFF22;
+            z: 1;
+
+            Text {
+                text: "✕";
+                color: #FFFFFF;
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            close_viewer_ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.show_image_viewer = false; }
             }
         }
     }
@@ -6125,36 +6787,12 @@ export component PopoutStreamWindow inherits Window {
 
                     VerticalLayout {
                         alignment: center;
-                        Rectangle {
-                            width: 65px;
-                            height: 6px;
-                            background: AppTheme.interactive-hover;
-                            border-radius: 3px;
-
-                            // Volume fill bar
-                            Rectangle {
-                                x: 0;
-                                y: 0;
-                                width: parent.width * (root.stream_volume.clamp(0.0, 1.0));
-                                height: 100%;
-                                background: root.stream_volume <= 0.01 ? AppTheme.danger : AppTheme.accent;
-                                border-radius: 3px;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                    root.stream_volume = new_vol;
-                                    root.stream_volume_changed(root.user_id, new_vol);
-                                }
-                                moved => {
-                                    if self.pressed {
-                                        let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                        root.stream_volume = new_vol;
-                                        root.stream_volume_changed(root.user_id, new_vol);
-                                    }
-                                }
+                        VolumeSlider {
+                            track-length: 110px;
+                            value: root.stream_volume;
+                            changed(val) => {
+                                root.stream_volume = val;
+                                root.stream_volume_changed(root.user_id, val);
                             }
                         }
                     }

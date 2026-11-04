@@ -383,6 +383,30 @@ pub fn update_voice_member_rows(ui: &AppWindow, changed: &[(String, u64, bool, b
     }
 }
 
+/// Repaints a member's role badge/color after a role was assigned or removed.
+/// The role store is already updated; this only refreshes existing voice rows,
+/// so the sidebar does not rebuild on every role toggle.
+pub fn refresh_member_role_rows(ui: &AppWindow, guild_id: &str, user_id: u64) {
+    let (role_name, role_color) = gateway::member_display_role(guild_id, user_id)
+        .map(|(name, color)| (name, color))
+        .unwrap_or_default();
+    let marker = format!(":{user_id}");
+    let channels = ui.get_channels();
+    for index in 0..channels.row_count() {
+        let Some(mut row) = channels.row_data(index) else { continue };
+        if !row.is_voice_member || !row.id.ends_with(&marker) {
+            continue;
+        }
+        row.role_name = role_name.as_str().into();
+        row.role_color = slint::Color::from_rgb_u8(
+            ((role_color >> 16) & 0xff) as u8,
+            ((role_color >> 8) & 0xff) as u8,
+            (role_color & 0xff) as u8,
+        );
+        channels.set_row_data(index, row);
+    }
+}
+
 pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
     let resolved = match lang {
         i18n::Language::Auto => i18n::detect_os_language(),
@@ -797,6 +821,9 @@ pub struct CommandSuggestionItem {
     pub param_name: String,
     pub param_desc: String,
     pub is_required: bool,
+    /// Discord application command option type: 3 string, 4 integer,
+    /// 5 boolean, 6 user, 7 channel, 8 role, 9 mentionable, 10 number.
+    pub option_type: i32,
 }
 
 pub static MASTER_COMMAND_SUGGESTIONS: std::sync::OnceLock<Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>>> = std::sync::OnceLock::new();
@@ -815,6 +842,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "query".to_string(),
                 param_desc: "Nome da música ou link do YouTube/Spotify".to_string(),
                 is_required: true,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/skip".to_string(),
@@ -827,6 +855,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/stop".to_string(),
@@ -839,6 +868,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/pause".to_string(),
@@ -851,6 +881,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/resume".to_string(),
@@ -863,6 +894,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/queue".to_string(),
@@ -875,6 +907,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/nowplaying".to_string(),
@@ -887,6 +920,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/247".to_string(),
@@ -899,126 +933,211 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
         ]))
     }).clone()
 }
 
+static COMMAND_INDEX_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn command_items_from_index(data: &serde_json::Value) -> Vec<CommandSuggestionItem> {
+    use std::collections::HashSet;
+
+    let mut app_names: HashMap<String, String> = HashMap::new();
+    if let Some(apps) = data["applications"].as_array() {
+        for app in apps {
+            let app_id = app["id"].as_str().unwrap_or("").to_string();
+            let app_name = app["name"]
+                .as_str()
+                .or_else(|| app["bot"]["global_name"].as_str())
+                .or_else(|| app["bot"]["username"].as_str())
+                .unwrap_or("")
+                .to_string();
+            if !app_id.is_empty() && !app_name.is_empty() {
+                app_names.insert(app_id, app_name);
+            }
+        }
+    }
+
+    let mut items: Vec<CommandSuggestionItem> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    if let Some(commands) = data["application_commands"].as_array() {
+        for command in commands {
+            // 1 = CHAT_INPUT. USER/MESSAGE/ENTRY_POINT commands are invoked from
+            // their own context menus, not from the composer.
+            if command["type"].as_i64().unwrap_or(1) != 1 {
+                continue;
+            }
+            let name = command["name"].as_str().unwrap_or("");
+            let app_id = command["application_id"].as_str().unwrap_or("");
+            let cmd_id = command["id"].as_str().unwrap_or("");
+            if name.is_empty() || app_id.is_empty() || cmd_id.is_empty() {
+                continue;
+            }
+            if !seen.insert((app_id.to_string(), cmd_id.to_string())) {
+                continue;
+            }
+
+            let description = command["description"]
+                .as_str()
+                .or_else(|| command["description_default"].as_str())
+                .unwrap_or("");
+            let version = command["version"].as_str().unwrap_or("");
+            let app_name = app_names
+                .get(app_id)
+                .cloned()
+                .unwrap_or_else(|| "Bot".to_string());
+
+            let mut param_name = String::new();
+            let mut param_desc = String::new();
+            let mut is_required = false;
+            let mut option_type = 3;
+            if let Some(options) = command["options"].as_array() {
+                // The composer currently exposes one argument. Prefer the first
+                // required scalar option; subcommands (types 1/2) need a richer
+                // wizard and are intentionally not flattened into a wrong payload.
+                let option = options
+                    .iter()
+                    .filter(|option| {
+                        !matches!(option["type"].as_i64().unwrap_or(0), 1 | 2)
+                    })
+                    .find(|option| option["required"].as_bool().unwrap_or(false))
+                    .or_else(|| {
+                        options
+                            .iter()
+                            .find(|option| !matches!(option["type"].as_i64().unwrap_or(0), 1 | 2))
+                    });
+                if let Some(option) = option {
+                    param_name = option["name"].as_str().unwrap_or("").to_string();
+                    param_desc = option["description"].as_str().unwrap_or("").to_string();
+                    is_required = option["required"].as_bool().unwrap_or(false);
+                    option_type = option["type"].as_i64().unwrap_or(3) as i32;
+                }
+            }
+
+            let usage = if param_name.is_empty() {
+                format!("/{name}")
+            } else if is_required {
+                format!("/{name} <{param_name}>")
+            } else {
+                format!("/{name} [{param_name}]")
+            };
+            items.push(CommandSuggestionItem {
+                name: format!("/{name}"),
+                desc: description.to_string(),
+                usage,
+                app_id: app_id.to_string(),
+                app_name,
+                cmd_id: cmd_id.to_string(),
+                version: version.to_string(),
+                param_name,
+                param_desc,
+                is_required,
+                option_type,
+            });
+        }
+    }
+    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    items
+}
+
+fn publish_command_items(app_weak: &slint::Weak<AppWindow>, items: Vec<CommandSuggestionItem>) {
+    let count = items.len();
+    if let Ok(mut master) = get_master_command_suggestions().lock() {
+        master.clear();
+        master.extend(items.clone());
+    }
+    let slint_suggestions: Vec<CommandSuggestion> = items
+        .into_iter()
+        .map(|item| CommandSuggestion {
+            name: item.name.into(),
+            desc: item.desc.into(),
+            usage: item.usage.into(),
+            app_id: item.app_id.into(),
+            app_name: item.app_name.into(),
+            cmd_id: item.cmd_id.into(),
+            version: item.version.into(),
+            param_name: item.param_name.into(),
+            param_desc: item.param_desc.into(),
+            is_required: item.is_required,
+        })
+        .collect();
+    let app_weak = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_weak.upgrade() {
+            let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
+            ui.set_command_suggestions(model.into());
+            if count == 0 {
+                info!("No hay comandos de aplicación disponibles en este ámbito");
+            } else {
+                info!("✅ Carregados {} comandos de aplicación", count);
+            }
+        }
+    });
+}
+
+/// Loads guild and user-installed application commands together. The guild
+/// index covers commands installed in the server; the user index covers global
+/// commands and apps installed only to the account (including DMs).
 pub async fn load_guild_command_index(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
     guild_id: &str,
 ) {
-    if guild_id.is_empty() || guild_id == "@me" {
+    if guild_id.is_empty() {
         return;
     }
-    match http.get_guild_application_command_index(guild_id).await {
-        Ok(data) => {
-            // Build map of application_id -> Application / Bot Name
-            let mut app_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-            if let Some(apps) = data["applications"].as_array() {
-                for app in apps {
-                    let app_id = app["id"].as_str().unwrap_or("").to_string();
-                    let app_name = app["name"].as_str()
-                        .or_else(|| app["bot"]["global_name"].as_str())
-                        .or_else(|| app["bot"]["username"].as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !app_id.is_empty() && !app_name.is_empty() {
-                        app_names.insert(app_id, app_name);
-                    }
-                }
+    let generation = COMMAND_INDEX_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut items = Vec::new();
+    let mut loaded_any = false;
+
+    if guild_id != "@me" {
+        let (guild_index, user_index) = tokio::join!(
+            http.get_guild_application_command_index(guild_id),
+            http.get_user_application_command_index()
+        );
+        match guild_index {
+            Ok(data) => {
+                loaded_any = true;
+                items.extend(command_items_from_index(&data));
             }
-
-            if let Some(cmds) = data["application_commands"].as_array() {
-                let mut items: Vec<CommandSuggestionItem> = Vec::new();
-                for cmd in cmds {
-                    let name = cmd["name"].as_str().unwrap_or("");
-                    if name.is_empty() { continue; }
-                    let desc = cmd["description"].as_str().unwrap_or("");
-                    let app_id = cmd["application_id"].as_str().unwrap_or("");
-                    let cmd_id = cmd["id"].as_str().unwrap_or("");
-                    let version = cmd["version"].as_str().unwrap_or("");
-                    let app_name = app_names.get(app_id).cloned().unwrap_or_else(|| {
-                        if !app_id.is_empty() { "Bot".to_string() } else { String::new() }
-                    });
-                    
-                    let mut param_name = String::new();
-                    let mut param_desc = String::new();
-                    let mut is_required = false;
-                    
-                    if let Some(opts) = cmd["options"].as_array() {
-                        // Find first required option, or fallback to first option if present
-                        let required_opt = opts.iter().find(|o| o["required"].as_bool().unwrap_or(false));
-                        if let Some(opt) = required_opt {
-                            param_name = opt["name"].as_str().unwrap_or("").to_string();
-                            param_desc = opt["description"].as_str().unwrap_or("").to_string();
-                            is_required = true;
-                        } else if let Some(opt) = opts.first() {
-                            // Option is optional — do not force a required parameter pill
-                            let opt_name = opt["name"].as_str().unwrap_or("");
-                            let opt_desc = opt["description"].as_str().unwrap_or("");
-                            param_desc = format!("Opcional: {} ({})", opt_name, opt_desc);
-                            is_required = false;
-                        }
-                    }
-                    
-                    let usage = if param_name.is_empty() {
-                        format!("/{}", name)
-                    } else if is_required {
-                        format!("/{} <{}>", name, param_name)
-                    } else {
-                        format!("/{} [{}]", name, param_name)
-                    };
-                    
-                    items.push(CommandSuggestionItem {
-                        name: format!("/{}", name),
-                        desc: desc.to_string(),
-                        usage,
-                        app_id: app_id.to_string(),
-                        app_name,
-                        cmd_id: cmd_id.to_string(),
-                        version: version.to_string(),
-                        param_name,
-                        param_desc,
-                        is_required,
-                    });
-                }
-                
-                if !items.is_empty() {
-                    let count = items.len();
-                    if let Ok(mut master) = get_master_command_suggestions().lock() {
-                        master.clear();
-                        master.extend(items.clone());
-                    }
-
-                    let slint_suggestions: Vec<CommandSuggestion> = items.into_iter().map(|item| CommandSuggestion {
-                        name: item.name.into(),
-                        desc: item.desc.into(),
-                        usage: item.usage.into(),
-                        app_id: item.app_id.into(),
-                        app_name: item.app_name.into(),
-                        cmd_id: item.cmd_id.into(),
-                        version: item.version.into(),
-                        param_name: item.param_name.into(),
-                        param_desc: item.param_desc.into(),
-                        is_required: item.is_required,
-                    }).collect();
-
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_weak.upgrade() {
-                            let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
-                            ui.set_command_suggestions(model.into());
-                            info!("✅ Carregados {} comandos inteligentes reais dos bots do servidor com identificadores!", count);
-                        }
-                    });
-                }
+            Err(error) => {
+                warn!("No se pudo cargar el índice del servidor {}: {}", guild_id, error);
             }
         }
-        Err(e) => {
-            warn!("Não foi possível carregar o índice de comandos do servidor {}: {}", guild_id, e);
+        match user_index {
+            Ok(data) => {
+                loaded_any = true;
+                items.extend(command_items_from_index(&data));
+            }
+            Err(error) => {
+                warn!("No se pudo cargar el índice global de comandos: {}", error);
+            }
+        }
+    } else {
+        match http.get_user_application_command_index().await {
+            Ok(data) => {
+                loaded_any = true;
+                items.extend(command_items_from_index(&data));
+            }
+            Err(error) => warn!("No se pudo cargar el índice global de comandos: {}", error),
         }
     }
+
+    if generation != COMMAND_INDEX_GENERATION.load(Ordering::Acquire) {
+        return;
+    }
+    if !loaded_any {
+        // Both indexes failed. Clear instead of leaving commands from the
+        // previous server active in the composer.
+        publish_command_items(&app_weak, Vec::new());
+        return;
+    }
+    // A command can appear in both indexes. Keep one entry per app/command id.
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert((item.app_id.clone(), item.cmd_id.clone())));
+    publish_command_items(&app_weak, items);
 }
 
 pub fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, app_weak: &slint::Weak<AppWindow>) -> slint::ModelRc<MessageLine> {
@@ -1205,6 +1324,18 @@ pub fn channel_drop_row(rows: &[ChannelItem], from: usize, dy: f32) -> usize {
     tops.iter().rposition(|&t| t <= centre).unwrap_or(0)
 }
 
+/// Resolves the row under a dragged voice member to a voice channel row. A
+/// member row maps to its parent voice channel, so dropping anywhere over the
+/// participant cluster works like Discord.
+pub fn voice_member_drop_row(rows: &[ChannelItem], from: usize, dy: f32) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    let target = channel_drop_row(rows, from, dy);
+    let row = rows.get(target)?;
+    (row.is_voice || row.is_voice_member).then_some(target)
+}
+
 pub fn build_ui_channels(
     channels_data: &[ChannelData],
     collapsed_cats: &std::collections::HashSet<String>,
@@ -1276,8 +1407,16 @@ pub fn build_ui_channels(
                 let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(user_id);
                 let (is_muted_saved, _, _) = gateway::get_user_audio_settings(&user_id.to_string());
                 let final_muted = is_muted_flag || is_muted_saved;
+                let (role_name, role_color) = gateway::get_user_display_role(user_id).unwrap_or_default();
+                let (is_screen_streaming, is_camera_streaming) = if is_self_member {
+                    let camera = crate::native_video::camera::is_camera_wanted();
+                    (crate::screen_capture::is_self_streaming() && !camera, camera)
+                } else {
+                    crate::screen_capture::get_user_stream_flags(user_id)
+                };
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
+                    user_id: user_id.to_string().into(),
                     name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
@@ -1288,9 +1427,17 @@ pub fn build_ui_channels(
                     } else {
                         crate::screen_capture::peer_is_streaming(user_id)
                     },
+                    is_screen_streaming,
+                    is_camera_streaming,
                     is_muted: final_muted,
                     is_deafened: is_deaf_flag,
                     is_self_member,
+                    role_name: role_name.into(),
+                    role_color: slint::Color::from_rgb_u8(
+                        ((role_color >> 16) & 0xFF) as u8,
+                        ((role_color >> 8) & 0xFF) as u8,
+                        (role_color & 0xFF) as u8,
+                    ),
                     parent_channel_id: ch.id.clone().into(),
                     avatar_text: avatar_text.into(),
                     avatar_slot: crate::utils::avatar_cache::get_avatar_cache().slot_for(&avatar_url),
@@ -1677,4 +1824,99 @@ pub fn refresh_emoji_in_messages(ui: &AppWindow, emoji_id: &str, img: &slint::Im
     let mut images = HashMap::new();
     images.insert(emoji_id.to_string(), img.clone());
     refresh_emojis_in_messages(ui, &images);
+}
+
+#[cfg(test)]
+mod command_index_tests {
+    use super::*;
+
+    #[test]
+    fn command_index_keeps_chat_input_commands_and_typed_options() {
+        let index = serde_json::json!({
+            "applications": [
+                {"id": "app-1", "name": "Example"}
+            ],
+            "application_commands": [
+                {
+                    "id": "cmd-1",
+                    "application_id": "app-1",
+                    "version": "v1",
+                    "type": 1,
+                    "name": "volume",
+                    "description": "Set volume",
+                    "options": [
+                        {"type": 4, "name": "percent", "description": "0-200", "required": true}
+                    ]
+                },
+                {
+                    "id": "cmd-2",
+                    "application_id": "app-1",
+                    "type": 2,
+                    "name": "User context",
+                    "description": ""
+                }
+            ]
+        });
+
+        let items = command_items_from_index(&index);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "/volume");
+        assert_eq!(items[0].option_type, 4);
+        assert!(items[0].is_required);
+        assert_eq!(items[0].usage, "/volume <percent>");
+    }
+
+    #[test]
+    fn command_index_deduplicates_the_same_application_command() {
+        let command = serde_json::json!({
+            "id": "cmd-1",
+            "application_id": "app-1",
+            "type": 1,
+            "name": "ping",
+            "description": "Ping"
+        });
+        let index = serde_json::json!({
+            "applications": [{"id": "app-1", "name": "Example"}],
+            "application_commands": [command, command]
+        });
+
+        assert_eq!(command_items_from_index(&index).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod member_drag_tests {
+    use super::*;
+
+    fn row(id: &str, voice: bool, member: bool, parent: &str) -> ChannelItem {
+        ChannelItem {
+            id: id.into(),
+            name: id.into(),
+            is_voice: voice,
+            is_voice_member: member,
+            parent_channel_id: parent.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dropping_a_member_on_a_voice_cluster_targets_its_channel() {
+        let rows = vec![
+            row("voice-1", true, false, ""),
+            row("voice-member:voice-1:1", false, true, "voice-1"),
+            row("voice-2", true, false, ""),
+            row("voice-member:voice-2:2", false, true, "voice-2"),
+        ];
+        // From the first member row, moving down past voice-2 lands on its cluster.
+        assert_eq!(voice_member_drop_row(&rows, 1, 20.0), Some(2));
+    }
+
+    #[test]
+    fn dropping_a_member_on_a_text_channel_is_rejected() {
+        let rows = vec![
+            row("voice-member:voice-1:1", false, true, "voice-1"),
+            row("text-1", false, false, ""),
+        ];
+        assert_eq!(voice_member_drop_row(&rows, 0, 50.0), None);
+    }
 }

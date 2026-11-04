@@ -218,6 +218,13 @@ pub fn play_soundboard_effect(sound_id: &str) {
     std::thread::Builder::new()
         .name(format!("soundboard-{}", sound_name))
         .spawn(move || {
+            // Server/default Discord sounds are snowflake ids: stream them from the CDN.
+            let sound_id = sound_name.split(':').last().unwrap_or(&sound_name);
+            if !sound_id.is_empty() && sound_id.chars().all(|c| c.is_ascii_digit()) {
+                play_remote_soundboard_effect(sound_id);
+                return;
+            }
+
             // 1. First check if a custom user WAV exists in soundboard dir
             let custom_path = get_soundboard_dir().join(format!("{}.wav", sound_name));
             let samples = if custom_path.exists() {
@@ -231,36 +238,152 @@ pub fn play_soundboard_effect(sound_id: &str) {
                 return;
             }
 
-            // 2. Stream into voice mic queue in standard Discord 20ms frames (960 samples @ 48kHz)
-            let chunk_size = 960;
-            let pcm_queue = crate::gateway::get_mic_pcm_queue();
-
-            for chunk in samples.chunks(chunk_size) {
-                if let Ok(mut q) = pcm_queue.lock() {
-                    for &s in chunk {
-                        if q.len() < 96000 {
-                            q.push_back(s.clamp(-1.0, 1.0));
-                        }
-                    }
-                }
-                crate::gateway::MIC_FRAME_READY.notify_one();
-
-                // Also feed into local loopback so the local user hears their soundboard
-                if let Ok(mut loop_q) = crate::gateway::get_mic_loopback_queue().lock() {
-                    for &s in chunk {
-                        if loop_q.len() < 96000 {
-                            loop_q.push_back(s.clamp(-1.0, 1.0));
-                        }
-                    }
-                }
-
-                // Throttle pacing to 20ms per frame
-                std::thread::sleep(Duration::from_millis(19));
-            }
-
+            // The user must hear their own soundboard even when mic loopback is
+            // disabled, so play it on the speakers as well as injecting it.
+            crate::audio::sound_effects::play_samples_local(samples.clone());
+            inject_samples(&samples);
             info!("✅ [SOUNDBOARD] Efeito sonoro '{}' transmitido com sucesso!", sound_name);
         })
         .expect("Falha ao iniciar thread de soundboard");
+}
+
+/// Streams 48 kHz mono samples into the mic path and the local loopback in
+/// Discord-sized 20 ms frames, pacing the writes so the queues do not run
+/// ahead of real time.
+fn inject_samples(samples: &[f32]) {
+    let chunk_size = 960;
+    let pcm_queue = crate::gateway::get_mic_pcm_queue();
+    for chunk in samples.chunks(chunk_size) {
+        if let Ok(mut q) = pcm_queue.lock() {
+            for &s in chunk {
+                if q.len() < 96000 {
+                    q.push_back(s.clamp(-1.0, 1.0));
+                }
+            }
+        }
+        crate::gateway::MIC_FRAME_READY.notify_one();
+
+        if let Ok(mut loop_q) = crate::gateway::get_mic_loopback_queue().lock() {
+            for &s in chunk {
+                if loop_q.len() < 96000 {
+                    loop_q.push_back(s.clamp(-1.0, 1.0));
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(19));
+    }
+}
+
+/// Downloads a Discord soundboard sound (Ogg/Opus) and plays it locally and in
+/// the current voice channel. `sound_id` is the snowflake returned by the API.
+pub fn play_remote_soundboard_effect(sound_id: &str) {
+    if sound_id.is_empty() {
+        return;
+    }
+    let id = sound_id.to_string();
+    std::thread::Builder::new()
+        .name(format!("soundboard-net-{}", &id[..id.len().min(8)]))
+        .spawn(move || {
+            let url = format!("https://cdn.discordapp.com/soundboard-sounds/{}", id);
+            let resp = match reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .and_then(|c| c.get(&url).send())
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("[SOUNDBOARD] Falha ao baixar som {}: {:?}", id, e);
+                    return;
+                }
+            };
+            if !resp.status().is_success() {
+                warn!("[SOUNDBOARD] CDN respondeu {} para o som {}", resp.status(), id);
+                return;
+            }
+            let bytes = match resp.bytes() {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("[SOUNDBOARD] Falha ao ler som {}: {:?}", id, e);
+                    return;
+                }
+            };
+            match decode_ogg_opus(&bytes) {
+                Ok(samples) if !samples.is_empty() => {
+                    info!("[SOUNDBOARD] Som remoto {} decodificado ({} muestras).", id, samples.len());
+                    crate::audio::sound_effects::play_samples_local(samples);
+                }
+                Ok(_) => warn!("[SOUNDBOARD] Som {} sem samples de áudio.", id),
+                Err(e) => warn!("[SOUNDBOARD] Não foi possível decodificar {}: {}", id, e),
+            }
+        })
+        .ok();
+}
+
+/// Minimal Ogg container reader for Opus streams (OpusHead/OpusTags skipped).
+fn decode_ogg_opus(bytes: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut packets: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
+    let mut pos = 0usize;
+    while pos + 27 <= bytes.len() {
+        if &bytes[pos..pos + 4] != b"OggS" {
+            break;
+        }
+        let segments = bytes[pos + 26] as usize;
+        if pos + 27 + segments > bytes.len() {
+            break;
+        }
+        let table = &bytes[pos + 27..pos + 27 + segments];
+        let mut data_pos = pos + 27 + segments;
+        let mut page_ok = true;
+        for &lace in table {
+            let len = lace as usize;
+            if data_pos + len > bytes.len() {
+                page_ok = false;
+                break;
+            }
+            current.extend_from_slice(&bytes[data_pos..data_pos + len]);
+            data_pos += len;
+            if len < 255 {
+                packets.push(std::mem::take(&mut current));
+            }
+        }
+        if !page_ok {
+            break;
+        }
+        pos = data_pos;
+    }
+
+    let mut channels = 2usize;
+    let mut decoder: Option<opus_rs::OpusDecoder> = None;
+    let mut out = Vec::new();
+    let mut pcm = vec![0.0f32; 5760 * 2];
+    for packet in packets {
+        if packet.starts_with(b"OpusHead") {
+            if packet.len() > 9 {
+                channels = packet[9] as usize;
+                if channels == 0 {
+                    channels = 1;
+                }
+            }
+            decoder = opus_rs::OpusDecoder::new(48000, channels).ok();
+            continue;
+        }
+        if packet.starts_with(b"OpusTags") {
+            continue;
+        }
+        let Some(dec) = decoder.as_mut() else { continue };
+        if let Ok(frames) = dec.decode(&packet, 5760, &mut pcm[..]) {
+            if channels >= 2 {
+                for i in 0..frames {
+                    out.push((pcm[i * 2] + pcm[i * 2 + 1]) * 0.5);
+                }
+            } else {
+                out.extend_from_slice(&pcm[..frames]);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Simple 16-bit PCM WAV loader fallback with auto-resampling to 48kHz

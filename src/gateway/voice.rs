@@ -223,6 +223,19 @@ pub async fn connect_voice_gateway(
                 // re-sent once the session description is complete.
                 let native_wants: Arc<std::sync::Mutex<std::collections::HashSet<u32>>> =
                     Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+                // Local video SSRCs assigned by the voice server in opcode 2 Ready.
+                // Camera video travels on this same connection.
+                let local_video_ssrc: Arc<std::sync::Mutex<(u32, u32)>> =
+                    Arc::new(std::sync::Mutex::new((0, 0)));
+                // The UDP socket and target are created inside the audio task; the
+                // camera pump needs them once the Session Description (op 4) arrives.
+                let parent_socket: Arc<std::sync::Mutex<Option<Arc<UdpSocket>>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                let parent_target: Arc<std::sync::Mutex<Option<std::net::SocketAddr>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                // One nonce counter for every packet encrypted with the parent key
+                // (microphone RTP, RTCP feedback and camera RTP).
+                let parent_nonce = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
                 // Create DAVE (Discord Audio/Video E2EE) session using the davey crate
                 let uid_num: u64 = user_id.parse().unwrap_or(0);
@@ -324,6 +337,34 @@ pub async fn connect_voice_gateway(
 
                                     let voice_ip = val["d"]["ip"].as_str().unwrap_or("").to_string();
                                     let voice_port = val["d"]["port"].as_u64().unwrap_or(0) as u16;
+
+                                    // Voice Ready assigns the local video SSRCs when Identify
+                                    // asked for `video: true`.  Camera uses them; without them
+                                    // op 12 would announce an SSRC the server never allocated.
+                                    let parsed_video = val["d"]["streams"]
+                                        .as_array()
+                                        .and_then(|streams| {
+                                            streams
+                                                .iter()
+                                                .find(|s| s["type"].as_str() == Some("video") && s["rid"].as_str() == Some("100"))
+                                                .or_else(|| streams.iter().find(|s| s["type"].as_str() == Some("video")))
+                                                .or_else(|| streams.first())
+                                        })
+                                        .and_then(|stream| {
+                                            let video = stream["ssrc"].as_u64().unwrap_or(0) as u32;
+                                            let rtx = stream["rtx_ssrc"].as_u64().unwrap_or(video.saturating_add(1) as u64) as u32;
+                                            (video != 0).then_some((video, rtx))
+                                        })
+                                        .unwrap_or_else(|| {
+                                            // Discord usually assigns RTX as the next SSRC when the
+                                            // stream list is omitted.
+                                            ((ssrc.saturating_add(1)), ssrc.saturating_add(2))
+                                        });
+                                    *local_video_ssrc.lock().unwrap() = parsed_video;
+                                    info!(
+                                        "🎥 [NATIVE VIDEO] SSRCs locais: audio={}, video={}, rtx={}",
+                                        ssrc, parsed_video.0, parsed_video.1
+                                    );
 
                                     // Seleciona o melhor modo de criptografia oferecido (prioriza XChaCha20Poly1305 ou AES-256-GCM)
                                     let offered_modes: Vec<&str> = val["d"]["modes"].as_array()
@@ -460,6 +501,9 @@ pub async fn connect_voice_gateway(
                                         let native_mode_audio = Arc::clone(&native_mode);
                                         let self_mute_rx = Arc::clone(&self_mute_state);
                                         let diag_audio = Arc::clone(&voice_diag);
+                                        let parent_socket_slot = Arc::clone(&parent_socket);
+                                        let parent_target_slot = Arc::clone(&parent_target);
+                                        let parent_nonce_udp = Arc::clone(&parent_nonce);
 
                                         tokio::spawn(async move {
                                             let socket = match UdpSocket::bind("0.0.0.0:0").await {
@@ -468,6 +512,13 @@ pub async fn connect_voice_gateway(
                                             };
                                                 let target_addr = format!("{}:{}", voice_ip, voice_port);
                                                 info!("Socket UDP de Voz conectado a {}", target_addr);
+                                                // Camera video shares this socket with the microphone.
+                                                if let Ok(mut slot) = parent_socket_slot.lock() {
+                                                    *slot = Some(Arc::clone(&socket));
+                                                }
+                                                if let Ok(mut slot) = parent_target_slot.lock() {
+                                                    *slot = target_addr.parse().ok();
+                                                }
 
                                                 // 1. Send 74-byte UDP IP Discovery Packet (RFC / Discord spec: 2 bytes type, 2 bytes len, 4 bytes ssrc, 64 bytes addr, 2 bytes port)
                                                 let mut discovery = [0u8; 74];
@@ -568,13 +619,17 @@ pub async fn connect_voice_gateway(
                                                 // connection (audio RTP and RTCP feedback), as the
                                                 // `*_rtpsize` modes expect.  Each sender takes its value
                                                 // with fetch_add, so no nonce is ever reused.
-                                                let outbound_nonce = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                                                let outbound_nonce = Arc::clone(&parent_nonce_udp);
                                                 let outbound_nonce_rx = Arc::clone(&outbound_nonce);
                                                 let diag_rx = Arc::clone(&diag_audio);
                                                 tokio::spawn(async move {
                                                     let mut opus_decoders: HashMap<(u32, usize), OpusDecoder> = HashMap::new();
                                                     let mut ssrc_last_pkt_time: HashMap<u32, std::time::Instant> = HashMap::new();
                                                     let mut ssrc_expected_seq: HashMap<u32, u16> = HashMap::new();
+                                                    // Last valid Opus TOC per SSRC. `opus-rs` only runs
+                                                    // packet-loss concealment for a 1-byte ToC packet;
+                                                    // an empty slice is rejected before PLC can run.
+                                                    let mut ssrc_last_toc: HashMap<u32, u8> = HashMap::new();
                                                     let mut recv_buf = vec![0u8; 4096];
                                                     let mut pcm_out_buf = vec![0.0f32; 11520];
                                                     let mut detected_ssrcs = std::collections::HashSet::new();
@@ -618,7 +673,16 @@ pub async fn connect_voice_gateway(
                                                                 if pt != 120 {
                                                                     // Video (H264) and RTCP share this socket with Opus;
                                                                     // the native receiver ignores audio and unknown SSRCs.
-                                                                    native_session.ingest(&native_ctx, pkt);
+                                                                    if crate::native_video::rtp::is_rtcp(pkt)
+                                                                        && crate::native_video::rtcp::wants_keyframe(pkt)
+                                                                    {
+                                                                        // The SFU asks the camera/screen sender on this
+                                                                        // connection for a new IDR (viewer joined or lost
+                                                                        // the reference frame).
+                                                                        crate::screen_capture::types::request_intra_keyframe();
+                                                                    } else {
+                                                                        native_session.ingest(&native_ctx, pkt);
+                                                                    }
                                                                     if last_native_tick.elapsed() >= Duration::from_secs(1) {
                                                                         native_session.tick(&native_ctx);
                                                                         last_native_tick = std::time::Instant::now();
@@ -799,11 +863,20 @@ pub async fn connect_voice_gateway(
                                                                             if let Some(ref mut s) = *sess {
                                                                                 if s.is_ready() {
                                                                                     if !has_dave_magic {
-                                                                                        // Sem marcador DAVE: aceitar texto plano apenas se permitido durante transição/downgrade
-                                                                                        if dave_flow_rx.plaintext_allowed() {
+                                                                                        // Sem marcador DAVE: áudio de bots/clientes antigos e pacotes
+                                                                                        // de silêncio/DTX não são cifrados. Ignorar todos eles produzia
+                                                                                        // ~20% de perda e obrigava o PLC a inventar 20 ms por pacote.
+                                                                                        let is_opus_silence = transport_payload.len() == 3
+                                                                                            && transport_payload == [0xF8, 0xFF, 0xFE];
+                                                                                        let sender_is_dave_member = user_id_opt
+                                                                                            .and_then(|uid| s.get_user_ids().map(|ids| ids.contains(&uid)))
+                                                                                            .unwrap_or(true);
+                                                                                        let known_plaintext_sender = user_id_opt.is_some() && !sender_is_dave_member;
+                                                                                        if dave_flow_rx.plaintext_allowed() || is_opus_silence || known_plaintext_sender {
                                                                                             dave_plaintext_cnt += 1;
+                                                                                            diag_rx.rx_dave_plaintext.fetch_add(1, Ordering::Relaxed);
                                                                                             if dave_plaintext_cnt % 500 == 1 {
-                                                                                                info!("🔓 [DAVE] Tocando pacotes sem DAVE durante a transição para a versão 0 ({} até agora).", dave_plaintext_cnt);
+                                                                                                info!("🔓 [DAVE] Tocando pacotes sem DAVE (transição, silêncio ou remetente não-DAVE) ({} até agora).", dave_plaintext_cnt);
                                                                                             }
                                                                                             (transport_payload.to_vec(), true)
                                                                                         } else {
@@ -812,33 +885,28 @@ pub async fn connect_voice_gateway(
                                                                                             (Vec::new(), false)
                                                                                         }
                                                                                     } else {
-                                                                                        // Com marcador DAVE 0xFAFA: tentar decifrar com sender_user_id
-                                                                                        let res = s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload);
-                                                                                        let res = match res {
+                                                                                        // Com marcador DAVE 0xFAFA: tentar decifrar com sender_user_id.
+                                                                                        // Se o mapa SSRC->UID estiver errado, tentar os demais membros do grupo
+                                                                                        // e corrigir o mapa (antes só se tentava quando o SSRC não tinha UID).
+                                                                                        let res = match s.decrypt(sender_user_id, MediaType::AUDIO, transport_payload) {
                                                                                             Ok(d) => Ok(d),
                                                                                             Err(_) => {
-                                                                                                // Fallback apenas se o SSRC ainda não estava mapeado
-                                                                                                if user_id_opt.is_none() {
-                                                                                                    let mut found = None;
-                                                                                                    if let Some(uids) = s.get_user_ids() {
-                                                                                                        for &alt_uid in &uids {
-                                                                                                            if alt_uid != s.user_id() {
-                                                                                                                if let Ok(d) = s.decrypt(alt_uid, MediaType::AUDIO, transport_payload) {
-                                                                                                                    found = Some((d, alt_uid));
-                                                                                                                    break;
-                                                                                                                }
-                                                                                                            }
+                                                                                                let mut found = None;
+                                                                                                if let Some(uids) = s.get_user_ids() {
+                                                                                                    for &alt_uid in &uids {
+                                                                                                        if alt_uid == sender_user_id { continue; }
+                                                                                                        if let Ok(d) = s.decrypt(alt_uid, MediaType::AUDIO, transport_payload) {
+                                                                                                            found = Some((d, alt_uid));
+                                                                                                            break;
                                                                                                         }
                                                                                                     }
-                                                                                                    if let Some((d, matched_uid)) = found {
-                                                                                                        if let Ok(mut m) = ssrc_to_userid_rx.lock() {
-                                                                                                            m.insert(ssrc_recv, matched_uid);
-                                                                                                        }
-                                                                                                        register_voice_participant(ssrc_recv, matched_uid);
-                                                                                                        Ok(d)
-                                                                                                    } else {
-                                                                                                        Err(davey::errors::DecryptError::NoDecryptorForUser)
+                                                                                                }
+                                                                                                if let Some((d, matched_uid)) = found {
+                                                                                                    if let Ok(mut m) = ssrc_to_userid_rx.lock() {
+                                                                                                        m.insert(ssrc_recv, matched_uid);
                                                                                                     }
+                                                                                                    register_voice_participant(ssrc_recv, matched_uid);
+                                                                                                    Ok(d)
                                                                                                 } else {
                                                                                                     Err(davey::errors::DecryptError::NoDecryptorForUser)
                                                                                                 }
@@ -944,15 +1012,22 @@ pub async fn connect_voice_gateway(
                                                                                     let missed = rtp_seq.wrapping_sub(last_seq);
                                                                                     if missed > 0 && missed <= 4 {
                                                                                         let mut plc_buf = [0.0f32; 1920];
+                                                                                        let toc = ssrc_last_toc.get(&ssrc_recv).copied().unwrap_or(0xE4);
                                                                                         for _ in 0..missed {
-                                                                                            if let Ok(samples) = dec.decode(&[], 960, &mut plc_buf[..]) {
-                                                                                                for i in 0..samples {
-                                                                                                    if pkt_channels == 2 {
-                                                                                                        plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
-                                                                                                    } else {
-                                                                                                        let m = plc_buf[i].clamp(-1.0, 1.0);
-                                                                                                        plc_pairs.push((m, m));
+                                                                                            match dec.decode(&[toc], 960, &mut plc_buf[..]) {
+                                                                                                Ok(samples) => {
+                                                                                                    diag_rx.rx_plc_frames.fetch_add(1, Ordering::Relaxed);
+                                                                                                    for i in 0..samples {
+                                                                                                        if pkt_channels == 2 {
+                                                                                                            plc_pairs.push((plc_buf[i * 2].clamp(-1.0, 1.0), plc_buf[i * 2 + 1].clamp(-1.0, 1.0)));
+                                                                                                        } else {
+                                                                                                            let m = plc_buf[i].clamp(-1.0, 1.0);
+                                                                                                            plc_pairs.push((m, m));
+                                                                                                        }
                                                                                                     }
+                                                                                                }
+                                                                                                Err(_) => {
+                                                                                                    diag_rx.rx_plc_fail.fetch_add(1, Ordering::Relaxed);
                                                                                                 }
                                                                                             }
                                                                                         }
@@ -968,6 +1043,7 @@ pub async fn connect_voice_gateway(
                                                                                 decoded_count = 960;
                                                                                 for s in pcm_out_buf[..1920].iter_mut() { *s = 0.0; }
                                                                             } else {
+                                                                                ssrc_last_toc.insert(ssrc_recv, raw_opus[0]);
                                                                                 match dec.decode(raw_opus, 5760, &mut pcm_out_buf[..]) {
                                                                                     Ok(samples) => {
                                                                                         decode_success = true;
@@ -975,26 +1051,47 @@ pub async fn connect_voice_gateway(
                                                                                     }
                                                                                     Err(e) => {
                                                                                         warn!("📊 [OPUS DIAG] Decode FALHOU: {:?}", e);
-                                                                                        if let Ok(plc_samples) = dec.decode(&[], 960, &mut pcm_out_buf[..]) {
-                                                                                            decode_success = true;
-                                                                                            decoded_count = plc_samples;
+                                                                                        let toc = ssrc_last_toc.get(&ssrc_recv).copied().unwrap_or(0xE4);
+                                                                                        match dec.decode(&[toc], 960, &mut pcm_out_buf[..]) {
+                                                                                            Ok(plc_samples) => {
+                                                                                                decode_success = true;
+                                                                                                decoded_count = plc_samples;
+                                                                                                diag_rx.rx_plc_frames.fetch_add(1, Ordering::Relaxed);
+                                                                                            }
+                                                                                            Err(_) => {
+                                                                                                diag_rx.rx_plc_fail.fetch_add(1, Ordering::Relaxed);
+                                                                                            }
                                                                                         }
                                                                                     }
                                                                                 }
                                                                             }
                                                                         } else if !can_decode || opus_data.is_empty() {
-                                                                            // Pacote com falha em DAVE/AEAD: aplicar PLC para evitar estalo seco
+                                                                            // Pacote com falha em DAVE/AEAD: aplicar PLC real.
+                                                                            // `opus-rs` exige um ToC de 1 byte; um slice vazio retorna
+                                                                            // Err("Input packet empty") e deixava um buraco seco.
                                                                             let dec = opus_decoders.entry((ssrc_recv, pkt_channels)).or_insert_with(|| {
                                                                                 OpusDecoder::new(48000, pkt_channels).expect("Falha ao inicializar OpusDecoder 48kHz")
                                                                             });
-                                                                            if let Ok(plc_samples) = dec.decode(&[], 960, &mut pcm_out_buf[..]) {
-                                                                                decode_success = true;
-                                                                                decoded_count = plc_samples;
+                                                                            let toc = ssrc_last_toc.get(&ssrc_recv).copied().unwrap_or(0xE4);
+                                                                            match dec.decode(&[toc], 960, &mut pcm_out_buf[..]) {
+                                                                                Ok(plc_samples) => {
+                                                                                    decode_success = true;
+                                                                                    decoded_count = plc_samples;
+                                                                                    diag_rx.rx_plc_frames.fetch_add(1, Ordering::Relaxed);
+                                                                                }
+                                                                                Err(_) => {
+                                                                                    diag_rx.rx_plc_fail.fetch_add(1, Ordering::Relaxed);
+                                                                                }
                                                                             }
                                                                         }
 
                                                                         if decode_success && decoded_count > 0 {
-                                                                            register_voice_participant(ssrc_recv, sender_user_id);
+                                                                            // Only expose participants whose SSRC maps to a real
+                                                                            // user. Using the raw SSRC as a fallback created ghost
+                                                                            // voice rows that no one could identify or remove.
+                                                                            if let Some(uid) = user_id_opt {
+                                                                                register_voice_participant(ssrc_recv, uid);
+                                                                            }
                                                                             let total_samples = decoded_count * pkt_channels;
                                                                             diag_rx.rx_decode_ok.fetch_add(1, Ordering::Relaxed);
                                                                             diag_rx.rx_samples.fetch_add(total_samples as u64, Ordering::Relaxed);
@@ -1102,6 +1199,9 @@ pub async fn connect_voice_gateway(
                                                     // Fractional phase counters per SSRC for smooth Hermite cubic sample rate conversion (48kHz -> out_sample_rate)
                                                     let mut ssrc_phases: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
+                                                    // Per-SSRC fade gain. A queue underrun used to fall to zero in four
+                                                    // samples, which is a click; this ramps down/up over 5 ms instead.
+                                                    let mut ssrc_gains: std::collections::HashMap<u32, f32> = std::collections::HashMap::new();
                                                     let _step = 48000.0f64 / out_sample_rate.max(1) as f64;
                                                     // Deafen silences the speaker by policy; on undeafen the queued
                                                     // backlog is stale, so drop it and restart the pre-buffer.
@@ -1172,6 +1272,7 @@ pub async fn connect_voice_gateway(
                                                                             inactive_samples.clear();
                                                                             ssrc_phases.clear();
                                                                             ssrc_histories.clear();
+                                                                            ssrc_gains.clear();
                                                                         }
                                                                         let frames = output.len() / out_channels.max(1);
                                                                         // Keep at least three callbacks buffered: a fixed 40 ms would drain
@@ -1187,6 +1288,7 @@ pub async fn connect_voice_gateway(
                                                                                 if *silence > VOICE_RESET_INACTIVE_SAMPLES {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
+                                                                                    ssrc_gains.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
                                                                                 }
                                                                                 if *silence > VOICE_FORGET_SSRC_SAMPLES {
@@ -1217,6 +1319,7 @@ pub async fn connect_voice_gateway(
                                                                             inactive_samples.remove(&ssrc);
                                                                             ssrc_phases.remove(&ssrc);
                                                                             ssrc_histories.remove(&ssrc);
+                                                                            ssrc_gains.remove(&ssrc);
                                                                         }
 
                                                                         if ready_ssrcs.is_empty() { return; }
@@ -1303,8 +1406,16 @@ pub async fn connect_voice_gateway(
                                                                                     let src_l = cubic_hermite(hist[0].0, hist[1].0, hist[2].0, hist[3].0, t);
                                                                                     let src_r = cubic_hermite(hist[0].1, hist[1].1, hist[2].1, hist[3].1, t);
 
-                                                                                    mixed_l += src_l * effective_vol;
-                                                                                    mixed_r += src_r * effective_vol;
+                                                                                    // 8 ms gain ramp: avoids the click/pop when a speaker
+                                                                                    // starts or stops mid-block.
+                                                                                    let target = if q.is_empty() { 0.0f32 } else { 1.0f32 };
+                                                                                    let gain = ssrc_gains.entry(ssrc).or_insert(0.0f32);
+                                                                                    let ramp = (1.0f32 / (out_sample_rate.max(1) as f32 * 0.008)).clamp(0.0005, 1.0);
+                                                                                    *gain += (target - *gain) * ramp;
+                                                                                    let g = *gain;
+
+                                                                                    mixed_l += src_l * effective_vol * g;
+                                                                                    mixed_r += src_r * effective_vol * g;
                                                                                 }
                                                                             }
 
@@ -1387,6 +1498,7 @@ pub async fn connect_voice_gateway(
                                                                             inactive_samples.clear();
                                                                             ssrc_phases.clear();
                                                                             ssrc_histories.clear();
+                                                                            ssrc_gains.clear();
                                                                         }
                                                                         let frames = output.len() / out_channels.max(1);
                                                                         // Keep at least three callbacks buffered: a fixed 40 ms would drain
@@ -1402,6 +1514,7 @@ pub async fn connect_voice_gateway(
                                                                                 if *silence > VOICE_RESET_INACTIVE_SAMPLES {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
+                                                                                    ssrc_gains.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
                                                                                 }
                                                                                 if *silence > VOICE_FORGET_SSRC_SAMPLES {
@@ -1432,6 +1545,7 @@ pub async fn connect_voice_gateway(
                                                                             inactive_samples.remove(&ssrc);
                                                                             ssrc_phases.remove(&ssrc);
                                                                             ssrc_histories.remove(&ssrc);
+                                                                            ssrc_gains.remove(&ssrc);
                                                                         }
 
                                                                         if ready_ssrcs.is_empty() { return; }
@@ -1518,8 +1632,16 @@ pub async fn connect_voice_gateway(
                                                                                     let src_l = cubic_hermite(hist[0].0, hist[1].0, hist[2].0, hist[3].0, t);
                                                                                     let src_r = cubic_hermite(hist[0].1, hist[1].1, hist[2].1, hist[3].1, t);
 
-                                                                                    mixed_l += src_l * effective_vol;
-                                                                                    mixed_r += src_r * effective_vol;
+                                                                                    // 8 ms gain ramp: avoids the click/pop when a speaker
+                                                                                    // starts or stops mid-block.
+                                                                                    let target = if q.is_empty() { 0.0f32 } else { 1.0f32 };
+                                                                                    let gain = ssrc_gains.entry(ssrc).or_insert(0.0f32);
+                                                                                    let ramp = (1.0f32 / (out_sample_rate.max(1) as f32 * 0.008)).clamp(0.0005, 1.0);
+                                                                                    *gain += (target - *gain) * ramp;
+                                                                                    let g = *gain;
+
+                                                                                    mixed_l += src_l * effective_vol * g;
+                                                                                    mixed_r += src_r * effective_vol * g;
                                                                                 }
                                                                             }
 
@@ -2015,6 +2137,29 @@ pub async fn connect_voice_gateway(
                                         let _ = w.send(Message::Text(payload.to_string().into())).await;
                                         info!("🎥 [NATIVE VIDEO] OP 15 reenviado após Session Description: {:?}", wants);
                                     }
+
+                                    // Camera video runs on this parent connection: hand the
+                                    // camera pump the socket, key and DAVE session now that
+                                    // the Session Description has completed the handshake.
+                                    let parent_socket_now = parent_socket.lock().ok().and_then(|slot| slot.clone());
+                                    let parent_target_now = parent_target.lock().ok().and_then(|slot| *slot);
+                                    if let (Some(socket), Some(target)) = (parent_socket_now, parent_target_now) {
+                                        let (video_ssrc, rtx_ssrc) = *local_video_ssrc.lock().unwrap();
+                                        crate::native_video::camera::install(crate::native_video::camera::CameraContext {
+                                            write: Arc::clone(&write_arc),
+                                            socket,
+                                            target,
+                                            key: Arc::clone(&secret_key_arc),
+                                            mode: Arc::clone(&native_mode),
+                                            dave: Arc::clone(&dave_session),
+                                            audio_ssrc: ssrc,
+                                            video_ssrc,
+                                            rtx_ssrc,
+                                            nonce: Arc::clone(&parent_nonce),
+                                        });
+                                    } else {
+                                        warn!("📷 [CAMERA] Socket UDP ainda não pronto no Session Description; câmera indisponível nesta conexão.");
+                                    }
                                 }
                                  5 => {
                                      // Voice Opcode 5: Speaking notification from another user
@@ -2416,9 +2561,15 @@ pub async fn connect_voice_gateway(
             }
             set_is_connected_to_voice(false);
             if final_close {
+                // Kicked / channel deleted: do not bring the camera back in the
+                // next call on its own.
+                crate::native_video::camera::reset();
                 clear_voice_participants();
                 break;
             }
+            // This connection is gone; stop its camera pump but keep the user's
+            // intent so the camera returns with the reconnected session.
+            crate::native_video::camera::uninstall();
             warn!("⚠️ [VOICE GATEWAY] Conexão com Voice Gateway temporariamente perdida. Reconectando em 1.5s...");
         }
         Err(e) => {
@@ -2471,8 +2622,11 @@ struct VoiceDiag {
     rx_dave_ok: std::sync::atomic::AtomicU64,
     rx_dave_fail: std::sync::atomic::AtomicU64,
     rx_dave_dropped: std::sync::atomic::AtomicU64,
+    rx_dave_plaintext: std::sync::atomic::AtomicU64,
     rx_decode_ok: std::sync::atomic::AtomicU64,
     rx_decode_fail: std::sync::atomic::AtomicU64,
+    rx_plc_frames: std::sync::atomic::AtomicU64,
+    rx_plc_fail: std::sync::atomic::AtomicU64,
     rx_samples: std::sync::atomic::AtomicU64,
     rx_peak_milli: std::sync::atomic::AtomicU32,
     tx_frames: std::sync::atomic::AtomicU64,
@@ -2525,7 +2679,8 @@ fn spawn_voice_diagnostics(
         let started = std::time::Instant::now();
         let (mut warned_rx, mut warned_dave, mut warned_mic) = (false, false, false);
         let (mut p_rx, mut p_dec_ok, mut p_dec_fail, mut p_dave_ok, mut p_dave_fail,
-             mut p_dropped, mut p_decode_ok, mut p_decode_fail) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+             mut p_dropped, mut p_plain, mut p_decode_ok, mut p_decode_fail,
+             mut p_plc_ok, mut p_plc_fail) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
         let (mut p_tx, mut p_tx_voice, mut p_tx_dave, mut p_tx_empty) = (0u64, 0u64, 0u64, 0u64);
 
         loop {
@@ -2556,8 +2711,11 @@ fn spawn_voice_diagnostics(
             let dave_ok = diag.rx_dave_ok.load(Ordering::Relaxed);
             let dave_fail = diag.rx_dave_fail.load(Ordering::Relaxed);
             let dropped = diag.rx_dave_dropped.load(Ordering::Relaxed);
+            let plain = diag.rx_dave_plaintext.load(Ordering::Relaxed);
             let decode_ok = diag.rx_decode_ok.load(Ordering::Relaxed);
             let decode_fail = diag.rx_decode_fail.load(Ordering::Relaxed);
+            let plc_ok = diag.rx_plc_frames.load(Ordering::Relaxed);
+            let plc_fail = diag.rx_plc_fail.load(Ordering::Relaxed);
             let tx = diag.tx_frames.load(Ordering::Relaxed);
             let tx_voice = diag.tx_voice_frames.load(Ordering::Relaxed);
             let tx_dave = diag.tx_dave_ok.load(Ordering::Relaxed);
@@ -2590,7 +2748,7 @@ fn spawn_voice_diagnostics(
 
             info!(
                 "📊 [VOICE DIAG ch={}] ready={} muted={} deaf={} | {} | DAVE={:?} | \
-                 RX +{} pkt (+{} ok / +{} fail) dave +{} ok / +{} fail / +{} dropped decode +{} ok / +{} fail peak={} | \
+                 RX +{} pkt (+{} ok / +{} fail) dave +{} ok / +{} fail / +{} dropped / +{} plain decode +{} ok / +{} fail / plc +{} ok / +{} fail peak={} | \
                  TX +{} frames (+{} voice, +{} dave) mic_empty +{} peak={} | \
                  SPK started={} ticks={} peak={} errors={} | mic_queue={}",
                 channel_id,
@@ -2601,7 +2759,9 @@ fn spawn_voice_diagnostics(
                 dave_state,
                 rx - p_rx, dec_ok - p_dec_ok, dec_fail - p_dec_fail,
                 dave_ok - p_dave_ok, dave_fail - p_dave_fail, dropped - p_dropped,
+                plain - p_plain,
                 decode_ok - p_decode_ok, decode_fail - p_decode_fail,
+                plc_ok - p_plc_ok, plc_fail - p_plc_fail,
                 rx_peak,
                 tx - p_tx, tx_voice - p_tx_voice, tx_dave - p_tx_dave, tx_empty - p_tx_empty,
                 tx_peak,
@@ -2614,7 +2774,9 @@ fn spawn_voice_diagnostics(
 
             p_rx = rx; p_dec_ok = dec_ok; p_dec_fail = dec_fail;
             p_dave_ok = dave_ok; p_dave_fail = dave_fail; p_dropped = dropped;
+            p_plain = plain;
             p_decode_ok = decode_ok; p_decode_fail = decode_fail;
+            p_plc_ok = plc_ok; p_plc_fail = plc_fail;
             p_tx = tx; p_tx_voice = tx_voice; p_tx_dave = tx_dave; p_tx_empty = tx_empty;
         }
         info!("📊 [VOICE DIAG] resumo encerrado (sessão {}).", session_id);

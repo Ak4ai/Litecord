@@ -518,9 +518,18 @@ impl CompactCachedMessage {
         }).collect();
         let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
+        let (role_name, role_color) = crate::gateway::get_user_display_role(
+            self.author_id.parse::<u64>().unwrap_or(0),
+        ).unwrap_or_default();
         let mut message = ChatMessage {
             id: self.id.as_str().into(),
             author: self.author.as_str().into(),
+            author_role_name: role_name.into(),
+            author_role_color: slint::Color::from_rgb_u8(
+                ((role_color >> 16) & 0xFF) as u8,
+                ((role_color >> 8) & 0xFF) as u8,
+                (role_color & 0xFF) as u8,
+            ),
             content: self.content.as_str().into(),
             commands: slint::ModelRc::from(commands_model),
             content_lines: map_message_lines(&self.content_lines, ch_id_for_emojis, app_weak_load),
@@ -1199,6 +1208,14 @@ pub async fn fetch_and_populate_dms(
     info!("Buscando conversas de DM via REST API (/users/@me/channels)...");
     *active_guild_id.lock().unwrap() = "@me".to_string();
 
+    {
+        let http_commands = http.clone();
+        let app_w_commands = app_weak.clone();
+        tokio::spawn(async move {
+            load_guild_command_index(&http_commands, app_w_commands, "@me").await;
+        });
+    }
+
     let app_w_top = app_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = app_w_top.upgrade() {
@@ -1805,6 +1822,9 @@ pub async fn try_login_with_candidates(
                 trigger_update_check(app_weak.clone());
 
                 let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
+                // Modules outside the gateway (the camera pump, for instance)
+                // publish voice-state changes through this sender.
+                gateway::install_command_sender(cmd_tx.clone());
                 *cmd_tx_store.lock().unwrap() = Some(cmd_tx);
 
                 if let Ok(uid) = user_id.parse::<u64>() {

@@ -6,7 +6,22 @@ pub struct AppLogger {
 
 impl log::Log for AppLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
+        if metadata.level() > log::Level::Info {
+            return false;
+        }
+        // Dependency internals (D-Bus, async runtimes) can log several lines per
+        // second. Keep only warnings/errors from them: the INFO flood added
+        // wakeups and hid the app's own messages in the log.
+        let target = metadata.target();
+        if metadata.level() == log::Level::Info
+            && (target.starts_with("zbus")
+                || target.starts_with("tracing")
+                || target.starts_with("polling")
+                || target.starts_with("async_io"))
+        {
+            return false;
+        }
+        true
     }
 
     fn log(&self, record: &log::Record) {
