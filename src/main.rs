@@ -979,10 +979,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .expect("Failed to spawn tray listener thread");
 
-    // The GTK pump is only needed by the libappindicator tray. On Linux the
-    // StatusNotifierItem (ksni) runs on its own zbus thread, so ticking GTK
-    // every 80 ms forever would just waste CPU in the UI thread.
-    #[cfg(not(target_os = "linux"))]
+    // The GTK pump is only needed by the libappindicator tray on Linux; the
+    // Windows tray is native and gtk is not even a dependency there.
+    #[cfg(target_os = "linux")]
     let _gtk_tray_pump_timer = {
         let timer = slint::Timer::default();
         timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(80), || {
