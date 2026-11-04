@@ -6,7 +6,22 @@ pub struct AppLogger {
 
 impl log::Log for AppLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
+        if metadata.level() > log::Level::Info {
+            return false;
+        }
+        // Dependency internals (D-Bus, async runtimes) can log several lines per
+        // second. Keep only warnings/errors from them: the INFO flood added
+        // wakeups and hid the app's own messages in the log.
+        let target = metadata.target();
+        if metadata.level() == log::Level::Info
+            && (target.starts_with("zbus")
+                || target.starts_with("tracing")
+                || target.starts_with("polling")
+                || target.starts_with("async_io"))
+        {
+            return false;
+        }
+        true
     }
 
     fn log(&self, record: &log::Record) {
@@ -110,6 +125,9 @@ fn has_stdout() -> bool {
 }
 
 pub fn init_logger() {
+    // Keep the previous run's log: when a call goes silent, the log of the session
+    // that had the problem is usually the one that was just replaced.
+    let _ = std::fs::rename("litecord_app.log", "litecord_app.prev.log");
     let log_file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("litecord_app.log").ok();
     let logger = AppLogger { file: Mutex::new(log_file) };
     let _ = log::set_boxed_logger(Box::new(logger));

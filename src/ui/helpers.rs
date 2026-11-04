@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 
-use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 use log::{info, warn};
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::utils::i18n;
 use crate::utils::i18n_ui;
 use crate::utils::video_settings;
 use crate::utils::attachment_cache;
+use crate::utils::avatar_cache;
 use crate::utils::emoji_cache;
 use std::sync::Mutex;
 use slint::Model;
@@ -71,6 +72,26 @@ pub fn reset_unread_and_dedup_state() {
     guard.1.clear();
 }
 
+/// Drops per-account memory: decoded images, message caches and user maps.
+///
+/// Called on logout and account switch. Preferences, window geometry and the
+/// on-disk image caches are kept; a new account re-downloads what it needs.
+pub fn clear_session_caches() {
+    avatar_cache::get_avatar_cache().clear_session();
+    emoji_cache::get_emoji_cache().clear_memory();
+    emoji_cache::clear_registered_custom_emojis();
+    attachment_cache::get_attachment_cache().clear_memory();
+    crate::ui::data_loader::clear_session_caches();
+    gateway::clear_user_directory();
+    gateway::clear_guild_voice_states();
+    gateway::channel_names::clear();
+    crate::ui::invite_cards::clear_session();
+    crate::ui::onboarding::clear_session();
+    if let Ok(mut pending) = HIDDEN_CHANNEL_ACTIVITY.lock() {
+        pending.clear();
+    }
+}
+
 pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::gateway::GuildData>>>) -> bool {
     if let Ok(map) = guilds_map.lock() {
         if let Some(dm_guild) = map.get("@me") {
@@ -80,18 +101,80 @@ pub fn is_dm_channel(ch_id: &str, guilds_map: &Arc<Mutex<HashMap<String, crate::
     false
 }
 
+struct ChatPinTimers {
+    first: slint::Timer,
+    follow_up: slint::Timer,
+}
+
+thread_local! {
+    static CHAT_PIN_TIMERS: std::cell::RefCell<Option<std::rc::Rc<ChatPinTimers>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn request_chat_scroll_to_bottom(app_weak: slint::Weak<AppWindow>) {
     let _ = slint::invoke_from_event_loop(move || {
-        let delays = [15, 45, 100, 200, 400];
-        for delay in delays {
-            let app_w = app_weak.clone();
-            slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
-                if let Some(ui) = app_w.upgrade() {
-                    ui.invoke_scroll_chat_to_bottom();
-                }
+        // Images and embeds change the height after the first layout, so one follow-up
+        // pin still lets a channel with pictures settle. Earlier requests are cancelled,
+        // so a burst of messages coalesces into at most two scrolls instead of seven
+        // timers per message.
+        CHAT_PIN_TIMERS.with(|slot| {
+            let existing = slot.borrow().clone();
+            let timers = existing.unwrap_or_else(|| {
+                let timers = std::rc::Rc::new(ChatPinTimers {
+                    first: slint::Timer::default(),
+                    follow_up: slint::Timer::default(),
+                });
+                *slot.borrow_mut() = Some(timers.clone());
+                timers
             });
-        }
+            timers.first.stop();
+            timers.follow_up.stop();
+
+            let weak_timers = std::rc::Rc::downgrade(&timers);
+            let app_first = app_weak.clone();
+            timers.first.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(80),
+                move || {
+                    if let Some(ui) = app_first.upgrade() {
+                        ui.invoke_scroll_chat_to_bottom();
+                    }
+                    let Some(timers) = weak_timers.upgrade() else { return };
+                    let app_follow = app_first.clone();
+                    timers.follow_up.start(
+                        slint::TimerMode::SingleShot,
+                        std::time::Duration::from_millis(340),
+                        move || {
+                            if let Some(ui) = app_follow.upgrade() {
+                                ui.invoke_scroll_chat_to_bottom();
+                            }
+                        },
+                    );
+                },
+            );
+        });
     });
+}
+
+static LAST_CHAT_PAINT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Marks that a channel batch was just painted in the chat.
+pub fn mark_chat_painted() {
+    LAST_CHAT_PAINT_MS.store(unix_millis(), Ordering::Relaxed);
+}
+
+/// True while a channel paint is recent: late model refreshes (images, emojis) may
+/// re-pin the chat even if a rebuild already reset the scroll position.
+pub fn chat_painted_within(max_age: std::time::Duration) -> bool {
+    let last = LAST_CHAT_PAINT_MS.load(Ordering::Relaxed);
+    last > 0 && unix_millis().saturating_sub(last) <= max_age.as_millis() as u64
 }
 
 pub fn parse_hex_color(hex: &str) -> slint::Color {
@@ -154,24 +237,73 @@ pub fn take_hidden_channel_activity() -> Vec<(String, i32)> {
 /// Applies sidebar activity in order: each channel's unread count grows by its new
 /// messages (the open channel goes back to 0) and, in the DM list, it moves to the top.
 pub fn apply_channel_activity(ui: &AppWindow, activity: &[(String, i32)], active_channel: &str, showing_dms: bool) {
-    let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-    let mut changed = false;
+    let current = ui.get_channels();
+    let Some(model) = current.as_any().downcast_ref::<slint::VecModel<ChannelItem>>() else {
+        // Unexpected model kind: keep the old rebuild path so the badge still updates.
+        let mut channels: Vec<ChannelItem> = current.iter().collect();
+        let mut changed = false;
+        for (id, new_unread) in activity {
+            let Some(pos) = channels.iter().position(|c| c.id == id.as_str()) else { continue };
+            let unread = if id == active_channel { 0 } else { channels[pos].unread_count + new_unread };
+            if channels[pos].unread_count != unread {
+                channels[pos].unread_count = unread;
+                changed = true;
+            }
+            if showing_dms && pos != 0 {
+                let ch = channels.remove(pos);
+                channels.insert(0, ch);
+                changed = true;
+            }
+        }
+        if changed {
+            ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
+        }
+        return;
+    };
+
+    // Touch only the rows that changed: replacing the whole model made the sidebar
+    // rebuild every visible row (and restart hover/selection) for each message.
     for (id, new_unread) in activity {
-        let Some(pos) = channels.iter().position(|c| c.id == id.as_str()) else { continue };
-        let unread = if id == active_channel { 0 } else { channels[pos].unread_count + new_unread };
-        if channels[pos].unread_count != unread {
-            channels[pos].unread_count = unread;
-            changed = true;
-        }
+        let Some(pos) = (0..model.row_count())
+            .find(|&index| model.row_data(index).is_some_and(|c| c.id == id.as_str()))
+        else {
+            continue;
+        };
+        let Some(mut row) = model.row_data(pos) else { continue };
+        let unread = if id == active_channel { 0 } else { row.unread_count + new_unread };
+        let unread_changed = row.unread_count != unread;
+        row.unread_count = unread;
         if showing_dms && pos != 0 {
-            let ch = channels.remove(pos);
-            channels.insert(0, ch);
-            changed = true;
+            let _ = model.remove(pos);
+            model.insert(0, row);
+        } else if unread_changed {
+            model.set_row_data(pos, row);
         }
     }
-    if changed {
-        ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
+}
+
+/// Clears the unread badge of one channel without rebuilding the sidebar model.
+pub fn clear_channel_unread(ui: &AppWindow, channel_id: &str) {
+    let current = ui.get_channels();
+    if let Some(model) = current.as_any().downcast_ref::<slint::VecModel<ChannelItem>>() {
+        for index in 0..model.row_count() {
+            let Some(mut row) = model.row_data(index) else { continue };
+            if row.id == channel_id {
+                if row.unread_count != 0 {
+                    row.unread_count = 0;
+                    model.set_row_data(index, row);
+                }
+                return;
+            }
+        }
+        return;
     }
+
+    let mut channels: Vec<ChannelItem> = current.iter().collect();
+    if let Some(channel) = channels.iter_mut().find(|c| c.id == channel_id) {
+        channel.unread_count = 0;
+    }
+    ui.set_channels(std::rc::Rc::new(slint::VecModel::from(channels)).into());
 }
 
 /// Refreshes voice counts and participants from `fresh` (a `build_ui_channels` result).
@@ -185,7 +317,13 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
         for i in 0..current.row_count() {
             let Some(old) = current.row_data(i) else { continue };
             let new = fresh_by_id[old.id.as_str()];
-            if old.voice_count != new.voice_count || old.name != new.name {
+            if old.voice_count != new.voice_count
+                || old.name != new.name
+                || old.is_speaking != new.is_speaking
+                || old.is_streaming != new.is_streaming
+                || old.is_muted != new.is_muted
+                || old.is_deafened != new.is_deafened
+            {
                 let mut row = new.clone();
                 row.unread_count = old.unread_count;
                 current.set_row_data(i, row);
@@ -208,6 +346,65 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
         })
         .collect();
     ui.set_channels(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+}
+
+/// Updates the talking and streaming state of the voice member rows in place.
+///
+/// The voice member rows have a stable id (`voice-member:<channel>:<user>`), so
+/// a change of speaker only touches that row: rebuilding the whole channel list
+/// (as the old fingerprint did) re-created every row of the sidebar.
+pub fn update_voice_member_rows(ui: &AppWindow, changed: &[(String, u64, bool, bool)]) {
+    if changed.is_empty() {
+        return;
+    }
+    let channels = ui.get_channels();
+    let row_count = channels.row_count();
+
+    // Index the rows once instead of scanning the list for every member.
+    let mut row_of: HashMap<String, usize> = HashMap::with_capacity(changed.len());
+    for index in 0..row_count {
+        if let Some(row) = channels.row_data(index) {
+            if row.is_voice_member {
+                row_of.entry(row.id.to_string()).or_insert(index);
+            }
+        }
+    }
+
+    for (channel_id, user_id, speaking, streaming) in changed {
+        let row_id = format!("voice-member:{channel_id}:{user_id}");
+        let Some(index) = row_of.get(&row_id).copied() else { continue };
+        let Some(mut row) = channels.row_data(index) else { continue };
+        if row.is_speaking == *speaking && row.is_streaming == *streaming {
+            continue;
+        }
+        row.is_speaking = *speaking;
+        row.is_streaming = *streaming;
+        channels.set_row_data(index, row);
+    }
+}
+
+/// Repaints a member's role badge/color after a role was assigned or removed.
+/// The role store is already updated; this only refreshes existing voice rows,
+/// so the sidebar does not rebuild on every role toggle.
+pub fn refresh_member_role_rows(ui: &AppWindow, guild_id: &str, user_id: u64) {
+    let (role_name, role_color) = gateway::member_display_role(guild_id, user_id)
+        .map(|(name, color)| (name, color))
+        .unwrap_or_default();
+    let marker = format!(":{user_id}");
+    let channels = ui.get_channels();
+    for index in 0..channels.row_count() {
+        let Some(mut row) = channels.row_data(index) else { continue };
+        if !row.is_voice_member || !row.id.ends_with(&marker) {
+            continue;
+        }
+        row.role_name = role_name.as_str().into();
+        row.role_color = slint::Color::from_rgb_u8(
+            ((role_color >> 16) & 0xff) as u8,
+            ((role_color >> 8) & 0xff) as u8,
+            (role_color & 0xff) as u8,
+        );
+        channels.set_row_data(index, row);
+    }
 }
 
 pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
@@ -318,13 +515,16 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let notice = video_settings::get_enable_self_preview_notice();
     let show_hw = video_settings::get_show_hardware_monitor();
     ui.set_use_gpu_renderer(video_settings::get_use_gpu_renderer());
-    let use_light_theme = video_settings::get_use_light_theme();
+    ui.set_enable_tray_icon(video_settings::get_enable_tray_icon());
+    let theme_mode = video_settings::get_theme_mode();
+    let use_light_theme = theme_mode == "light";
 
     ui.set_selected_video_encoder(enc.clone().into());
     ui.set_selected_video_capture_backend(vcap.clone().into());
     ui.set_selected_audio_loopback_backend(aloop.clone().into());
     ui.set_enable_self_preview_notice(notice);
     ui.set_show_hardware_monitor(show_hw);
+    ui.set_theme_mode_name(theme_mode.as_str().into());
     ui.set_use_light_theme(use_light_theme);
 
     #[cfg(target_os = "windows")]
@@ -507,27 +707,27 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
     let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
         i18n::Language::English => (
             "Advanced Suppression",
-            "Deep neural network background noise removal and transient filtering.",
+            "Ideal for gaming & typing: blocks mechanical keyboards, pets, house noise & fans. (Avoid for musical instruments).",
             "Standard (RNNoise)",
-            "Classic recurrent neural network noise reduction.",
-            "Disabled (Default)",
-            "No noise suppression applied to microphone."
+            "For quiet rooms with steady hum (PC fans, AC). Preserves voice warmth, but does not block keyboard clicks.",
+            "Disabled (Raw Audio)",
+            "Pure unprocessed audio. Recommended for singing, playing guitar, and musical instruments."
         ),
         i18n::Language::Spanish => (
             "Supresión avanzada",
-            "Supresión por red neuronal profunda y filtrado de transientes.",
+            "Ideal para gaming y llamadas: bloquea teclados mecánicos, mascotas, ruidos de casa y ventiladores. (Evitar para música).",
             "Estándar (RNNoise)",
-            "Reducción de ruido clásica basada en red neuronal recurrente.",
-            "Desactivado (Predeterminado)",
-            "Sin procesamiento de supresión de ruido en el micrófono."
+            "Para ambientes tranquilos con zumbido constante (ventilador, AC). Mantiene voz natural, no quita teclas.",
+            "Desactivado (Audio puro)",
+            "Audio puro sin filtros ni cortes. Recomendado para cantar, tocar guitarra y transmitir instrumentos musicales."
         ),
         _ => (
             "Supressão Avançada",
-            "Supressão por rede neural profunda e filtragem de transientes.",
+            "Ideal para jogos e digitação: bloqueia teclado mecânico, pets, ruídos domésticos e ventoinhas. (Evitar para música).",
             "Padrão (RNNoise)",
-            "Redução de ruído clássica baseada em rede neural recorrente.",
-            "Desativado (Padrão)",
-            "Sem processamento de supressão de ruído no microfone."
+            "Para ambientes calmos com ruído contínuo (ventoinha, AC). Mantém voz natural, mas não remove teclas.",
+            "Desativado (Áudio puro)",
+            "Áudio puro sem filtros ou cortes. Recomendado para cantar, tocar violão/guitarra e transmitir instrumentos."
         ),
     };
 
@@ -621,6 +821,9 @@ pub struct CommandSuggestionItem {
     pub param_name: String,
     pub param_desc: String,
     pub is_required: bool,
+    /// Discord application command option type: 3 string, 4 integer,
+    /// 5 boolean, 6 user, 7 channel, 8 role, 9 mentionable, 10 number.
+    pub option_type: i32,
 }
 
 pub static MASTER_COMMAND_SUGGESTIONS: std::sync::OnceLock<Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>>> = std::sync::OnceLock::new();
@@ -639,6 +842,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "query".to_string(),
                 param_desc: "Nome da música ou link do YouTube/Spotify".to_string(),
                 is_required: true,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/skip".to_string(),
@@ -651,6 +855,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/stop".to_string(),
@@ -663,6 +868,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/pause".to_string(),
@@ -675,6 +881,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/resume".to_string(),
@@ -687,6 +894,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/queue".to_string(),
@@ -699,6 +907,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/nowplaying".to_string(),
@@ -711,6 +920,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
             CommandSuggestionItem {
                 name: "/247".to_string(),
@@ -723,126 +933,211 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_name: "".to_string(),
                 param_desc: "".to_string(),
                 is_required: false,
+                option_type: 3,
             },
         ]))
     }).clone()
 }
 
+static COMMAND_INDEX_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn command_items_from_index(data: &serde_json::Value) -> Vec<CommandSuggestionItem> {
+    use std::collections::HashSet;
+
+    let mut app_names: HashMap<String, String> = HashMap::new();
+    if let Some(apps) = data["applications"].as_array() {
+        for app in apps {
+            let app_id = app["id"].as_str().unwrap_or("").to_string();
+            let app_name = app["name"]
+                .as_str()
+                .or_else(|| app["bot"]["global_name"].as_str())
+                .or_else(|| app["bot"]["username"].as_str())
+                .unwrap_or("")
+                .to_string();
+            if !app_id.is_empty() && !app_name.is_empty() {
+                app_names.insert(app_id, app_name);
+            }
+        }
+    }
+
+    let mut items: Vec<CommandSuggestionItem> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    if let Some(commands) = data["application_commands"].as_array() {
+        for command in commands {
+            // 1 = CHAT_INPUT. USER/MESSAGE/ENTRY_POINT commands are invoked from
+            // their own context menus, not from the composer.
+            if command["type"].as_i64().unwrap_or(1) != 1 {
+                continue;
+            }
+            let name = command["name"].as_str().unwrap_or("");
+            let app_id = command["application_id"].as_str().unwrap_or("");
+            let cmd_id = command["id"].as_str().unwrap_or("");
+            if name.is_empty() || app_id.is_empty() || cmd_id.is_empty() {
+                continue;
+            }
+            if !seen.insert((app_id.to_string(), cmd_id.to_string())) {
+                continue;
+            }
+
+            let description = command["description"]
+                .as_str()
+                .or_else(|| command["description_default"].as_str())
+                .unwrap_or("");
+            let version = command["version"].as_str().unwrap_or("");
+            let app_name = app_names
+                .get(app_id)
+                .cloned()
+                .unwrap_or_else(|| "Bot".to_string());
+
+            let mut param_name = String::new();
+            let mut param_desc = String::new();
+            let mut is_required = false;
+            let mut option_type = 3;
+            if let Some(options) = command["options"].as_array() {
+                // The composer currently exposes one argument. Prefer the first
+                // required scalar option; subcommands (types 1/2) need a richer
+                // wizard and are intentionally not flattened into a wrong payload.
+                let option = options
+                    .iter()
+                    .filter(|option| {
+                        !matches!(option["type"].as_i64().unwrap_or(0), 1 | 2)
+                    })
+                    .find(|option| option["required"].as_bool().unwrap_or(false))
+                    .or_else(|| {
+                        options
+                            .iter()
+                            .find(|option| !matches!(option["type"].as_i64().unwrap_or(0), 1 | 2))
+                    });
+                if let Some(option) = option {
+                    param_name = option["name"].as_str().unwrap_or("").to_string();
+                    param_desc = option["description"].as_str().unwrap_or("").to_string();
+                    is_required = option["required"].as_bool().unwrap_or(false);
+                    option_type = option["type"].as_i64().unwrap_or(3) as i32;
+                }
+            }
+
+            let usage = if param_name.is_empty() {
+                format!("/{name}")
+            } else if is_required {
+                format!("/{name} <{param_name}>")
+            } else {
+                format!("/{name} [{param_name}]")
+            };
+            items.push(CommandSuggestionItem {
+                name: format!("/{name}"),
+                desc: description.to_string(),
+                usage,
+                app_id: app_id.to_string(),
+                app_name,
+                cmd_id: cmd_id.to_string(),
+                version: version.to_string(),
+                param_name,
+                param_desc,
+                is_required,
+                option_type,
+            });
+        }
+    }
+    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    items
+}
+
+fn publish_command_items(app_weak: &slint::Weak<AppWindow>, items: Vec<CommandSuggestionItem>) {
+    let count = items.len();
+    if let Ok(mut master) = get_master_command_suggestions().lock() {
+        master.clear();
+        master.extend(items.clone());
+    }
+    let slint_suggestions: Vec<CommandSuggestion> = items
+        .into_iter()
+        .map(|item| CommandSuggestion {
+            name: item.name.into(),
+            desc: item.desc.into(),
+            usage: item.usage.into(),
+            app_id: item.app_id.into(),
+            app_name: item.app_name.into(),
+            cmd_id: item.cmd_id.into(),
+            version: item.version.into(),
+            param_name: item.param_name.into(),
+            param_desc: item.param_desc.into(),
+            is_required: item.is_required,
+        })
+        .collect();
+    let app_weak = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = app_weak.upgrade() {
+            let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
+            ui.set_command_suggestions(model.into());
+            if count == 0 {
+                info!("No hay comandos de aplicación disponibles en este ámbito");
+            } else {
+                info!("✅ Carregados {} comandos de aplicación", count);
+            }
+        }
+    });
+}
+
+/// Loads guild and user-installed application commands together. The guild
+/// index covers commands installed in the server; the user index covers global
+/// commands and apps installed only to the account (including DMs).
 pub async fn load_guild_command_index(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
     guild_id: &str,
 ) {
-    if guild_id.is_empty() || guild_id == "@me" {
+    if guild_id.is_empty() {
         return;
     }
-    match http.get_guild_application_command_index(guild_id).await {
-        Ok(data) => {
-            // Build map of application_id -> Application / Bot Name
-            let mut app_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-            if let Some(apps) = data["applications"].as_array() {
-                for app in apps {
-                    let app_id = app["id"].as_str().unwrap_or("").to_string();
-                    let app_name = app["name"].as_str()
-                        .or_else(|| app["bot"]["global_name"].as_str())
-                        .or_else(|| app["bot"]["username"].as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !app_id.is_empty() && !app_name.is_empty() {
-                        app_names.insert(app_id, app_name);
-                    }
-                }
+    let generation = COMMAND_INDEX_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut items = Vec::new();
+    let mut loaded_any = false;
+
+    if guild_id != "@me" {
+        let (guild_index, user_index) = tokio::join!(
+            http.get_guild_application_command_index(guild_id),
+            http.get_user_application_command_index()
+        );
+        match guild_index {
+            Ok(data) => {
+                loaded_any = true;
+                items.extend(command_items_from_index(&data));
             }
-
-            if let Some(cmds) = data["application_commands"].as_array() {
-                let mut items: Vec<CommandSuggestionItem> = Vec::new();
-                for cmd in cmds {
-                    let name = cmd["name"].as_str().unwrap_or("");
-                    if name.is_empty() { continue; }
-                    let desc = cmd["description"].as_str().unwrap_or("");
-                    let app_id = cmd["application_id"].as_str().unwrap_or("");
-                    let cmd_id = cmd["id"].as_str().unwrap_or("");
-                    let version = cmd["version"].as_str().unwrap_or("");
-                    let app_name = app_names.get(app_id).cloned().unwrap_or_else(|| {
-                        if !app_id.is_empty() { "Bot".to_string() } else { String::new() }
-                    });
-                    
-                    let mut param_name = String::new();
-                    let mut param_desc = String::new();
-                    let mut is_required = false;
-                    
-                    if let Some(opts) = cmd["options"].as_array() {
-                        // Find first required option, or fallback to first option if present
-                        let required_opt = opts.iter().find(|o| o["required"].as_bool().unwrap_or(false));
-                        if let Some(opt) = required_opt {
-                            param_name = opt["name"].as_str().unwrap_or("").to_string();
-                            param_desc = opt["description"].as_str().unwrap_or("").to_string();
-                            is_required = true;
-                        } else if let Some(opt) = opts.first() {
-                            // Option is optional — do not force a required parameter pill
-                            let opt_name = opt["name"].as_str().unwrap_or("");
-                            let opt_desc = opt["description"].as_str().unwrap_or("");
-                            param_desc = format!("Opcional: {} ({})", opt_name, opt_desc);
-                            is_required = false;
-                        }
-                    }
-                    
-                    let usage = if param_name.is_empty() {
-                        format!("/{}", name)
-                    } else if is_required {
-                        format!("/{} <{}>", name, param_name)
-                    } else {
-                        format!("/{} [{}]", name, param_name)
-                    };
-                    
-                    items.push(CommandSuggestionItem {
-                        name: format!("/{}", name),
-                        desc: desc.to_string(),
-                        usage,
-                        app_id: app_id.to_string(),
-                        app_name,
-                        cmd_id: cmd_id.to_string(),
-                        version: version.to_string(),
-                        param_name,
-                        param_desc,
-                        is_required,
-                    });
-                }
-                
-                if !items.is_empty() {
-                    let count = items.len();
-                    if let Ok(mut master) = get_master_command_suggestions().lock() {
-                        master.clear();
-                        master.extend(items.clone());
-                    }
-
-                    let slint_suggestions: Vec<CommandSuggestion> = items.into_iter().map(|item| CommandSuggestion {
-                        name: item.name.into(),
-                        desc: item.desc.into(),
-                        usage: item.usage.into(),
-                        app_id: item.app_id.into(),
-                        app_name: item.app_name.into(),
-                        cmd_id: item.cmd_id.into(),
-                        version: item.version.into(),
-                        param_name: item.param_name.into(),
-                        param_desc: item.param_desc.into(),
-                        is_required: item.is_required,
-                    }).collect();
-
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = app_weak.upgrade() {
-                            let model = std::rc::Rc::new(slint::VecModel::from(slint_suggestions));
-                            ui.set_command_suggestions(model.into());
-                            info!("✅ Carregados {} comandos inteligentes reais dos bots do servidor com identificadores!", count);
-                        }
-                    });
-                }
+            Err(error) => {
+                warn!("No se pudo cargar el índice del servidor {}: {}", guild_id, error);
             }
         }
-        Err(e) => {
-            warn!("Não foi possível carregar o índice de comandos do servidor {}: {}", guild_id, e);
+        match user_index {
+            Ok(data) => {
+                loaded_any = true;
+                items.extend(command_items_from_index(&data));
+            }
+            Err(error) => {
+                warn!("No se pudo cargar el índice global de comandos: {}", error);
+            }
+        }
+    } else {
+        match http.get_user_application_command_index().await {
+            Ok(data) => {
+                loaded_any = true;
+                items.extend(command_items_from_index(&data));
+            }
+            Err(error) => warn!("No se pudo cargar el índice global de comandos: {}", error),
         }
     }
+
+    if generation != COMMAND_INDEX_GENERATION.load(Ordering::Acquire) {
+        return;
+    }
+    if !loaded_any {
+        // Both indexes failed. Clear instead of leaving commands from the
+        // previous server active in the composer.
+        publish_command_items(&app_weak, Vec::new());
+        return;
+    }
+    // A command can appear in both indexes. Keep one entry per app/command id.
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert((item.app_id.clone(), item.cmd_id.clone())));
+    publish_command_items(&app_weak, items);
 }
 
 pub fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, app_weak: &slint::Weak<AppWindow>) -> slint::ModelRc<MessageLine> {
@@ -850,9 +1145,12 @@ pub fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, a
     let slint_lines: Vec<MessageLine> = lines.iter().map(|line| {
         let slint_blocks: Vec<MessageBlock> = line.blocks.iter().map(|b| {
             let emoji_img = if b.is_emoji {
-                if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+                if let Some(img) = emoji_mgr.get_cached(&b.emoji_id) {
                     img
                 } else {
+                    // Never decode on the paint path: hydrate what is on disk and
+                    // download only what is missing.
+                    emoji_mgr.hydrate_from_disk_async(&b.emoji_id, app_weak.clone());
                     emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
                     slint::Image::default()
                 }
@@ -884,9 +1182,15 @@ pub fn map_message_attachments(
 ) -> slint::ModelRc<MessageAttachment> {
     let att_cache = attachment_cache::get_attachment_cache();
     let slint_atts: Vec<MessageAttachment> = attachments.iter().map(|a| {
-        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full(&a.id, &a.filename) {
+        let (is_downloaded, full_img) = if let Some(img) = att_cache.get_full_for_ui(&a.id) {
             (true, img)
         } else {
+            // Painting never touches the disk: decode what is already downloaded on a
+            // worker thread and update this row when it is ready.
+            att_cache.hydrate_full_from_disk_async(&a.id, &a.filename, app_weak.clone());
+            if a.id.starts_with("embed_img_") {
+                att_cache.download_full_async(&a.id, &a.filename, &a.url, app_weak.clone());
+            }
             (false, slint::Image::default())
         };
 
@@ -910,6 +1214,8 @@ pub fn map_message_attachments(
             (a.width, a.height)
         };
 
+        let is_loading = a.id.starts_with("embed_img_") && !is_downloaded;
+
         MessageAttachment {
             id: a.id.clone().into(),
             filename: a.filename.clone().into(),
@@ -920,7 +1226,7 @@ pub fn map_message_attachments(
             height,
             is_image: a.is_image,
             is_downloaded,
-            is_loading: false,
+            is_loading,
             full_img,
             preview_img,
         }
@@ -936,9 +1242,10 @@ pub fn map_message_buttons(
     let emoji_mgr = emoji_cache::get_emoji_cache();
     let slint_buttons: Vec<MessageButton> = buttons.iter().map(|b| {
         let emoji_img = if !b.emoji_id.is_empty() {
-            if let Some(img) = emoji_mgr.get(&b.emoji_id) {
+            if let Some(img) = emoji_mgr.get_cached(&b.emoji_id) {
                 img
             } else {
+                emoji_mgr.hydrate_from_disk_async(&b.emoji_id, app_weak.clone());
                 emoji_mgr.fetch_priority_async(&b.emoji_id, channel_id, app_weak.clone());
                 slint::Image::default()
             }
@@ -1017,6 +1324,18 @@ pub fn channel_drop_row(rows: &[ChannelItem], from: usize, dy: f32) -> usize {
     tops.iter().rposition(|&t| t <= centre).unwrap_or(0)
 }
 
+/// Resolves the row under a dragged voice member to a voice channel row. A
+/// member row maps to its parent voice channel, so dropping anywhere over the
+/// participant cluster works like Discord.
+pub fn voice_member_drop_row(rows: &[ChannelItem], from: usize, dy: f32) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    let target = channel_drop_row(rows, from, dy);
+    let row = rows.get(target)?;
+    (row.is_voice || row.is_voice_member).then_some(target)
+}
+
 pub fn build_ui_channels(
     channels_data: &[ChannelData],
     collapsed_cats: &std::collections::HashSet<String>,
@@ -1083,12 +1402,42 @@ pub fn build_ui_channels(
                     .take(2)
                     .flat_map(char::to_uppercase)
                     .collect();
+                let my_uid = gateway::get_my_user_id();
+                let is_self_member = user_id == 999999 || (my_uid != 0 && user_id == my_uid);
+                let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(user_id);
+                let (is_muted_saved, _, _) = gateway::get_user_audio_settings(&user_id.to_string());
+                let final_muted = is_muted_flag || is_muted_saved;
+                let (role_name, role_color) = gateway::get_user_display_role(user_id).unwrap_or_default();
+                let (is_screen_streaming, is_camera_streaming) = if is_self_member {
+                    let camera = crate::native_video::camera::is_camera_wanted();
+                    (crate::screen_capture::is_self_streaming() && !camera, camera)
+                } else {
+                    crate::screen_capture::get_user_stream_flags(user_id)
+                };
                 ui_channels.push(ChannelItem {
                     id: format!("voice-member:{}:{}", ch.id, user_id).into(),
+                    user_id: user_id.to_string().into(),
                     name: crate::utils::styled_text::plain_display_name(&name).as_ref().into(),
                     is_voice: false,
                     voice_count: 0,
                     is_voice_member: true,
+                    is_speaking: gateway::is_voice_user_speaking(user_id),
+                    is_streaming: if is_self_member {
+                        crate::screen_capture::is_self_streaming()
+                    } else {
+                        crate::screen_capture::peer_is_streaming(user_id)
+                    },
+                    is_screen_streaming,
+                    is_camera_streaming,
+                    is_muted: final_muted,
+                    is_deafened: is_deaf_flag,
+                    is_self_member,
+                    role_name: role_name.into(),
+                    role_color: slint::Color::from_rgb_u8(
+                        ((role_color >> 16) & 0xFF) as u8,
+                        ((role_color >> 8) & 0xFF) as u8,
+                        (role_color & 0xFF) as u8,
+                    ),
                     parent_channel_id: ch.id.clone().into(),
                     avatar_text: avatar_text.into(),
                     avatar_slot: crate::utils::avatar_cache::get_avatar_cache().slot_for(&avatar_url),
@@ -1312,5 +1661,262 @@ pub fn refresh_channel_emoji(ui: &AppWindow, emoji_id: &str, img: &slint::Image)
         if (slot as usize) < pool.row_count() {
             pool.set_row_data(slot as usize, img.clone());
         }
+    }
+}
+
+/// Emoji images that finished decoding and still have to reach the chat rows.
+/// The pixels are kept as a raw buffer (which is `Send`) instead of a
+/// `slint::Image` (which is not), so the queue can live in a static.
+static PENDING_EMOJI_IMAGES: std::sync::LazyLock<Mutex<HashMap<String, slint::SharedPixelBuffer<slint::Rgba8Pixel>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Set while a refresh pass is already scheduled.
+static EMOJI_REFRESH_SCHEDULED: AtomicBool = AtomicBool::new(false);
+
+/// Queues an emoji image for the chat rows that use it.
+///
+/// A burst of decoded emojis used to trigger one full pass over the chat model
+/// per emoji (each pass cloning every line and block of every row). The
+/// pending images are now coalesced into a single pass.
+pub fn queue_emoji_refresh(
+    app_weak: &slint::Weak<AppWindow>,
+    emoji_id: &str,
+    buffer: &slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+) {
+    if emoji_id.is_empty() {
+        return;
+    }
+    if let Ok(mut pending) = PENDING_EMOJI_IMAGES.lock() {
+        pending.insert(emoji_id.to_string(), buffer.clone());
+    }
+    if EMOJI_REFRESH_SCHEDULED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let weak = app_weak.clone();
+    slint::Timer::single_shot(std::time::Duration::from_millis(60), move || {
+        EMOJI_REFRESH_SCHEDULED.store(false, Ordering::Release);
+        flush_emoji_refreshes(&weak);
+    });
+}
+
+/// Applies every queued emoji image to the chat rows that use it.
+fn flush_emoji_refreshes(app_weak: &slint::Weak<AppWindow>) {
+    let pending = {
+        let Ok(mut guard) = PENDING_EMOJI_IMAGES.lock() else { return; };
+        std::mem::take(&mut *guard)
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let Some(ui) = app_weak.upgrade() else { return; };
+    let images: HashMap<String, slint::Image> = pending
+        .into_iter()
+        .map(|(id, buffer)| (id, slint::Image::from_rgba8(buffer)))
+        .collect();
+    refresh_emojis_in_messages(&ui, &images);
+}
+
+/// Replaces emoji images in every row already painted that uses them.
+///
+/// Rows that do not use any of the given emojis are skipped without building
+/// new vectors, so a pass over a 300 message channel stays cheap.
+pub fn refresh_emojis_in_messages(ui: &AppWindow, images: &HashMap<String, slint::Image>) {
+    if images.is_empty() {
+        return;
+    }
+    let messages = ui.get_messages();
+    let row_count = messages.row_count();
+
+    for idx in 0..row_count {
+        let Some(mut msg) = messages.row_data(idx) else { continue };
+
+        // Fast path: most rows use none of these emojis. Checking without
+        // allocating keeps the pass free for the common case.
+        let uses_any = msg.content_lines.iter().any(|line| {
+            line.blocks.iter().any(|b| b.is_emoji && images.contains_key(b.emoji_id.as_str()))
+        }) || msg.embed_lines.iter().any(|line| {
+            line.blocks.iter().any(|b| b.is_emoji && images.contains_key(b.emoji_id.as_str()))
+        }) || msg.buttons.iter().any(|b| images.contains_key(b.emoji_id.as_str()));
+        if !uses_any {
+            continue;
+        }
+
+        let mut content_changed = false;
+        let current_content_lines: Vec<MessageLine> = msg.content_lines.iter().collect();
+        let mut updated_content_lines = Vec::with_capacity(current_content_lines.len());
+        for line in current_content_lines {
+            let blocks: Vec<MessageBlock> = line.blocks.iter().collect();
+            let mut updated_blocks = Vec::with_capacity(blocks.len());
+            let mut line_changed = false;
+            for mut block in blocks {
+                if block.is_emoji {
+                    if let Some(img) = images.get(block.emoji_id.as_str()) {
+                        block.emoji_img = img.clone();
+                        line_changed = true;
+                    }
+                }
+                updated_blocks.push(block);
+            }
+            if line_changed {
+                content_changed = true;
+                updated_content_lines.push(MessageLine {
+                    blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
+                });
+            } else {
+                // Unchanged line: keep the original model instead of rebuilding it.
+                updated_content_lines.push(line);
+            }
+        }
+
+        let mut embed_changed = false;
+        let current_embed_lines: Vec<MessageLine> = msg.embed_lines.iter().collect();
+        let mut updated_embed_lines = Vec::with_capacity(current_embed_lines.len());
+        for line in current_embed_lines {
+            let blocks: Vec<MessageBlock> = line.blocks.iter().collect();
+            let mut updated_blocks = Vec::with_capacity(blocks.len());
+            let mut line_changed = false;
+            for mut block in blocks {
+                if block.is_emoji {
+                    if let Some(img) = images.get(block.emoji_id.as_str()) {
+                        block.emoji_img = img.clone();
+                        line_changed = true;
+                    }
+                }
+                updated_blocks.push(block);
+            }
+            if line_changed {
+                embed_changed = true;
+                updated_embed_lines.push(MessageLine {
+                    blocks: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_blocks))),
+                });
+            } else {
+                updated_embed_lines.push(line);
+            }
+        }
+
+        let mut buttons_changed = false;
+        let current_buttons: Vec<MessageButton> = msg.buttons.iter().collect();
+        let mut updated_buttons = Vec::with_capacity(current_buttons.len());
+        for mut button in current_buttons {
+            if let Some(img) = images.get(button.emoji_id.as_str()) {
+                button.emoji_img = img.clone();
+                buttons_changed = true;
+            }
+            updated_buttons.push(button);
+        }
+
+        if content_changed {
+            msg.content_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_content_lines)));
+        }
+        if embed_changed {
+            msg.embed_lines = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_embed_lines)));
+        }
+        if buttons_changed {
+            msg.buttons = slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_buttons)));
+        }
+        if content_changed || embed_changed || buttons_changed {
+            messages.set_row_data(idx, msg);
+        }
+    }
+}
+
+/// Replaces one emoji image in every row already painted that uses it.
+pub fn refresh_emoji_in_messages(ui: &AppWindow, emoji_id: &str, img: &slint::Image) {
+    let mut images = HashMap::new();
+    images.insert(emoji_id.to_string(), img.clone());
+    refresh_emojis_in_messages(ui, &images);
+}
+
+#[cfg(test)]
+mod command_index_tests {
+    use super::*;
+
+    #[test]
+    fn command_index_keeps_chat_input_commands_and_typed_options() {
+        let index = serde_json::json!({
+            "applications": [
+                {"id": "app-1", "name": "Example"}
+            ],
+            "application_commands": [
+                {
+                    "id": "cmd-1",
+                    "application_id": "app-1",
+                    "version": "v1",
+                    "type": 1,
+                    "name": "volume",
+                    "description": "Set volume",
+                    "options": [
+                        {"type": 4, "name": "percent", "description": "0-200", "required": true}
+                    ]
+                },
+                {
+                    "id": "cmd-2",
+                    "application_id": "app-1",
+                    "type": 2,
+                    "name": "User context",
+                    "description": ""
+                }
+            ]
+        });
+
+        let items = command_items_from_index(&index);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "/volume");
+        assert_eq!(items[0].option_type, 4);
+        assert!(items[0].is_required);
+        assert_eq!(items[0].usage, "/volume <percent>");
+    }
+
+    #[test]
+    fn command_index_deduplicates_the_same_application_command() {
+        let command = serde_json::json!({
+            "id": "cmd-1",
+            "application_id": "app-1",
+            "type": 1,
+            "name": "ping",
+            "description": "Ping"
+        });
+        let index = serde_json::json!({
+            "applications": [{"id": "app-1", "name": "Example"}],
+            "application_commands": [command, command]
+        });
+
+        assert_eq!(command_items_from_index(&index).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod member_drag_tests {
+    use super::*;
+
+    fn row(id: &str, voice: bool, member: bool, parent: &str) -> ChannelItem {
+        ChannelItem {
+            id: id.into(),
+            name: id.into(),
+            is_voice: voice,
+            is_voice_member: member,
+            parent_channel_id: parent.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dropping_a_member_on_a_voice_cluster_targets_its_channel() {
+        let rows = vec![
+            row("voice-1", true, false, ""),
+            row("voice-member:voice-1:1", false, true, "voice-1"),
+            row("voice-2", true, false, ""),
+            row("voice-member:voice-2:2", false, true, "voice-2"),
+        ];
+        // From the first member row, moving down past voice-2 lands on its cluster.
+        assert_eq!(voice_member_drop_row(&rows, 1, 20.0), Some(2));
+    }
+
+    #[test]
+    fn dropping_a_member_on_a_text_channel_is_rejected() {
+        let rows = vec![
+            row("voice-member:voice-1:1", false, true, "voice-1"),
+            row("text-1", false, false, ""),
+        ];
+        assert_eq!(voice_member_drop_row(&rows, 0, 50.0), None);
     }
 }

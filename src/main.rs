@@ -10,6 +10,7 @@ pub mod http;
 pub mod channel_permissions;
 pub mod encoder;
 pub mod screen_capture;
+pub mod native_video;
 #[cfg(feature = "automation")]
 mod automation;
 
@@ -53,8 +54,444 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 slint::include_modules!();
 
+/// Mirrors the current call/broadcast state on the tray and taskbar icons:
+/// green while in a voice call (server channel or DM), red while the camera or
+/// the screen share is live, plus the mute/deafen badge on top.
+fn sync_presence_icon(ui: &AppWindow) {
+    let in_voice = ui.get_is_in_voice() || ui.get_is_in_dm_call();
+    let streaming = crate::native_video::camera::is_camera_wanted()
+        || crate::screen_capture::is_self_streaming();
+    let muted = ui.get_is_muted();
+    let deafened = ui.get_is_deafened();
+
+    if !crate::utils::tray::set_presence(in_voice, streaming, muted, deafened) {
+        return;
+    }
+    if let Some((rgba, width, height)) = crate::utils::tray::presence_icon_rgba() {
+        use i_slint_backend_winit::WinitWindowAccessor;
+        if let Ok(icon) = winit::window::Icon::from_rgba(rgba, width, height) {
+            ui.window().with_winit_window(|window| {
+                window.set_window_icon(Some(icon));
+            });
+        }
+    }
+}
+
+/// Rebuilds the picker from the Unicode set plus every custom emoji the
+/// gateway has registered for this account. Custom entries insert the
+/// `<:name:id>` form Discord expects.
+fn refresh_emoji_picker(ui: &AppWindow) {
+    const UNICODE: &[(&str, &str, &str)] = &[
+        ("😀", "grinning", "faces"), ("😂", "joy", "faces"), ("🤣", "rofl", "faces"),
+        ("😊", "blush", "faces"), ("😍", "heart_eyes", "faces"), ("🥰", "smiling_face_with_3_hearts", "faces"),
+        ("😎", "sunglasses", "faces"), ("🤔", "thinking", "faces"), ("🤫", "shushing", "faces"),
+        ("😭", "sob", "faces"), ("💀", "skull", "faces"), ("🔥", "fire", "objects"),
+        ("✨", "sparkles", "objects"), ("👍", "+1", "hands"), ("👎", "-1", "hands"),
+        ("👏", "clap", "hands"), ("🙌", "raised_hands", "hands"), ("❤️", "heart", "objects"),
+        ("🎉", "tada", "objects"), ("👀", "eyes", "faces"), ("💯", "100", "objects"),
+        ("🚀", "rocket", "objects"), ("🎮", "video_game", "objects"), ("🍻", "beers", "objects"),
+        ("🍕", "pizza", "objects"), ("💩", "poop", "faces"), ("🥺", "pleading_face", "faces"),
+        ("🥳", "partying_face", "faces"), ("🤯", "exploding_head", "faces"), ("🤝", "handshake", "hands"),
+        ("🙏", "pray", "hands"), ("💪", "muscle", "hands"), ("🧠", "brain", "faces"),
+        ("🤡", "clown", "faces"), ("👻", "ghost", "faces"), ("👾", "space_invader", "objects"),
+        ("😅", "sweat_smile", "faces"), ("😆", "laughing", "faces"), ("🙃", "upside_down", "faces"),
+        ("😉", "wink", "faces"), ("😇", "innocent", "faces"), ("🥹", "holding_back_tears", "faces"),
+        ("😤", "triumph", "faces"), ("😴", "sleeping", "faces"), ("🤤", "drooling_face", "faces"),
+        ("🤗", "hugs", "faces"), ("🤪", "zany_face", "faces"), ("🫡", "saluting_face", "faces"),
+        ("😱", "scream", "faces"), ("😡", "rage", "faces"), ("🥶", "cold_face", "faces"),
+        ("🤠", "cowboy", "faces"), ("🤓", "nerd", "faces"), ("😷", "mask", "faces"),
+        ("🌟", "star2", "objects"), ("⚡", "zap", "objects"), ("💥", "boom", "objects"),
+        ("🎵", "musical_note", "objects"), ("🎶", "notes", "objects"), ("🏆", "trophy", "objects"),
+        ("💎", "gem", "objects"), ("🎁", "gift", "objects"), ("🍔", "hamburger", "objects"),
+        ("🍟", "fries", "objects"), ("☕", "coffee", "objects"), ("🍺", "beer", "objects"),
+        ("🌮", "taco", "objects"), ("🍩", "doughnut", "objects"), ("🍪", "cookie", "objects"),
+        ("👋", "wave", "hands"), ("🤞", "crossed_fingers", "hands"), ("✌️", "v", "hands"),
+        ("🤙", "call_me_hand", "hands"), ("👌", "ok_hand", "hands"), ("🫶", "heart_hands", "hands"),
+        ("👊", "punch", "hands"), ("✊", "fist", "hands"), ("🖖", "vulcan", "hands"),
+        ("🫠", "melting_face", "faces"), ("🫣", "face_with_peeking_eye", "faces"), ("🫤", "face_with_diagonal_mouth", "faces"),
+        ("🙈", "see_no_evil", "faces"), ("🙉", "hear_no_evil", "faces"), ("🙊", "speak_no_evil", "faces"),
+        ("🐶", "dog", "animals"), ("🐱", "cat", "animals"), ("🦊", "fox", "animals"),
+        ("🐼", "panda", "animals"), ("🦄", "unicorn", "animals"), ("🐸", "frog", "animals"),
+        ("🐵", "monkey_face", "animals"), ("🦆", "duck", "animals"), ("🐝", "bee", "animals"),
+        ("🌸", "cherry_blossom", "nature"), ("🌈", "rainbow", "nature"), ("❄️", "snowflake", "nature"),
+        ("🌙", "crescent_moon", "nature"), ("☀️", "sunny", "nature"), ("🌊", "ocean", "nature"),
+        ("🍀", "four_leaf_clover", "nature"), ("🌵", "cactus", "nature"), ("🌻", "sunflower", "nature"),
+        ("✅", "white_check_mark", "symbols"), ("❌", "x", "symbols"), ("⚠️", "warning", "symbols"),
+        ("❓", "question", "symbols"), ("❗", "exclamation", "symbols"), ("💤", "zzz", "symbols"),
+        ("🔞", "underage", "symbols"), ("♻️", "recycle", "symbols"), ("🔱", "trident", "symbols"),
+        ("😈", "smiling_imp", "faces"), ("👿", "imp", "faces"), ("💔", "broken_heart", "objects"),
+        ("💖", "sparkling_heart", "objects"), ("💙", "blue_heart", "objects"), ("💚", "green_heart", "objects"),
+        ("💜", "purple_heart", "objects"), ("🖤", "black_heart", "objects"), ("🤍", "white_heart", "objects"),
+        ("🫂", "people_hugging", "objects"), ("🎯", "dart", "objects"), ("🎲", "game_die", "objects"),
+        ("🕹️", "joystick", "objects"), ("🎧", "headphones", "objects"), ("📌", "pushpin", "objects"),
+    ];
+
+    let mut rows: Vec<EmojiRow> = Vec::new();
+    let mut row: Vec<EmojiPickerItem> = Vec::with_capacity(12);
+    for (code, name, category) in UNICODE {
+        row.push(EmojiPickerItem {
+            code: (*code).into(),
+            name: (*name).into(),
+            category: (*category).into(),
+            is_custom: false,
+        });
+        if row.len() == 12 {
+            rows.push(EmojiRow { emojis: std::rc::Rc::new(slint::VecModel::from(std::mem::take(&mut row))).into() });
+        }
+    }
+    let mut custom = crate::utils::emoji_cache::get_all_custom_emojis();
+    custom.sort_by(|a, b| a.name.cmp(&b.name));
+    // The picker is a convenience list, not a full browser: cap it so a large
+    // account does not build thousands of rows every time it opens.
+    for emoji in custom.into_iter().take(512) {
+        let prefix = if emoji.animated { "a" } else { "" };
+        row.push(EmojiPickerItem {
+            code: format!("<{}:{}:{}>", prefix, emoji.name, emoji.id).into(),
+            name: emoji.name.into(),
+            category: "custom".into(),
+            is_custom: true,
+        });
+        if row.len() == 12 {
+            rows.push(EmojiRow { emojis: std::rc::Rc::new(slint::VecModel::from(std::mem::take(&mut row))).into() });
+        }
+    }
+    if !row.is_empty() {
+        rows.push(EmojiRow { emojis: std::rc::Rc::new(slint::VecModel::from(row)).into() });
+    }
+    ui.set_emoji_rows(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+}
+
+/// (kind, target id, show topic/nsfw fields). Kind is "channel", "guild" or "create".
+fn edit_target_store() -> &'static std::sync::Mutex<(String, String, bool)> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<(String, String, bool)>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new((String::new(), String::new(), false)))
+}
+
+/// Action string waiting for the confirmation dialog.
+fn confirm_target_store() -> &'static std::sync::Mutex<String> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct ChannelPrefs {
+    #[serde(default)]
+    favorites: std::collections::HashSet<String>,
+    #[serde(default)]
+    pinned: std::collections::HashSet<String>,
+    #[serde(default)]
+    muted: std::collections::HashSet<String>,
+    #[serde(default)]
+    notify: std::collections::HashMap<String, String>,
+}
+
+fn channel_prefs_path() -> std::path::PathBuf {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    base.join("litecord").join("channel_prefs.json")
+}
+
+fn channel_prefs() -> &'static std::sync::Mutex<ChannelPrefs> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<ChannelPrefs>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| {
+        let prefs = std::fs::read_to_string(channel_prefs_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        std::sync::Mutex::new(prefs)
+    })
+}
+
+fn save_channel_prefs() {
+    if let Ok(prefs) = channel_prefs().lock() {
+        if let Ok(json) = serde_json::to_string_pretty(&*prefs) {
+            let path = channel_prefs_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+/// User whose context-menu **voice** slider is open.
+fn voice_slider_target_store() -> &'static std::sync::Mutex<String> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+/// User whose context-menu **stream** slider is open.
+fn stream_slider_target_store() -> &'static std::sync::Mutex<String> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+fn video_disabled_store() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn soundboard_muted_store() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// An installed application and the slash commands it exposes in a guild.
+#[derive(Clone)]
+struct AppCommand {
+    name: String,
+    id: String,
+    version: String,
+    param: String,
+}
+
+#[derive(Clone)]
+struct GuildApp {
+    id: String,
+    name: String,
+    commands: Vec<AppCommand>,
+}
+
+/// Parses `GET /guilds/{id}/application-command-index` into apps with their
+/// commands. Applications without a bot (some built-ins) still show up.
+fn parse_guild_apps(data: &serde_json::Value) -> Vec<GuildApp> {
+    let mut apps: Vec<GuildApp> = Vec::new();
+    let mut names: HashMap<String, String> = HashMap::new();
+    if let Some(list) = data["applications"].as_array() {
+        for app in list {
+            let id = app["id"].as_str().unwrap_or("").to_string();
+            let name = app["name"]
+                .as_str()
+                .or_else(|| app["bot"]["global_name"].as_str())
+                .or_else(|| app["bot"]["username"].as_str())
+                .unwrap_or("")
+                .to_string();
+            if !id.is_empty() && !name.is_empty() {
+                names.insert(id.clone(), name.clone());
+                apps.push(GuildApp { id, name, commands: Vec::new() });
+            }
+        }
+    }
+    if let Some(cmds) = data["application_commands"].as_array() {
+        for cmd in cmds {
+            let name = cmd["name"].as_str().unwrap_or("");
+            let app_id = cmd["application_id"].as_str().unwrap_or("");
+            if name.is_empty() || app_id.is_empty() {
+                continue;
+            }
+            let param = cmd["options"]
+                .as_array()
+                .and_then(|o| o.first())
+                .and_then(|o| o["name"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let entry = AppCommand {
+                name: name.to_string(),
+                id: cmd["id"].as_str().unwrap_or("").to_string(),
+                version: cmd["version"].as_str().unwrap_or("").to_string(),
+                param,
+            };
+            if let Some(app) = apps.iter_mut().find(|a| a.id == app_id) {
+                app.commands.push(entry);
+            } else {
+                let app_name = names.get(app_id).cloned().unwrap_or_else(|| "Bot".to_string());
+                apps.push(GuildApp {
+                    id: app_id.to_string(),
+                    name: app_name,
+                    commands: vec![entry],
+                });
+            }
+        }
+    }
+    apps.retain(|a| !a.commands.is_empty());
+    apps
+}
+
+fn guild_apps_cache() -> &'static Mutex<HashMap<String, Vec<GuildApp>>> {
+    static STORE: std::sync::OnceLock<Mutex<HashMap<String, Vec<GuildApp>>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn guild_apps_inflight() -> &'static Mutex<std::collections::HashSet<String>> {
+    static STORE: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Which submenu is currently open, so an async fetch can fill the right one.
+fn open_submenu_store() -> &'static Mutex<String> {
+    static STORE: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Builds the Apps submenu: one section per app, one entry per command.
+fn build_apps_submenu(gid: &str) -> Vec<ContextMenuItem> {
+    let apps = guild_apps_cache()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(gid).cloned())
+        .unwrap_or_default();
+    if apps.is_empty() {
+        return vec![cm_item("", "No hay apps instaladas", "🧩", false, false, false)];
+    }
+    let mut items = Vec::new();
+    for app in apps {
+        items.push(ContextMenuItem {
+            id: "".into(),
+            label: app.name.clone().into(),
+            icon: "".into(),
+            danger: false,
+            checked: false,
+            enabled: false,
+            kind: 2,
+            submenu: false,
+        });
+        for cmd in app.commands {
+            let id = format!(
+                "app_cmd:{}|{}|{}|{}",
+                app.id, cmd.id, cmd.name, cmd.version
+            );
+            let label = if cmd.param.is_empty() {
+                format!("/{}", cmd.name)
+            } else {
+                format!("/{} <{}>", cmd.name, cmd.param)
+            };
+            items.push(cm_item(&id, &label, "⌨", false, false, true));
+        }
+    }
+    items
+}
+
+/// Builds the typed value Discord expects for a slash-command option. The
+/// composer is text-only, so mentions and raw snowflakes are both accepted for
+/// USER/CHANNEL/ROLE options.
+fn slash_option_value(option_type: i32, raw: &str) -> Result<serde_json::Value, String> {
+    let value = raw.trim();
+    match option_type {
+        4 => value
+            .parse::<i64>()
+            .map(serde_json::Value::from)
+            .map_err(|_| format!("'{value}' no es un entero")),
+        5 => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "si" | "sí" | "s" => Ok(serde_json::Value::Bool(true)),
+            "false" | "0" | "no" | "n" => Ok(serde_json::Value::Bool(false)),
+            _ => Err(format!("'{value}' no es un booleano")),
+        },
+        6 | 7 | 8 | 9 => {
+            let id: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+            if id.is_empty() {
+                Err(format!("'{value}' no contiene un ID de Discord"))
+            } else {
+                Ok(serde_json::Value::String(id))
+            }
+        }
+        10 => value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| format!("'{value}' no es un número")),
+        _ => Ok(serde_json::Value::String(value.to_string())),
+    }
+}
+
+fn cm_item(id: &str, label: &str, icon: &str, danger: bool, checked: bool, enabled: bool) -> ContextMenuItem {
+    ContextMenuItem {
+        id: id.into(),
+        label: label.into(),
+        icon: icon.into(),
+        danger,
+        checked,
+        enabled,
+        kind: 0,
+        submenu: false,
+    }
+}
+
+fn cm_submenu(id: &str, label: &str, icon: &str) -> ContextMenuItem {
+    ContextMenuItem {
+        id: id.into(),
+        label: label.into(),
+        icon: icon.into(),
+        danger: false,
+        checked: false,
+        enabled: true,
+        kind: 0,
+        submenu: true,
+    }
+}
+
+fn cm_separator() -> ContextMenuItem {
+    ContextMenuItem { kind: 1, ..Default::default() }
+}
+
+fn soundboard_icon(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    if n.contains("horn") { "🎺" }
+    else if n.contains("bruh") { "🗿" }
+    else if n.contains("quack") || n.contains("duck") { "🦆" }
+    else if n.contains("drum") || n.contains("ba dum") { "🥁" }
+    else if n.contains("boom") { "💥" }
+    else if n.contains("tada") || n.contains("fanfare") { "🎉" }
+    else if n.contains("applause") || n.contains("clap") { "👏" }
+    else if n.contains("cricket") { "🦗" }
+    else if n.contains("laugh") { "😂" }
+    else if n.contains("sad") || n.contains("cry") { "😭" }
+    else if n.contains("wow") { "😮" }
+    else if n.contains("discord") { "💬" }
+    else { "🔊" }
+}
+
+/// Turns the REST soundboard payload into the two-dimensional picker model.
+fn soundboard_rows_from_json(items: &[serde_json::Value], source_guild: &str) -> Vec<SoundboardRow> {
+    let mut rows = Vec::new();
+    let mut row: Vec<SoundboardItem> = Vec::with_capacity(4);
+    for item in items {
+        let sound_id = item["sound_id"].as_str().unwrap_or("");
+        if sound_id.is_empty() {
+            continue;
+        }
+        let name = item["name"].as_str().unwrap_or("Sound");
+        let id = if source_guild.is_empty() {
+            sound_id.to_string()
+        } else {
+            format!("{}:{}", source_guild, sound_id)
+        };
+        row.push(SoundboardItem {
+            id: id.into(),
+            name: name.into(),
+            icon: soundboard_icon(name).into(),
+            category: if source_guild.is_empty() { "default".into() } else { "guild".into() },
+        });
+        if row.len() == 4 {
+            rows.push(SoundboardRow { sounds: std::rc::Rc::new(slint::VecModel::from(std::mem::take(&mut row))).into() });
+        }
+    }
+    let builtins = [
+        ("airhorn", "Airhorn", "🎺"), ("bruh", "Bruh", "🗿"),
+        ("quack", "Quack", "🦆"), ("badumtss", "Ba-Dum-Tss", "🥁"),
+        ("vineboom", "Vine Boom", "💥"), ("tada", "Tada", "🎉"),
+        ("applause", "Applause", "👏"), ("cricket", "Crickets", "🦗"),
+    ];
+    for (id, name, icon) in builtins {
+        row.push(SoundboardItem { id: id.into(), name: name.into(), icon: icon.into(), category: "builtin".into() });
+        if row.len() == 4 {
+            rows.push(SoundboardRow { sounds: std::rc::Rc::new(slint::VecModel::from(std::mem::take(&mut row))).into() });
+        }
+    }
+    if !row.is_empty() {
+        rows.push(SoundboardRow { sounds: std::rc::Rc::new(slint::VecModel::from(row)).into() });
+    }
+    rows
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GDK_GL").is_none() {
+        std::env::set_var("GDK_GL", "never");
+    }
     commit_heap_pages_on_demand();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
@@ -117,13 +554,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
         std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
+    let configure_window = |ui: &AppWindow| {
+        if let Some(saved) = video_settings::get_window_geometry() {
+            ui.window().set_size(slint::LogicalSize::new(
+                saved.width as f32,
+                saved.height as f32,
+            ));
+            #[cfg(not(target_os = "linux"))]
+            if let (Some(x), Some(y)) = (saved.x, saved.y) {
+                ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+            }
+            if saved.maximized {
+                ui.window().set_maximized(true);
+                ui.set_is_maximized(true);
+            }
+        }
+    };
+
     let app = match AppWindow::new() {
         Ok(app) => {
+            configure_window(&app);
             info!("🖥️ Exibindo janela principal (app.show())...");
             if let Err(e) = app.show() {
                 log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
                 std::env::set_var("SLINT_BACKEND", "software");
                 let sw_app = AppWindow::new()?;
+                configure_window(&sw_app);
                 sw_app.show()?;
                 info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
                 sw_app
@@ -136,6 +592,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
             std::env::set_var("SLINT_BACKEND", "software");
             let sw_app = AppWindow::new()?;
+            configure_window(&sw_app);
             sw_app.show()?;
             info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
             sw_app
@@ -166,6 +623,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_video_interface_settings(&app);
     populate_voice_processing_settings(&app);
     populate_network_proxy_settings(&app);
+
+    refresh_emoji_picker(&app);
+    {
+        let weak = app.as_weak();
+        app.on_toggle_emoji_picker(move || {
+            if let Some(ui) = weak.upgrade() {
+                let open = !ui.get_show_emoji_picker();
+                ui.set_show_emoji_picker(open);
+                if open {
+                    ui.set_show_soundboard_panel(false);
+                    ui.set_show_command_suggestions(false);
+                    refresh_emoji_picker(&ui);
+                }
+            }
+        });
+    }
 
     let app_weak = app.as_weak();
     #[cfg(windows)]
@@ -204,7 +677,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (aw, pw) = (app_weak.clone(), popout_weak.clone());
             move || {
                 if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
-                    crate::ui::gpu_video::refresh(&a, &p);
+                    crate::ui::gpu_video::refresh(&a, Some(&p));
                 }
             }
         };
@@ -224,8 +697,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
-                        if ui.get_is_maximized() != w.is_maximized() {
-                            ui.set_is_maximized(w.is_maximized());
+                        let is_max = crate::ui::window_place::is_maximized(w);
+                        if ui.get_is_maximized() != is_max {
+                            ui.set_is_maximized(is_max);
                         }
                     }
                 });
@@ -254,7 +728,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (aw, pw) = (app_weak.clone(), popout_weak.clone());
         app.on_stream_viewport_changed(move |x, y, w, h| {
             if let (Some(a), Some(p)) = (aw.upgrade(), pw.upgrade()) {
-                crate::ui::gpu_video::viewport_changed(&a, &p, x, y, w, h);
+                crate::ui::gpu_video::viewport_changed(&a, Some(&p), x, y, w, h);
             }
         });
     }
@@ -275,6 +749,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if crate::ui::window_place::restore(winit_win) {
                     ui.set_is_maximized(true);
                 }
+                crate::ui::window_place::register(&app_weak_init);
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 // A frameless window gets no drop shadow, so over another light window its
@@ -287,27 +762,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 winit_win.focus_window();
                 winit_win.request_redraw();
+                #[cfg(target_os = "windows")]
                 if let Some(pop_win) = popout_weak_init.upgrade() {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
                         let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
                         winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                         winit_pop.set_visible(false);
-                        #[cfg(target_os = "windows")]
-                        {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            if let Ok(handle) = winit_pop.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    let hwnd = win32_handle.hwnd.get() as isize;
-                                    *pop_hwnd_c.lock().unwrap() = Some(hwnd);
-                                    set_dark_titlebar_color(hwnd);
-                                    unsafe {
-                                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
-                                        };
-                                        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
-                                        SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
-                                    }
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        if let Ok(handle) = winit_pop.window_handle() {
+                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                let hwnd = win32_handle.hwnd.get() as isize;
+                                *pop_hwnd_c.lock().unwrap() = Some(hwnd);
+                                set_dark_titlebar_color(hwnd);
+                                unsafe {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                        GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+                                    };
+                                    let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+                                    SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
                                 }
                             }
                         }
@@ -342,17 +815,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             ui.window().request_redraw();
             if let Some(pop_win) = popout_weak_init.upgrade() {
-                crate::ui::gpu_video::install(&ui, &pop_win);
+                crate::ui::gpu_video::install(&ui, Some(&pop_win));
             }
         }
     });
 
     #[cfg(not(target_os = "windows"))]
     {
+        // First paint on the software renderer can land before the fonts/layout are
+        // ready; two late redraws cover that without the old 8×250 ms pulse that kept
+        // repainting the whole window for two seconds after startup.
         let app_weak_pulse = app_weak.clone();
         tokio::spawn(async move {
-            for _ in 0..8 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            for delay in [300u64, 800] {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 let app_w = app_weak_pulse.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = app_w.upgrade() {
@@ -379,6 +855,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_mic_stream: Arc<Mutex<Option<audio::engine::MicCapture>>> = Arc::new(Mutex::new(None));
     let active_loopback_stream: Arc<Mutex<Option<cpal::Stream>>> = Arc::new(Mutex::new(None));
 
+    // The tray and menu handlers forward only the events that matter; the thread
+    // sleeps on that channel instead of polling the receivers every 120 ms.
+    // `true` = toggle window visibility, `false` = quit.
+    let (tray_action_tx, tray_action_rx) = std::sync::mpsc::channel::<bool>();
+    utils::tray::set_action_sender(tray_action_tx.clone());
+
     let tray = SystemTrayManager::setup();
     let show_id = tray.show_item_id.clone();
     let quit_id = tray.quit_item_id.clone();
@@ -388,10 +870,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_tray = app_weak.clone();
     let show_id_c = show_id.clone();
     let quit_id_c = quit_id.clone();
-    // The tray and menu handlers forward only the events that matter; the thread
-    // sleeps on that channel instead of polling the receivers every 120 ms.
-    // `true` = restore the window, `false` = quit.
-    let (tray_action_tx, tray_action_rx) = std::sync::mpsc::channel::<bool>();
     let menu_action_tx = tray_action_tx.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         info!("Tray MenuEvent recebido: {:?}", event);
@@ -421,6 +899,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(0);
                 }
 
+                // Left click on the tray toggles: hide when the window is up,
+                // restore when it is hidden.
+                if APP_IS_VISIBLE.swap(false, Ordering::Relaxed) {
+                    crate::ui::window_place::save_now();
+                    crate::ui::invite_cards::clear();
+                    PENDING_MESSAGES.store(0, Ordering::Relaxed);
+                    let app_w_hide = app_weak_tray.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w_hide.upgrade() {
+                            let _ = ui.hide();
+                        }
+                        trim_process_memory();
+                    });
+                    info!("[Tray] Janela ocultada via toggle.");
+                    continue;
+                }
+
                 APP_IS_VISIBLE.store(true, Ordering::Relaxed);
                 // Watched streams are asked for again right away.
                 screen_capture::types::wake_p2p_receiver();
@@ -433,10 +928,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _hwnd_store_inner = Arc::clone(&hwnd_store_tray);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui_inner) = app_weak_inner.upgrade() {
+                        let _ = ui_inner.show();
+                        let app_w_restore = app_weak_inner.clone();
                         let _ = ui_inner.window().with_winit_window(|winit_win| {
                             winit_win.set_visible(true);
                             winit_win.set_minimized(false);
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                winit_win.set_decorations(true);
+                                let icon_bytes = include_bytes!("../assets/app_icon.png");
+                                if let Ok(img) = image::load_from_memory(icon_bytes) {
+                                    let rgba = img.into_rgba8();
+                                    let (width, height) = rgba.dimensions();
+                                    if let Ok(winit_icon) = winit::window::Icon::from_rgba(rgba.into_raw(), width, height) {
+                                        winit_win.set_window_icon(Some(winit_icon));
+                                    }
+                                }
+                                if crate::ui::window_place::restore(winit_win) {
+                                    if let Some(ui) = app_w_restore.upgrade() {
+                                        ui.set_is_maximized(true);
+                                    }
+                                }
+                            }
                             winit_win.focus_window();
+                        });
+                        // Redraw when the surface is mapped
+                        let app_w_pulse = app_weak_inner.clone();
+                        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                            if let Some(ui) = app_w_pulse.upgrade() {
+                                ui.window().with_winit_window(|winit_win| {
+                                    winit_win.set_visible(true);
+                                    winit_win.focus_window();
+                                });
+                                i_slint_backend_winit::redraw_whole_window(ui.window());
+                            }
                         });
                         i_slint_backend_winit::redraw_whole_window(ui_inner.window());
                     }
@@ -453,6 +978,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .expect("Failed to spawn tray listener thread");
+
+    // The GTK pump is only needed by the libappindicator tray on Linux; the
+    // Windows tray is native and gtk is not even a dependency there.
+    #[cfg(target_os = "linux")]
+    let _gtk_tray_pump_timer = {
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(80), || {
+            while gtk::events_pending() {
+                gtk::main_iteration_do(false);
+            }
+        });
+        timer
+    };
+
+    // Call/broadcast state drives the tray and taskbar icons.  A one-second
+    // tick is enough: the transitions are rare and it keeps this independent
+    // from every call site that changes voice, mute, deafen or streaming.
+    let app_weak_presence = app_weak.clone();
+    let _presence_icon_timer = {
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(1000), move || {
+            if let Some(ui) = app_weak_presence.upgrade() {
+                sync_presence_icon(&ui);
+            }
+        });
+        timer
+    };
 
 
 
@@ -558,6 +1110,1220 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache.download_full_async(att_id.as_str(), filename.as_str(), url.as_str(), app_weak_dl.clone());
     });
 
+    // Soundboard: synthesized/custom sounds locally, and OP 31 for server sounds
+    // so the rest of the voice channel hears them too.
+    {
+        let cmd_tx_sb = Arc::clone(&cmd_tx_store);
+        let active_ch_sb = Arc::clone(&active_channel_id);
+        let active_guild_sb = Arc::clone(&active_guild_id);
+        app.on_play_soundboard_sound(move |sound_id: SharedString| {
+            let raw = sound_id.to_string();
+            soundboard::play_soundboard_effect(&raw);
+
+            let sound = raw.split(':').last().unwrap_or(&raw).to_string();
+            if sound.is_empty() || !sound.chars().all(|c| c.is_ascii_digit()) {
+                return;
+            }
+            let (source_guild, _) = raw.split_once(':').unwrap_or(("", ""));
+            let channel_id = active_ch_sb.lock().unwrap().clone();
+            let guild_id = active_guild_sb.lock().unwrap().clone();
+            let source = if !source_guild.is_empty() {
+                Some(source_guild.to_string())
+            } else if !guild_id.is_empty() && guild_id != "@me" {
+                Some(guild_id)
+            } else {
+                None
+            };
+            if let Some(tx) = cmd_tx_sb.lock().unwrap().as_ref() {
+                let _ = tx.try_send(GatewayCommand::SendSoundboardSound {
+                    channel_id,
+                    sound_id: sound,
+                    source_guild_id: source,
+                });
+            }
+        });
+    }
+
+    // ── Context menus (users / channels / servers) ──────────────────────────
+    {
+        let app_weak_cm = app.as_weak();
+        let active_guild_cm = Arc::clone(&active_guild_id);
+        let guilds_map_cm = Arc::clone(&guilds_map);
+        app.on_request_context_menu(move |raw: SharedString, x: f32, y: f32| {
+            let raw = raw.to_string();
+            let gid = active_guild_cm.lock().unwrap().clone();
+            let my_uid = gateway::get_my_user_id();
+            let mut items: Vec<ContextMenuItem> = Vec::new();
+            let mut title = String::new();
+            let mut show_voice_slider = false;
+            let mut voice_slider_label = String::new();
+            let mut voice_slider_value = 1.0f32;
+            let mut show_stream_slider = false;
+            let mut stream_slider_label = String::new();
+            let mut stream_slider_value = 1.0f32;
+
+            if let Some(rest) = raw.strip_prefix("channel:voice-member:") {
+                let (channel_id, uid) = rest.rsplit_once(':').unwrap_or((rest, "0"));
+                let uid_num = uid.parse::<u64>().unwrap_or(0);
+                title = gateway::get_user_name(uid_num);
+                if title.is_empty() {
+                    title = uid.to_string();
+                }
+                let (saved_muted, saved_vol, _) = gateway::get_user_audio_settings(uid);
+                let is_streaming_uid = uid_num != 0 && crate::screen_capture::peer_is_streaming(uid_num);
+                // Voice and stream are independent: a streaming user still has a
+                // microphone track, and both can be boosted up to 200%.
+                if uid_num != my_uid {
+                    show_voice_slider = true;
+                    voice_slider_label = format!("Volumen de voz de {}", title);
+                    voice_slider_value = saved_vol;
+                }
+                if is_streaming_uid && uid_num != my_uid {
+                    show_stream_slider = true;
+                    stream_slider_label = format!("Volumen del stream de {}", title);
+                    stream_slider_value = crate::screen_capture::audio_loopback::get_stream_volume(uid_num);
+                }
+                *voice_slider_target_store().lock().unwrap() =
+                    if show_voice_slider { uid.to_string() } else { String::new() };
+                *stream_slider_target_store().lock().unwrap() =
+                    if show_stream_slider { uid.to_string() } else { String::new() };
+                if !gid.is_empty() && gid != "@me" {
+                    let can_manage_roles = gateway::has_guild_permission(
+                        &gid,
+                        my_uid,
+                        gateway::PERM_MANAGE_ROLES,
+                    );
+                    if can_manage_roles && uid_num != 0 {
+                        items.push(cm_submenu(
+                            &format!("submenu:roles:{uid}"),
+                            "Roles",
+                            "🛡",
+                        ));
+                    } else {
+                        let roles = gateway::member_role_names(&gid, uid_num);
+                        if !roles.is_empty() {
+                            items.push(ContextMenuItem {
+                                id: "".into(),
+                                label: "Roles".into(),
+                                icon: "".into(),
+                                danger: false,
+                                checked: false,
+                                enabled: false,
+                                kind: 2,
+                                submenu: false,
+                            });
+                            for role in roles {
+                                items.push(cm_item("", &role, "•", false, false, false));
+                            }
+                        }
+                    }
+                    items.push(cm_separator());
+                }
+                let is_self = uid_num == my_uid;
+                items.push(cm_item(&format!("mention:{uid}"), "Mención", "@", false, false, true));
+                items.push(cm_item(&format!("user_dm:{uid}"), "Enviar mensaje", "💬", false, false, !is_self));
+                items.push(cm_item(&format!("user_call:{uid}"), "Iniciar una llamada", "📞", false, false, !is_self));
+                items.push(cm_item(&format!("user_mute:{uid}"), "Silenciar", "🔇", false, saved_muted, !uid.is_empty()));
+                items.push(cm_item(&format!("vol_down:{uid}"), &format!("Volumen − ({}%)", (saved_vol * 100.0).round() as i32), "➖", false, false, saved_vol > 0.0));
+                items.push(cm_item(&format!("vol_up:{uid}"), "Volumen +", "➕", false, false, saved_vol < 2.0));
+                let sb_muted = soundboard_muted_store().lock().map(|s| s.contains(uid)).unwrap_or(false);
+                items.push(cm_item(&format!("user_sb_mute:{uid}"), "Silenciar panel de sonidos", "🔊", false, sb_muted, true));
+                let video_off = video_disabled_store().lock().map(|s| s.contains(uid)).unwrap_or(false);
+                items.push(cm_item(&format!("user_video_disable:{uid}"), "Desactivar vídeo", "📷", false, video_off, uid_num != my_uid));
+                items.push(cm_separator());
+                items.push(cm_item(&format!("user_note:{uid}"), "Añadir nota", "📝", false, false, !is_self));
+                items.push(cm_item(&format!("user_nick:{uid}"), "Añadir apodo de amigo", "🏷", false, false, !is_self));
+                items.push(cm_item(&format!("user_unfriend:{uid}"), "Eliminar amigo", "💔", true, false, !is_self));
+                items.push(cm_item(&format!("user_block:{uid}"), "Bloquear", "🚫", true, false, !is_self));
+                items.push(cm_submenu(&format!("submenu:apps:{uid}"), "Apps", "🧩"));
+                items.push(cm_item(&format!("mod_view:{uid}"), "Abrir en vista de moderador", "🛡", false, false, !is_self));
+                items.push(cm_separator());
+                let can_mute = !gid.is_empty() && gid != "@me" && gateway::can_moderate_member(&gid, my_uid, uid_num, gateway::PERM_MUTE_MEMBERS);
+                let can_deafen = !gid.is_empty() && gid != "@me" && gateway::can_moderate_member(&gid, my_uid, uid_num, gateway::PERM_DEAFEN_MEMBERS);
+                let can_move = !gid.is_empty() && gid != "@me" && gateway::can_moderate_member(&gid, my_uid, uid_num, gateway::PERM_MOVE_MEMBERS);
+                let can_kick = !gid.is_empty() && gid != "@me" && gateway::can_moderate_member(&gid, my_uid, uid_num, gateway::PERM_KICK_MEMBERS);
+                let can_ban = !gid.is_empty() && gid != "@me" && gateway::can_moderate_member(&gid, my_uid, uid_num, gateway::PERM_BAN_MEMBERS);
+                let server_muted = gateway::is_user_server_muted(uid_num);
+                items.push(cm_item(&format!("server_mute:{uid}"), "Silenciar en el servidor", "🎙", true, server_muted, can_mute && !is_self));
+                items.push(cm_submenu(&format!("submenu:server_timeout:{uid}"), "Silenciar con duración", "⏱"));
+                items.push(cm_item(&format!("server_deafen:{uid}"), "Ensordecer en el servidor", "🎧", true, false, can_deafen && !is_self));
+                items.push(cm_item(&format!("server_disconnect:{uid}"), "Desconectar", "⏏", true, false, can_move && !is_self));
+                items.push(cm_item(&format!("user_kick:{uid}"), "Expulsar del servidor", "⛔", true, false, can_kick && !is_self));
+                items.push(cm_item(&format!("user_ban:{uid}"), "Banear del servidor", "🚫", true, false, can_ban && !is_self));
+                if can_move && !is_self {
+                    let channels: Vec<(String, String)> = guilds_map_cm
+                        .lock()
+                        .ok()
+                        .and_then(|m| m.get(&gid).map(|g| {
+                            g.channels.iter()
+                                .filter(|c| c.is_voice)
+                                .map(|c| (c.id.clone(), c.name.clone()))
+                                .collect()
+                        }))
+                        .unwrap_or_default();
+                    if !channels.is_empty() {
+                        items.push(ContextMenuItem { id: "".into(), label: "Mover a".into(), icon: "".into(), danger: false, checked: false, enabled: false, kind: 2, submenu: false });
+                        for (cid, cname) in channels {
+                            items.push(cm_item(&format!("move_to:{uid}:{cid}"), &cname, "🔀", false, false, true));
+                        }
+                    }
+                }
+                items.push(cm_separator());
+                items.push(cm_item(&format!("copy:{uid}"), "Copiar ID de usuario", "🆔", false, false, true));
+                let _ = channel_id;
+            } else if let Some(rest) = raw.strip_prefix("channel:") {
+                let channel_id = rest.to_string();
+                title = "Canal".to_string();
+                items.push(cm_item(&format!("mark_read:{channel_id}"), "Marcar como leído", "✓", false, false, true));
+                items.push(cm_item(&format!("copy:{channel_id}"), "Copiar ID del canal", "🆔", false, false, true));
+                items.push(cm_item(&format!("copy_link:{channel_id}"), "Copiar enlace", "🔗", false, false, !gid.is_empty()));
+                let (fav, pinned, muted, notify) = {
+                    let prefs = channel_prefs().lock().unwrap();
+                    (
+                        prefs.favorites.contains(&channel_id),
+                        prefs.pinned.contains(&channel_id),
+                        prefs.muted.contains(&channel_id),
+                        prefs.notify.get(&channel_id).cloned().unwrap_or_else(|| "all".to_string()),
+                    )
+                };
+                items.push(cm_item(&format!("channel_fav:{channel_id}"), if fav { "Quitar de favoritos" } else { "Añadir a favoritos" }, "⭐", false, fav, true));
+                items.push(cm_item(&format!("channel_pin:{channel_id}"), if pinned { "Desfijar canal" } else { "Fijar canal en la parte superior" }, "📌", false, pinned, true));
+                items.push(cm_item(&format!("channel_mute:{channel_id}"), "Silenciar canal", "🔕", false, muted, true));
+                items.push(cm_submenu(&format!("submenu:channel_notify:{channel_id}"), "Ajustes de notificaciones", "🔔"));
+                if gid != "@me" && !gid.is_empty() {
+                    items.push(cm_submenu(&format!("submenu:invite:{gid}"), "Invitar a la gente", "🔗"));
+                }
+                let categories: Vec<(String, String)> = guilds_map_cm
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&gid).map(|g| {
+                        g.channels.iter()
+                            .filter(|c| c.is_category)
+                            .map(|c| (c.id.clone(), c.name.clone()))
+                            .collect()
+                    }))
+                    .unwrap_or_default();
+                if !categories.is_empty() {
+                    items.push(ContextMenuItem { id: "".into(), label: "Mover a categoría".into(), icon: "".into(), danger: false, checked: false, enabled: false, kind: 2, submenu: false });
+                    items.push(cm_item(&format!("channel_move:{channel_id}:"), "Sin categoría", "📂", false, false, true));
+                    for (cat_id, cat_name) in categories {
+                        items.push(cm_item(&format!("channel_move:{channel_id}:{cat_id}"), &cat_name, "📂", false, false, true));
+                    }
+                }
+                let _ = notify;
+                items.push(cm_separator());
+                let can_manage = !gid.is_empty()
+                    && gid != "@me"
+                    && (gateway::has_channel_permission(&gid, my_uid, &channel_id, gateway::PERM_MANAGE_CHANNELS)
+                        || !gateway::member_roles_known(&gid, my_uid));
+                info!(
+                    "🛠️ [CHANNEL PERMS] guild={} user={} channel={} manage={} roles_known={}",
+                    gid,
+                    my_uid,
+                    channel_id,
+                    can_manage,
+                    gateway::member_roles_known(&gid, my_uid)
+                );
+                items.push(cm_item(&format!("channel_edit:{channel_id}"), "Editar canal", "✏", false, false, can_manage));
+                items.push(cm_item(&format!("channel_delete:{channel_id}"), "Eliminar canal", "🗑", true, false, can_manage));
+            } else if let Some(rest) = raw.strip_prefix("guild:") {
+                let guild_id = rest.to_string();
+                title = "Servidor".to_string();
+                let roles_known = gateway::member_roles_known(&guild_id, my_uid);
+                let can_manage_guild = gateway::has_guild_permission(&guild_id, my_uid, gateway::PERM_MANAGE_GUILD) || !roles_known;
+                let can_manage_channels = gateway::has_guild_permission(&guild_id, my_uid, gateway::PERM_MANAGE_CHANNELS) || !roles_known;
+                info!(
+                    "🛠️ [GUILD PERMS] guild={} user={} manage_guild={} manage_channels={} roles_known={}",
+                    guild_id, my_uid, can_manage_guild, can_manage_channels, roles_known
+                );
+                items.push(cm_item(&format!("guild_mark_read:{guild_id}"), "Marcar como leído", "✓", false, false, true));
+                let guild_muted = channel_prefs().lock().map(|p| p.muted.contains(&guild_id)).unwrap_or(false);
+                items.push(cm_item(&format!("channel_mute:{guild_id}"), "Silenciar servidor", "🔕", false, guild_muted, true));
+                items.push(cm_submenu(&format!("submenu:guild_notify:{guild_id}"), "Ajustes de notificaciones", "🔔"));
+                items.push(cm_submenu(&format!("submenu:invite:{guild_id}"), "Invitar al servidor", "🔗"));
+                items.push(cm_item(&format!("copy:{guild_id}"), "Copiar ID del servidor", "🆔", false, false, true));
+                items.push(cm_item(&format!("copy_guild_link:{guild_id}"), "Copiar enlace del servidor", "🔗", false, false, true));
+                items.push(cm_separator());
+                items.push(cm_item(&format!("channel_create:{guild_id}"), "Crear canal de texto", "＋", false, false, can_manage_channels));
+                items.push(cm_item(&format!("guild_edit:{guild_id}"), "Editar servidor", "✏", false, false, can_manage_guild));
+                items.push(cm_separator());
+                items.push(cm_item(&format!("guild_move_up:{guild_id}"), "Mover arriba", "↑", false, false, true));
+                items.push(cm_item(&format!("guild_move_down:{guild_id}"), "Mover abajo", "↓", false, false, true));
+                items.push(cm_separator());
+                items.push(cm_item(&format!("guild_leave:{guild_id}"), "Abandonar el servidor", "⏏", true, false, true));
+            }
+
+            if let Some(ui) = app_weak_cm.upgrade() {
+                ui.set_context_menu_title(title.into());
+                ui.set_context_menu_items(std::rc::Rc::new(slint::VecModel::from(items)).into());
+                ui.set_context_menu_x(x);
+                ui.set_context_menu_y(y);
+                ui.set_context_menu_show_voice_slider(show_voice_slider);
+                ui.set_context_menu_voice_slider_label(voice_slider_label.into());
+                ui.set_context_menu_voice_slider_value(voice_slider_value);
+                ui.set_context_menu_show_stream_slider(show_stream_slider);
+                ui.set_context_menu_stream_slider_label(stream_slider_label.into());
+                ui.set_context_menu_stream_slider_value(stream_slider_value);
+                ui.set_context_menu_submenu_open(false);
+                ui.set_context_menu_open(true);
+            }
+        });
+    }
+
+    {
+        let app_weak_cm_action = app.as_weak();
+        let http_cm = Arc::clone(&http_client);
+        let active_guild_cm_action = Arc::clone(&active_guild_id);
+        let active_ch_cm_action = Arc::clone(&active_channel_id);
+        let guilds_map_act = Arc::clone(&guilds_map);
+        app.on_context_menu_action(move |action: SharedString| {
+            let action = action.to_string();
+            let (verb, target) = action.split_once(':').unwrap_or((action.as_str(), ""));
+            let target = target.to_string();
+            match verb {
+                "mention" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let text = ui.get_chat_input_text().to_string();
+                        ui.set_chat_input_text(format!("{}<@{}> ", text, target).into());
+                    }
+                }
+                "copy" | "copy_link" | "copy_guild_link" => {
+                    let value = if verb == "copy_link" {
+                        let gid = active_guild_cm_action.lock().unwrap().clone();
+                        format!("https://discord.com/channels/{}/{}", gid, target)
+                    } else if verb == "copy_guild_link" {
+                        format!("https://discord.com/channels/{}", target)
+                    } else {
+                        target.clone()
+                    };
+                    if let Ok(mut ctx) = copypasta::ClipboardContext::new() {
+                        let _ = copypasta::ClipboardProvider::set_contents(&mut ctx, value);
+                    }
+                }
+                "user_mute" => {
+                    let (is_m, _) = gateway::get_user_mute_volume(&target);
+                    gateway::set_user_mute(&target, !is_m);
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let model = ui.get_voice_participants();
+                        for i in 0..model.row_count() {
+                            if let Some(mut p) = model.row_data(i) {
+                                if p.user_id == target.as_str() {
+                                    p.is_muted = !is_m;
+                                    model.set_row_data(i, p);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                "vol_up" | "vol_down" => {
+                    let (_m, vol) = gateway::get_user_mute_volume(&target);
+                    let new_vol = if verb == "vol_up" { (vol + 0.1).min(2.0) } else { (vol - 0.1).max(0.0) };
+                    gateway::set_user_volume(&target, new_vol);
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let model = ui.get_voice_participants();
+                        for i in 0..model.row_count() {
+                            if let Some(mut p) = model.row_data(i) {
+                                if p.user_id == target.as_str() {
+                                    p.volume = new_vol;
+                                    model.set_row_data(i, p);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                "user_sb_mute" => {
+                    if let Ok(mut set) = soundboard_muted_store().lock() {
+                        if !set.remove(&target) {
+                            set.insert(target.clone());
+                        }
+                    }
+                }
+                "user_video_disable" => {
+                    if let Ok(mut set) = video_disabled_store().lock() {
+                        if !set.remove(&target) {
+                            set.insert(target.clone());
+                        }
+                    }
+                }
+                "user_note" | "user_nick" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        *edit_target_store().lock().unwrap() = (verb.to_string(), target.clone(), false);
+                        ui.set_edit_modal_title(if verb == "user_note" { "Añadir nota" } else { "Apodo de amigo" }.into());
+                        ui.set_edit_name("".into());
+                        ui.set_edit_topic("".into());
+                        ui.set_edit_nsfw(false);
+                        ui.set_edit_show_topic(false);
+                        ui.set_show_edit_modal(true);
+                    }
+                }
+                "move_to" => {
+                    let Some((uid, cid)) = target.split_once(':') else { return };
+                    let (uid, cid) = (uid.to_string(), cid.to_string());
+                    let gid = active_guild_cm_action.lock().unwrap().clone();
+                    if gid.is_empty() || gid == "@me" { return; }
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    tokio::spawn(async move {
+                        if let Some(http) = http_opt {
+                            let payload = serde_json::json!({ "channel_id": cid });
+                            let _ = http.edit_guild_member(&gid, &uid, payload).await;
+                        }
+                    });
+                }
+                "role_toggle" => {
+                    let Some((uid_part, role_part)) = target.split_once(':') else { return };
+                    let uid = uid_part.to_string();
+                    let role_id = role_part.to_string();
+                    let gid = active_guild_cm_action.lock().unwrap().clone();
+                    let actor = gateway::get_my_user_id();
+                    let target_uid = uid.parse::<u64>().unwrap_or(0);
+                    if gid.is_empty()
+                        || gid == "@me"
+                        || target_uid == 0
+                        || !gateway::can_manage_role(&gid, actor, target_uid, &role_id)
+                    {
+                        return;
+                    }
+                    let assigned = gateway::member_roles(&gid, target_uid)
+                        .iter()
+                        .any(|id| id == &role_id);
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    let app_w_role = app_weak_cm_action.clone();
+                    let gid_task = gid.clone();
+                    let uid_task = target_uid;
+                    let uid_task_str = uid.clone();
+                    let role_task = role_id.clone();
+                    tokio::spawn(async move {
+                        let Some(http) = http_opt else { return };
+                        let result = if assigned {
+                            http.remove_guild_member_role(&gid_task, &uid_task_str, &role_task).await
+                        } else {
+                            http.add_guild_member_role(&gid_task, &uid_task_str, &role_task).await
+                        };
+                        match result {
+                            Ok(()) => {
+                                gateway::set_member_role_local(
+                                    &gid_task,
+                                    uid_task,
+                                    &role_task,
+                                    !assigned,
+                                );
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = app_w_role.upgrade() {
+                                        crate::ui::helpers::refresh_member_role_rows(
+                                            &ui,
+                                            &gid_task,
+                                            uid_task,
+                                        );
+                                    }
+                                });
+                            }
+                            Err(error) => warn!("No se pudo actualizar el rol: {}", error),
+                        }
+                    });
+                }
+                "mod_view" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let gid = active_guild_cm_action.lock().unwrap().clone();
+                        let uid = target.parse::<u64>().unwrap_or(0);
+                        let name = gateway::get_user_name(uid);
+                        let roles = gateway::member_role_names(&gid, uid).join(", ");
+                        *confirm_target_store().lock().unwrap() = String::new();
+                        ui.set_confirm_title(format!("Vista de moderador · {}", if name.is_empty() { target.clone() } else { name }).into());
+                        ui.set_confirm_message(format!("ID: {}\nRoles: {}", target, if roles.is_empty() { "Sin roles".to_string() } else { roles }).into());
+                        ui.set_show_confirm_modal(true);
+                    }
+                }
+                "app_cmd" => {
+                    // Insert the slash command into the composer so the user can
+                    // add arguments before sending; the command popup takes over.
+                    let parts: Vec<&str> = target.split('|').collect();
+                    if parts.len() >= 3 {
+                        if let Some(ui) = app_weak_cm_action.upgrade() {
+                            let name = parts[2];
+                            let text = ui.get_chat_input_text().to_string();
+                            let sep = if text.is_empty() || text.ends_with(' ') { "" } else { " " };
+                            ui.set_chat_input_text(format!("{}{}/{} ", text, sep, name).into());
+                        }
+                    }
+                }
+                "server_timeout" => {
+                    let Some((uid, mins)) = target.split_once(':') else { return };
+                    let minutes: i64 = mins.parse().unwrap_or(0);
+                    let gid = active_guild_cm_action.lock().unwrap().clone();
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    let uid = uid.to_string();
+                    if gid.is_empty() || gid == "@me" { return; }
+                    tokio::spawn(async move {
+                        let Some(http) = http_opt else { return };
+                        let until = if minutes > 0 {
+                            let when = chrono::Utc::now() + chrono::Duration::minutes(minutes);
+                            serde_json::Value::String(
+                                when.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                            )
+                        } else {
+                            serde_json::Value::Null
+                        };
+                        let payload = serde_json::json!({
+                            "communication_disabled_until": until
+                        });
+                        if let Err(e) = http.edit_guild_member(&gid, &uid, payload).await {
+                            warn!("No se pudo aplicar el silencio temporal: {}", e);
+                        } else {
+                            info!(
+                                "⏱ Silencio de {} min aplicado a {} en {}",
+                                minutes, uid, gid
+                            );
+                        }
+                    });
+                }
+                "invite_create" => {
+                    let gid = target.clone();
+                    let guilds_map_i = Arc::clone(&guilds_map_act);
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    tokio::spawn(async move {
+                        let Some(http) = http_opt else { return };
+                        // Prefer the first text channel we already know about.
+                        let known = guilds_map_i
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&gid).map(|g| {
+                                g.channels
+                                    .iter()
+                                    .find(|c| !c.is_voice && !c.is_category)
+                                    .map(|c| c.id.clone())
+                            }))
+                            .flatten();
+                        let channel = match known {
+                            Some(id) => Some(id),
+                            None => match http.get_guild_channels(&gid).await {
+                                Ok(chans) => chans.iter().find_map(|c| {
+                                    let is_voice = c["type"].as_u64() == Some(2);
+                                    let is_cat = c["type"].as_u64() == Some(4);
+                                    if is_voice || is_cat {
+                                        None
+                                    } else {
+                                        c["id"].as_str().map(|s| s.to_string())
+                                    }
+                                }),
+                                Err(_) => None,
+                            },
+                        };
+                        let Some(channel) = channel else {
+                            warn!("No hay canal de texto para invitar en {}", gid);
+                            return;
+                        };
+                        match http.create_channel_invite(&channel, 86400, 0).await {
+                            Ok(data) => {
+                                if let Some(code) = data["code"].as_str() {
+                                    let link = format!("https://discord.gg/{}", code);
+                                    if let Ok(mut ctx) = copypasta::ClipboardContext::new() {
+                                        let _ = copypasta::ClipboardProvider::set_contents(
+                                            &mut ctx,
+                                            link.clone(),
+                                        );
+                                    }
+                                    info!("🔗 Invitación creada y copiada: {}", link);
+                                }
+                            }
+                            Err(e) => warn!("No se pudo crear la invitación: {}", e),
+                        }
+                    });
+                }
+                "user_block" | "user_unfriend" => {
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    let uid = target.clone();
+                    let block = verb == "user_block";
+                    tokio::spawn(async move {
+                        if let Some(http) = http_opt {
+                            if block {
+                                let _ = http.set_relationship(&uid, 2).await;
+                            } else {
+                                let _ = http.remove_relationship(&uid).await;
+                            }
+                        }
+                    });
+                }
+                "mark_read" => {
+                    let _ = crate::ui::helpers::clear_dm_unread(&target);
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let model = ui.get_channels();
+                        for i in 0..model.row_count() {
+                            if let Some(mut c) = model.row_data(i) {
+                                if c.id == target.as_str() {
+                                    c.unread_count = 0;
+                                    model.set_row_data(i, c);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                "server_mute" | "server_deafen" | "server_disconnect" => {
+                    let gid = active_guild_cm_action.lock().unwrap().clone();
+                    if gid.is_empty() || gid == "@me" {
+                        return;
+                    }
+                    let uid = target.parse::<u64>().unwrap_or(0);
+                    if uid == 0 {
+                        return;
+                    }
+                    let mut payload = serde_json::Map::new();
+                    match verb {
+                        "server_mute" => { payload.insert("mute".into(), serde_json::Value::Bool(true)); }
+                        "server_deafen" => { payload.insert("deaf".into(), serde_json::Value::Bool(true)); }
+                        "server_disconnect" => { payload.insert("channel_id".into(), serde_json::Value::Null); }
+                        _ => {}
+                    }
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    tokio::spawn(async move {
+                        if let Some(http) = http_opt {
+                            let _ = http.edit_guild_member(&gid, &uid.to_string(), serde_json::Value::Object(payload)).await;
+                        }
+                    });
+                }
+                "user_dm" | "user_call" => {
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    let app_w = app_weak_cm_action.clone();
+                    let active_ch = Arc::clone(&active_ch_cm_action);
+                    let uid = target.clone();
+                    let want_call = verb == "user_call";
+                    tokio::spawn(async move {
+                        let Some(http) = http_opt else { return };
+                        if let Ok(dm) = http.create_dm(&uid).await {
+                            let ch_id = dm["id"].as_str().unwrap_or("").to_string();
+                            if ch_id.is_empty() { return; }
+                            *active_ch.lock().unwrap() = ch_id.clone();
+                            let dm_name = dm["recipients"]
+                                .as_array()
+                                .and_then(|r| r.first())
+                                .and_then(|u| u["global_name"].as_str().or_else(|| u["username"].as_str()))
+                                .map(|s| s.to_string())
+                                .or_else(|| {
+                                    let n = gateway::get_user_name(uid.parse::<u64>().unwrap_or(0));
+                                    if n.is_empty() { None } else { Some(n) }
+                                })
+                                .unwrap_or_else(|| "Mensaje directo".to_string());
+                            let app_in = app_w.clone();
+                            let ch_in = ch_id.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_in.upgrade() {
+                                    if want_call {
+                                        ui.set_active_guild_id("@me".into());
+                                        ui.set_active_guild_name("Direct Messages".into());
+                                        ui.set_active_channel_id(ch_in.clone().into());
+                                        ui.set_active_channel_name(dm_name.into());
+                                        ui.invoke_call_dm();
+                                    } else {
+                                        ui.invoke_select_channel(ch_in.clone().into());
+                                        // The loader may not know this brand-new DM yet;
+                                        // set the header after it so it never shows "#canal".
+                                        ui.set_active_guild_id("@me".into());
+                                        ui.set_active_guild_name("Direct Messages".into());
+                                        ui.set_active_channel_id(ch_in.into());
+                                        ui.set_active_channel_name(dm_name.into());
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+                "guild_mark_read" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let model = ui.get_channels();
+                        for i in 0..model.row_count() {
+                            if let Some(mut c) = model.row_data(i) {
+                                if !c.id.is_empty() {
+                                    c.unread_count = 0;
+                                    model.set_row_data(i, c);
+                                }
+                            }
+                        }
+                    }
+                }
+                "channel_edit" | "guild_edit" | "channel_create" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let id = if verb == "channel_create" {
+                            active_guild_cm_action.lock().unwrap().clone()
+                        } else {
+                            target.clone()
+                        };
+                        let mut name = String::new();
+                        if verb == "channel_edit" {
+                            let model = ui.get_channels();
+                            for i in 0..model.row_count() {
+                                if let Some(c) = model.row_data(i) {
+                                    if c.id == id.as_str() {
+                                        name = c.name.to_string();
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if verb == "guild_edit" {
+                            let model = ui.get_guilds();
+                            for i in 0..model.row_count() {
+                                if let Some(g) = model.row_data(i) {
+                                    if g.id == id.as_str() {
+                                        name = g.name.to_string();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        *edit_target_store().lock().unwrap() = (verb.to_string(), id, verb == "channel_edit");
+                        ui.set_edit_modal_title(if verb == "guild_edit" { "Editar servidor" } else if verb == "channel_create" { "Crear canal de texto" } else { "Editar canal" }.into());
+                        ui.set_edit_name(name.into());
+                        ui.set_edit_topic("".into());
+                        ui.set_edit_nsfw(false);
+                        ui.set_edit_show_topic(verb == "channel_edit");
+                        ui.set_show_edit_modal(true);
+                    }
+                }
+                "channel_delete" | "guild_leave" | "user_kick" | "user_ban" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        *confirm_target_store().lock().unwrap() = action.clone();
+                        let (t, m) = match verb {
+                            "channel_delete" => ("Eliminar canal", "Esta acción es permanente. ¿Eliminar el canal?"),
+                            "guild_leave" => ("Abandonar servidor", "¿Seguro que querés abandonar este servidor?"),
+                            "user_kick" => ("Expulsar miembro", "El miembro será expulsado del servidor. ¿Continuar?"),
+                            "user_ban" => ("Banear miembro", "El miembro será baneado del servidor. ¿Continuar?"),
+                            _ => ("Confirmar", "¿Continuar?"),
+                        };
+                        ui.set_confirm_title(t.into());
+                        ui.set_confirm_message(m.into());
+                        ui.set_show_confirm_modal(true);
+                    }
+                }
+                "guild_move_up" | "guild_move_down" => {
+                    if let Some(ui) = app_weak_cm_action.upgrade() {
+                        let model = ui.get_guilds();
+                        for i in 0..model.row_count() {
+                            if let Some(g) = model.row_data(i) {
+                                if g.id == target.as_str() {
+                                    let to = if verb == "guild_move_up" { (i as i32 - 1).max(0) } else { (i as i32 + 1).min(model.row_count() as i32 - 1) };
+                                    if to != i as i32 {
+                                        ui.invoke_reorder_guild(i as i32, to);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                "channel_move" => {
+                    let Some((cid, parent)) = target.split_once(':') else { return };
+                    let payload = if parent.is_empty() {
+                        serde_json::json!({ "parent_id": serde_json::Value::Null })
+                    } else {
+                        serde_json::json!({ "parent_id": parent })
+                    };
+                    let http_opt = http_cm.lock().unwrap().as_ref().cloned();
+                    let cid = cid.to_string();
+                    tokio::spawn(async move {
+                        if let Some(http) = http_opt {
+                            let _ = http.edit_channel(&cid, payload).await;
+                        }
+                    });
+                }
+                "channel_fav" | "channel_pin" | "channel_mute" => {
+                    let mut prefs = channel_prefs().lock().unwrap();
+                    let set = match verb {
+                        "channel_fav" => &mut prefs.favorites,
+                        "channel_pin" => &mut prefs.pinned,
+                        _ => &mut prefs.muted,
+                    };
+                    if !set.remove(&target) {
+                        set.insert(target.clone());
+                    }
+                    drop(prefs);
+                    save_channel_prefs();
+                }
+                "notify" => {
+                    if let Some((cid, mode)) = target.split_once(':') {
+                        let mut prefs = channel_prefs().lock().unwrap();
+                        prefs.notify.insert(cid.to_string(), mode.to_string());
+                        drop(prefs);
+                        save_channel_prefs();
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+
+    {
+        let app_w = app.as_weak();
+        let http_sub = Arc::clone(&http_client);
+        let guilds_map_sub = Arc::clone(&guilds_map);
+        let active_guild_sub = Arc::clone(&active_guild_id);
+        app.on_context_menu_submenu_request(move |raw: SharedString| {
+            let raw = raw.to_string();
+            *open_submenu_store().lock().unwrap() = raw.clone();
+            let mut title = "Opciones".to_string();
+            let mut items = Vec::new();
+            if let Some(uid) = raw.strip_prefix("submenu:roles:") {
+                title = "Roles del miembro".to_string();
+                let gid = active_guild_sub.lock().unwrap().clone();
+                let target = uid.parse::<u64>().unwrap_or(0);
+                let actor = gateway::get_my_user_id();
+                if gid.is_empty() || gid == "@me" || target == 0 || actor == 0 {
+                    items.push(cm_item("", "No disponible", "🛡", false, false, false));
+                } else {
+                    let roles = gateway::assignable_roles(&gid, actor, target);
+                    if roles.is_empty() {
+                        items.push(cm_item(
+                            "",
+                            "No hay roles asignables por tu jerarquía",
+                            "🛡",
+                            false,
+                            false,
+                            false,
+                        ));
+                    } else {
+                        items.push(cm_item(
+                            "",
+                            "Solo roles por debajo del tuyo",
+                            "ⓘ",
+                            false,
+                            false,
+                            false,
+                        ));
+                        for (role, assigned) in roles {
+                            items.push(cm_item(
+                                &format!("role_toggle:{uid}:{}", role.id),
+                                &role.name,
+                                if assigned { "✓" } else { "○" },
+                                false,
+                                assigned,
+                                true,
+                            ));
+                        }
+                    }
+                }
+            } else if let Some(cid) = raw.strip_prefix("submenu:channel_notify:") {
+                title = "Notificaciones".to_string();
+                let current = channel_prefs()
+                    .lock()
+                    .unwrap()
+                    .notify
+                    .get(cid)
+                    .cloned()
+                    .unwrap_or_else(|| "all".to_string());
+                items.push(cm_item(&format!("notify:{cid}:all"), "Todos los mensajes", "🔔", false, current == "all", true));
+                items.push(cm_item(&format!("notify:{cid}:mentions"), "Solo @mentions", "📣", false, current == "mentions", true));
+                items.push(cm_item(&format!("notify:{cid}:none"), "Nada", "🔕", false, current == "none", true));
+            } else if let Some(gid) = raw.strip_prefix("submenu:guild_notify:") {
+                title = "Notificaciones del servidor".to_string();
+                let current = channel_prefs()
+                    .lock()
+                    .unwrap()
+                    .notify
+                    .get(gid)
+                    .cloned()
+                    .unwrap_or_else(|| "all".to_string());
+                items.push(cm_item(&format!("notify:{gid}:all"), "Todos los mensajes", "🔔", false, current == "all", true));
+                items.push(cm_item(&format!("notify:{gid}:mentions"), "Solo @mentions", "📣", false, current == "mentions", true));
+                items.push(cm_item(&format!("notify:{gid}:none"), "Nada", "🔕", false, current == "none", true));
+            } else if let Some(uid) = raw.strip_prefix("submenu:server_timeout:") {
+                title = "Duración del silencio".to_string();
+                for (mins, label) in [
+                    (15u32, "15 minutos"),
+                    (60, "1 hora"),
+                    (480, "8 horas"),
+                    (1440, "24 horas"),
+                ] {
+                    items.push(cm_item(
+                        &format!("server_timeout:{uid}:{mins}"),
+                        label,
+                        "⏱",
+                        false,
+                        false,
+                        true,
+                    ));
+                }
+                items.push(cm_separator());
+                items.push(cm_item(
+                    &format!("server_timeout:{uid}:0"),
+                    "Quitar el silencio",
+                    "🔊",
+                    false,
+                    false,
+                    true,
+                ));
+            } else if let Some(origin_gid) = raw.strip_prefix("submenu:invite:") {
+                title = "Invitar al servidor".to_string();
+                let my_uid = gateway::get_my_user_id();
+                let all_guilds: Vec<(String, String)> = guilds_map_sub
+                    .lock()
+                    .ok()
+                    .map(|m| {
+                        m.values()
+                            .filter(|g| !g.id.is_empty())
+                            .map(|g| (g.id.clone(), g.name.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut guilds: Vec<(String, String)> = all_guilds
+                    .iter()
+                    .filter(|(id, _)| {
+                        gateway::has_guild_permission(
+                            id,
+                            my_uid,
+                            gateway::PERM_CREATE_INSTANT_INVITE,
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                // Role data may not be hydrated yet; never leave the user without
+                // options when we cannot prove the permission is missing.
+                if guilds.is_empty() {
+                    guilds = all_guilds;
+                }
+                if guilds.is_empty() {
+                    items.push(cm_item("", "No hay servidores donde puedas invitar", "🔗", false, false, false));
+                } else {
+                    for (id, name) in guilds {
+                        let checked = id == origin_gid;
+                        items.push(cm_item(&format!("invite_create:{id}"), &name, "🏰", false, checked, true));
+                    }
+                }
+            } else if let Some(uid) = raw.strip_prefix("submenu:apps:") {
+                let _ = uid;
+                title = "Apps".to_string();
+                let gid = active_guild_sub.lock().unwrap().clone();
+                if gid.is_empty() || gid == "@me" {
+                    items.push(cm_item("", "Las apps solo están en servidores", "🧩", false, false, false));
+                } else if let Some(cached) = guild_apps_cache().lock().ok().and_then(|m| m.get(&gid).cloned()) {
+                    items = build_apps_submenu(&gid);
+                    let _ = cached;
+                } else {
+                    items.push(cm_item("", "Cargando apps…", "⏳", false, false, false));
+                    let should_fetch = guild_apps_inflight()
+                        .lock()
+                        .map(|mut s| s.insert(gid.clone()))
+                        .unwrap_or(false);
+                    if should_fetch {
+                        let http_opt = http_sub.lock().unwrap().as_ref().cloned();
+                        let gid_task = gid.clone();
+                        let raw_task = raw.clone();
+                        let app_w_task = app_w.clone();
+                        if let Some(http) = http_opt {
+                            tokio::spawn(async move {
+                                if let Ok(data) = http.get_guild_application_command_index(&gid_task).await {
+                                    let apps = parse_guild_apps(&data);
+                                    if let Ok(mut cache) = guild_apps_cache().lock() {
+                                        cache.insert(gid_task.clone(), apps);
+                                    }
+                                }
+                                if let Ok(mut set) = guild_apps_inflight().lock() {
+                                    set.remove(&gid_task);
+                                }
+                                let still_open = open_submenu_store()
+                                    .lock()
+                                    .map(|s| *s == raw_task)
+                                    .unwrap_or(false);
+                                if still_open {
+                                    let items = build_apps_submenu(&gid_task);
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(ui) = app_w_task.upgrade() {
+                                            ui.set_context_menu_submenu_items(
+                                                std::rc::Rc::new(slint::VecModel::from(items)).into(),
+                                            );
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_context_menu_submenu_title(title.into());
+                ui.set_context_menu_submenu_items(std::rc::Rc::new(slint::VecModel::from(items)).into());
+                ui.set_context_menu_submenu_open(true);
+            }
+        });
+    }
+
+    {
+        let app_w = app.as_weak();
+        app.on_context_menu_voice_slider_changed(move |value: f32| {
+            // The id lives in the target store written when the menu opened.
+            let id = voice_slider_target_store().lock().unwrap().clone();
+            if id.is_empty() { return; }
+            let value = value.clamp(0.0, 2.0);
+            gateway::set_user_volume(&id, value);
+            if let Some(ui) = app_w.upgrade() {
+                let model = ui.get_voice_participants();
+                for i in 0..model.row_count() {
+                    if let Some(mut p) = model.row_data(i) {
+                        if p.user_id == id.as_str() {
+                            p.volume = value;
+                            model.set_row_data(i, p);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let app_w = app.as_weak();
+        app.on_context_menu_stream_slider_changed(move |value: f32| {
+            let id = stream_slider_target_store().lock().unwrap().clone();
+            if id.is_empty() { return; }
+            let value = value.clamp(0.0, 2.0);
+            if let Ok(uid) = id.parse::<u64>() {
+                crate::screen_capture::audio_loopback::set_stream_volume(uid, value);
+            }
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_stream_remote_volume(value);
+            }
+        });
+    }
+
+    // ── Edit modal save/cancel ────────────────────────────────────────────
+    {
+        let app_w = app.as_weak();
+        let http_edit = Arc::clone(&http_client);
+        let guilds_map_edit = Arc::clone(&guilds_map);
+        app.on_edit_modal_save(move || {
+            let guilds_map_edit = Arc::clone(&guilds_map_edit);
+            let Some(ui) = app_w.upgrade() else { return };
+            let (kind, id, _) = edit_target_store().lock().unwrap().clone();
+            let name = ui.get_edit_name().to_string().trim().to_string();
+            if name.is_empty() { return; }
+            let topic = ui.get_edit_topic().to_string();
+            let nsfw = ui.get_edit_nsfw();
+            ui.set_show_edit_modal(false);
+            let http_opt = http_edit.lock().unwrap().as_ref().cloned();
+            let app_after = app_w.clone();
+            tokio::spawn(async move {
+                let Some(http) = http_opt else { return };
+                match kind.as_str() {
+                    "channel_create" => {
+                        let payload = serde_json::json!({ "name": name, "type": 0 });
+                        let guild_id = id.clone();
+                        let map_create = Arc::clone(&guilds_map_edit);
+                        let app_err = app_after.clone();
+                        match http.create_guild_channel(&id, payload).await {
+                          Ok(ch) => {
+                            let cid = ch["id"].as_str().unwrap_or("").to_string();
+                            let cname = ch["name"].as_str().unwrap_or(&name).to_string();
+                            if let Ok(mut map) = map_create.lock() {
+                                if let Some(guild) = map.get_mut(&guild_id) {
+                                    guild.channels.push(crate::gateway::ChannelData {
+                                        id: cid.clone(),
+                                        name: cname.clone(),
+                                        is_voice: false,
+                                        is_category: false,
+                                        parent_id: None,
+                                        position: guild.channels.len() as i64,
+                                    });
+                                }
+                            }
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_after.upgrade() {
+                                    let model = ui.get_channels();
+                                    let mut rows = Vec::new();
+                                    for i in 0..model.row_count() {
+                                        if let Some(c) = model.row_data(i) { rows.push(c); }
+                                    }
+                                    let mut row = ChannelItem::default();
+                                    row.id = cid.into();
+                                    row.name = cname.into();
+                                    row.is_voice = false;
+                                    rows.push(row);
+                                    ui.set_channels(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+                                }
+                            });
+                          }
+                          Err(error) => {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_err.upgrade() {
+                                    ui.set_titlebar_error(format!("No se pudo crear el canal: {}", error).into());
+                                }
+                            });
+                          }
+                        }
+                    }
+                    "channel_edit" => {
+                        let payload = serde_json::json!({ "name": name, "topic": topic, "nsfw": nsfw });
+                        let app_err = app_after.clone();
+                        match http.edit_channel(&id, payload).await {
+                          Ok(_) => {
+                            let new_name = name.clone();
+                            let map_edit = Arc::clone(&guilds_map_edit);
+                            let edited_id = id.clone();
+                            if let Ok(mut map) = map_edit.lock() {
+                                for guild in map.values_mut() {
+                                    if let Some(channel) = guild.channels.iter_mut().find(|c| c.id == edited_id) {
+                                        channel.name = new_name.clone();
+                                        break;
+                                    }
+                                }
+                            }
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_after.upgrade() {
+                                    let model = ui.get_channels();
+                                    for i in 0..model.row_count() {
+                                        if let Some(mut c) = model.row_data(i) {
+                                            if c.id == id.as_str() {
+                                                c.name = new_name.into();
+                                                model.set_row_data(i, c);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                          }
+                          Err(error) => {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_err.upgrade() {
+                                    ui.set_titlebar_error(format!("No se pudo editar el canal: {}", error).into());
+                                }
+                            });
+                          }
+                        }
+                    }
+                    "user_note" => {
+                        let _ = http.set_user_note(&id, &name).await;
+                    }
+                    "user_nick" => {
+                        let _ = http.set_friend_nickname(&id, &name).await;
+                    }
+                    "guild_edit" => {
+                        let payload = serde_json::json!({ "name": name });
+                        if http.edit_guild(&id, payload).await.is_ok() {
+                            let new_name = name.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_after.upgrade() {
+                                    let model = ui.get_guilds();
+                                    for i in 0..model.row_count() {
+                                        if let Some(mut g) = model.row_data(i) {
+                                            if g.id == id.as_str() {
+                                                g.name = new_name.into();
+                                                model.set_row_data(i, g);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            });
+        });
+    }
+    {
+        let app_w = app.as_weak();
+        app.on_edit_modal_cancel(move || {
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_show_edit_modal(false);
+            }
+        });
+    }
+
+    // ── Destructive confirmation ──────────────────────────────────────────
+    {
+        let app_w = app.as_weak();
+        let http_confirm = Arc::clone(&http_client);
+        let active_guild_confirm = Arc::clone(&active_guild_id);
+        let guilds_map_confirm = Arc::clone(&guilds_map);
+        app.on_confirm_modal_accept(move || {
+            let guilds_map_confirm = Arc::clone(&guilds_map_confirm);
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_show_confirm_modal(false);
+            }
+            let action = std::mem::take(&mut *confirm_target_store().lock().unwrap());
+            if action.is_empty() { return; }
+            let (verb, target) = action
+                .split_once(':')
+                .map(|(v, t)| (v.to_string(), t.to_string()))
+                .unwrap_or((action.clone(), String::new()));
+            let gid = active_guild_confirm.lock().unwrap().clone();
+            let http_opt = http_confirm.lock().unwrap().as_ref().cloned();
+            let app_after = app_w.clone();
+            tokio::spawn(async move {
+                let Some(http) = http_opt else { return };
+                match verb.as_str() {
+                    "channel_delete" => {
+                        let app_err = app_after.clone();
+                        match http.delete_channel(&target).await {
+                          Ok(()) => {
+                            if let Ok(mut map) = guilds_map_confirm.lock() {
+                                for guild in map.values_mut() {
+                                    guild.channels.retain(|c| c.id != target);
+                                }
+                            }
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_after.upgrade() {
+                                    let model = ui.get_channels();
+                                    let mut keep = Vec::new();
+                                    for i in 0..model.row_count() {
+                                        if let Some(c) = model.row_data(i) {
+                                            if c.id != target.as_str() { keep.push(c); }
+                                        }
+                                    }
+                                    ui.set_channels(std::rc::Rc::new(slint::VecModel::from(keep)).into());
+                                }
+                            });
+                          }
+                          Err(error) => {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_err.upgrade() {
+                                    ui.set_titlebar_error(format!("No se pudo eliminar el canal: {}", error).into());
+                                }
+                            });
+                          }
+                        }
+                    }
+                    "guild_leave" => {
+                        if http.leave_guild(&target).await.is_ok() {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_after.upgrade() {
+                                    let model = ui.get_guilds();
+                                    let mut keep = Vec::new();
+                                    for i in 0..model.row_count() {
+                                        if let Some(g) = model.row_data(i) {
+                                            if g.id != target.as_str() { keep.push(g); }
+                                        }
+                                    }
+                                    ui.set_guilds(std::rc::Rc::new(slint::VecModel::from(keep)).into());
+                                }
+                            });
+                        }
+                    }
+                    "user_kick" | "user_ban" => {
+                        let uid = target.parse::<u64>().unwrap_or(0);
+                        if uid == 0 || gid.is_empty() { return; }
+                        if verb == "user_kick" {
+                            // Discord kicks by deleting the member.
+                            let _ = http.kick_guild_member(&gid, &uid.to_string()).await;
+                        } else {
+                            let _ = http.ban_guild_member(&gid, &uid.to_string()).await;
+                        }
+                    }
+                    _ => {}
+                }
+            });
+        });
+    }
+    {
+        let app_w = app.as_weak();
+        app.on_confirm_modal_cancel(move || {
+            if let Some(ui) = app_w.upgrade() {
+                ui.set_show_confirm_modal(false);
+            }
+            *confirm_target_store().lock().unwrap() = String::new();
+        });
+    }
+
     // Popout Stream Window Callbacks & Window Manager
     // Hides the popout's top bar 2.2 s after the last mouse activity. Single-shot and
     // restarted on activity, so nothing ticks while the popout is closed or idle.
@@ -619,6 +2385,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 let _ = pop_win.window().with_winit_window(|w| {
+                    w.set_decorations(false);
+                    let _ = w.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
+                    w.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                     w.set_visible(true);
                     w.set_minimized(false);
                     w.focus_window();
@@ -626,7 +2395,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 i_slint_backend_winit::redraw_whole_window(pop_win.window());
                 // Shown and restored now (showing a hidden window brings no resize event).
                 screen_capture::set_popout_has_area(true);
-                crate::ui::gpu_video::refresh(&ui, &pop_win);
+                crate::ui::gpu_video::refresh(&ui, Some(&pop_win));
             }
         }
     });
@@ -885,11 +2654,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
     let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
 
-    screen_manager.start_receiver(
-        {
-            let app_w = app_weak_rx.clone();
-            let pop_w = pop_w_rx.clone();
-            move |uid, uname, quality, pixel_buf| {
+    let deliver_stream_frame: Arc<dyn Fn(u64, String, String, SharedPixelBuffer<Rgba8Pixel>) + Send + Sync> = {
+        let app_w = app_weak_rx.clone();
+        let pop_w = pop_w_rx.clone();
+        Arc::new(move |uid, uname, quality, pixel_buf| {
+                if video_disabled_store()
+                    .lock()
+                    .map(|s| s.contains(&uid.to_string()))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
                 *latest_rx_frame_cb.lock().unwrap() = Some((uid, uname, quality, pixel_buf));
                 if !is_rx_ui_pending_cb.swap(true, Ordering::AcqRel) {
                     let app_w2 = app_w.clone();
@@ -903,7 +2678,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some((uid, uname, quality, pixel_buf)) = latest_slot.lock().unwrap().take() {
                             // The stop may have been handled while this frame was waiting
                             // for the UI thread; showing it would re-open a dead stream.
-                            if screen_capture::is_stream_recently_stopped(uid) {
+                            // Only deliver if user explicitly wants to watch this stream.
+                            if screen_capture::is_stream_recently_stopped(uid) || !screen_capture::watch::is_wanted(uid) {
                                 return;
                             }
                             let uid_str = uid.to_string();
@@ -938,7 +2714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_remote_stream_frame(frame.clone());
                                 ui.set_remote_stream_fps(rx_fps_str.clone().into());
                                 if let Some(pop) = pop_w2.upgrade() {
-                                    crate::ui::gpu_video::refresh(&ui, &pop);
+                                    crate::ui::gpu_video::refresh(&ui, Some(&pop));
                                 }
 
                                 // Garantir que o participante na lista de voz esteja marcado como streaming
@@ -966,7 +2742,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pending_flag.store(false, Ordering::Release);
                     }
                 }
-            }
+            })
+    };
+    // Native Discord camera / Go Live frames go through the same renderer,
+    // popout and fullscreen path as the LTPV frames.
+    crate::native_video::set_frame_callback(Arc::clone(&deliver_stream_frame));
+    screen_manager.start_receiver(
+        {
+            let deliver = Arc::clone(&deliver_stream_frame);
+            move |uid, uname, quality, pixel_buf| deliver(uid, uname, quality, pixel_buf)
         },
         {
             let app_w = app_weak_rx.clone();
@@ -1025,6 +2809,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if ui.get_focused_stream_uid() == uid_str.as_str() || uid == 0 {
                                 ui.set_focused_stream_uid("".into());
                             }
+                            if ui.get_is_stream_fullscreen() && (cur_act_id == uid_str || uid == 0) {
+                                ui.set_is_stream_fullscreen(false);
+                                let window = ui.window();
+                                let _ = window.with_winit_window(|w| w.set_fullscreen(None));
+                            }
                             let cur_model = ui.get_voice_participants();
                             for i in 0..cur_model.row_count() {
                                 if let Some(mut p) = cur_model.row_data(i) {
@@ -1036,7 +2825,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         if let Some(pop) = pop_w2.upgrade() {
-                            crate::ui::gpu_video::refresh(&ui, &pop);
+                            crate::ui::gpu_video::refresh(&ui, Some(&pop));
                         }
                     }
                 });
@@ -1049,9 +2838,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = app_weak_ss.upgrade() {
             let active = sm.is_active();
             if active {
-                info!("🛑 Encerrando transmissão de tela P2P...");
+                info!("🛑 Encerrando transmissão...");
                 sm.stop();
+                if screen_capture::types::is_camera_stream() {
+                    // Camera is signalled on the voice connection itself; there is no
+                    // Go Live stream to delete.
+                    crate::native_video::camera::stop_camera();
+                    screen_capture::types::set_is_camera_stream(false);
+                } else {
+                    gateway::delete_stream();
+                }
                 ui.set_is_screen_sharing(false);
+                screen_capture::set_self_streaming(false);
                 ui.set_web_share_active(false);
                 ui.set_web_share_url("".into());
                 ui.set_web_share_viewers(0);
@@ -1095,9 +2893,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
 
                 let source_tab = ui.get_stream_source_tab().to_string();
-                let (target_hwnd, screen_index, camera_index, include_audio) = if source_tab == "cameras" {
+                let is_camera = source_tab == "cameras";
+                screen_capture::types::set_is_camera_stream(is_camera);
+                // The camera tab hides the quality picker; a previous screen-share
+                // choice must not make a webcam encode at 1080p.
+                let (res_str, res_val, target_fps) = if is_camera {
+                    ("720p".to_string(), 720, 30)
+                } else {
+                    (res_str, res_val, target_fps)
+                };
+
+                if cid != 0 {
+                    if is_camera {
+                        // Discord camera shares the parent voice connection (video SSRC
+                        // family); it is not a Go Live stream and must not call op 18.
+                        info!("📷 [CAMERA] Iniciando webcam no canal de voz {}", cid);
+                        crate::native_video::camera::start_camera();
+                    } else {
+                        let gid = gateway::get_my_voice_guild_id();
+                        let gid_opt = if !gid.is_empty() && gid != "@me" { Some(gid) } else { None };
+                        info!("🚀 [DISCORD GO LIVE] Solicitando transmissão nativa no canal {} (guild={:?})...", cid, gid_opt);
+                        gateway::create_stream(gid_opt, cid);
+                    }
+                }
+
+                let (target_hwnd, screen_index, camera_index, include_audio) = if is_camera {
                     let cam_id_str = ui.get_stream_selected_camera_id().to_string();
-                    let cam_idx: Option<u32> = cam_id_str.parse().ok().or(Some(0));
+                    // A saved index from before the metadata-node filter may no
+                    // longer exist; never fall through to a grey/meta node.
+                    let cameras = screen_capture::list_cameras();
+                    let cam_idx: Option<u32> = cam_id_str
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|index| (*index as usize) < cameras.len())
+                        .or_else(|| cameras.first().map(|c| c.index))
+                        .or(Some(0));
                     (0, 0, cam_idx, false)
                 } else if source_tab == "windows" {
                     let hwnd: isize = ui.get_stream_selected_window_id().to_string().parse().unwrap_or(0);
@@ -1158,6 +2988,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
                 ui.set_is_screen_sharing(true);
+                screen_capture::set_self_streaming(true);
                 if video_settings::get_enable_self_preview_notice() {
                     ui.set_show_self_preview_notice(true);
                     let app_weak_notice = app_weak_ss.clone();
@@ -1354,11 +3185,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_available_cameras(std::rc::Rc::new(slint::VecModel::from(ui_cameras)).into());
 
             ui.set_stream_selected_source_index(0);
+            ui.set_stream_selected_camera_id(first_cam_id.into());
             if ui.get_stream_source_tab() == "windows" {
                 ui.set_stream_selected_window_id(first_win_id.into());
                 ui.set_stream_include_audio(true);
             } else if ui.get_stream_source_tab() == "cameras" {
-                ui.set_stream_selected_camera_id(first_cam_id.into());
                 ui.set_stream_include_audio(false);
             } else {
                 ui.set_stream_selected_window_id("".into());
@@ -1371,8 +3202,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_fs = app_weak.clone();
     app.on_toggle_stream_fullscreen(move || {
         if let Some(ui) = app_weak_fs.upgrade() {
-            let cur = ui.get_is_stream_fullscreen();
-            ui.set_is_stream_fullscreen(!cur);
+            let next = !ui.get_is_stream_fullscreen();
+            ui.set_is_stream_fullscreen(next);
+            // Ask the window manager for real fullscreen (borderless). The Slint
+            // overlay already covers the app, so a failure here is cosmetic.
+            let window = ui.window();
+            let _ = window.with_winit_window(|w| {
+                w.set_fullscreen(if next {
+                    Some(winit::window::Fullscreen::Borderless(None))
+                } else {
+                    None
+                });
+            });
         }
     });
 
@@ -1394,11 +3235,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uid = uid_str.to_string();
         info!("👁️ Ocultando stream de vídeo do usuário {}", uid);
         hidden_streams_hide.lock().unwrap().insert(uid.clone());
+        let uid_num: u64 = uid.parse().unwrap_or(0);
         // Hiding someone's stream stops receiving it (the sender stops sending to us).
-        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), false);
+        screen_capture::watch::set_wanted(uid_num, false);
+
+        // Cancel stream subscription on Discord gateway
+        let cid = gateway::get_my_voice_channel_id();
+        let gid = gateway::get_my_voice_guild_id();
+        if cid != 0 && uid_num != 0 {
+            let stream_key = if !gid.is_empty() && gid != "@me" {
+                format!("guild:{}:{}:{}", gid, cid, uid_num)
+            } else {
+                format!("call:{}:{}", cid, uid_num)
+            };
+            info!("🎬 [GATEWAY] Cancelando visualização de stream: {}", stream_key);
+            gateway::unwatch_stream(&stream_key);
+        }
+
         if let Some(ui) = app_weak_hide.upgrade() {
             if ui.get_focused_stream_uid() == uid.as_str() {
                 ui.set_focused_stream_uid("".into());
+            }
+            if ui.get_active_stream_user_id() == uid.as_str() {
+                ui.set_has_active_stream(false);
+                ui.set_active_stream_user_id("".into());
+                ui.set_remote_stream_frame(Image::default());
             }
             let cur_model = ui.get_voice_participants();
             for i in 0..cur_model.row_count() {
@@ -1421,9 +3282,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let uid = uid_str.to_string();
         info!("👁️ Reexibindo stream de vídeo do usuário {}", uid);
         hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
+        let uid_num: u64 = uid.parse().unwrap_or(0);
         // Watch: ask the sender for the stream.
-        screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), true);
+        screen_capture::watch::set_wanted(uid_num, true);
+
+        // Subscribe to stream on Discord gateway
+        let cid = gateway::get_my_voice_channel_id();
+        let gid = gateway::get_my_voice_guild_id();
+        if cid != 0 && uid_num != 0 {
+            let stream_key = if !gid.is_empty() && gid != "@me" {
+                format!("guild:{}:{}:{}", gid, cid, uid_num)
+            } else {
+                format!("call:{}:{}", cid, uid_num)
+            };
+            info!("🎬 [GATEWAY] Assistindo transmissão sob demanda: {}", stream_key);
+            gateway::watch_stream(&stream_key);
+        }
+
         if let Some(ui) = app_weak_unhide.upgrade() {
+            ui.set_has_active_stream(true);
+            ui.set_active_stream_user_id(uid.clone().into());
+            // Clicking a peer's LIVE badge must bring the stream into view even
+            // when the user is looking at a text channel.
+            ui.set_is_voice_focused(true);
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
                 ui.set_is_popout_intangible(false);
@@ -1581,8 +3462,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .map(|&(ssrc, uid)| (ssrc, uid, (ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) * 20.0) as u8))
                 .collect();
-            // Our own bar only shows above the voice threshold; mic noise below it changes nothing.
-            let shown_self_level = if self_level >= gateway::get_vad_threshold() { self_level } else { 0.0 };
+            // Our own bar only shows when voice is active according to the DSP/VAD
+            let shown_self_level = if gateway::is_self_speaking() { self_level } else { 0.0 };
             fingerprint.push((0, 0, (shown_self_level * 20.0) as u8));
             if fingerprint == last_panel_fingerprint && last_panel_update.elapsed() < std::time::Duration::from_secs(1) {
                 continue;
@@ -1609,7 +3490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for (ssrc, user_id) in parts_snapshot {
                     if user_id == 999999 { continue; }
                     let (audio_level, is_speaking) = if user_id == my_uid && my_uid > 0 {
-                        (self_level, self_level > 0.03)
+                        (self_level, gateway::is_self_speaking())
                     } else {
                         let lvl = ssrc_levels.get(&ssrc).copied().unwrap_or(0.0);
                         (lvl, lvl > 0.03)
@@ -1724,19 +3605,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let avatar_text = username.chars().next().unwrap_or('U').to_uppercase().to_string();
                     let (is_muted_saved, vol, prio) = gateway::get_user_audio_settings(&uid_str);
+                    let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(user_id);
 
-                    let (final_audio_level, final_is_speaking, final_is_muted) = if is_self {
+                    let (final_audio_level, final_is_speaking, final_is_muted, final_is_deafened) = if is_self {
                         let mic_lvl = self_level;
                         let is_self_muted = ui.get_is_muted();
-                        if is_self_muted {
-                            (0.0, false, true)
+                        let is_self_deafened = ui.get_is_deafened();
+                        if is_self_muted || is_self_deafened {
+                            (0.0, false, true, is_self_deafened)
                         } else {
-                            let is_spk = mic_lvl >= gateway::get_vad_threshold();
+                            let is_spk = gateway::is_self_speaking();
                             let lvl = if is_spk { mic_lvl } else { 0.0 };
-                            (lvl, is_spk, false)
+                            (lvl, is_spk, false, false)
                         }
                     } else {
-                        (audio_level, is_speaking, is_muted_saved)
+                        (audio_level, is_speaking, is_muted_saved || is_muted_flag, is_deaf_flag)
                     };
 
                     let is_streaming_peer = if is_self {
@@ -1761,10 +3644,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ))
                     };
 
-                    let is_hidden = hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false);
+                    let is_streaming_peer = is_streaming_peer
+                        && !video_disabled_store().lock().map(|s| s.contains(&uid_str)).unwrap_or(false);
+                    // Camera and screen share are separate tracks: one green
+                    // badge and one red badge can be shown side by side.
+                    let (is_screen_streaming, is_camera_streaming) = if is_self {
+                        let camera = crate::native_video::camera::is_camera_wanted();
+                        (is_streaming_peer && !camera, camera)
+                    } else {
+                        screen_capture::get_user_stream_flags(user_id)
+                    };
+                    let is_hidden = if is_self {
+                        hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false)
+                    } else {
+                        !screen_capture::watch::is_wanted(user_id)
+                            || hidden_streams_voice_loop_inner.lock().map(|h| h.contains(&uid_str)).unwrap_or(false)
+                    };
 
                     let avatar_user_id = if user_id == 999999 { my_user_id } else { user_id };
                     let avatar_url = gateway::get_user_avatar_url(avatar_user_id);
+                    let (role_name, role_color) = gateway::get_user_display_role(avatar_user_id).unwrap_or_default();
                     let avatar_img = match prev_avatars.get(&uid_str) {
                         Some((url, image)) if *url == avatar_url => image.clone(),
                         _ => avatars.image_for(&avatar_url),
@@ -1779,10 +3678,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         is_speaking: final_is_speaking,
                         audio_level: final_audio_level,
                         is_muted: final_is_muted,
+                        is_deafened: final_is_deafened,
+                        is_server_muted: !is_self && gateway::is_user_server_muted(user_id),
+                        role_name: role_name.into(),
+                        role_color: slint::Color::from_rgb_u8(
+                            ((role_color >> 16) & 0xFF) as u8,
+                            ((role_color >> 8) & 0xFF) as u8,
+                            (role_color & 0xFF) as u8,
+                        ),
                         volume: vol,
                         priority: prio,
                         is_self,
                         is_streaming: is_streaming_peer,
+                        is_screen_streaming,
+                        is_camera_streaming,
                         is_stream_hidden: is_hidden,
                     });
                 }
@@ -1814,11 +3723,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let level_changed = !both_zero && level_diff >= 0.03;
                             let state_changed = old.is_speaking != p.is_speaking
                                 || old.is_muted != p.is_muted
+                                || old.is_deafened != p.is_deafened
                                 || old.volume != p.volume
                                 || old.priority != p.priority
                                 || old.username != p.username
                                 || old.avatar_url != p.avatar_url
                                 || old.is_streaming != p.is_streaming
+                                || old.is_screen_streaming != p.is_screen_streaming
+                                || old.is_camera_streaming != p.is_camera_streaming
                                 || old.is_stream_hidden != p.is_stream_hidden;
                             if level_changed || state_changed {
                                 cur_model.set_row_data(i, p);
@@ -1888,8 +3800,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guilds_map_badges = Arc::clone(&guilds_map);
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
-        let mut last_fingerprint: Vec<(String, Vec<(u64, String)>)> = Vec::new();
+        // Fast enough for the speaking ring to track the voice; the fingerprint
+        // below still avoids touching the UI when nothing changed.
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+        // Structural state: who is in which voice channel and with which flags.
+        let mut last_members: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::new();
+        // Ephemeral state: who is talking or streaming right now.
+        let mut last_speaking: HashMap<String, HashMap<u64, (bool, bool)>> = HashMap::new();
         let mut last_gid = String::new();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -1911,20 +3828,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if let Some(chans) = channels_opt {
-                let mut current_fingerprint = Vec::with_capacity(chans.len());
+                let my_uid = gateway::get_my_user_id();
+                let mut current_members: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::with_capacity(chans.len());
+                let mut current_speaking: HashMap<String, HashMap<u64, (bool, bool)>> = HashMap::new();
                 for ch in &chans {
                     let participants = if ch.is_voice {
                         gateway::get_voice_channel_participants(&ch.id)
+                            .into_iter()
+                            .map(|(uid, name)| {
+                                let is_self_member = uid == 999999 || (my_uid != 0 && uid == my_uid);
+                                let streaming = if is_self_member {
+                                    crate::screen_capture::is_self_streaming()
+                                } else {
+                                    crate::screen_capture::peer_is_streaming(uid)
+                                };
+                                let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(uid);
+                                let (is_muted_saved, _, _) = gateway::get_user_audio_settings(&uid.to_string());
+                                let muted = is_muted_flag || is_muted_saved;
+                                (uid, name, gateway::is_voice_user_speaking(uid), streaming, muted, is_deaf_flag)
+                            })
+                            .collect()
                     } else {
                         Vec::new()
                     };
-                    current_fingerprint.push((ch.id.clone(), participants));
+                    let mut structural: Vec<(u64, String, bool, bool)> = Vec::with_capacity(participants.len());
+                    for (uid, name, speaking, streaming, muted, is_deaf) in &participants {
+                        structural.push((*uid, name.clone(), *muted, *is_deaf));
+                        current_speaking
+                            .entry(ch.id.clone())
+                            .or_default()
+                            .insert(*uid, (*speaking, *streaming));
+                    }
+                    current_members.push((ch.id.clone(), structural));
                 }
 
                 let guild_changed = gid != last_gid;
-                if guild_changed || current_fingerprint != last_fingerprint {
+                if guild_changed || current_members != last_members {
+                    // Somebody joined, left or changed a flag: the list of rows
+                    // itself changed, so it is rebuilt once.
                     last_gid = gid;
-                    last_fingerprint = current_fingerprint;
+                    last_members = current_members;
+                    last_speaking = current_speaking;
 
                     let ui_channels = {
                         let cats_guard = get_collapsed_categories().lock().unwrap().clone();
@@ -1942,6 +3886,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if old_c.voice_count != new_c.voice_count
                                             || old_c.name != new_c.name
                                             || old_c.id != new_c.id
+                                            || old_c.is_speaking != new_c.is_speaking
+                                            || old_c.is_streaming != new_c.is_streaming
                                         {
                                             cur_chans.set_row_data(i, new_c.clone());
                                         }
@@ -1957,10 +3903,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     });
+                } else {
+                    // Only the talking state changed: the voice member rows are
+                    // updated in place, without rebuilding the whole channel list.
+                    let mut changed: Vec<(String, u64, bool, bool)> = Vec::new();
+                    for (channel_id, members) in &current_speaking {
+                        let previous = last_speaking.get(channel_id);
+                        for (uid, state) in members {
+                            if previous.and_then(|m| m.get(uid)) != Some(state) {
+                                changed.push((channel_id.clone(), *uid, state.0, state.1));
+                            }
+                        }
+                    }
+                    if !changed.is_empty() {
+                        last_speaking = current_speaking;
+                        let app_w = app_weak_ch_badges.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = app_w.upgrade() {
+                                crate::ui::helpers::update_voice_member_rows(&ui, &changed);
+                            }
+                        });
+                    }
                 }
             }
         }
     });
+
+    // Memory trimming stays event-driven (startup, channel switch, hide to tray,
+    // logout...). A periodic 45 s trim only produced a sawtooth and CPU spikes
+    // without lowering the plateau, so it is intentionally not scheduled here.
 
     // Voice & Audio Settings Callbacks
     let app_weak_open_settings = app_weak.clone();
@@ -2333,6 +4304,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_tray_toggle = app.as_weak();
+    app.on_toggle_tray_icon(move || {
+        let new_val = video_settings::toggle_enable_tray_icon();
+        utils::tray::set_tray_enabled(new_val);
+        if let Some(ui) = app_weak_tray_toggle.upgrade() {
+            ui.set_enable_tray_icon(new_val);
+        }
+    });
+
     let app_weak_theme = app_weak.clone();
     app.on_toggle_theme(move || {
         let use_light_theme = video_settings::toggle_use_light_theme();
@@ -2524,6 +4504,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
         screen_capture::watch::clear_wanted();
+        // Native Discord viewers and SSRC maps belong to the call that just ended.
+        gateway::clear_watched_streams();
+        gateway::delete_stream();
+        crate::native_video::camera::reset();
+        crate::native_video::clear_video_ssrcs();
         // Do this even if the window has gone away: the next call starts with fresh audio.
         if let Ok(mut queues) = gateway::get_speaker_pcm_queues().lock() {
             queues.clear();
@@ -2535,9 +4520,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_is_in_voice(false);
             ui.set_is_voice_connecting(false);
             ui.set_is_voice_focused(false);
+            if ui.get_is_stream_fullscreen() {
+                ui.set_is_stream_fullscreen(false);
+                let window = ui.window();
+                let _ = window.with_winit_window(|w| w.set_fullscreen(None));
+            }
             ui.set_current_voice_channel("".into());
             ui.set_is_in_dm_call(false); // também encerra chamada DM se estava ativa
             ui.set_is_screen_sharing(false);
+            screen_capture::set_self_streaming(false);
             ui.set_show_self_preview_notice(false);
             ui.set_web_share_active(false);
             ui.set_web_share_url("".into());
@@ -2632,6 +4623,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return;
         }
 
+        // Reset anything left from a previous call: a stale participant list and
+        // a ringtone thread were the reason the second call could look/sound dead.
+        sound_effects::stop_call_ring();
+        gateway::clear_voice_participants();
+
         // ── Passo 1: Abrir interface de voz imediatamente (mesmo fluxo que canais de voz) ──
         if let Some(ui) = app_weak_call.upgrade() {
             // Nome da conversa já está no active_channel_name da UI
@@ -2676,6 +4672,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("🔔 DM ring iniciado com sucesso no canal {}", ch_id);
                 }
             }
+            // Ringback while we wait for the other side to answer.
+            sound_effects::start_call_ring(false);
         });
     });
 
@@ -2694,6 +4692,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Para o microfone imediatamente
         *active_mic_hangup.lock().unwrap() = None;
+        sound_effects::stop_call_ring();
         sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
 
         let http_opt = http_hangup_dm.lock().unwrap().as_ref().cloned();
@@ -2745,6 +4744,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if ch_id.is_empty() { return; }
 
             // Fechar painel + abrir interface de voz
+            sound_effects::stop_call_ring();
+            gateway::clear_voice_participants();
             ui.set_has_incoming_call(false);
             ui.set_incoming_call_channel_id("".into());
             ui.set_is_in_voice(true);
@@ -2785,6 +4786,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_reject_call(move || {
         if let Some(ui) = app_weak_reject.upgrade() {
             let ch_id = ui.get_incoming_call_channel_id().to_string();
+            sound_effects::stop_call_ring();
             ui.set_has_incoming_call(false);
             ui.set_incoming_call_channel_id("".into());
             ui.set_incoming_call_caller_name("".into());
@@ -2923,6 +4925,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(http) = http_opt {
             if let Some(ui) = app_w.upgrade() {
+                // History browsing has its own hard cap: without it, repeatedly
+                // clicking "load older" would grow the non-virtualized scene
+                // forever. Live appends later trim back to MAX_CHAT_ROWS and
+                // re-enable the button through the rebased cursor.
+                if ui.get_messages().row_count()
+                    >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY
+                {
+                    ui.set_has_more_older_messages(false);
+                    return;
+                }
                 ui.set_is_loading_older_messages(true);
             }
 
@@ -2987,8 +4999,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 regroup_messages(&mut combined);
                                 avatar_cache::get_avatar_cache().hydrate(&mut combined, &app_w_inner);
                                 crate::ui::invite_cards::hydrate(&mut combined, &app_w_inner);
+                                let window_is_full = combined.len()
+                                    >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY;
                                 let model = std::rc::Rc::new(slint::VecModel::from(combined));
                                 ui.set_messages(model.into());
+                                if window_is_full {
+                                    ui.set_has_more_older_messages(false);
+                                }
                             }
                         });
                     }
@@ -3157,6 +5174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 4. Reset backend states
         crate::ui::helpers::reset_unread_and_dedup_state();
+        crate::ui::helpers::clear_session_caches();
         *cmd_tx_logout.lock().unwrap() = None;
         *http_client_logout.lock().unwrap() = None;
         *last_token_logout.lock().unwrap() = String::new();
@@ -3261,6 +5279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Reset backend states
         crate::ui::helpers::reset_unread_and_dedup_state();
+        crate::ui::helpers::clear_session_caches();
         *cmd_tx_sw.lock().unwrap() = None;
         *http_client_sw.lock().unwrap() = None;
         *last_token_sw.lock().unwrap() = target_token.clone();
@@ -3344,6 +5363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Reset backend states in-memory (vault remains intact with existing accounts)
         crate::ui::helpers::reset_unread_and_dedup_state();
+        crate::ui::helpers::clear_session_caches();
         *cmd_tx_add.lock().unwrap() = None;
         *http_client_add.lock().unwrap() = None;
         *last_token_add.lock().unwrap() = String::new();
@@ -3434,6 +5454,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             match http.get_current_user().await {
                 Ok(user_info) => {
+                    // Load Discord's default soundboard catalog in the background.
+                    {
+                        let http_sb = http.clone();
+                        let app_sb = app_weak_inner.clone();
+                        tokio::spawn(async move {
+                            if let Ok(items) = http_sb.get_default_soundboard_sounds().await {
+                                if !items.is_empty() {
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(ui) = app_sb.upgrade() {
+                                            let rows = soundboard_rows_from_json(&items, "");
+                                            ui.set_soundboard_rows(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    }
                     let username = user_info["username"].as_str().unwrap_or("User");
                     let user_id = user_info["id"].as_str().unwrap_or("");
                     let global_name = user_info["global_name"].as_str().unwrap_or(username);
@@ -3495,7 +5532,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Start Gateway WebSocket connection with Opcode 4 command channel
                     let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(100);
+                    gateway::client::install_command_sender(cmd_tx.clone());
                     *cmd_tx_gw_store.lock().unwrap() = Some(cmd_tx);
+
+                    if let Ok(uid) = user_id.parse::<u64>() {
+                        gateway::set_my_user_id(uid);
+                        gateway::set_my_username(global_name.to_string());
+                        gateway::register_user_name(uid, global_name.to_string());
+                        gateway::register_user_avatar(uid, user_info["avatar"].as_str().unwrap_or(""));
+                    }
+                    // The gateway connects while the REST lists load.
+                    let gw = Arc::new(GatewayClient::new(
+                        token_str,
+                        event_tx_gw,
+                        Arc::clone(&active_channel_in),
+                    ));
+                    tokio::spawn(async move {
+                        gw.start(cmd_rx).await;
+                    });
 
                     // Fetch all servers and channels via HTTP REST immediately!
                     fetch_and_populate_guilds(
@@ -3506,9 +5560,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         active_channel_in,
                         cmd_tx_gw_store,
                     ).await;
-
-                    let gw = Arc::new(GatewayClient::new(token_str, event_tx_gw));
-                    gw.start(cmd_rx).await;
                 }
                 Err(err_msg) => {
                     error!("Falha na validação do Token: {}", err_msg);
@@ -3706,6 +5757,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cmd_tx_in = Arc::clone(&cmd_tx_guild_select);
 
         if let Some(http) = http_opt {
+            if gid != "@me" {
+                let http_sb = http.clone();
+                let app_sb = app_w.clone();
+                let gid_sb = gid.clone();
+                tokio::spawn(async move {
+                    if let Ok(items) = http_sb.get_guild_soundboard_sounds(&gid_sb).await {
+                        if !items.is_empty() {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = app_sb.upgrade() {
+                                    let rows = soundboard_rows_from_json(&items, &gid_sb);
+                                    ui.set_soundboard_rows(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+                                }
+                            });
+                        }
+                    }
+                });
+            }
             tokio::spawn(async move {
                 if gid == "@me" {
                     fetch_and_populate_dms(
@@ -3811,6 +5879,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::ui::helpers::channel_drop_row(&rows, from.max(0) as usize, dy) as i32
     });
 
+    let app_weak_member_drop = app_weak.clone();
+    app.on_voice_member_drop_row(move |from, dy| {
+        let Some(ui) = app_weak_member_drop.upgrade() else { return -1 };
+        let rows: Vec<ChannelItem> = ui.get_channels().iter().collect();
+        crate::ui::helpers::voice_member_drop_row(&rows, from.max(0) as usize, dy)
+            .map(|index| index as i32)
+            .unwrap_or(-1)
+    });
+
+    let active_guild_move = Arc::clone(&active_guild_id);
+    let http_move_member = Arc::clone(&http_client);
+    app.on_move_voice_member(move |source_row: SharedString, target_channel: SharedString| {
+        let source = source_row.to_string();
+        let target = target_channel.to_string();
+        let Some(rest) = source.strip_prefix("voice-member:") else { return };
+        let Some((source_channel, uid)) = rest.rsplit_once(':') else { return };
+        let Ok(user_id) = uid.parse::<u64>() else { return };
+        let guild_id = active_guild_move.lock().unwrap().clone();
+        let actor = gateway::get_my_user_id();
+        let roles_known = gateway::member_roles_known(&guild_id, actor);
+        let allowed = gateway::can_moderate_member(
+            &guild_id,
+            actor,
+            user_id,
+            gateway::PERM_MOVE_MEMBERS,
+        ) || !roles_known;
+        if target.is_empty()
+            || guild_id.is_empty()
+            || guild_id == "@me"
+            || target == source_channel
+            || !allowed
+        {
+            warn!(
+                "🔀 [VOICE] No se movió a {} a {}: guild={} target={} roles_known={} allowed={}",
+                user_id, target, guild_id, target, roles_known, allowed
+            );
+            return;
+        }
+        info!(
+            "🔀 [VOICE] Moviendo a {} del canal {} al canal {} (roles_known={}).",
+            user_id, source_channel, target, roles_known
+        );
+        let http_opt = http_move_member.lock().unwrap().as_ref().cloned();
+        tokio::spawn(async move {
+            let Some(http) = http_opt else { return };
+            let payload = serde_json::json!({ "channel_id": target });
+            match http
+                .edit_guild_member(&guild_id, &user_id.to_string(), payload)
+                .await
+            {
+                Ok(()) => info!("🔀 Miembro {} movido al canal de voz {}", user_id, target),
+                Err(error) => warn!("No se pudo mover al miembro a voz: {}", error),
+            }
+        });
+    });
+
     // Reorder Channel Callback
     let app_weak_reorder_c = app_weak.clone();
     let guilds_map_reorder_c = Arc::clone(&guilds_map);
@@ -3865,6 +5989,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ui) = app_weak_chan_select.upgrade() {
             if is_voice {
+                // Clicking the voice channel we are already in must only bring the
+                // call back into view: re-sending the voice state tears down the
+                // media session and plays the join sound again.
+                let already_connected = ui.get_is_in_voice()
+                    && gateway::get_my_voice_channel_id().to_string() == ch_id;
+                if already_connected
+                    && (gateway::is_connected_to_voice() || ui.get_is_voice_connecting())
+                {
+                    info!("🎧 [VOICE] Canal {} já conectado; mantendo a sessão.", ch_id);
+                    ui.set_is_voice_focused(true);
+                    ui.set_active_channel_id(ch_id.clone().into());
+                    return;
+                }
                 ui.set_is_in_voice(true);
                 ui.set_is_voice_connecting(true);
                 ui.set_is_voice_focused(true);
@@ -3929,16 +6066,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let clean_name = crate::utils::styled_text::plain_display_name(ch_name.trim_start_matches('#').trim());
                 ui.set_active_channel_name(clean_name.as_ref().into());
                 ui.set_active_channel_id(ch_id.clone().into());
+                remember_last_channel(&gid, &ch_id);
                 ui.set_is_voice_focused(false);
                 request_chat_scroll_to_bottom(app_weak_chan_select.clone());
 
-                // Zera o badge de não lidos do canal que foi aberto
-                let mut channels: Vec<ChannelItem> = ui.get_channels().iter().collect();
-                if let Some(ch) = channels.iter_mut().find(|c| c.id == ch_id.as_str()) {
-                    ch.unread_count = 0;
-                }
-                let model = std::rc::Rc::new(slint::VecModel::from(channels));
-                ui.set_channels(model.into());
+                // Zera o badge de não lidos do canal que foi aberto sem reconstruir a sidebar
+                crate::ui::helpers::clear_channel_unread(&ui, &ch_id);
 
                 // Zera o unread deste canal no mapa global de DMs e atualiza o badge do botão principal de DMs
                 let remaining_dm_unreads = crate::ui::helpers::clear_dm_unread(&ch_id);
@@ -3960,7 +6093,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mute Button Toggle Callback
     let cmd_tx_mute = Arc::clone(&cmd_tx_store);
     let active_guild_mute = Arc::clone(&active_guild_id);
-    let active_channel_mute = Arc::clone(&active_channel_id);
     let app_weak_mute = app_weak.clone();
 
     app.on_toggle_mute(move || {
@@ -3973,17 +6105,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound_effects::UiSound::Unmute
             });
 
-            let gid = active_guild_mute.lock().unwrap().clone();
-            let cid = active_channel_mute.lock().unwrap().clone();
             let deafened = ui.get_is_deafened();
+            // Always address the channel and guild we are actually in voice with:
+            // using the ones open in the UI sends the mute somewhere else and tears
+            // the running voice session down.
+            let voice_cid = gateway::get_my_voice_channel_id();
+            let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+            let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+            let gid = if in_voice { gateway::get_my_voice_guild_id() } else { active_guild_mute.lock().unwrap().clone() };
 
-            if let Some(cmd_tx_guard) = cmd_tx_mute.lock().unwrap().as_ref() {
-                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
-                    channel_id: Some(cid),
-                    self_mute: new_muted,
-                    self_deaf: deafened,
-                });
+            if !cid.is_empty() {
+                if let Some(cmd_tx_guard) = cmd_tx_mute.lock().unwrap().as_ref() {
+                    let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                        guild_id: gid,
+                        channel_id: Some(cid),
+                        self_mute: new_muted,
+                        self_deaf: deafened,
+                    });
+                }
             }
         }
     });
@@ -3991,7 +6130,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deafen Button Toggle Callback
     let cmd_tx_deafen = Arc::clone(&cmd_tx_store);
     let active_guild_deafen = Arc::clone(&active_guild_id);
-    let active_channel_deafen = Arc::clone(&active_channel_id);
     let app_weak_deafen = app_weak.clone();
 
     app.on_toggle_deafen(move || {
@@ -4005,17 +6143,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound_effects::UiSound::Undeafen
             });
 
-            let gid = active_guild_deafen.lock().unwrap().clone();
-            let cid = active_channel_deafen.lock().unwrap().clone();
             let muted = ui.get_is_muted();
+            let voice_cid = gateway::get_my_voice_channel_id();
+            let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+            let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+            let gid = if in_voice { gateway::get_my_voice_guild_id() } else { active_guild_deafen.lock().unwrap().clone() };
 
-            if let Some(cmd_tx_guard) = cmd_tx_deafen.lock().unwrap().as_ref() {
-                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
-                    channel_id: Some(cid),
-                    self_mute: muted,
-                    self_deaf: new_deafened,
-                });
+            if !cid.is_empty() {
+                if let Some(cmd_tx_guard) = cmd_tx_deafen.lock().unwrap().as_ref() {
+                    let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                        guild_id: gid,
+                        channel_id: Some(cid),
+                        self_mute: muted,
+                        self_deaf: new_deafened,
+                    });
+                }
             }
         }
     });
@@ -4024,12 +6166,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_kb_mute = app_weak.clone();
     let cmd_tx_kb_mute = Arc::clone(&cmd_tx_store);
     let active_guild_kb_mute = Arc::clone(&active_guild_id);
-    let active_channel_kb_mute = Arc::clone(&active_channel_id);
 
     let app_weak_kb_deaf = app_weak.clone();
     let cmd_tx_kb_deaf = Arc::clone(&cmd_tx_store);
     let active_guild_kb_deaf = Arc::clone(&active_guild_id);
-    let active_channel_kb_deaf = Arc::clone(&active_channel_id);
 
     let app_weak_kb_rec = app_weak.clone();
 
@@ -4038,7 +6178,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w = app_weak_kb_mute.clone();
             let cmd_tx = Arc::clone(&cmd_tx_kb_mute);
             let agid = Arc::clone(&active_guild_kb_mute);
-            let acid = Arc::clone(&active_channel_kb_mute);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let new_muted = !ui.get_is_muted();
@@ -4049,17 +6188,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sound_effects::UiSound::Unmute
                     });
 
-                    let gid = agid.lock().unwrap().clone();
-                    let cid = acid.lock().unwrap().clone();
                     let deafened = ui.get_is_deafened();
+                    let voice_cid = gateway::get_my_voice_channel_id();
+                    let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+                    let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+                    let gid = if in_voice { gateway::get_my_voice_guild_id() } else { agid.lock().unwrap().clone() };
 
-                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
-                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                            guild_id: gid,
-                            channel_id: Some(cid),
-                            self_mute: new_muted,
-                            self_deaf: deafened,
-                        });
+                    if !cid.is_empty() {
+                        if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                                guild_id: gid,
+                                channel_id: Some(cid),
+                                self_mute: new_muted,
+                                self_deaf: deafened,
+                            });
+                        }
                     }
                 }
             });
@@ -4068,7 +6211,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w = app_weak_kb_deaf.clone();
             let cmd_tx = Arc::clone(&cmd_tx_kb_deaf);
             let agid = Arc::clone(&active_guild_kb_deaf);
-            let acid = Arc::clone(&active_channel_kb_deaf);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let new_deafened = !ui.get_is_deafened();
@@ -4080,17 +6222,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sound_effects::UiSound::Undeafen
                     });
 
-                    let gid = agid.lock().unwrap().clone();
-                    let cid = acid.lock().unwrap().clone();
                     let muted = ui.get_is_muted();
+                    let voice_cid = gateway::get_my_voice_channel_id();
+                    let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+                    let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+                    let gid = if in_voice { gateway::get_my_voice_guild_id() } else { agid.lock().unwrap().clone() };
 
-                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
-                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                            guild_id: gid,
-                            channel_id: Some(cid),
-                            self_mute: muted,
-                            self_deaf: new_deafened,
-                        });
+                    if !cid.is_empty() {
+                        if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                                guild_id: gid,
+                                channel_id: Some(cid),
+                                self_mute: muted,
+                                self_deaf: new_deafened,
+                            });
+                        }
                     }
                 }
             });
@@ -4116,6 +6262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_send_message(move |content: SharedString| {
         let content_str = content.to_string();
         let channel_id = active_channel_msg.lock().unwrap().clone();
+        invalidate_message_cache(&channel_id);
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
 
         if let Some(http) = http_opt {
@@ -4123,6 +6270,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = http.send_message(&channel_id, &content_str).await;
             });
         }
+    });
+
+    // Community onboarding: pick answers, save them, then reload the server so the
+    // new roles and channels appear immediately.
+    let app_weak_onb_toggle = app_weak.clone();
+    app.on_onboarding_toggle(move |prompt: i32, option: i32| {
+        if let Some(ui) = app_weak_onb_toggle.upgrade() {
+            crate::ui::onboarding::toggle(&ui, prompt.max(0) as usize, option.max(0) as usize);
+        }
+    });
+
+    let app_weak_onb_dismiss = app_weak.clone();
+    app.on_onboarding_dismiss(move || {
+        if let Some(ui) = app_weak_onb_dismiss.upgrade() {
+            ui.set_show_onboarding_modal(false);
+            let guild_id = ui.get_onboarding_guild_id().to_string();
+            crate::ui::onboarding::mark_dismissed(&guild_id);
+        }
+    });
+
+    let app_weak_onb_submit = app_weak.clone();
+    let http_onb = Arc::clone(&http_client);
+    let guilds_map_onb = Arc::clone(&guilds_map);
+    let active_guild_onb = Arc::clone(&active_guild_id);
+    let active_channel_onb = Arc::clone(&active_channel_id);
+    let cmd_tx_onb = Arc::clone(&cmd_tx_store);
+    app.on_onboarding_submit(move || {
+        let Some(ui) = app_weak_onb_submit.upgrade() else { return };
+        if ui.get_onboarding_submitting() {
+            return;
+        }
+        let guild_id = ui.get_onboarding_guild_id().to_string();
+        let submission = match crate::ui::onboarding::take_submission(&ui) {
+            Ok(submission) => submission,
+            Err(err) => {
+                ui.set_onboarding_error(err.into());
+                return;
+            }
+        };
+        let http_opt = http_onb.lock().unwrap().as_ref().cloned();
+        let Some(http) = http_opt else {
+            ui.set_onboarding_error(crate::utils::i18n_ui::ui_text().onboarding_error.into());
+            return;
+        };
+        ui.set_onboarding_submitting(true);
+        ui.set_onboarding_error("".into());
+
+        let app_w = app_weak_onb_submit.clone();
+        let guilds_map = Arc::clone(&guilds_map_onb);
+        let active_guild = Arc::clone(&active_guild_onb);
+        let active_channel = Arc::clone(&active_channel_onb);
+        let cmd_tx = Arc::clone(&cmd_tx_onb);
+        tokio::spawn(async move {
+            let body = crate::ui::onboarding::request_body(&submission);
+            match http.submit_guild_onboarding(&guild_id, &body).await {
+                Ok(()) => {
+                    crate::ui::onboarding::mark_done(&guild_id);
+                    crate::channel_permissions::forget(&guild_id);
+                    crate::ui::data_loader::mark_guild_stale(&guild_id);
+                    let app_hide = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_hide.upgrade() {
+                            ui.set_show_onboarding_modal(false);
+                            ui.set_onboarding_submitting(false);
+                        }
+                    });
+                    fetch_and_populate_channels(
+                        &http,
+                        app_w,
+                        guilds_map,
+                        active_guild,
+                        active_channel,
+                        cmd_tx,
+                        &guild_id,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!("Falha ao salvar onboarding: {}", err);
+                    let message = crate::utils::i18n_ui::ui_text().onboarding_error.to_string();
+                    let app_err = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_err.upgrade() {
+                            ui.set_onboarding_submitting(false);
+                            ui.set_onboarding_error(message.into());
+                        }
+                    });
+                }
+            }
+        });
     });
 
     // Click Command Callback (fills input with command parameter pill)
@@ -4253,6 +6490,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let channel_id = active_channel_cmd.lock().unwrap().clone();
         let guild_id = active_guild_cmd.lock().unwrap().clone();
         let http_opt = http_client_cmd.lock().unwrap().as_ref().cloned();
+        let option_type = get_master_command_suggestions()
+            .lock()
+            .ok()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.app_id == app_id_str && item.cmd_id == cmd_id_str)
+                    .map(|item| item.option_type)
+            })
+            .unwrap_or(3);
 
         if let Some(http) = http_opt {
             tokio::spawn(async move {
@@ -4261,11 +6508,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut options = Vec::new();
                     if !arg_val_str.is_empty() {
                         let opt_name = if param_name_str.is_empty() { "query".to_string() } else { param_name_str };
-                        options.push(serde_json::json!({
-                            "type": 3,
-                            "name": opt_name,
-                            "value": arg_val_str
-                        }));
+                        match slash_option_value(option_type, &arg_val_str) {
+                            Ok(value) => options.push(serde_json::json!({
+                                "type": option_type,
+                                "name": opt_name,
+                                "value": value
+                            })),
+                            Err(error) => {
+                                warn!("Argumento de comando inválido: {}", error);
+                                return;
+                            }
+                        }
                     }
                     if let Err(e) = http.send_slash_command_interaction(
                         &guild_id,
@@ -4297,42 +6550,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Minimize to Tray Callback using Win32 ShowWindow(SW_HIDE)
-    let app_weak_tray_min = app_weak.clone();
-    let hwnd_store_minimize = Arc::clone(&hwnd_store);
-    app.on_minimize_to_tray(move || {
-        info!("Minimizando janela para a bandeja do sistema via Win32 SW_HIDE...");
-        crate::ui::window_place::save_now();
-        crate::ui::invite_cards::clear();
-        APP_IS_VISIBLE.store(false, Ordering::Relaxed);
-        PENDING_MESSAGES.store(0, Ordering::Relaxed);
-        info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
-        let app_w = app_weak_tray_min.clone();
-        let hwnd_store_c = Arc::clone(&hwnd_store_minimize);
-        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-            let mut target_hwnd = *hwnd_store_c.lock().unwrap();
-            if let Some(ui) = app_w.upgrade() {
-                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                let _ = ui.window().with_winit_window(|winit_win| {
-                    winit_win.set_visible(false);
-                    if target_hwnd.is_none() {
-                        if let Ok(handle) = winit_win.window_handle() {
-                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                target_hwnd = Some(win32_handle.hwnd.get() as isize);
-                            }
-                        }
-                    }
-                });
-            }
-            #[cfg(target_os = "windows")]
-            if let Some(hwnd) = target_hwnd {
-                unsafe {
-                    ShowWindow(hwnd as _, SW_HIDE);
+    // Helper closure to hide the window to tray across Linux (Wayland/X11) and Windows
+    let hide_to_tray = {
+        let app_w = app_weak.clone();
+        let _hwnd_store_c = Arc::clone(&hwnd_store);
+        move || {
+            crate::ui::window_place::save_now();
+            crate::ui::invite_cards::clear();
+            APP_IS_VISIBLE.store(false, Ordering::Relaxed);
+            PENDING_MESSAGES.store(0, Ordering::Relaxed);
+            info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
+
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(ui) = app_w.upgrade() {
+                    let _ = ui.hide();
                 }
             }
-            trim_process_memory();
-            info!("[DeepSleep] Memória RAM compactada e liberada (minimize to tray)!");
-        });
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                if let Some(ui) = app_w.upgrade() {
+                    let _ = ui.window().with_winit_window(|winit_win| {
+                        winit_win.set_visible(false);
+                    });
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                let app_w_timer = app_w.clone();
+                let hwnd_store_timer = Arc::clone(&_hwnd_store_c);
+                slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                    let mut target_hwnd = *hwnd_store_timer.lock().unwrap();
+                    if let Some(ui) = app_w_timer.upgrade() {
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        let _ = ui.window().with_winit_window(|winit_win| {
+                            winit_win.set_visible(false);
+                            if target_hwnd.is_none() {
+                                if let Ok(handle) = winit_win.window_handle() {
+                                    if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                        target_hwnd = Some(win32_handle.hwnd.get() as isize);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    if let Some(hwnd) = target_hwnd {
+                        unsafe {
+                            ShowWindow(hwnd as _, SW_HIDE);
+                        }
+                    }
+                    trim_process_memory();
+                    info!("[DeepSleep] Memória RAM compactada e liberada (tray hide)!");
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                trim_process_memory();
+                info!("[DeepSleep] Memória RAM compactada e liberada (tray hide)!");
+            }
+        }
+    };
+
+    // Minimize to Tray Callback using Win32 ShowWindow(SW_HIDE)
+    let hide_tray_min_cb = hide_to_tray.clone();
+    app.on_minimize_to_tray(move || {
+        info!("Minimizando janela para a bandeja do sistema...");
+        hide_tray_min_cb();
     });
 
     // Custom window controls for frameless mode
@@ -4390,45 +6675,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app_weak_min = app_weak.clone();
-    let hwnd_store_min = Arc::clone(&hwnd_store);
+    let hide_tray_min_win = hide_to_tray.clone();
     app.on_minimize_window(move || {
-        info!("🔕 Minimizando janela para a bandeja do sistema (System Tray) & entrando em DeepSleep...");
-        APP_IS_VISIBLE.store(false, Ordering::Relaxed);
-        PENDING_MESSAGES.store(0, Ordering::Relaxed);
-        info!("[DeepSleep] UI loops suspensos. Apenas áudio permanece ativo.");
-        let app_w = app_weak_min.clone();
-        let hwnd_store_c = Arc::clone(&hwnd_store_min);
-        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-            let mut target_hwnd = *hwnd_store_c.lock().unwrap();
-            if let Some(ui) = app_w.upgrade() {
-                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if !video_settings::get_enable_tray_icon() {
+            info!("Minimizando janela para a barra de tarefas (System Tray desativado)...");
+            if let Some(ui) = app_weak_min.upgrade() {
                 let _ = ui.window().with_winit_window(|winit_win| {
-                    winit_win.set_visible(false);
                     winit_win.set_minimized(true);
-                    if target_hwnd.is_none() {
-                        if let Ok(handle) = winit_win.window_handle() {
-                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                target_hwnd = Some(win32_handle.hwnd.get() as isize);
-                            }
-                        }
-                    }
                 });
             }
-            #[cfg(target_os = "windows")]
-            if let Some(hwnd) = target_hwnd {
-                unsafe {
-                    ShowWindow(hwnd as _, SW_HIDE);
-                }
-            }
-            trim_process_memory();
-            info!("[DeepSleep] Memória RAM compactada e liberada ao minimizar!");
-        });
+            return;
+        }
+        info!("🔕 Minimizando janela para a bandeja do sistema (System Tray) & entrando em DeepSleep...");
+        hide_tray_min_win();
     });
 
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            let is_max = app_instance.window().is_maximized();
+            // `window().is_maximized()` misses the state on some Wayland compositors.
+            let mut is_max = app_instance.get_is_maximized();
+            app_instance.window().with_winit_window(|w| {
+                is_max = crate::ui::window_place::is_maximized(w);
+            });
             let next = !is_max;
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);
@@ -4436,13 +6705,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let sm_for_close = Arc::clone(&screen_manager);
+    let hide_tray_close = hide_to_tray.clone();
     app.on_close_window(move || {
-        info!("Fechar clicado na barra superior: saindo do aplicativo...");
+        if video_settings::get_enable_tray_icon() {
+            info!("Fechar clicado na barra superior: minimizando para o System Tray (DeepSleep)...");
+            hide_tray_close();
+            return;
+        }
         crate::ui::window_place::save_now();
+        info!("Fechar clicado na barra superior: saindo do aplicativo...");
         sm_for_close.stop();
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
         std::process::exit(0);
+    });
+
+    let sm_for_close_req = Arc::clone(&screen_manager);
+    let hide_tray_close_req = hide_to_tray.clone();
+    app.window().on_close_requested(move || {
+        if video_settings::get_enable_tray_icon() {
+            info!("Solicitação nativa de fechamento recebida: minimizando para o System Tray (DeepSleep)...");
+            hide_tray_close_req();
+            return slint::CloseRequestResponse::KeepWindowShown;
+        }
+        crate::ui::window_place::save_now();
+        info!("Solicitação nativa de fechamento da janela recebida (Alt+F4 / Taskbar)...");
+        sm_for_close_req.stop();
+        #[cfg(target_os = "linux")]
+        screen_capture::kill_portal_child();
+        std::process::exit(0);
+        #[allow(unreachable_code)]
+        slint::CloseRequestResponse::HideWindow
     });
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
@@ -4462,8 +6755,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sm_gw_inner = Arc::clone(&sm_gw);
 
             match event {
+                GatewayEvent::VoiceConnected => {
+                    // The call/voice channel is now live: stop any waiting tone.
+                    sound_effects::stop_call_ring();
+                    let app_w = app_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_w.upgrade() {
+                            if ui.get_is_voice_connecting() {
+                                info!("🎙️ [GatewayEvent::VoiceConnected] Voice Gateway pronta, definindo is_voice_connecting = false");
+                                ui.set_is_voice_connecting(false);
+                            }
+                        }
+                    });
+                }
                 GatewayEvent::VoiceDisconnected => {
                     sound_effects::play_ui_sound(sound_effects::UiSound::LeaveChannel);
+                    // Native Go Live viewers and SSRC maps belong to the call that
+                    // just ended (also when another client displaces us).
+                    gateway::clear_watched_streams();
+                    crate::native_video::camera::reset();
+                    crate::native_video::clear_video_ssrcs();
                     let app_w = app_weak.clone();
                     let sm_disc = Arc::clone(&sm_gw_inner);
                     *active_mic_disc.lock().unwrap() = None;
@@ -4476,6 +6787,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.set_is_in_voice(false);
                             ui.set_is_voice_connecting(false);
                             ui.set_is_screen_sharing(false);
+                            screen_capture::set_self_streaming(false);
                             ui.set_has_active_stream(false);
                             ui.set_popped_out_stream_uid("".into());
                             ui.set_voice_participants(slint::ModelRc::new(slint::VecModel::from(vec![])));
@@ -4516,6 +6828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageCreated { id, channel_id, author, author_id, created_at, avatar_url, is_bot, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, is_self } => {
+                    invalidate_message_cache(&channel_id);
                     // Deduplicação: ignora se esta mensagem já foi processada anteriormente
                     if !id.is_empty() && crate::ui::helpers::mark_msg_seen(&id) {
                         continue;
@@ -4590,7 +6903,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = app_weak_inner.upgrade() {
-                                let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
+                                // A new message only pins the chat when the reader was already
+                                // at the bottom (or sent it); otherwise the history stays put.
+                                let was_at_bottom = ui.get_chat_is_at_bottom();
 
                                 let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                                 let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
@@ -4625,27 +6940,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 message.avatar_url = avatar_url.into();
                                 message.avatar_initial = message.author.chars().next().unwrap_or('?').to_uppercase().to_string().into();
                                 message.is_bot = is_bot;
-                                current_msgs.push(message);
-                                regroup_messages(&mut current_msgs);
-                                // An append never changes the grouping of older rows. Keep the
-                                // existing model so a new message does not rebuild the chat UI.
-                                let mut appended = current_msgs.pop().expect("message was appended");
-                                avatar_cache::get_avatar_cache().hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
-                                crate::ui::invite_cards::hydrate(std::slice::from_mut(&mut appended), &app_weak_inner);
+                                if let Some((role_name, role_color)) = gateway::get_user_display_role(author_id.parse::<u64>().unwrap_or(0)) {
+                                    message.author_role_name = role_name.into();
+                                    message.author_role_color = slint::Color::from_rgb_u8(
+                                        ((role_color >> 16) & 0xFF) as u8,
+                                        ((role_color >> 8) & 0xFF) as u8,
+                                        (role_color & 0xFF) as u8,
+                                    );
+                                }
+                                avatar_cache::get_avatar_cache().hydrate(std::slice::from_mut(&mut message), &app_weak_inner);
+                                crate::ui::invite_cards::hydrate(std::slice::from_mut(&mut message), &app_weak_inner);
                                 let messages = ui.get_messages();
                                 if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
-                                    model.push(appended);
+                                    // An append never changes the grouping of older rows, so
+                                    // group against the last row and push instead of copying and
+                                    // regrouping the whole history on every message.
+                                    crate::ui::message_grouping::group_appended_message(&messages, &mut message);
+                                    model.push(message);
+
+                                    // Keep the model bounded while the reader is at the bottom:
+                                    // the dropped rows are above the viewport, and moving the
+                                    // pagination cursor back to the new oldest row lets "load
+                                    // older" refetch that window instead of skipping it.
+                                    if was_at_bottom
+                                        && crate::ui::message_grouping::trim_chat_window_and_rebase(
+                                            &messages,
+                                            model,
+                                            &channel_id,
+                                        )
+                                    {
+                                        ui.set_has_more_older_messages(true);
+                                    }
                                 } else {
-                                    current_msgs.push(appended);
+                                    let mut current_msgs: Vec<ChatMessage> = messages.iter().collect();
+                                    current_msgs.push(message);
+                                    regroup_messages(&mut current_msgs);
                                     ui.set_messages(std::rc::Rc::new(slint::VecModel::from(current_msgs)).into());
                                 }
 
-                                request_chat_scroll_to_bottom(app_weak_inner.clone());
+                                if was_at_bottom || is_self {
+                                    request_chat_scroll_to_bottom(app_weak_inner.clone());
+                                }
                             }
                         });
                     }
                 }
                 GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
+                    invalidate_message_cache(&channel_id);
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // Hidden: the open channel is refetched when the window comes back.
                     if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
@@ -4654,8 +6995,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
-                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().collect();
-
                             let slint_cmds: Vec<slint::SharedString> = commands.into_iter().map(|c| c.into()).collect();
                             let commands_model = std::rc::Rc::new(slint::VecModel::from(slint_cmds));
 
@@ -4665,65 +7004,139 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }).collect();
                             let links_model = std::rc::Rc::new(slint::VecModel::from(slint_links));
 
-                            let mut found = false;
-                            for msg in current_msgs.iter_mut() {
-                                if !id.is_empty() && msg.id == id.as_str() {
-                                    msg.content = content.clone().into();
-                                    msg.commands = slint::ModelRc::from(commands_model.clone());
-                                    msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
-                                    msg.embed_content = embed_content.clone().into();
-                                    msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
-                                    msg.embed_color = parse_hex_color(&embed_color);
-                                    msg.embed_footer = embed_footer.clone().into();
-                                    msg.code_block = code_block.clone().into();
-                                    if !reply_author.is_empty() {
-                                        msg.reply_author = reply_author.clone().into();
-                                    }
-                                    if !reply_content.is_empty() {
-                                        msg.reply_content = reply_content.clone().into();
-                                    }
-                                    if !reply_command.is_empty() {
-                                        msg.reply_command = reply_command.clone().into();
-                                    }
-                                    msg.links = slint::ModelRc::from(links_model.clone());
-                                    msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
-                                    msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
-                                    found = true;
-                                    break;
-                                }
-                            }
-
-                            if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty()) {
-                                current_msgs.push(ChatMessage {
-                                    id: id.into(),
-                                    author: "Bot".into(),
-                                    content: content.into(),
-                                    commands: slint::ModelRc::from(commands_model),
-                                    content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
-                                    embed_content: embed_content.into(),
-                                    embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
-                                    embed_color: parse_hex_color(&embed_color),
-                                    embed_footer: embed_footer.into(),
-                                    code_block: code_block.into(),
-                                    reply_author: reply_author.into(),
-                                    reply_content: reply_content.into(),
-                                    reply_command: reply_command.into(),
-                                    links: slint::ModelRc::from(links_model),
-                                    buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
-                                    attachments: map_message_attachments(&attachments, &app_weak_inner),
-                                    timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
-                                    show_header: true,
-                                    ..Default::default()
+                            let messages = ui.get_messages();
+                            if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
+                                // An edit keeps the author and timestamp, so grouping does not
+                                // change: update the single row and leave the rest of the model.
+                                let found_index = (0..model.row_count()).find(|&index| {
+                                    model.row_data(index).is_some_and(|msg| !id.is_empty() && msg.id == id.as_str())
                                 });
-                            }
+                                if let Some(index) = found_index {
+                                    if let Some(mut msg) = model.row_data(index) {
+                                        msg.content = content.clone().into();
+                                        msg.commands = slint::ModelRc::from(commands_model.clone());
+                                        msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_content = embed_content.clone().into();
+                                        msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_color = parse_hex_color(&embed_color);
+                                        msg.embed_footer = embed_footer.clone().into();
+                                        msg.code_block = code_block.clone().into();
+                                        if !reply_author.is_empty() {
+                                            msg.reply_author = reply_author.clone().into();
+                                        }
+                                        if !reply_content.is_empty() {
+                                            msg.reply_content = reply_content.clone().into();
+                                        }
+                                        if !reply_command.is_empty() {
+                                            msg.reply_command = reply_command.clone().into();
+                                        }
+                                        msg.links = slint::ModelRc::from(links_model.clone());
+                                        msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
+                                        msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
+                                        model.set_row_data(index, msg);
+                                    }
+                                } else if !content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty() {
+                                    let mut message = ChatMessage {
+                                        id: id.into(),
+                                        author: "Bot".into(),
+                                        content: content.into(),
+                                        commands: slint::ModelRc::from(commands_model),
+                                        content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
+                                        embed_content: embed_content.into(),
+                                        embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
+                                        embed_color: parse_hex_color(&embed_color),
+                                        embed_footer: embed_footer.into(),
+                                        code_block: code_block.into(),
+                                        reply_author: reply_author.into(),
+                                        reply_content: reply_content.into(),
+                                        reply_command: reply_command.into(),
+                                        links: slint::ModelRc::from(links_model),
+                                        buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
+                                        attachments: map_message_attachments(&attachments, &app_weak_inner),
+                                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                                        show_header: true,
+                                        ..Default::default()
+                                    };
+                                    crate::ui::message_grouping::group_appended_message(&messages, &mut message);
+                                    model.push(message);
+                                    // Bot/webhook appends can also arrive while the reader sits
+                                    // at the bottom: bound the model the same way as a normal
+                                    // message, leaving the history alone when scrolled up.
+                                    if ui.get_chat_is_at_bottom()
+                                        && crate::ui::message_grouping::trim_chat_window_and_rebase(
+                                            &messages,
+                                            model,
+                                            &channel_id,
+                                        )
+                                    {
+                                        ui.set_has_more_older_messages(true);
+                                    }
+                                }
+                            } else {
+                                // Unexpected model kind: keep the old full rebuild path.
+                                let mut current_msgs: Vec<ChatMessage> = messages.iter().collect();
 
-                            regroup_messages(&mut current_msgs);
-                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-                            ui.set_messages(model.into());
+                                let mut found = false;
+                                for msg in current_msgs.iter_mut() {
+                                    if !id.is_empty() && msg.id == id.as_str() {
+                                        msg.content = content.clone().into();
+                                        msg.commands = slint::ModelRc::from(commands_model.clone());
+                                        msg.content_lines = map_message_lines(&content_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_content = embed_content.clone().into();
+                                        msg.embed_lines = map_message_lines(&embed_lines, &channel_id, &app_weak_inner);
+                                        msg.embed_color = parse_hex_color(&embed_color);
+                                        msg.embed_footer = embed_footer.clone().into();
+                                        msg.code_block = code_block.clone().into();
+                                        if !reply_author.is_empty() {
+                                            msg.reply_author = reply_author.clone().into();
+                                        }
+                                        if !reply_content.is_empty() {
+                                            msg.reply_content = reply_content.clone().into();
+                                        }
+                                        if !reply_command.is_empty() {
+                                            msg.reply_command = reply_command.clone().into();
+                                        }
+                                        msg.links = slint::ModelRc::from(links_model.clone());
+                                        msg.buttons = map_message_buttons(&buttons, &channel_id, &app_weak_inner);
+                                        msg.attachments = map_message_attachments(&attachments, &app_weak_inner);
+                                        found = true;
+                                        break;
+                                    }
+                                }
+
+                                if !found && (!content.is_empty() || !embed_content.is_empty() || !reply_command.is_empty() || !attachments.is_empty()) {
+                                    current_msgs.push(ChatMessage {
+                                        id: id.into(),
+                                        author: "Bot".into(),
+                                        content: content.into(),
+                                        commands: slint::ModelRc::from(commands_model),
+                                        content_lines: map_message_lines(&content_lines, &channel_id, &app_weak_inner),
+                                        embed_content: embed_content.into(),
+                                        embed_lines: map_message_lines(&embed_lines, &channel_id, &app_weak_inner),
+                                        embed_color: parse_hex_color(&embed_color),
+                                        embed_footer: embed_footer.into(),
+                                        code_block: code_block.into(),
+                                        reply_author: reply_author.into(),
+                                        reply_content: reply_content.into(),
+                                        reply_command: reply_command.into(),
+                                        links: slint::ModelRc::from(links_model),
+                                        buttons: map_message_buttons(&buttons, &channel_id, &app_weak_inner),
+                                        attachments: map_message_attachments(&attachments, &app_weak_inner),
+                                        timestamp: crate::utils::i18n_ui::ui_text().now_label.into(),
+                                        show_header: true,
+                                        ..Default::default()
+                                    });
+                                }
+
+                                regroup_messages(&mut current_msgs);
+                                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                                ui.set_messages(model.into());
+                            }
                         }
                     });
                 }
                 GatewayEvent::MessageDeleted { id, channel_id } => {
+                    invalidate_message_cache(&channel_id);
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // Hidden: the open channel is refetched when the window comes back.
                     if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
@@ -4732,12 +7145,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
-                            let mut current_msgs: Vec<ChatMessage> = ui.get_messages().iter().filter(|m| m.id != id.as_str()).collect();
-                            regroup_messages(&mut current_msgs);
-                            avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
-                            crate::ui::invite_cards::hydrate(&mut current_msgs, &app_weak_inner);
-                            let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
-                            ui.set_messages(model.into());
+                            let messages = ui.get_messages();
+                            if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
+                                // Only the row that moved up needs regrouping; the rows that
+                                // stay put keep their grouping, avatars and invite cards.
+                                if let Some(index) = (0..model.row_count())
+                                    .find(|&index| model.row_data(index).is_some_and(|m| m.id == id.as_str()))
+                                {
+                                    model.remove(index);
+                                    crate::ui::message_grouping::regroup_message_at(&messages, index);
+                                }
+                            } else {
+                                let mut current_msgs: Vec<ChatMessage> = messages.iter().filter(|m| m.id != id.as_str()).collect();
+                                regroup_messages(&mut current_msgs);
+                                avatar_cache::get_avatar_cache().hydrate(&mut current_msgs, &app_weak_inner);
+                                crate::ui::invite_cards::hydrate(&mut current_msgs, &app_weak_inner);
+                                let model = std::rc::Rc::new(slint::VecModel::from(current_msgs));
+                                ui.set_messages(model.into());
+                            }
                         }
                     });
                 }
@@ -4761,8 +7186,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                GatewayEvent::GuildLoaded { .. } => {
-                    // Handled via HTTP REST instant fetching
+                GatewayEvent::GuildLoaded { guild } => {
+                    if let Ok(mut gmap) = guilds_map_inner.lock() {
+                        // Channels already filtered by permissions (REST or snapshot) are kept.
+                        match gmap.get_mut(&guild.id) {
+                            Some(existing) if !existing.channels.is_empty() => {
+                                if !guild.name.is_empty() {
+                                    existing.name = guild.name.clone();
+                                }
+                            }
+                            _ => {
+                                gmap.insert(guild.id.clone(), guild);
+                            }
+                        }
+                    }
                 }
                 GatewayEvent::IncomingCall { channel_id, caller_name } => {
                     // Chamada de DM recebida — mostrar painel de notificação com nome do amigo
@@ -4812,15 +7249,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.set_incoming_call_caller_name(resolved_name.into());
                         }
                     });
-                    sound_effects::play_ui_sound(sound_effects::UiSound::JoinChannel);
+                    sound_effects::start_call_ring(true);
                 }
                 GatewayEvent::CallEnded { channel_id } => {
+                    // Chamada encerrada, recusada ou cancelada: parar cualquier tono.
+                    sound_effects::stop_call_ring();
                     // Chamada encerrada ou cancelada — fechar modal de chamada recebida
                     let app_w = app_weak_inner.clone();
                     let ch_id = channel_id.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             if ui.get_incoming_call_channel_id().as_str() == ch_id {
+                                sound_effects::stop_call_ring();
                                 ui.set_has_incoming_call(false);
                                 ui.set_incoming_call_channel_id("".into());
                                 ui.set_incoming_call_caller_name("".into());
@@ -4828,11 +7268,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 }
+                GatewayEvent::SoundboardSoundPlayed { channel_id, sound_id, user_id } => {
+                    let my_id = gateway::get_my_user_id().to_string();
+                    let our_channel = gateway::get_my_voice_channel_id();
+                    let belongs_to_us = channel_id
+                        .parse::<u64>()
+                        .map(|id| id == our_channel)
+                        .unwrap_or(true);
+                    let soundboard_blocked = soundboard_muted_store()
+                        .lock()
+                        .map(|s| s.contains(&user_id))
+                        .unwrap_or(false);
+                    if belongs_to_us && user_id != my_id && !soundboard_blocked {
+                        soundboard::play_remote_soundboard_effect(&sound_id);
+                    }
+                }
             }
         }
     });
 
-    app.run()?;
+    slint::run_event_loop_until_quit()?;
+    // Leave the voice channel explicitly so Discord does not keep showing us
+    // connected when the client is reopened.
+    if crate::gateway::get_my_voice_channel_id() > 0 {
+        let gid = crate::gateway::get_my_voice_guild_id();
+        if let Ok(guard) = cmd_tx_store.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.try_send(GatewayCommand::UpdateVoiceState {
+                    guild_id: gid,
+                    channel_id: None,
+                    self_mute: false,
+                    self_deaf: false,
+                });
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
     crate::ui::window_place::save_now();
     Ok(())
 }

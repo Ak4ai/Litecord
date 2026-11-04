@@ -233,6 +233,7 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
                 "settings_active_tab" => ui.set_settings_active_tab(as_int()?),
                 "show_stream_modal" => ui.set_show_stream_modal(as_bool()?),
                 "show_web_share_modal" => ui.set_show_web_share_modal(as_bool()?),
+                "show_onboarding_modal" => ui.set_show_onboarding_modal(as_bool()?),
                 "show_user_menu" => ui.set_show_user_menu(as_bool()?),
                 other => return Err(format!("property {other} is not settable from automation")),
             }
@@ -257,6 +258,20 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
                 reply
             };
             Ok(reply)
+        }
+        "onboarding_toggle" => {
+            let prompt = cmd["prompt"].as_i64().unwrap_or(0) as i32;
+            let option = cmd["option"].as_i64().unwrap_or(0) as i32;
+            ui.invoke_onboarding_toggle(prompt, option);
+            Ok(json!({ "ok": true }))
+        }
+        "onboarding_submit" => {
+            ui.invoke_onboarding_submit();
+            Ok(json!({ "ok": true }))
+        }
+        "onboarding_dismiss" => {
+            ui.invoke_onboarding_dismiss();
+            Ok(json!({ "ok": true }))
         }
         "select_video_encoder" => {
             let id = cmd["id"].as_str().ok_or("missing \"id\"")?;
@@ -449,6 +464,24 @@ fn state(ui: &AppWindow) -> Value {
         "active_channel_id": ui.get_active_channel_id().to_string(),
         "show_settings_modal": ui.get_show_settings_modal(),
         "settings_active_tab": ui.get_settings_active_tab(),
+        "show_onboarding_modal": ui.get_show_onboarding_modal(),
+        "onboarding": {
+            "guild_id": ui.get_onboarding_guild_id().to_string(),
+            "guild_name": ui.get_onboarding_guild_name().to_string(),
+            "error": ui.get_onboarding_error().to_string(),
+            "submitting": ui.get_onboarding_submitting(),
+            "prompts": ui.get_onboarding_prompts().iter().map(|prompt| json!({
+                "id": prompt.id.to_string(),
+                "title": prompt.title.to_string(),
+                "single_select": prompt.single_select,
+                "required": prompt.required,
+                "options": prompt.options.iter().map(|option| json!({
+                    "id": option.id.to_string(),
+                    "title": option.title.to_string(),
+                    "selected": option.selected,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        },
         "show_stream_modal": ui.get_show_stream_modal(),
         "show_web_share_modal": ui.get_show_web_share_modal(),
         "voice": {

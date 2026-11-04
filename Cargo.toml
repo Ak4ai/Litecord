@@ -120,7 +120,11 @@ windows-sys = { version = "0.61", features = [
 windows-capture = "2.0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Direct V4L2 probe: the `cameras` crate maps unknown FourCCs (such as the
+# GREY metadata nodes UVC exposes next to the real camera) to MJPEG.
+v4l = "0.14"
 gtk = "0.18"
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 x11rb = { version = "0.14", features = ["allow-unsafe-code"] }
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 libc = "0.2"
@@ -146,9 +150,15 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
+codegen-units = 1
+lto = "fat"
+strip = true
+
+# Fast release profile for rapid sandbox/agent iteration without long link times
+[profile.fast-release]
+inherits = "release"
 codegen-units = 256
 lto = "off"
-strip = false
 
 
 # Local copy of i-slint-core 1.17.1 with one fix: a mouse-wheel scroll animation could get

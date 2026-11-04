@@ -131,6 +131,13 @@ pub fn clear() {
     }
 }
 
+/// Forgets every cached card: they belong to the account that was signed in.
+pub fn clear_session() {
+    if let Ok(mut cache) = cache().lock() {
+        cache.entries.clear();
+    }
+}
+
 /// Invite codes in the order they appear, without repeats.
 pub fn invite_codes(text: &str) -> Vec<String> {
     let mut codes: Vec<String> = Vec::new();
@@ -305,13 +312,10 @@ fn group_digits(n: u64, lang: Language) -> String {
     out
 }
 
-/// Built per lookup, like the avatar downloads: a proxy changed in the settings applies
-/// at once, and no connection pool stays open between the rare lookups.
+/// The shared client is reused: building a new one per card initialized a fresh
+/// TLS backend and connection pool for every invite shown in the chat.
 fn http_client() -> reqwest::Client {
-    let builder = reqwest::Client::builder()
-        .user_agent(crate::utils::client_identity::user_agent())
-        .timeout(std::time::Duration::from_secs(10));
-    crate::utils::apply_proxy_to_builder(builder).build().unwrap_or_default()
+    crate::utils::network_settings::shared_http_client().clone()
 }
 
 fn fetch(code: String, scale: f32, app: slint::Weak<AppWindow>) {

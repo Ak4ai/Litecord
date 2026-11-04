@@ -426,6 +426,10 @@ impl WinitWindowAdapter {
         self.renderer.as_ref()
     }
 
+    pub(crate) fn is_shown(&self) -> bool {
+        !matches!(self.shown.get(), WindowVisibility::Hidden)
+    }
+
     pub fn ensure_window(
         &self,
         active_event_loop: &ActiveEventLoop,
@@ -1091,6 +1095,11 @@ impl WinitWindowAdapter {
                 window_item.width.set(LogicalLength::new(layout_info_h.preferred_bounded()));
             }
             let layout_info_v = component.as_ref().layout_info(Orientation::Vertical);
+            if self.has_explicit_size.get() {
+                if let Some(window_item) = runtime_window.window_item() {
+                    window_item.width.set(LogicalLength::new(self.size.get().to_logical(scale_factor as f32).width));
+                }
+            }
             #[allow(unused_mut)]
             let mut preferred_size = winit::dpi::LogicalSize::new(
                 layout_info_h.preferred_bounded(),
@@ -1123,6 +1132,11 @@ impl WinitWindowAdapter {
                 // use the Slint's window Scale factor to take in account the override
                 let size = preferred_size.to_physical::<u32>(scale_factor);
                 self.resize_window(size.into())?;
+            } else if self.has_explicit_size.get() && !recreating_window {
+                let size = self.size.get();
+                if size.width > 0 && size.height > 0 {
+                    let _ = self.resize_window(winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(size.width, size.height)));
+                }
             };
 
             // Pre-render the first frame before mapping the window to avoid a flash of

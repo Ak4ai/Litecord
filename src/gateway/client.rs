@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
@@ -7,7 +8,7 @@ use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use log::{info, error, warn};
+use log::{debug, info, error, warn};
 
 use super::types::*;
 use super::formatting::*;
@@ -27,6 +28,12 @@ pub struct GatewayClient {
     /// The session READY opened, kept so a dropped connection resumes it instead of
     /// identifying again: a new session makes Discord drop the voice call of the old one.
     resume: std::sync::Mutex<Option<ResumeSession>>,
+    /// `stream_key` -> (`rtc_server_id`, `rtc_channel_id`) from STREAM_CREATE.
+    stream_servers: std::sync::Mutex<HashMap<String, (String, String)>>,
+    /// Channel currently painted in the chat view. Shared with the UI state so a
+    /// message for any other channel can skip markdown/embed formatting: only its
+    /// unread badge matters, and opening that channel reloads it through REST.
+    active_channel_id: Arc<std::sync::Mutex<String>>,
 }
 
 #[derive(Clone)]
@@ -42,6 +49,162 @@ fn close_ends_session(code: u16) -> bool {
     matches!(code, 4004 | 4007 | 4009 | 4010 | 4011 | 4012 | 4013 | 4014)
 }
 
+/// `stream_key`s the user wants to watch.  Re-sent after READY/RESUMED so a
+/// dropped socket does not silently end Go Live playback.
+fn watched_streams() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static WATCHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    WATCHED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+static WATCH_TX: std::sync::Mutex<Option<mpsc::UnboundedSender<String>>> = std::sync::Mutex::new(None);
+
+/// Sends main-gateway opcode 20 (Stream Watch).
+///
+/// Stream Watch belongs to the **main** gateway.  The old implementation sent it
+/// over the voice WebSocket, where the server ignores it.
+pub fn watch_stream(stream_key: &str) {
+    if let Ok(mut set) = watched_streams().lock() {
+        set.insert(stream_key.to_string());
+    }
+    if let Ok(guard) = WATCH_TX.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(stream_key.to_string());
+        }
+    }
+}
+
+/// Forgets a stream key (stream deleted, call ended).
+pub fn unwatch_stream(stream_key: &str) {
+    if let Ok(mut set) = watched_streams().lock() {
+        set.remove(stream_key);
+    }
+    crate::native_video::stream::stop_stream_viewer(stream_key);
+    if let Some(uid_str) = stream_key.split(':').last() {
+        if let Ok(uid) = uid_str.parse::<u64>() {
+            crate::screen_capture::mpv_player::stop_mpv_player(uid);
+        }
+    }
+}
+
+/// Drops every Go Live subscription (left the voice call).
+pub fn clear_watched_streams() {
+    if let Ok(mut set) = watched_streams().lock() {
+        set.clear();
+    }
+    crate::native_video::stream::stop_all_stream_viewers();
+    crate::screen_capture::mpv_player::stop_all_mpv_players();
+    crate::screen_capture::watch::clear_wanted();
+    crate::ui::helpers::trim_process_memory();
+}
+
+#[derive(Clone, Debug)]
+pub enum StreamControlMsg {
+    Create {
+        guild_id: Option<String>,
+        channel_id: String,
+    },
+    Delete {
+        stream_key: String,
+    },
+    SetPaused {
+        stream_key: String,
+        paused: bool,
+    },
+}
+
+static STREAM_CONTROL_TX: std::sync::Mutex<Option<mpsc::UnboundedSender<StreamControlMsg>>> = std::sync::Mutex::new(None);
+static ACTIVE_OUTBOUND_STREAM_KEY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Command channel of the live gateway client, so non-gateway modules (the
+/// camera pump) can update our voice state without owning the WebSocket.
+static GATEWAY_CMD_TX: std::sync::Mutex<Option<mpsc::Sender<GatewayCommand>>> = std::sync::Mutex::new(None);
+
+pub fn install_command_sender(tx: mpsc::Sender<GatewayCommand>) {
+    if let Ok(mut guard) = GATEWAY_CMD_TX.lock() {
+        *guard = Some(tx);
+    }
+}
+
+/// Publishes camera state (`self_video`) on the main gateway.  Discord clients
+/// show the camera tile from this flag, and the server keeps it across a voice
+/// gateway reconnect.
+pub fn set_self_video(enabled: bool) {
+    if let Ok(guard) = GATEWAY_CMD_TX.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.try_send(GatewayCommand::SetSelfVideo { enabled });
+        }
+    }
+}
+
+/// Initiates Go Live screen broadcast via main gateway Opcode 18 (Stream Create).
+pub fn create_stream(guild_id: Option<String>, channel_id: u64) {
+    let msg = StreamControlMsg::Create {
+        guild_id,
+        channel_id: channel_id.to_string(),
+    };
+    if let Ok(guard) = STREAM_CONTROL_TX.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(msg);
+        }
+    }
+}
+
+/// Terminates Go Live screen broadcast via main gateway Opcode 19 (Stream Delete).
+pub fn delete_stream() {
+    let key = ACTIVE_OUTBOUND_STREAM_KEY.lock().ok().and_then(|mut k| k.take());
+    if let Some(stream_key) = key {
+        crate::native_video::stream::stop_stream_sender(&stream_key);
+        let msg = StreamControlMsg::Delete { stream_key };
+        if let Ok(guard) = STREAM_CONTROL_TX.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
+    }
+}
+
+/// Sets paused state of current active stream via main gateway Opcode 22 (Stream Set Paused).
+pub fn set_stream_paused(paused: bool) {
+    let key = ACTIVE_OUTBOUND_STREAM_KEY.lock().ok().and_then(|k| k.clone());
+    if let Some(stream_key) = key {
+        let msg = StreamControlMsg::SetPaused { stream_key, paused };
+        if let Ok(guard) = STREAM_CONTROL_TX.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
+    }
+}
+
+/// Subscribes to streams already running in `channel_id` when we join it.
+///
+/// The gateway only sends `VOICE_STATE_UPDATE` when something changes, so a Go
+/// Live started before we joined would otherwise never be watched.
+pub fn resubscribe_channel_streams(channel_id: &str, _guild_id: Option<&str>) {
+    if channel_id.is_empty() {
+        return;
+    }
+    let in_channel: Vec<u64> = get_guild_voice_states_store()
+        .lock()
+        .ok()
+        .map(|map| {
+            map.iter()
+                .filter(|(_, cid)| cid.as_str() == channel_id)
+                .map(|(uid, _)| *uid)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for uid in in_channel {
+        let (self_stream, self_video) = crate::screen_capture::types::get_user_stream_flags(uid);
+        if !(self_stream || self_video) {
+            continue;
+        }
+        // Do NOT automatically watch or hijack screen on join: streams remain on-demand
+        crate::screen_capture::types::set_peer_streaming(uid, true);
+    }
+}
+
 /// Dispatch events this client acts on. The others (presences, typing, reactions, member
 /// updates...: most of what a big account receives) are dropped after reading their
 /// header, without building a JSON tree for their payload.
@@ -53,12 +216,16 @@ const HANDLED_EVENTS: &[&str] = &[
     "GUILD_MEMBERS_CHUNK",
     "VOICE_STATE_UPDATE",
     "VOICE_SERVER_UPDATE",
+    "VOICE_CHANNEL_EFFECT_SEND",
     "MESSAGE_CREATE",
     "MESSAGE_UPDATE",
     "MESSAGE_DELETE",
     "CALL_CREATE",
     "CALL_UPDATE",
     "CALL_DELETE",
+    "STREAM_CREATE",
+    "STREAM_SERVER_UPDATE",
+    "STREAM_DELETE",
 ];
 
 /// Events that change what the user may see in a server. They only drop the server's
@@ -72,17 +239,18 @@ const PERMISSION_EVENTS: &[&str] = &[
 ];
 
 #[derive(Debug, PartialEq, Eq)]
-struct Peek {
+struct Peek<'a> {
     op: u64,
     seq: Option<i64>,
     /// Worth parsing whole: a non-dispatch op, or a dispatch event in HANDLED_EVENTS.
     wanted: bool,
     /// One of PERMISSION_EVENTS.
     permissions: bool,
+    event_name: Option<std::borrow::Cow<'a, str>>,
 }
 
 /// Reads only `op`, `s` and `t` of a gateway message; the payload is skipped, not built.
-fn peek(text: &str) -> Option<Peek> {
+fn peek<'a>(text: &'a str) -> Option<Peek<'a>> {
     #[derive(serde::Deserialize)]
     struct Head<'a> {
         op: u64,
@@ -94,7 +262,7 @@ fn peek(text: &str) -> Option<Peek> {
     let h: Head = serde_json::from_str(text).ok()?;
     let wanted = h.op != 0 || h.t.as_deref().is_some_and(|t| HANDLED_EVENTS.contains(&t));
     let permissions = h.op == 0 && h.t.as_deref().is_some_and(|t| PERMISSION_EVENTS.contains(&t));
-    Some(Peek { op: h.op, seq: h.s, wanted, permissions })
+    Some(Peek { op: h.op, seq: h.s, wanted, permissions, event_name: h.t })
 }
 
 /// The server whose permissions a PERMISSION_EVENTS event changes. Updates of other
@@ -123,6 +291,7 @@ fn permission_change(text: &str, my_user_id: u64) -> Option<String> {
         id: Cow<'a, str>,
     }
     let e: Event = serde_json::from_str(text).ok()?;
+    apply_role_store_event(text);
     let guild = match e.t.as_ref() {
         "GUILD_UPDATE" => e.d.id,
         "GUILD_MEMBER_UPDATE" => e.d.user.filter(|u| u.id.parse() == Ok(my_user_id)).and(e.d.guild_id),
@@ -131,13 +300,377 @@ fn permission_change(text: &str, my_user_id: u64) -> Option<String> {
     guild.map(Cow::into_owned)
 }
 
+/// PERMISSION_EVENTS are deliberately read only for their ids, but role and
+/// membership changes also need to update the local RBAC store. Without this,
+/// a role added through the context menu or by another client would keep the
+/// old hierarchy until the next READY.
+fn apply_role_store_event(text: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { return };
+    let event = value["t"].as_str().unwrap_or("");
+    let data = &value["d"];
+    let guild_id = data["guild_id"].as_str().unwrap_or("");
+    if guild_id.is_empty() {
+        return;
+    }
+    match event {
+        "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
+            let role = &data["role"];
+            let role_id = role["id"].as_str().unwrap_or("");
+            if role_id.is_empty() {
+                return;
+            }
+            register_guild_role(guild_id, RoleInfo {
+                id: role_id.to_string(),
+                name: role["name"].as_str().unwrap_or("").to_string(),
+                color: role["color"].as_u64().unwrap_or(0) as u32,
+                position: role["position"].as_i64().unwrap_or(0),
+                permissions: role["permissions"]
+                    .as_str()
+                    .and_then(|p| p.parse::<u64>().ok())
+                    .unwrap_or(0),
+                managed: role["managed"].as_bool().unwrap_or(false),
+            });
+        }
+        "GUILD_ROLE_DELETE" => {
+            if let Some(role_id) = data["role_id"].as_str() {
+                remove_guild_role_local(guild_id, role_id);
+            }
+        }
+        "GUILD_MEMBER_UPDATE" => {
+            let user_id = data["user"]["id"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .unwrap_or(0);
+            if let Some(roles) = data["roles"].as_array() {
+                let roles = roles
+                    .iter()
+                    .filter_map(|role| role.as_str().map(str::to_owned))
+                    .collect();
+                register_member_roles(guild_id, user_id, roles, 0);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The resume URL READY gives, with the query the first connection used.
 fn resume_url(base: &str) -> String {
     format!("{}/?v=9&encoding=json", base.trim_end_matches('/'))
 }
 
+fn deserialize_cow_id<'de, D>(deserializer: D) -> Result<std::borrow::Cow<'de, str>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct IdCowVisitor;
+    impl<'de> serde::de::Visitor<'de> for IdCowVisitor {
+        type Value = std::borrow::Cow<'de, str>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or integer id")
+        }
+        fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E> {
+            Ok(std::borrow::Cow::Borrowed(v))
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(std::borrow::Cow::Owned(v.to_string()))
+        }
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+            Ok(std::borrow::Cow::Owned(v))
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(std::borrow::Cow::Owned(v.to_string()))
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(std::borrow::Cow::Owned(v.to_string()))
+        }
+    }
+    deserializer.deserialize_any(IdCowVisitor)
+}
+
+fn deserialize_id_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct IdVisitor;
+    impl<'de> serde::de::Visitor<'de> for IdVisitor {
+        type Value = u64;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or integer id")
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> { Ok(v) }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> { Ok(v as u64) }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            v.parse().map_err(serde::de::Error::custom)
+        }
+    }
+    deserializer.deserialize_any(IdVisitor)
+}
+
+fn deserialize_id_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringIdVisitor;
+    impl<'de> serde::de::Visitor<'de> for StringIdVisitor {
+        type Value = String;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or integer id")
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> { Ok(v.to_string()) }
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E> { Ok(v) }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> { Ok(v.to_string()) }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> { Ok(v.to_string()) }
+    }
+    deserializer.deserialize_any(StringIdVisitor)
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyEvent<'a> {
+    #[serde(borrow)]
+    d: StrictReadyData<'a>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyData<'a> {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    resume_gateway_url: Option<String>,
+    #[serde(borrow)]
+    user: StrictReadyUser<'a>,
+    #[serde(default, borrow)]
+    users: Vec<StrictReadyUser<'a>>,
+    #[serde(default, borrow)]
+    guilds: Vec<StrictReadyGuild<'a>>,
+    #[serde(default, borrow)]
+    private_channels: Vec<StrictReadyPrivateChannel<'a>>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyUser<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    username: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    global_name: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    avatar: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    discriminator: Option<std::borrow::Cow<'a, str>>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyGuild<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    name: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    emojis: Vec<StrictReadyEmoji<'a>>,
+    #[serde(default, borrow)]
+    members: Vec<StrictReadyMember<'a>>,
+    #[serde(default, borrow)]
+    voice_states: Vec<StrictReadyVoiceState<'a>>,
+    #[serde(default, borrow)]
+    channels: Vec<StrictReadyChannel<'a>>,
+    #[serde(default, borrow)]
+    roles: Vec<StrictReadyRole<'a>>,
+    #[serde(default, borrow)]
+    owner_id: Option<std::borrow::Cow<'a, str>>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyRole<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    name: std::borrow::Cow<'a, str>,
+    #[serde(default)]
+    color: u32,
+    #[serde(default)]
+    position: i64,
+    #[serde(default, borrow)]
+    permissions: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default)]
+    managed: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyMember<'a> {
+    #[serde(default, borrow)]
+    user: Option<StrictReadyUser<'a>>,
+    #[serde(default, borrow)]
+    nick: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    roles: Vec<std::borrow::Cow<'a, str>>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyEmoji<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    name: std::borrow::Cow<'a, str>,
+    #[serde(default)]
+    animated: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyVoiceState<'a> {
+    #[serde(deserialize_with = "deserialize_id_u64")]
+    user_id: u64,
+    #[serde(deserialize_with = "deserialize_id_string")]
+    channel_id: String,
+    #[serde(default)]
+    self_stream: Option<bool>,
+    #[serde(default)]
+    self_video: Option<bool>,
+    #[serde(default)]
+    self_mute: Option<bool>,
+    #[serde(default)]
+    self_deaf: Option<bool>,
+    #[serde(default)]
+    mute: Option<bool>,
+    #[serde(default)]
+    deaf: Option<bool>,
+    #[serde(default, borrow)]
+    member: Option<StrictReadyMember<'a>>,
+}
+
+fn parse_channel_overwrites(ch: &Value) -> Vec<ChannelOverwrite> {
+    ch["permission_overwrites"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|ow| {
+                    let id = ow["id"].as_str()?.to_string();
+                    let bits = |key: &str| -> u64 {
+                        ow[key]
+                            .as_u64()
+                            .or_else(|| ow[key].as_str().and_then(|s| s.parse().ok()))
+                            .unwrap_or(0)
+                    };
+                    Some(ChannelOverwrite {
+                        id,
+                        kind: ow["type"].as_u64().unwrap_or(0),
+                        allow: bits("allow"),
+                        deny: bits("deny"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sort_gateway_channels(raw_channels: Vec<(String, String, u64, Option<String>, i64)>) -> Vec<ChannelData> {
+    let mut cats = Vec::new();
+    let mut chans = Vec::new();
+    for (id, name, ch_type, parent_id, position) in raw_channels {
+        if id.is_empty() { continue; }
+        if ch_type == 4 {
+            cats.push((id, name.to_uppercase(), position));
+        } else if ch_type == 0 || ch_type == 2 || ch_type == 5 || ch_type == 10 || ch_type == 11 || ch_type == 12 || ch_type == 13 || ch_type == 15 || ch_type == 16 {
+            chans.push((id, name, ch_type, parent_id, position));
+        }
+    }
+    cats.sort_by_key(|c| c.2);
+    let cat_ids: std::collections::HashSet<String> = cats.iter().map(|c| c.0.clone()).collect();
+    let mut cat_map: HashMap<String, Vec<(String, String, u64, Option<String>, i64)>> = HashMap::new();
+    let mut uncategorized = Vec::new();
+    for ch in chans {
+        if let Some(ref pid) = ch.3 {
+            if cat_ids.contains(pid) {
+                cat_map.entry(pid.clone()).or_default().push(ch);
+                continue;
+            }
+        }
+        uncategorized.push(ch);
+    }
+    let sort_list = |list: &mut Vec<(String, String, u64, Option<String>, i64)>| {
+        list.sort_by(|a, b| {
+            let a_v = a.2 == 2 || a.2 == 13;
+            let b_v = b.2 == 2 || b.2 == 13;
+            if a_v == b_v {
+                a.4.cmp(&b.4)
+            } else if !a_v {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+    };
+    sort_list(&mut uncategorized);
+    for children in cat_map.values_mut() {
+        sort_list(children);
+    }
+    let mut out = Vec::new();
+    for (id, name, ch_type, _, position) in uncategorized {
+        out.push(ChannelData {
+            id,
+            name,
+            is_voice: ch_type == 2 || ch_type == 13,
+            is_category: false,
+            parent_id: None,
+            position,
+        });
+    }
+    for (cat_id, cat_name, cat_pos) in cats {
+        let children = cat_map.remove(&cat_id).unwrap_or_default();
+        if children.is_empty() { continue; }
+        out.push(ChannelData {
+            id: cat_id.clone(),
+            name: cat_name,
+            is_voice: false,
+            is_category: true,
+            parent_id: None,
+            position: cat_pos,
+        });
+        for (id, name, ch_type, _, position) in children {
+            out.push(ChannelData {
+                id,
+                name,
+                is_voice: ch_type == 2 || ch_type == 13,
+                is_category: false,
+                parent_id: Some(cat_id.clone()),
+                position,
+            });
+        }
+    }
+    out
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyChannel<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    name: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, rename = "type")]
+    ch_type: u64,
+    #[serde(default, borrow)]
+    parent_id: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default)]
+    position: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct StrictReadyPrivateChannel<'a> {
+    #[serde(deserialize_with = "deserialize_cow_id")]
+    id: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    recipients: Vec<StrictReadyUser<'a>>,
+}
+
 impl GatewayClient {
-    pub fn new(raw_token: String, event_tx: mpsc::Sender<GatewayEvent>) -> Self {
+    pub fn new(
+        raw_token: String,
+        event_tx: mpsc::Sender<GatewayEvent>,
+        active_channel_id: Arc<std::sync::Mutex<String>>,
+    ) -> Self {
         let mut token = raw_token.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
 
         if token.to_lowercase().starts_with("authorization:") {
@@ -162,6 +695,19 @@ impl GatewayClient {
             voice_self_mute: Arc::new(std::sync::Mutex::new(false)),
             ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
             resume: std::sync::Mutex::new(None),
+            stream_servers: std::sync::Mutex::new(HashMap::new()),
+            active_channel_id,
+        }
+    }
+
+    /// True when `channel_id` is the one currently shown in the chat view.
+    ///
+    /// On a poisoned lock we fall back to `true` (format normally) so a broken
+    /// mutex can never hide a message that the UI would otherwise paint.
+    fn is_active_channel(&self, channel_id: &str) -> bool {
+        match self.active_channel_id.lock() {
+            Ok(active) => !active.is_empty() && active.as_str() == channel_id,
+            Err(_) => true,
         }
     }
 
@@ -177,9 +723,14 @@ impl GatewayClient {
             user_id.is_some(), voice_sid.is_some(), voice_tok.is_some(), voice_ep.is_some(), voice_gid, voice_cid);
 
         if let (Some(uid), Some(sid), Some(tok), Some(ep)) = (user_id, voice_sid, voice_tok, voice_ep) {
-            let effective_gid = if voice_gid.is_empty() || voice_gid == "@me" { voice_cid.clone() } else { voice_gid };
+            let is_dm_call = voice_gid.is_empty() || voice_gid == "@me";
+            let resub_guild = if is_dm_call { None } else { Some(voice_gid.clone()) };
+            let effective_gid = if is_dm_call { voice_cid.clone() } else { voice_gid };
             if !voice_cid.is_empty() || !effective_gid.is_empty() {
                 info!("⚡ TODAS AS CREDENCIAIS DE VOZ PRONTAS! Conectando à Voice Gateway no endpoint {}...", ep);
+                // A Go Live started before we joined is not re-announced by the
+                // gateway; subscribe to it here.
+                resubscribe_channel_streams(&voice_cid, resub_guild.as_deref());
                 *self.voice_token.lock().unwrap() = None;
                 *self.voice_session_id.lock().unwrap() = None;
 
@@ -192,12 +743,118 @@ impl GatewayClient {
         }
     }
 
+    /// Rebuild the voice session after the media path dies (NAT rebind, interface
+    /// change). Dropping and re-adding the voice state through the main gateway is
+    /// the same sequence Discord uses; it is the only way to get a fresh UDP socket,
+    /// endpoint and DAVE group without the user leaving the call.
+    async fn force_voice_rejoin(&self) {
+        let target_cid = match self.voice_channel_id.lock().unwrap().clone() {
+            Some(cid) => cid,
+            None => return,
+        };
+        let target_gid = self.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
+        let self_mute = *self.voice_self_mute.lock().unwrap();
+        let self_deaf = is_self_deaf();
+        warn!("🎧 [VOICE] Reconstruindo a sessão de voz de '{}' após perda de mídia...", target_cid);
+
+        let effective_gid = if target_gid.trim().is_empty() || target_gid == "@me" {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(target_gid)
+        };
+
+        // Send the reset first: if the main gateway socket is down, tearing the local
+        // credentials down would leave voice unusable with no way to recover. In that
+        // case keep everything and retry once the socket is back.
+        let reset_payload = serde_json::json!({
+            "op": 4,
+            "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": self_mute, "self_deaf": self_deaf }
+        });
+        let reset_sent = match self.ws_tx.lock().await.as_ref() {
+            Some(tx) => tx.send(Message::Text(reset_payload.to_string().into())).await.is_ok(),
+            None => false,
+        };
+        if !reset_sent {
+            warn!("🎧 [VOICE] Gateway principal indisponível; nova tentativa de reconstrução em instantes.");
+            crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+            return;
+        }
+
+        IS_WATCHDOG_RESETTING.store(true, Ordering::SeqCst);
+        // Tear the dead session down deterministically: the audio threads watch this
+        // counter, so they stop even if the gateway never acknowledges the reset.
+        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+        *self.voice_session_id.lock().unwrap() = None;
+        *self.voice_token.lock().unwrap() = None;
+        *self.voice_endpoint.lock().unwrap() = None;
+        // The old voice task may keep its WebSocket open for a while, so it can still
+        // look "connected" when the rejoin arrives; that would make the state update
+        // skip the reconnect and leave voice silent.
+        set_is_connected_to_voice(false);
+        // Let the gateway emit the disconnect before asking for the channel again;
+        // sent back to back, both updates can be merged and the rejoin ignored.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let rejoin_payload = serde_json::json!({
+            "op": 4,
+            "d": { "guild_id": effective_gid, "channel_id": target_cid, "self_mute": self_mute, "self_deaf": self_deaf }
+        });
+        let rejoin_sent = match self.ws_tx.lock().await.as_ref() {
+            Some(tx) => tx.send(Message::Text(rejoin_payload.to_string().into())).await.is_ok(),
+            None => false,
+        };
+        if !rejoin_sent {
+            warn!("🎧 [VOICE] Não foi possível reentrar no canal após a reconstrução; tentando de novo.");
+            crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+        }
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        IS_WATCHDOG_RESETTING.store(false, Ordering::SeqCst);
+    }
+
     pub async fn start(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<GatewayCommand>) {
+        // Voice media watchdog: the voice connection asks for a rebuild when its UDP
+        // path stays dead. Rejoining needs the main gateway socket, which lives here.
+        let rejoin_client = Arc::clone(&self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if !crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.swap(false, Ordering::SeqCst) {
+                    continue;
+                }
+                rejoin_client.force_voice_rejoin().await;
+            }
+        });
+
         // Spawn GatewayCommand listener loop (permanece vivo entre reconexões do WebSocket)
         let client_cmd = Arc::clone(&self);
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
+                    GatewayCommand::SetSelfVideo { enabled } => {
+                        // Camera on/off is a voice state update on the same channel:
+                        // it must not touch the session, credentials or audio.
+                        let channel = client_cmd.voice_channel_id.lock().unwrap().clone();
+                        let Some(channel) = channel else { continue };
+                        let guild = client_cmd.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
+                        let effective_gid = if guild.trim().is_empty() || guild == "@me" {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::json!(guild)
+                        };
+                        let payload = serde_json::json!({
+                            "op": 4,
+                            "d": {
+                                "guild_id": effective_gid,
+                                "channel_id": channel,
+                                "self_mute": *client_cmd.voice_self_mute.lock().unwrap(),
+                                "self_deaf": is_self_deaf(),
+                                "self_video": enabled
+                            }
+                        });
+                        info!("📷 [CAMERA] OP 4 VoiceStateUpdate self_video={}", enabled);
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let _ = tx.send(Message::Text(payload.to_string().into())).await;
+                        }
+                    }
                     GatewayCommand::UpdateVoiceState { guild_id, channel_id, self_mute, self_deaf } => {
                         *client_cmd.voice_self_mute.lock().unwrap() = self_mute;
 
@@ -294,7 +951,75 @@ impl GatewayClient {
                             }
                         }
                     }
-                    GatewayCommand::SubscribeGuild { .. } => {}
+                    GatewayCommand::SendSoundboardSound { channel_id, sound_id, source_guild_id } => {
+                        if channel_id.is_empty() || sound_id.is_empty() {
+                            continue;
+                        }
+                        let payload = serde_json::json!({
+                            "op": 31,
+                            "d": {
+                                "channel_id": channel_id,
+                                "sound_id": sound_id,
+                                "source_guild_id": source_guild_id
+                            }
+                        });
+                        info!("📢 [SOUNDBOARD] Enviando OP 31: {}", payload);
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let _ = tx.send(Message::Text(payload.to_string().into())).await;
+                        }
+                    }
+                    GatewayCommand::SubscribeGuild { guild_id, channel_ids } => {
+                        if guild_id.is_empty() || guild_id == "@me" {
+                            continue;
+                        }
+                        if let Some(tx) = client_cmd.ws_tx.lock().await.as_ref() {
+                            let mut channels_obj = serde_json::Map::new();
+                            for cid in &channel_ids {
+                                if !cid.is_empty() {
+                                    channels_obj.insert(cid.clone(), serde_json::json!([[0, 99]]));
+                                }
+                            }
+                            let lazy_req = serde_json::json!({
+                                "op": 14,
+                                "d": {
+                                    "guild_id": guild_id,
+                                    "typing": true,
+                                    "activities": true,
+                                    "threads": true,
+                                    "channels": channels_obj
+                                }
+                            });
+                            let _ = tx.send(Message::Text(lazy_req.to_string().into())).await;
+
+                            let missing_uids: Vec<String> = get_guild_voice_states_store()
+                                .lock()
+                                .ok()
+                                .map(|gvs| {
+                                    gvs.iter()
+                                        .filter(|(&uid, cid)| {
+                                            uid > 0
+                                                && (channel_ids.is_empty() || channel_ids.contains(cid))
+                                                && (!has_user_name(uid) || get_user_avatar_url(uid).is_empty())
+                                        })
+                                        .take(100)
+                                        .map(|(&uid, _)| uid.to_string())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            if !missing_uids.is_empty() {
+                                let chunk_req = serde_json::json!({
+                                    "op": 8,
+                                    "d": {
+                                        "guild_id": guild_id,
+                                        "user_ids": missing_uids,
+                                        "presences": false
+                                    }
+                                });
+                                let _ = tx.send(Message::Text(chunk_req.to_string().into())).await;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -322,6 +1047,84 @@ impl GatewayClient {
 
                     *self.ws_tx.lock().await = Some(ws_out_tx.clone());
 
+                    // Main-gateway stream watch pump (opcode 20). Recreated per connection.
+                    {
+                        let (watch_tx, mut watch_rx) = mpsc::unbounded_channel::<String>();
+                        *WATCH_TX.lock().unwrap() = Some(watch_tx);
+                        let tx_watch = ws_out_tx.clone();
+                        tokio::spawn(async move {
+                            while let Some(stream_key) = watch_rx.recv().await {
+                                let payload = serde_json::json!({
+                                    "op": 20,
+                                    "d": { "stream_key": stream_key }
+                                });
+                                info!("🎬 [GATEWAY] OP 20 (Watch Stream): {}", stream_key);
+                                if tx_watch
+                                    .send(Message::Text(payload.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+
+                    // Main-gateway stream broadcast control pump (opcodes 18, 19, 22). Recreated per connection.
+                    {
+                        let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<StreamControlMsg>();
+                        *STREAM_CONTROL_TX.lock().unwrap() = Some(ctrl_tx);
+                        let tx_ctrl = ws_out_tx.clone();
+                        tokio::spawn(async move {
+                            while let Some(msg) = ctrl_rx.recv().await {
+                                let payload = match msg {
+                                    StreamControlMsg::Create { guild_id, channel_id } => {
+                                        if let Some(gid) = guild_id {
+                                            serde_json::json!({
+                                                "op": 18,
+                                                "d": {
+                                                    "type": "guild",
+                                                    "guild_id": gid,
+                                                    "channel_id": channel_id,
+                                                    "preferred_region": null
+                                                }
+                                            })
+                                        } else {
+                                            serde_json::json!({
+                                                "op": 18,
+                                                "d": {
+                                                    "type": "call",
+                                                    "channel_id": channel_id,
+                                                    "preferred_region": null
+                                                }
+                                            })
+                                        }
+                                    }
+                                    StreamControlMsg::Delete { stream_key } => {
+                                        serde_json::json!({
+                                            "op": 19,
+                                            "d": { "stream_key": stream_key }
+                                        })
+                                    }
+                                    StreamControlMsg::SetPaused { stream_key, paused } => {
+                                        serde_json::json!({
+                                            "op": 22,
+                                            "d": { "stream_key": stream_key, "paused": paused }
+                                        })
+                                    }
+                                };
+                                info!("🎬 [GATEWAY] Enviando controle de Stream nativo: op={}", payload["op"]);
+                                if tx_ctrl
+                                    .send(Message::Text(payload.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+
                     // Worker para envio ordenado de mensagens no WebSocket
                     let writer_task = tokio::spawn(async move {
                         while let Some(msg) = ws_out_rx.recv().await {
@@ -333,6 +1136,7 @@ impl GatewayClient {
                     });
 
                     let mut hb_task_handle: Option<tokio::task::JoinHandle<()>> = None;
+                    let hb_acked = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
                     // Read incoming Gateway messages loop
                     while let Some(msg_result) = read.next().await {
@@ -357,6 +1161,21 @@ impl GatewayClient {
                                 if !head.wanted {
                                     continue;
                                 }
+
+                                // Fast-Path Zero-Copy: Se for evento READY, desserializa estritamente com IgnoredAny
+                                // evitando alocar dezenas de megabytes de nós no heap do mimalloc.
+                                if head.op == 0 && head.event_name.as_deref() == Some("READY") {
+                                    if let Ok(ready_ev) = serde_json::from_str::<StrictReadyEvent>(&text) {
+                                        let d = ready_ev.d;
+                                        *self.resume.lock().unwrap() = d.session_id.as_ref().map(|s| ResumeSession {
+                                            session_id: s.clone(),
+                                            url: d.resume_gateway_url.as_deref().unwrap_or("wss://gateway.discord.gg").to_string(),
+                                        });
+                                        self.handle_strict_ready(d).await;
+                                        continue;
+                                    }
+                                }
+
                                 if let Ok(value) = serde_json::from_str::<Value>(&text) {
                                     let op = value["op"].as_u64().unwrap_or(99);
                                     if let Some(s) = value["s"].as_i64() {
@@ -371,6 +1190,7 @@ impl GatewayClient {
                                                 .unwrap_or(41250);
 
                                             info!("Heartbeat interval recebido: {} ms", heartbeat_interval);
+                                            hb_acked.store(true, Ordering::SeqCst);
 
                                             // Send initial Heartbeat (Opcode 1)
                                             let last_s = last_seq_arc.load(Ordering::Relaxed);
@@ -417,13 +1237,19 @@ impl GatewayClient {
                                             let _ = ws_out_tx.send(Message::Text(identify.to_string().into())).await;
                                             }
 
-                                            // Spawn Heartbeat Loop
+                                            // Spawn Heartbeat Loop com detecção estrita de conexão zumbi (espera OP 11 ACK)
                                             let tx_hb = ws_out_tx.clone();
                                             let last_seq_hb = Arc::clone(&last_seq_arc);
+                                            let hb_acked_loop = Arc::clone(&hb_acked);
                                             if let Some(h) = hb_task_handle.take() { h.abort(); }
                                             hb_task_handle = Some(tokio::spawn(async move {
                                                 loop {
                                                     sleep(Duration::from_millis(heartbeat_interval)).await;
+                                                    if !hb_acked_loop.swap(false, Ordering::SeqCst) {
+                                                        warn!("⚠️ [GATEWAY] Heartbeat ACK não recebido (conexão zumbi). Forçando reconexão imediata!");
+                                                        let _ = tx_hb.send(Message::Close(None)).await;
+                                                        break;
+                                                    }
                                                     let last_s = last_seq_hb.load(Ordering::Relaxed);
                                                     let hb = if last_s >= 0 {
                                                         serde_json::json!({ "op": 1, "d": last_s })
@@ -441,6 +1267,10 @@ impl GatewayClient {
                                             let last_s = last_seq_arc.load(Ordering::Relaxed);
                                             let hb = serde_json::json!({ "op": 1, "d": if last_s >= 0 { serde_json::json!(last_s) } else { Value::Null } });
                                             let _ = ws_out_tx.send(Message::Text(hb.to_string().into())).await;
+                                        }
+                                        11 => {
+                                            // Opcode 11: Heartbeat ACK
+                                            hb_acked.store(true, Ordering::SeqCst);
                                         }
                                         7 => {
                                             // Opcode 7: RECONNECT. The session stays; resume it on a new connection.
@@ -470,6 +1300,27 @@ impl GatewayClient {
                                                 });
                                             } else if value["t"].as_str() == Some("RESUMED") {
                                                 info!("✅ [GATEWAY] Sessão retomada; chamada de voz e transmissão continuam.");
+                                                // Resincronizar OP 4 de voz se o usuário estiver em chamada ativa
+                                                let cur_cid = self.voice_channel_id.lock().unwrap().clone();
+                                                if let Some(ref cid) = cur_cid {
+                                                    let gid = self.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
+                                                    let effective_gid = if gid.trim().is_empty() || gid == "@me" {
+                                                        serde_json::Value::Null
+                                                    } else {
+                                                        serde_json::json!(gid)
+                                                    };
+                                                    let voice_sync = serde_json::json!({
+                                                        "op": 4,
+                                                        "d": {
+                                                            "guild_id": effective_gid,
+                                                            "channel_id": cid,
+                                                            "self_mute": *self.voice_self_mute.lock().unwrap(),
+                                                            "self_deaf": is_self_deaf()
+                                                        }
+                                                    });
+                                                    info!("🔄 [GATEWAY] Resincronizando OP 4 de chamada ativa após RESUMED: channel={}", cid);
+                                                    let _ = ws_out_tx.send(Message::Text(voice_sync.to_string().into())).await;
+                                                }
                                             }
                                             self.handle_event(&value).await;
                                         }
@@ -510,6 +1361,257 @@ impl GatewayClient {
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
+    }
+
+    async fn rewatch_streams(&self) {
+        let keys: Vec<String> = watched_streams()
+            .lock()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            return;
+        }
+        if let Some(tx) = self.ws_tx.lock().await.as_ref() {
+            for stream_key in keys {
+                let payload = serde_json::json!({
+                    "op": 20,
+                    "d": { "stream_key": stream_key }
+                });
+                info!("🎬 [GATEWAY] Retomando OP 20 (Watch Stream): {}", stream_key);
+                if tx.send(Message::Text(payload.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn handle_strict_ready(&self, d: StrictReadyData<'_>) {
+        let uid_str = d.user.id.to_string();
+        *self.user_id.lock().unwrap() = Some(uid_str.clone());
+        let uid_num = uid_str.parse::<u64>().unwrap_or(0);
+
+        let username = d.user.username.as_deref().unwrap_or("User");
+        let global_name = d.user.global_name.as_deref().unwrap_or(username);
+        let user_avatar = d.user.avatar.as_deref().unwrap_or("");
+        if uid_num > 0 {
+            set_my_user_id(uid_num);
+            set_my_username(global_name.to_string());
+            register_user_name(uid_num, global_name.to_string());
+            register_user_avatar(uid_num, user_avatar);
+        }
+
+        // Parse users/bots in READY payload without heap explosion
+        for u in d.users {
+            let u_id: u64 = u.id.parse().unwrap_or(0);
+            if u_id > 0 {
+                let dname = u.global_name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| u.username.as_deref().filter(|s| !s.is_empty()))
+                    .unwrap_or("");
+                if !dname.is_empty() {
+                    register_user_avatar(u_id, u.avatar.as_deref().unwrap_or(""));
+                    register_user_name(u_id, dname.to_string());
+                }
+            }
+        }
+
+        // Parse guilds
+        let mut stale_self_voice: Option<String> = None;
+        for g in d.guilds {
+            // Emojis
+            for em in g.emojis {
+                let anim = em.animated.unwrap_or(false);
+                crate::utils::emoji_cache::register_custom_emoji(&em.id, &em.name, anim);
+            }
+
+            // Roles and member role assignments (used by context-menu moderation)
+            let gid = g.id.as_ref();
+            let owner_id = g.owner_id.as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            for role in &g.roles {
+                register_guild_role(gid, RoleInfo {
+                    id: role.id.to_string(),
+                    name: role.name.to_string(),
+                    color: role.color,
+                    position: role.position,
+                    permissions: role.permissions.as_deref().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0),
+                    managed: role.managed.unwrap_or(false),
+                });
+            }
+
+            // Members included in READY guild object
+            for m in g.members {
+                if let Some(u) = m.user {
+                    let u_id: u64 = u.id.parse().unwrap_or(0);
+                    if u_id > 0 {
+                        register_member_roles(
+                            gid,
+                            u_id,
+                            m.roles.iter().map(|r| r.to_string()).collect(),
+                            owner_id,
+                        );
+                        refresh_user_display_role(gid, u_id);
+                        let dname = m.nick
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| u.global_name.as_deref().filter(|s| !s.is_empty()))
+                            .or_else(|| u.username.as_deref().filter(|s| !s.is_empty()))
+                            .unwrap_or("");
+                        if !dname.is_empty() {
+                            register_user_avatar(u_id, u.avatar.as_deref().unwrap_or(""));
+                            register_user_name(u_id, dname.to_string());
+                        }
+                    }
+                }
+            }
+
+            // Voice states
+            for vs in g.voice_states {
+                if vs.user_id > 0 && !vs.channel_id.is_empty() {
+                    // A previous run can leave us in a channel server-side until the
+                    // old session times out.  On a fresh READY with no live voice
+                    // session, tell Discord to drop that ghost and do not list
+                    // ourselves in the channel.
+                    if vs.user_id == uid_num && !is_connected_to_voice() {
+                        stale_self_voice = Some(gid.to_string());
+                        continue;
+                    }
+                    if let Some(m) = vs.member {
+                        let dname = m.nick
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| m.user.as_ref().and_then(|u| u.global_name.as_deref()).filter(|s| !s.is_empty()))
+                            .or_else(|| m.user.as_ref().and_then(|u| u.username.as_deref()).filter(|s| !s.is_empty()))
+                            .unwrap_or("");
+                        if !dname.is_empty() {
+                            if let Some(ref u) = m.user {
+                                register_user_avatar(vs.user_id, u.avatar.as_deref().unwrap_or(""));
+                            }
+                            register_user_name(vs.user_id, dname.to_string());
+                        }
+                    }
+                    if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                        gvs.insert(vs.user_id, vs.channel_id.clone());
+                    }
+                    let is_muted = vs.self_mute.unwrap_or(false) || vs.mute.unwrap_or(false);
+                    let is_deaf = vs.self_deaf.unwrap_or(false) || vs.deaf.unwrap_or(false);
+                    set_user_voice_audio_flags(vs.user_id, is_muted, is_deaf);
+                    set_user_server_muted(vs.user_id, vs.mute.unwrap_or(false) && !vs.self_mute.unwrap_or(false));
+                    let self_stream = vs.self_stream.unwrap_or(false);
+                    let self_video = vs.self_video.unwrap_or(false);
+                    crate::screen_capture::types::set_user_stream_flags(vs.user_id, self_stream, self_video);
+                    if self_stream || self_video {
+                        crate::screen_capture::types::set_peer_streaming(vs.user_id, true);
+                    }
+                }
+            }
+
+            // Channels
+            let gid = g.id.to_string();
+            let gname = g.name.as_deref().unwrap_or("Servidor").to_string();
+            if !gid.is_empty() {
+                let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = g.channels
+                    .into_iter()
+                    .map(|ch| {
+                        (
+                            ch.id.to_string(),
+                            ch.name.as_deref().unwrap_or("canal").to_string(),
+                            ch.ch_type,
+                            ch.parent_id.map(|s| s.to_string()),
+                            ch.position.unwrap_or(0),
+                        )
+                    })
+                    .collect();
+                let channels = sort_gateway_channels(raw_channels);
+                if !channels.is_empty() {
+                    let guild = GuildData { id: gid, name: gname, channels };
+                    let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
+                }
+            }
+        }
+
+        // Clear a voice state left by a previous run.  The main gateway only
+        // reports it again until Discord expires the old session; leaving it
+        // makes the user appear connected in a channel after reopening.
+        if let Some(ghost_gid) = stale_self_voice {
+            warn!(
+                "🚪 [VOICE] Estado de voz fantasma detectado no servidor {}; enviando saída.",
+                ghost_gid
+            );
+            if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
+                gvs.remove(&uid_num);
+            }
+            let payload = serde_json::json!({
+                "op": 4,
+                "d": {
+                    "guild_id": ghost_gid,
+                    "channel_id": serde_json::Value::Null,
+                    "self_mute": false,
+                    "self_deaf": false
+                }
+            });
+            if let Some(tx) = self.ws_tx.lock().await.as_ref() {
+                let _ = tx.send(Message::Text(payload.to_string().into())).await;
+            }
+        }
+
+        // Direct Messages extraction from READY
+        let mut dm_channels = Vec::new();
+        for dm in d.private_channels {
+            let ch_id = dm.id.to_string();
+            if ch_id.is_empty() { continue; }
+            for r in &dm.recipients {
+                let r_id: u64 = r.id.parse().unwrap_or(0);
+                if r_id > 0 {
+                    let r_name = r.global_name
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| r.username.as_deref().filter(|s| !s.is_empty()))
+                        .unwrap_or("");
+                    if !r_name.is_empty() {
+                        register_user_avatar(r_id, r.avatar.as_deref().unwrap_or(""));
+                        register_user_name(r_id, r_name.to_string());
+                    }
+                }
+            }
+            let name = dm.recipients
+                .first()
+                .and_then(|u| u.global_name.as_deref().or_else(|| u.username.as_deref()))
+                .unwrap_or("DM")
+                .to_string();
+            dm_channels.push(ChannelData {
+                id: ch_id,
+                name,
+                is_voice: false,
+                is_category: false,
+                parent_id: None,
+                position: 0,
+            });
+        }
+        if !dm_channels.is_empty() {
+            let guild = GuildData {
+                id: "@me".to_string(),
+                name: "Direct Messages".to_string(),
+                channels: dm_channels,
+            };
+            let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
+        }
+
+        save_user_directory_cache();
+        let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
+
+        let discriminator = d.user.discriminator.as_deref().unwrap_or("0");
+        let user_tag = if discriminator == "0" {
+            global_name.to_string()
+        } else {
+            format!("{}#{}", global_name, discriminator)
+        };
+        info!("Login BEM-SUCEDIDO na Gateway (Strict Zero-Copy)! Usuário: {} (@{})", global_name, username);
+        let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
+        self.rewatch_streams().await;
+
+        // Purgar qualquer arena ou fragmentação do mimalloc pós-boot
+        crate::utils::memory::purge_unused_memory();
     }
 
     async fn handle_event(&self, v: &Value) {
@@ -555,9 +1657,69 @@ impl GatewayClient {
                         }
                     }
 
-                    // Parse initial voice states in READY payload
+                    // Parse initial voice states and custom emojis in READY payload
                     if let Some(guilds_arr) = v["d"]["guilds"].as_array() {
                         for g in guilds_arr {
+                            // Extract server emojis for FakeNitro picker
+                            if let Some(em_arr) = g["emojis"].as_array() {
+                                for em in em_arr {
+                                    if let (Some(id), Some(name)) = (em["id"].as_str(), em["name"].as_str()) {
+                                        let anim = em["animated"].as_bool().unwrap_or(false);
+                                        crate::utils::emoji_cache::register_custom_emoji(id, name, anim);
+                                    }
+                                }
+                            }
+
+                            let gid_json = g["id"].as_str().unwrap_or("");
+                            let owner_json = g["owner_id"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                            if let Some(roles_arr) = g["roles"].as_array() {
+                                for role in roles_arr {
+                                    let rid = role["id"].as_str().unwrap_or("");
+                                    if !rid.is_empty() {
+                                        register_guild_role(gid_json, RoleInfo {
+                                            id: rid.to_string(),
+                                            name: role["name"].as_str().unwrap_or("").to_string(),
+                                            color: role["color"].as_u64().unwrap_or(0) as u32,
+                                            position: role["position"].as_i64().unwrap_or(0),
+                                            permissions: role["permissions"].as_str().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0),
+                                            managed: role["managed"].as_bool().unwrap_or(false),
+                                        });
+                                    }
+                                }
+                            }
+
+                            if let Some(members_arr) = g["members"].as_array() {
+                                for m in members_arr {
+                                    let uid_str = m["user"]["id"].as_str().unwrap_or("");
+                                    if let Ok(uid) = uid_str.parse::<u64>() {
+                                        let member_roles: Vec<String> = m["roles"]
+                                            .as_array()
+                                            .map(|arr| arr.iter().filter_map(|r| r.as_str().map(|s| s.to_string())).collect())
+                                            .unwrap_or_default();
+                                        register_member_roles(gid_json, uid, member_roles, owner_json);
+                                        refresh_user_display_role(gid_json, uid);
+                                        let mut display_name = String::new();
+                                        if let Some(nick) = m["nick"].as_str() {
+                                            if !nick.is_empty() { display_name = nick.to_string(); }
+                                        }
+                                        if display_name.is_empty() {
+                                            if let Some(gname) = m["user"]["global_name"].as_str() {
+                                                if !gname.is_empty() { display_name = gname.to_string(); }
+                                            }
+                                        }
+                                        if display_name.is_empty() {
+                                            if let Some(uname) = m["user"]["username"].as_str() {
+                                                if !uname.is_empty() { display_name = uname.to_string(); }
+                                            }
+                                        }
+                                        if !display_name.is_empty() {
+                                            register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
+                                            register_user_name(uid, display_name);
+                                        }
+                                    }
+                                }
+                            }
+
                             if let Some(vs_arr) = g["voice_states"].as_array() {
                                 for vs in vs_arr {
                                     let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
@@ -573,15 +1735,96 @@ impl GatewayClient {
                                         String::new()
                                     };
                                     if u_id > 0 && !c_str.is_empty() {
+                                        let dname = vs["member"]["nick"].as_str().filter(|s| !s.is_empty())
+                                            .or_else(|| vs["member"]["user"]["global_name"].as_str().filter(|s| !s.is_empty()))
+                                            .or_else(|| vs["member"]["user"]["username"].as_str().filter(|s| !s.is_empty()));
+                                        if let Some(name) = dname {
+                                            register_user_avatar(u_id, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
+                                            register_user_name(u_id, name.to_string());
+                                        }
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
-                                            info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", u_id, c_str);
                                         }
+                                        let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                        let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                        set_user_voice_audio_flags(u_id, is_muted, is_deaf);
+                                        set_user_server_muted(u_id, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
+                                        let self_stream = vs["self_stream"].as_bool().unwrap_or(false);
+                                        let self_video = vs["self_video"].as_bool().unwrap_or(false);
+                                        crate::screen_capture::types::set_user_stream_flags(u_id, self_stream, self_video);
+                                        if self_stream || self_video {
+                                            crate::screen_capture::types::set_peer_streaming(u_id, true);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Extract channels if present in READY payload (Zero-Network Server Switching)
+                            let gid = g["id"].as_str().unwrap_or("").to_string();
+                            let gname = g["name"].as_str().unwrap_or("Servidor").to_string();
+                            if !gid.is_empty() {
+                                if let Some(chans_arr) = g["channels"].as_array() {
+                                    for ch in chans_arr {
+                                        let cid = ch["id"].as_str().unwrap_or("");
+                                        if !cid.is_empty() {
+                                            register_channel_overwrites(&gid, cid, parse_channel_overwrites(ch));
+                                        }
+                                    }
+                                    let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = chans_arr
+                                        .iter()
+                                        .map(|ch| {
+                                            (
+                                                ch["id"].as_str().unwrap_or("").to_string(),
+                                                ch["name"].as_str().unwrap_or("canal").to_string(),
+                                                ch["type"].as_u64().unwrap_or(0),
+                                                ch["parent_id"].as_str().map(|s| s.to_string()),
+                                                ch["position"].as_i64().unwrap_or(0),
+                                            )
+                                        })
+                                        .collect();
+                                    let channels = sort_gateway_channels(raw_channels);
+                                    if !channels.is_empty() {
+                                        let guild = GuildData { id: gid.clone(), name: gname, channels };
+                                        let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
                                     }
                                 }
                             }
                         }
                     }
+
+                    // Direct Messages extraction from READY fallback
+                    if let Some(priv_chans) = v["d"]["private_channels"].as_array() {
+                        let mut dm_channels = Vec::new();
+                        for dm in priv_chans {
+                            let ch_id = dm["id"].as_str().unwrap_or("").to_string();
+                            if ch_id.is_empty() { continue; }
+                            let name = dm["recipients"]
+                                .as_array()
+                                .and_then(|arr| arr.first())
+                                .and_then(|u| u["global_name"].as_str().or_else(|| u["username"].as_str()))
+                                .unwrap_or("DM")
+                                .to_string();
+                            dm_channels.push(ChannelData {
+                                id: ch_id,
+                                name,
+                                is_voice: false,
+                                is_category: false,
+                                parent_id: None,
+                                position: 0,
+                            });
+                        }
+                        if !dm_channels.is_empty() {
+                            let guild = GuildData {
+                                id: "@me".to_string(),
+                                name: "Direct Messages".to_string(),
+                                channels: dm_channels,
+                            };
+                            let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
+                        }
+                    }
+
+                    save_user_directory_cache();
+                    let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
 
                     let discriminator = v["d"]["user"]["discriminator"].as_str().unwrap_or("0");
                     let user_tag = if discriminator == "0" {
@@ -591,6 +1834,11 @@ impl GatewayClient {
                     };
                     info!("Login BEM-SUCEDIDO na Gateway! Usuário: {} (@{})", global_name, username);
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
+                    self.rewatch_streams().await;
+                    crate::utils::memory::purge_unused_memory();
+                }
+                "RESUMED" => {
+                    self.rewatch_streams().await;
                 }
                 "READY_SUPPLEMENTAL" => {
                     info!("📌 Evento READY_SUPPLEMENTAL recebido da Gateway! Keys: {:?}", v["d"].as_object().map(|m| m.keys().collect::<Vec<_>>()));
@@ -610,10 +1858,25 @@ impl GatewayClient {
                                 String::new()
                             };
                             if u_id > 0 && !c_str.is_empty() {
+                                let dname = vs["member"]["nick"].as_str().filter(|s| !s.is_empty())
+                                    .or_else(|| vs["member"]["user"]["global_name"].as_str().filter(|s| !s.is_empty()))
+                                    .or_else(|| vs["member"]["user"]["username"].as_str().filter(|s| !s.is_empty()));
+                                if let Some(name) = dname {
+                                    register_user_avatar(u_id, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
+                                    register_user_name(u_id, name.to_string());
+                                }
                                 if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                     gvs.insert(u_id, c_str.clone());
-                                    info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
                                 }
+                                let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                set_user_voice_audio_flags(u_id, is_muted, is_deaf);
+                                set_user_server_muted(u_id, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
+                                crate::screen_capture::types::set_user_stream_flags(
+                                    u_id,
+                                    vs["self_stream"].as_bool().unwrap_or(false),
+                                    vs["self_video"].as_bool().unwrap_or(false),
+                                );
                             }
                         }
                     }
@@ -621,7 +1884,7 @@ impl GatewayClient {
                         info!("📌 [READY_SUPPLEMENTAL] Encontrados {} guilds no READY_SUPPLEMENTAL!", guilds_arr.len());
                         for g in guilds_arr {
                             if let Some(vs_arr) = g["voice_states"].as_array() {
-                                info!("📌 [READY_SUPPLEMENTAL] Guild {} tem {} voice_states!", g["id"], vs_arr.len());
+                                debug!("📌 [READY_SUPPLEMENTAL] Guild {} tem {} voice_states!", g["id"], vs_arr.len());
                                 for vs in vs_arr {
                                     let u_id: u64 = if let Some(s) = vs["user_id"].as_str() {
                                         s.parse().unwrap_or(0)
@@ -636,10 +1899,25 @@ impl GatewayClient {
                                         String::new()
                                     };
                                     if u_id > 0 && !c_str.is_empty() {
+                                        let dname = vs["member"]["nick"].as_str().filter(|s| !s.is_empty())
+                                            .or_else(|| vs["member"]["user"]["global_name"].as_str().filter(|s| !s.is_empty()))
+                                            .or_else(|| vs["member"]["user"]["username"].as_str().filter(|s| !s.is_empty()));
+                                        if let Some(name) = dname {
+                                            register_user_avatar(u_id, vs["member"]["user"]["avatar"].as_str().unwrap_or(""));
+                                            register_user_name(u_id, name.to_string());
+                                        }
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
-                                            info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
                                         }
+                                        let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                        let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                        set_user_voice_audio_flags(u_id, is_muted, is_deaf);
+                                        set_user_server_muted(u_id, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
+                                        crate::screen_capture::types::set_user_stream_flags(
+                                            u_id,
+                                            vs["self_stream"].as_bool().unwrap_or(false),
+                                            vs["self_video"].as_bool().unwrap_or(false),
+                                        );
                                     }
                                 }
                             }
@@ -648,6 +1926,7 @@ impl GatewayClient {
                     let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
                 }
                 "GUILD_MEMBERS_CHUNK" => {
+                    let mut updated = false;
                     if let Some(members_arr) = v["d"]["members"].as_array() {
                         for m in members_arr {
                             let uid_str = m["user"]["id"].as_str().unwrap_or("");
@@ -667,10 +1946,38 @@ impl GatewayClient {
                                     }
                                 }
                                 if !display_name.is_empty() {
+                                    register_user_avatar(uid, m["user"]["avatar"].as_str().unwrap_or(""));
                                     register_user_name(uid, display_name);
+                                    updated = true;
                                 }
                             }
                         }
+                    }
+                    if updated {
+                        save_user_directory_cache();
+                        let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
+                    }
+                }
+                "VOICE_CHANNEL_EFFECT_SEND" => {
+                    let sound_id = v["d"]["sound_id"].as_str().unwrap_or("").to_string();
+                    if !sound_id.is_empty() {
+                        let channel_id = v["d"]["channel_id"]
+                            .as_str()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| {
+                                v["d"]["channel_id"].as_u64().map(|n| n.to_string()).unwrap_or_default()
+                            });
+                        let user_id = v["d"]["user_id"]
+                            .as_str()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| {
+                                v["d"]["user_id"].as_u64().map(|n| n.to_string()).unwrap_or_default()
+                            });
+                        let _ = self.event_tx.send(GatewayEvent::SoundboardSoundPlayed {
+                            channel_id,
+                            sound_id,
+                            user_id,
+                        }).await;
                     }
                 }
                 "VOICE_STATE_UPDATE" => {
@@ -715,22 +2022,46 @@ impl GatewayClient {
                                 info!("📌 [VOICE_STATE_UPDATE] User {} -> Canal {}", event_uid, cid);
                                 gvs.insert(event_uid, cid.clone())
                             } else {
+                                remove_user_voice_audio_flags(event_uid);
                                 gvs.remove(&event_uid)
                             }
                         } else {
                             None
                         };
+
+                        if event_chan.is_some() {
+                            let is_muted = v["d"]["self_mute"].as_bool().unwrap_or(false) || v["d"]["mute"].as_bool().unwrap_or(false);
+                            let is_deaf = v["d"]["self_deaf"].as_bool().unwrap_or(false) || v["d"]["deaf"].as_bool().unwrap_or(false);
+                            set_user_voice_audio_flags(event_uid, is_muted, is_deaf);
+                            set_user_server_muted(event_uid, v["d"]["mute"].as_bool().unwrap_or(false) && !v["d"]["self_mute"].as_bool().unwrap_or(false));
+                        }
                         let my_voice_chan = self.voice_channel_id.lock().unwrap().clone();
 
                         if let Some(ref my_cid) = my_voice_chan {
                             if event_chan.as_deref() == Some(my_cid.as_str()) {
                                 info!("👥 [VOICE CHANNEL JOIN] Usuário {} ({}) entrou no nosso canal de voz!", event_uid, display_name);
                                 register_voice_participant(event_uid as u32, event_uid);
+                                let self_stream = v["d"]["self_stream"].as_bool().unwrap_or(false);
+                                let self_video = v["d"]["self_video"].as_bool().unwrap_or(false);
+                                crate::screen_capture::types::set_user_stream_flags(event_uid, self_stream, self_video);
+                                let is_streaming = self_stream || self_video;
+                                crate::screen_capture::types::set_peer_streaming(event_uid, is_streaming);
+                                if let Some(cid) = event_chan.as_deref() {
+                                    let stream_key = match v["d"]["guild_id"].as_str() {
+                                        Some(gid) => format!("guild:{}:{}:{}", gid, cid, event_uid),
+                                        None => format!("call:{}:{}", cid, event_uid),
+                                    };
+                                    if !self_stream {
+                                        // Go Live ended: stop viewing it.
+                                        crate::gateway::unwatch_stream(&stream_key);
+                                    }
+                                }
                             } else {
                                 // Voice states of every server arrive here: only someone who was
                                 // in our channel left it.
                                 if previous_chan.as_deref() == Some(my_cid.as_str()) {
                                     info!("👥 [VOICE CHANNEL LEAVE] Usuário {} saiu do nosso canal de voz!", event_uid);
+                                    crate::screen_capture::types::set_peer_streaming(event_uid, false);
                                 }
                                 remove_voice_participant_by_user_id(event_uid);
                             }
@@ -822,12 +2153,211 @@ impl GatewayClient {
                         warn!("VOICE_SERVER_UPDATE recebido com campos ausentes ou nulos: token_empty={}, endpoint_empty={}", token.is_empty(), endpoint.is_empty());
                     }
                 }
+                "STREAM_CREATE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let rtc_server_id = v["d"]["rtc_server_id"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| v["d"]["rtc_server_id"].as_u64().map(|n| n.to_string()))
+                        .unwrap_or_default();
+                    let rtc_channel_id = v["d"]["rtc_channel_id"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| v["d"]["rtc_channel_id"].as_u64().map(|n| n.to_string()))
+                        .unwrap_or_default();
+                    if !stream_key.is_empty() {
+                        info!("🎬 [STREAM_CREATE] key={} rtc_server_id={} rtc_channel_id={}", stream_key, rtc_server_id, rtc_channel_id);
+                        let owner = stream_key
+                            .rsplit(':')
+                            .next()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        let my_uid = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                        if owner == my_uid && my_uid != 0 {
+                            info!("🎬 [STREAM_CREATE] Detectado nosso próprio stream criado no Discord! key={}", stream_key);
+                            *ACTIVE_OUTBOUND_STREAM_KEY.lock().unwrap() = Some(stream_key.clone());
+                            set_stream_paused(false);
+                        }
+                        self.stream_servers
+                            .lock()
+                            .unwrap()
+                            .insert(stream_key, (rtc_server_id, rtc_channel_id));
+                    }
+                }
+                "STREAM_SERVER_UPDATE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let token = v["d"]["token"].as_str().unwrap_or("").to_string();
+                    let endpoint = v["d"]["endpoint"].as_str().unwrap_or("").to_string();
+                    if stream_key.is_empty() || token.is_empty() || endpoint.is_empty() {
+                        warn!("🎬 [STREAM_SERVER_UPDATE] campos ausentes (key={}, token_empty={}, endpoint_empty={})",
+                            stream_key, token.is_empty(), endpoint.is_empty());
+                        return;
+                    }
+
+                    let (mut rtc_server_id, mut rtc_channel_id) = self
+                        .stream_servers
+                        .lock()
+                        .unwrap()
+                        .get(&stream_key)
+                        .cloned()
+                        .unwrap_or_default();
+                    if rtc_server_id.is_empty() {
+                        rtc_server_id = v["d"]["rtc_server_id"].as_str().unwrap_or("").to_string();
+                    }
+                    if rtc_channel_id.is_empty() {
+                        rtc_channel_id = v["d"]["rtc_channel_id"].as_str().unwrap_or("").to_string();
+                    }
+                    let mut parts = stream_key.split(':');
+                    let kind = parts.next().unwrap_or("");
+                    let p1 = parts.next().unwrap_or("").to_string();
+                    let p2 = parts.next().unwrap_or("").to_string();
+                    let p3 = parts.next().unwrap_or("").to_string();
+                    // guild:{guild_id}:{channel_id}:{owner_id} | call:{channel_id}:{owner_id}
+                    let (guild_id, channel_id, owner) = if kind == "guild" {
+                        (p1, p2, p3.parse::<u64>().unwrap_or(0))
+                    } else {
+                        (String::new(), p1, p2.parse::<u64>().unwrap_or(0))
+                    };
+                    if rtc_channel_id.is_empty() {
+                        rtc_channel_id = channel_id.clone();
+                    }
+                    if rtc_server_id.is_empty() {
+                        // For guild streams the voice server id is the guild id; for a
+                        // DM call Discord uses the channel itself.
+                        rtc_server_id = if kind == "guild" { guild_id.clone() } else { channel_id.clone() };
+                    }
+
+                    let session_id = self
+                        .resume
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|r| r.session_id.clone())
+                        .unwrap_or_default();
+                    let user_id = self
+                        .user_id
+                        .lock()
+                        .unwrap()
+                        .as_deref()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+
+                    if session_id.is_empty() || user_id == 0 || owner == 0 {
+                        warn!("🎬 [STREAM_SERVER_UPDATE] sem sessão/usuário/owner (sid={}, uid={}, owner={}); ignorando {}",
+                            !session_id.is_empty(), user_id != 0, owner, stream_key);
+                        return;
+                    }
+
+                    if owner == user_id {
+                        info!("🎬 [STREAM_SERVER_UPDATE] abrindo conexão EMISSORA nativa key={} endpoint={}", stream_key, endpoint);
+                        tokio::spawn(async move {
+                            crate::native_video::stream::connect_stream_sender(
+                                endpoint,
+                                token,
+                                rtc_server_id,
+                                rtc_channel_id,
+                                session_id,
+                                user_id,
+                                stream_key,
+                            )
+                            .await;
+                        });
+                    } else {
+                        info!("🎬 [STREAM_SERVER_UPDATE] abrindo visualização key={} endpoint={} owner={}", stream_key, endpoint, owner);
+                        tokio::spawn(async move {
+                            crate::native_video::stream::connect_stream_viewer(
+                                endpoint,
+                                token,
+                                rtc_server_id,
+                                rtc_channel_id,
+                                session_id,
+                                user_id,
+                                owner,
+                                stream_key,
+                            )
+                            .await;
+                        });
+                    }
+                }
+                "STREAM_DELETE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let owner = stream_key
+                        .rsplit(':')
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    info!("🎬 [STREAM_DELETE] encerrando stream key={} (reason={:?})",
+                        stream_key, v["d"]["reason"].as_str());
+                    let user_id = self
+                        .user_id
+                        .lock()
+                        .unwrap()
+                        .as_deref()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+
+                    if !stream_key.is_empty() {
+                        // Forget the subscription too, so a gateway resume does not
+                        // re-watch a stream that no longer exists.
+                        crate::gateway::unwatch_stream(&stream_key);
+                        self.stream_servers.lock().unwrap().remove(&stream_key);
+                    }
+                    if owner == user_id && user_id != 0 {
+                        info!("🎬 [STREAM_DELETE] Nosso stream foi encerrado no Discord.");
+                        crate::native_video::stream::stop_stream_sender(&stream_key);
+                        let mut guard = ACTIVE_OUTBOUND_STREAM_KEY.lock().unwrap();
+                        if guard.as_deref() == Some(&stream_key) {
+                            *guard = None;
+                        }
+                    } else if owner != 0 {
+                        let (_streaming, camera_on) =
+                            crate::screen_capture::types::get_user_stream_flags(owner);
+                        if !camera_on && !crate::native_video::stream::has_viewer_for(owner) {
+                            crate::screen_capture::types::set_peer_streaming(owner, false);
+                        }
+                    }
+                }
                 "MESSAGE_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
                     let author_id = v["d"]["author"]["id"].as_str().unwrap_or("");
                     let is_self = !my_uid.is_empty() && author_id == my_uid;
+
+                    // A message for another channel is never painted: the UI only
+                    // bumps its unread badge and opening it later fetches the history.
+                    // Formatting markdown, embeds and attachments here was pure CPU.
+                    if !self.is_active_channel(&channel_id) {
+                        let _ = self.event_tx.send(GatewayEvent::MessageCreated {
+                            id,
+                            channel_id,
+                            author: String::new(),
+                            author_id: if matches!(v["d"]["type"].as_i64().unwrap_or(0), 0 | 19) {
+                                author_id.to_string()
+                            } else {
+                                String::new()
+                            },
+                            created_at: String::new(),
+                            avatar_url: String::new(),
+                            is_bot: false,
+                            content: String::new(),
+                            commands: Vec::new(),
+                            content_lines: Vec::new(),
+                            embed_content: String::new(),
+                            embed_lines: Vec::new(),
+                            embed_color: String::new(),
+                            embed_footer: String::new(),
+                            code_block: String::new(),
+                            reply_author: String::new(),
+                            reply_content: String::new(),
+                            reply_command: String::new(),
+                            links: Vec::new(),
+                            buttons: Vec::new(),
+                            attachments: Vec::new(),
+                            is_self,
+                        }).await;
+                        return;
+                    }
 
                     let author = format_discord_author(&v["d"]);
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
@@ -867,6 +2397,31 @@ impl GatewayClient {
                 "MESSAGE_UPDATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
+
+                    // Same as MESSAGE_CREATE: a channel that is not on screen only
+                    // needs its cached batch invalidated, which the empty event does.
+                    if !self.is_active_channel(&channel_id) {
+                        let _ = self.event_tx.send(GatewayEvent::MessageUpdated {
+                            id,
+                            channel_id,
+                            content: String::new(),
+                            commands: Vec::new(),
+                            content_lines: Vec::new(),
+                            embed_content: String::new(),
+                            embed_lines: Vec::new(),
+                            embed_color: String::new(),
+                            embed_footer: String::new(),
+                            code_block: String::new(),
+                            reply_author: String::new(),
+                            reply_content: String::new(),
+                            reply_command: String::new(),
+                            links: Vec::new(),
+                            buttons: Vec::new(),
+                            attachments: Vec::new(),
+                        }).await;
+                        return;
+                    }
+
                     let (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments) = format_discord_message_parts(&v["d"]);
 
                     let _ = self.event_tx.send(GatewayEvent::MessageUpdated {
@@ -897,6 +2452,20 @@ impl GatewayClient {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
                     let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
                     info!("📞 {} recebido bruto: {:?}", t, v["d"]);
+
+                    // A CALL_UPDATE with ringing=false means the call stopped
+                    // ringing: it was rejected, cancelled or answered elsewhere.
+                    // Treating it as a new incoming call made the rejected call
+                    // pop up again (and look accepted).
+                    let ringing = v["d"]["ringing"]
+                        .as_bool()
+                        .unwrap_or(t == "CALL_CREATE");
+                    if !ringing {
+                        if !channel_id.is_empty() {
+                            let _ = self.event_tx.send(GatewayEvent::CallEnded { channel_id }).await;
+                        }
+                        return;
+                    }
 
                     // Extrai IDs dos usuários presentes nos voice_states da chamada
                     let voice_uids: Vec<String> = v["d"]["voice_states"]
@@ -956,27 +2525,58 @@ impl GatewayClient {
                 "GUILD_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let name = v["d"]["name"].as_str().unwrap_or("Servidor").to_string();
-                    let mut channels = Vec::new();
-
-                    if let Some(chans_arr) = v["d"]["channels"].as_array() {
-                        for ch in chans_arr {
-                            let ch_id = ch["id"].as_str().unwrap_or("").to_string();
-                            let ch_name = ch["name"].as_str().unwrap_or("canal").to_string();
-                            let ch_type = ch["type"].as_u64().unwrap_or(0);
-
-                            // type 0 = text, type 2 = voice, type 4 = category, type 5 = news, type 13 = stage, type 15 = forum
-                            if ch_type == 0 || ch_type == 2 || ch_type == 4 || ch_type == 5 || ch_type == 13 || ch_type == 15 {
-                                channels.push(ChannelData {
-                                    id: ch_id,
-                                    name: if ch_type == 4 { ch_name.to_uppercase() } else { ch_name },
-                                    is_voice: ch_type == 2 || ch_type == 13,
-                                    is_category: ch_type == 4,
-                                    parent_id: ch["parent_id"].as_str().map(|s| s.to_string()),
-                                    position: ch["position"].as_i64().unwrap_or(0),
-                                });
+                    if !id.is_empty() {
+                        let owner = v["d"]["owner_id"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                        if let Some(roles_arr) = v["d"]["roles"].as_array() {
+                            for role in roles_arr {
+                                let rid = role["id"].as_str().unwrap_or("");
+                                if !rid.is_empty() {
+                                    register_guild_role(&id, RoleInfo {
+                                        id: rid.to_string(),
+                                        name: role["name"].as_str().unwrap_or("").to_string(),
+                                        color: role["color"].as_u64().unwrap_or(0) as u32,
+                                        position: role["position"].as_i64().unwrap_or(0),
+                                        permissions: role["permissions"].as_str().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0),
+                                        managed: role["managed"].as_bool().unwrap_or(false),
+                                    });
+                                }
+                            }
+                        }
+                        if let Some(members_arr) = v["d"]["members"].as_array() {
+                            for m in members_arr {
+                                if let Ok(uid) = m["user"]["id"].as_str().unwrap_or("").parse::<u64>() {
+                                    let roles = m["roles"].as_array()
+                                        .map(|a| a.iter().filter_map(|r| r.as_str().map(|s| s.to_string())).collect())
+                                        .unwrap_or_default();
+                                    register_member_roles(&id, uid, roles, owner);
+                                    refresh_user_display_role(&id, uid);
+                                }
                             }
                         }
                     }
+                    let channels = if let Some(chans_arr) = v["d"]["channels"].as_array() {
+                        for ch in chans_arr {
+                            let cid = ch["id"].as_str().unwrap_or("");
+                            if !cid.is_empty() {
+                                register_channel_overwrites(&id, cid, parse_channel_overwrites(ch));
+                            }
+                        }
+                        let raw_channels: Vec<(String, String, u64, Option<String>, i64)> = chans_arr
+                            .iter()
+                            .map(|ch| {
+                                (
+                                    ch["id"].as_str().unwrap_or("").to_string(),
+                                    ch["name"].as_str().unwrap_or("canal").to_string(),
+                                    ch["type"].as_u64().unwrap_or(0),
+                                    ch["parent_id"].as_str().map(|s| s.to_string()),
+                                    ch["position"].as_i64().unwrap_or(0),
+                                )
+                            })
+                            .collect();
+                        sort_gateway_channels(raw_channels)
+                    } else {
+                        Vec::new()
+                    };
 
                     // Parse members to cache user display names
                     if let Some(members_arr) = v["d"]["members"].as_array() {
@@ -1026,6 +2626,15 @@ impl GatewayClient {
                                     gvs.insert(uid, cid_str.clone());
                                     info!("📌 [GUILD_CREATE] Pré-carregado estado de voz: User {} -> Canal {}", uid, cid_str);
                                 }
+                                let is_muted = vs["self_mute"].as_bool().unwrap_or(false) || vs["mute"].as_bool().unwrap_or(false);
+                                let is_deaf = vs["self_deaf"].as_bool().unwrap_or(false) || vs["deaf"].as_bool().unwrap_or(false);
+                                set_user_voice_audio_flags(uid, is_muted, is_deaf);
+                                set_user_server_muted(uid, vs["mute"].as_bool().unwrap_or(false) && !vs["self_mute"].as_bool().unwrap_or(false));
+                                crate::screen_capture::types::set_user_stream_flags(
+                                    uid,
+                                    vs["self_stream"].as_bool().unwrap_or(false),
+                                    vs["self_video"].as_bool().unwrap_or(false),
+                                );
                                 let mut display_name = String::new();
                                 if let Some(nick) = vs["member"]["nick"].as_str() {
                                     if !nick.is_empty() { display_name = nick.to_string(); }
@@ -1052,6 +2661,7 @@ impl GatewayClient {
 
                     let guild = GuildData { id, name, channels };
                     let _ = self.event_tx.send(GatewayEvent::GuildLoaded { guild }).await;
+                    let _ = self.event_tx.send(GatewayEvent::VoiceStatesUpdated).await;
                 }
                 _ => {}
             }
@@ -1068,17 +2678,17 @@ mod tests {
     fn only_events_the_app_uses_are_parsed_whole_but_every_sequence_counts() {
         // Presence and typing are most of what a big account receives: skipped.
         let presence = r#"{"t":"PRESENCE_UPDATE","s":42,"op":0,"d":{"user":{"id":"1"},"status":"online","activities":[{"name":"x"}]}}"#;
-        assert_eq!(peek(presence), Some(Peek { op: 0, seq: Some(42), wanted: false, permissions: false }));
+        assert_eq!(peek(presence), Some(Peek { op: 0, seq: Some(42), wanted: false, permissions: false, event_name: Some("PRESENCE_UPDATE".into()) }));
         // Fields in any order, nested objects named like the head fields.
         let msg = r#"{"op":0,"d":{"t":"x","s":1,"op":9,"content":"hi"},"s":43,"t":"MESSAGE_CREATE"}"#;
-        assert_eq!(peek(msg), Some(Peek { op: 0, seq: Some(43), wanted: true, permissions: false }));
+        assert_eq!(peek(msg), Some(Peek { op: 0, seq: Some(43), wanted: true, permissions: false, event_name: Some("MESSAGE_CREATE".into()) }));
         for t in HANDLED_EVENTS {
             let ev = format!(r#"{{"op":0,"s":1,"t":"{t}","d":{{}}}}"#);
             assert!(peek(&ev).unwrap().wanted, "{t}");
         }
         // Everything that is not a dispatch (hello, ack, reconnect...) is parsed.
-        assert_eq!(peek(r#"{"op":11,"d":null,"s":null,"t":null}"#), Some(Peek { op: 11, seq: None, wanted: true, permissions: false }));
-        assert_eq!(peek(r#"{"op":10,"d":{"heartbeat_interval":41250}}"#), Some(Peek { op: 10, seq: None, wanted: true, permissions: false }));
+        assert_eq!(peek(r#"{"op":11,"d":null,"s":null,"t":null}"#), Some(Peek { op: 11, seq: None, wanted: true, permissions: false, event_name: None }));
+        assert_eq!(peek(r#"{"op":10,"d":{"heartbeat_interval":41250}}"#), Some(Peek { op: 10, seq: None, wanted: true, permissions: false, event_name: None }));
         assert_eq!(peek("not json"), None);
     }
 
@@ -1096,6 +2706,61 @@ mod tests {
         assert_eq!(permission_change(other, 7), None);
         let presence = r#"{"t":"PRESENCE_UPDATE","s":42,"op":0,"d":{"guild_id":"10"}}"#;
         assert!(!peek(presence).unwrap().permissions);
+    }
+
+    #[test]
+    fn only_the_open_channel_is_formatted_for_the_ui() {
+        let (tx, _rx) = mpsc::channel(1);
+        let active = Arc::new(std::sync::Mutex::new(String::new()));
+        let client = GatewayClient::new("token".into(), tx, Arc::clone(&active));
+        assert!(!client.is_active_channel("1"), "no channel is open yet");
+        *active.lock().unwrap() = "1".into();
+        assert!(client.is_active_channel("1"));
+        assert!(!client.is_active_channel("2"));
+        // Empty again means the chat view is closed, so nothing needs formatting.
+        *active.lock().unwrap() = String::new();
+        assert!(!client.is_active_channel("1"));
+    }
+
+    #[tokio::test]
+    async fn messages_for_the_open_channel_are_formatted_and_others_are_not() {
+        let payload = serde_json::json!({
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "1",
+                "channel_id": "2",
+                "type": 0,
+                "author": { "id": "3", "username": "Ana" },
+                "content": "**hola**",
+                "timestamp": "2026-11-02T12:00:00.000Z"
+            }
+        });
+
+        // Channel "2" is not open: the event carries no formatted body.
+        let (tx, mut rx) = mpsc::channel(4);
+        let active = Arc::new(std::sync::Mutex::new("9".to_string()));
+        let client = GatewayClient::new("token".into(), tx, Arc::clone(&active));
+        client.handle_event(&payload).await;
+        match rx.recv().await.expect("event") {
+            GatewayEvent::MessageCreated { content, content_lines, .. } => {
+                assert!(content.is_empty());
+                assert!(content_lines.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // The same payload for the open channel keeps the formatted content.
+        *active.lock().unwrap() = "2".to_string();
+        let (tx, mut rx) = mpsc::channel(4);
+        let client = GatewayClient::new("token".into(), tx, active);
+        client.handle_event(&payload).await;
+        match rx.recv().await.expect("event") {
+            GatewayEvent::MessageCreated { content, content_lines, .. } => {
+                assert!(content.contains("hola"), "content was {content:?}");
+                assert!(!content_lines.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

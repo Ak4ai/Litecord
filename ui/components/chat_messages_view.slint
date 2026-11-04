@@ -74,6 +74,8 @@ export struct ChatMessage {
     avatar_url: string,
     avatar_img: image,
     avatar_initial: string,
+    author_role_name: string,
+    author_role_color: color,
     is_bot: bool,
     timestamp: string,
     hover_timestamp: string,
@@ -104,7 +106,9 @@ export component ChatMessagesView inherits Rectangle {
     callback load_older_messages();
     callback open_link(string);
     callback download_attachment(string, string, string);
+    callback open_image(image);
     callback click_command(string);
+    callback bottom_state_changed(bool);
 
     changed scroll_trigger => {
         root.scroll_to_bottom();
@@ -116,6 +120,16 @@ export component ChatMessagesView inherits Rectangle {
         } else {
             scroll_y = 0px;
         }
+    }
+
+    public function is_at_bottom() -> bool {
+        (msg_scroll.viewport-height - msg_scroll.visible-height) + scroll_y > -24px;
+    }
+
+    out property <bool> at_bottom: (msg_scroll.viewport-height - msg_scroll.visible-height) + scroll_y > -24px;
+
+    changed at_bottom => {
+        root.bottom_state_changed(at_bottom);
     }
 
     msg_scroll := ScrollView {
@@ -333,11 +347,28 @@ export component ChatMessagesView inherits Rectangle {
                         spacing: 8px;
                         Text {
                             text: msg.author;
-                            color: AppTheme.accent;
+                            color: (msg.author_role_name != "" && msg.author_role_color != #000000) ? msg.author_role_color : AppTheme.accent;
                             font-family: ChatTypography.family;
                             font-size: ChatTypography.author-size;
                             font-weight: 700;
                             vertical-alignment: center;
+                        }
+
+                        if msg.author_role_name != "" : Rectangle {
+                            background: #00000033;
+                            border-radius: 4px;
+                            height: 15px;
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-right: 5px;
+                                Text {
+                                    text: msg.author_role_name;
+                                    color: (msg.author_role_color != #000000) ? msg.author_role_color : AppTheme.text-muted;
+                                    font-size: 9px;
+                                    font-weight: 800;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                         if msg.is_bot: Rectangle {
                             background: AppTheme.accent;
@@ -1095,6 +1126,12 @@ export component ChatMessagesView inherits Rectangle {
                                 image-fit: contain;
                             }
 
+                            // Click-to-enlarge lightbox
+                            if att.is_image && att.is_downloaded : TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open_image(att.full_img); }
+                            }
+
                             // 2. Low-res pixelated / blurred preview thumbnail
                             if att.is_image && !att.is_downloaded : Image {
                                 width: 100%;
@@ -1104,14 +1141,14 @@ export component ChatMessagesView inherits Rectangle {
                             }
 
                             // 3. Darkened overlay for preview state
-                            if att.is_image && !att.is_downloaded : Rectangle {
+                            if att.is_image && !att.is_downloaded && !att.is_loading : Rectangle {
                                 width: 100%;
                                 height: 100%;
                                 background: AppTheme.surface-backdrop;
                             }
 
                             // 4. Rounded Rectangle Download Button in the center (when not downloaded)
-                            if att.is_image && !att.is_downloaded : VerticalLayout {
+                            if att.is_image && !att.is_downloaded && !att.is_loading : VerticalLayout {
                                 alignment: center;
                                 HorizontalLayout {
                                     alignment: center;

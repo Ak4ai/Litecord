@@ -640,10 +640,15 @@ impl SharedBackendData {
         let mut inactive_windows = self.inactive_windows.take();
         let mut result = Ok(());
         while let Some(window_weak) = inactive_windows.pop() {
-            if let Some(err) = window_weak.upgrade().and_then(|w| w.ensure_window(event_loop).err())
-            {
-                result = Err(err);
-                break;
+            if let Some(w) = window_weak.upgrade() {
+                #[cfg(feature = "wayland")]
+                if !w.is_shown() && self.is_wayland {
+                    continue;
+                }
+                if let Err(err) = w.ensure_window(event_loop) {
+                    result = Err(err);
+                    break;
+                }
             }
         }
         self.inactive_windows.borrow_mut().extend(inactive_windows);

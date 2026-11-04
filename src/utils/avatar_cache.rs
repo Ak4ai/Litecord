@@ -12,9 +12,9 @@ use crate::{AppWindow, ChatMessage};
 const AVATAR_SIZE: u32 = 40;
 const AVATAR_BYTES: usize = (AVATAR_SIZE * AVATAR_SIZE * 4) as usize;
 const MAX_DOWNLOAD_BYTES: usize = 512 * 1024;
-// Decoded thumbnails use about 2.4 MiB in RAM and 25 MiB on disk at these limits.
+// Decoded thumbnails use about 5 MiB in RAM and 25 MiB on disk at these limits.
 // Messages, voice rows and the DM list share this one cache.
-const MAX_MEMORY_AVATARS: usize = 384;
+const MAX_MEMORY_AVATARS: usize = 256;
 const MAX_DISK_AVATARS: usize = 4096;
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 // Sidebar rows (DM list, voice members) are Send-only data, so their thumbnails
@@ -49,7 +49,7 @@ fn pool_set(slot: usize, url: &str, image: slint::Image) {
 }
 
 struct MemoryAvatar {
-    rgba: Vec<u8>,
+    buffer: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     last_used: u64,
 }
 
@@ -64,17 +64,17 @@ impl MemoryStore {
         self.clock = self.clock.wrapping_add(1);
         let avatar = self.entries.get_mut(url)?;
         avatar.last_used = self.clock;
-        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-            &avatar.rgba,
-            AVATAR_SIZE,
-            AVATAR_SIZE,
-        );
-        Some(slint::Image::from_rgba8(buffer))
+        Some(slint::Image::from_rgba8(avatar.buffer.clone()))
     }
 
     fn insert(&mut self, url: String, mut rgba: Vec<u8>) {
         // Avatars are always shown as circles; see image_shape for why the pixels are cut.
         crate::utils::image_shape::round_corners(&mut rgba, AVATAR_SIZE, AVATAR_SIZE, AVATAR_SIZE as f32 / 2.0);
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            &rgba,
+            AVATAR_SIZE,
+            AVATAR_SIZE,
+        );
         self.clock = self.clock.wrapping_add(1);
         if !self.entries.contains_key(&url) && self.entries.len() >= MAX_MEMORY_AVATARS {
             if let Some(oldest) = self
@@ -89,7 +89,7 @@ impl MemoryStore {
         self.entries.insert(
             url,
             MemoryAvatar {
-                rgba,
+                buffer,
                 last_used: self.clock,
             },
         );
@@ -115,7 +115,7 @@ pub fn get_avatar_cache() -> Arc<AvatarCache> {
                 images: Mutex::new(MemoryStore::default()),
                 pending: Mutex::new(HashSet::new()),
                 failed_until: Mutex::new(HashMap::new()),
-                requests: Arc::new(Semaphore::new(4)),
+                requests: Arc::new(Semaphore::new(16)),
                 disk_dir: avatar_disk_dir(),
                 app: Mutex::new(None),
                 slots: Mutex::new(SlotTable::default()),
@@ -146,9 +146,6 @@ fn load_disk_avatar(path: &Path) -> Option<Vec<u8>> {
     if rgba.len() != AVATAR_BYTES {
         let _ = std::fs::remove_file(path);
         return None;
-    }
-    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
-        let _ = file.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()));
     }
     Some(rgba)
 }
@@ -242,6 +239,36 @@ impl AvatarCache {
         }
     }
 
+    /// Drops decoded thumbnails and pool bookkeeping for the signed-out account.
+    ///
+    /// The disk cache is shared between accounts and is intentionally kept. Must
+    /// run on the UI thread: the shared thumbnail pool is cleared in place.
+    pub fn clear_session(&self) {
+        if let Ok(mut images) = self.images.lock() {
+            images.entries.clear();
+            images.clock = 0;
+        }
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.clear();
+        }
+        if let Ok(mut failed) = self.failed_until.lock() {
+            failed.clear();
+        }
+        if let Ok(mut slots) = self.slots.lock() {
+            slots.by_url.clear();
+            slots.urls.clear();
+            slots.next = 0;
+        }
+        UI_POOL.with(|pool| {
+            if let Some(pool) = pool.borrow().as_ref() {
+                for index in 0..pool.images.row_count() {
+                    pool.images.set_row_data(index, slint::Image::default());
+                    pool.urls.set_row_data(index, slint::SharedString::default());
+                }
+            }
+        });
+    }
+
     /// Pool slot for a sidebar row's avatar. Thread-safe and cheap: the image
     /// itself is attached on the UI thread once cached or downloaded.
     pub fn slot_for(&self, url: &str) -> i32 {
@@ -272,16 +299,20 @@ impl AvatarCache {
         if is_new {
             let app = self.app.lock().ok().and_then(|slot| slot.clone());
             if let Some(app) = app {
-                let cached = self
-                    .images
-                    .lock()
-                    .is_ok_and(|images| images.entries.contains_key(url));
-                if cached {
-                    let url = url.to_owned();
+                // Fast path: if already in memory RAM, attach to pool immediately.
+                // `slot_for` also runs from tokio workers while the DM/guild lists
+                // are built. `pool_set` touches Slint models, so it must be
+                // dispatched to the UI thread; calling it directly from a worker
+                // silently did nothing and left already-cached avatars blank.
+                let cached_img = self.get(url);
+                if cached_img.is_some() {
+                    // `slint::Image` is not Send in this backend, so the UI
+                    // closure looks the thumbnail up again on the UI thread.
                     let cache = get_avatar_cache();
+                    let slot_url = url.to_owned();
                     let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(image) = cache.get(&url) {
-                            pool_set(slot, &url, image);
+                        if let Some(image) = cache.get(&slot_url) {
+                            pool_set(slot, &slot_url, image);
                         }
                     });
                 } else {
@@ -310,6 +341,38 @@ impl AvatarCache {
             self.fetch(url, app);
         }
         slint::Image::default()
+    }
+
+    /// Pre-warms the memory cache from disk asynchronously on a background thread.
+    /// This prevents any cold-boot I/O delay or syscall spikes on the UI thread when opening DMs.
+    pub fn warm_up_from_disk(&self, urls: &[String]) {
+        // Cap the pre-warm: eagerly decoding every cached avatar on a large
+        // account caused a startup CPU/RAM spike for images most rows never
+        // display. The rest load on demand.
+        let mut seen = HashSet::new();
+        let urls: Vec<String> = urls
+            .iter()
+            .filter(|url| !url.is_empty() && seen.insert((*url).clone()))
+            .take(128)
+            .cloned()
+            .collect();
+        let cache = get_avatar_cache();
+        tokio::task::spawn_blocking(move || {
+            for url in urls {
+                if url.is_empty() {
+                    continue;
+                }
+                let already_cached = cache.images.lock().is_ok_and(|img| img.entries.contains_key(&url));
+                if !already_cached {
+                    let disk_path = avatar_disk_path(&cache.disk_dir, &url);
+                    if let Some(rgba) = load_disk_avatar(&disk_path) {
+                        if let Ok(mut images) = cache.images.lock() {
+                            images.insert(url, rgba);
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub fn hydrate(&self, messages: &mut [ChatMessage], app: &slint::Weak<AppWindow>) {
@@ -353,10 +416,7 @@ impl AvatarCache {
         let url = url.to_owned();
         let cache = get_avatar_cache();
         tokio::spawn(async move {
-            let _permit = match cache.requests.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => return,
-            };
+            // First check local disk cache without contending for network download permits
             let disk_path = avatar_disk_path(&cache.disk_dir, &url);
             let mut pixels = tokio::task::spawn_blocking(move || load_disk_avatar(&disk_path))
                 .await
@@ -364,39 +424,39 @@ impl AvatarCache {
                 .flatten();
             let mut downloaded = false;
 
+            // Only acquire network permit if we actually need to download over HTTP
             if pixels.is_none() {
-                let client = crate::utils::apply_proxy_to_builder(
-                    reqwest::Client::builder().timeout(Duration::from_secs(6)),
-                )
-                .build();
-                if let Ok(client) = client {
-                    if let Ok(mut response) = client.get(&url).send().await {
-                        if response.status().is_success()
-                            && response.content_length().unwrap_or(0) <= MAX_DOWNLOAD_BYTES as u64
-                        {
-                            let mut bytes = Vec::new();
-                            let mut valid = true;
-                            loop {
-                                match response.chunk().await {
-                                    Ok(Some(chunk))
-                                        if bytes.len() + chunk.len() <= MAX_DOWNLOAD_BYTES =>
-                                    {
-                                        bytes.extend_from_slice(&chunk);
-                                    }
-                                    Ok(None) => break,
-                                    _ => {
-                                        valid = false;
-                                        break;
-                                    }
+                let _permit = match cache.requests.acquire().await {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                };
+                let client = crate::utils::network_settings::shared_http_client();
+                if let Ok(mut response) = client.get(&url).send().await {
+                    if response.status().is_success()
+                        && response.content_length().unwrap_or(0) <= MAX_DOWNLOAD_BYTES as u64
+                    {
+                        let mut bytes = Vec::new();
+                        let mut valid = true;
+                        loop {
+                            match response.chunk().await {
+                                Ok(Some(chunk))
+                                    if bytes.len() + chunk.len() <= MAX_DOWNLOAD_BYTES =>
+                                {
+                                    bytes.extend_from_slice(&chunk);
+                                }
+                                Ok(None) => break,
+                                _ => {
+                                    valid = false;
+                                    break;
                                 }
                             }
-                            if valid {
-                                pixels = tokio::task::spawn_blocking(move || decode_avatar(&bytes))
-                                    .await
-                                    .ok()
-                                    .flatten();
-                                downloaded = pixels.is_some();
-                            }
+                        }
+                        if valid {
+                            pixels = tokio::task::spawn_blocking(move || decode_avatar(&bytes))
+                                .await
+                                .ok()
+                                .flatten();
+                            downloaded = pixels.is_some();
                         }
                     }
                 }

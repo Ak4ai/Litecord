@@ -291,35 +291,75 @@ impl LinuxLoopbackSinkGuard {
         }
     }
 
-    fn move_litecord_sink_inputs(target_sink: &str) {
+    /// Moves every application **except Litecord** to the isolated sink whose
+    /// monitor we capture.  Litecord's own call audio stays on the real sink,
+    /// so it is heard locally but never echoed back into the stream when the
+    /// user shares system audio.
+    fn move_other_sink_inputs(target_sink: &str) {
         let pid_str = std::process::id().to_string();
+        // Index of the isolated sink, so an input that is already there is not
+        // moved (and logged) again on every 500 ms pass.
+        let target_index = std::process::Command::new("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| {
+                text.lines().find_map(|line| {
+                    let mut fields = line.split('\t');
+                    let index = fields.next()?;
+                    (fields.next()? == target_sink).then(|| index.to_string())
+                })
+            });
+
         if let Ok(output) = std::process::Command::new("pactl").args(["list", "sink-inputs"]).output() {
             if let Ok(text) = String::from_utf8(output.stdout) {
                 let mut current_id: Option<String> = None;
-                let mut is_litecord = false;
+                let mut current_sink: Option<String> = None;
+                // `true` means: leave it alone (Litecord, or our own loopback
+                // that already plays the isolated sink on the real speakers).
+                let mut keep_on_real_sink = false;
+                let mut moved = 0usize;
 
                 for line in text.lines() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("Sink Input #") || trimmed.starts_with("Sink-Input #") || (trimmed.contains('#') && trimmed.to_lowercase().contains("sink-input")) {
-                        if let (Some(id), true) = (current_id.take(), is_litecord) {
-                            let _ = std::process::Command::new("pactl").args(["move-sink-input", &id, target_sink]).status();
+                        if let Some(id) = current_id.take() {
+                            let already_there = target_index.is_some() && current_sink == target_index;
+                            if !keep_on_real_sink && !already_there {
+                                let _ = std::process::Command::new("pactl").args(["move-sink-input", &id, target_sink]).status();
+                                moved += 1;
+                            }
                         }
-                        is_litecord = false;
+                        keep_on_real_sink = false;
+                        current_sink = None;
                         if let Some(pos) = trimmed.find('#') {
                             let id_str: String = trimmed[pos + 1..].chars().take_while(|c| c.is_ascii_digit()).collect();
                             if !id_str.is_empty() {
                                 current_id = Some(id_str);
                             }
                         }
+                    } else if let Some(rest) = trimmed.strip_prefix("Sink:") {
+                        current_sink = Some(rest.trim().to_string());
                     } else {
                         let lower = trimmed.to_lowercase();
-                        if lower.contains("litecord") || trimmed.contains(&pid_str) {
-                            is_litecord = true;
+                        if lower.contains("litecord")
+                            || lower.contains("loopback")
+                            || trimmed.contains(&pid_str)
+                        {
+                            keep_on_real_sink = true;
                         }
                     }
                 }
-                if let (Some(id), true) = (current_id, is_litecord) {
-                    let _ = std::process::Command::new("pactl").args(["move-sink-input", &id, target_sink]).status();
+                if let Some(id) = current_id {
+                    let already_there = target_index.is_some() && current_sink == target_index;
+                    if !keep_on_real_sink && !already_there {
+                        let _ = std::process::Command::new("pactl").args(["move-sink-input", &id, target_sink]).status();
+                        moved += 1;
+                    }
+                }
+                if moved > 0 {
+                    info!("🎧 [LOOPBACK TX] {} aplicação(ões) movida(s) para '{}' para capturar o áudio do sistema.", moved, target_sink);
                 }
             }
         }
@@ -365,24 +405,21 @@ impl LinuxLoopbackSinkGuard {
             None
         };
 
+        // NUNCA alteramos o sink padrão do sistema (pactl set-default-sink)!
+        // Em vez disso, criamos um sink nulo 'LitecordAppAudio' com loopback para o sink físico real.
+        // As aplicações a serem transmitidas (ou o áudio do sistema) tocam nesse sink, ou
+        // capturamos diretamente do monitor do sink nativo sem tocar nas configurações globais do WirePlumber.
         if mod_null.is_some() && mod_loopback.is_some() {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", "LitecordDesktopSink"])
-                .status();
-            info!("🛡️ [LOOPBACK TX] Sink virtual isolado 'LitecordDesktopSink' criado (áudio do Litecord excluído da transmissão de tela)!");
-
-            // Move imediatamente qualquer stream já aberta do Litecord de volta para o hardware físico
-            Self::move_litecord_sink_inputs(&orig);
+            info!("🛡️ [LOOPBACK TX] Sink auxiliar 'LitecordDesktopSink' criado com espelhamento transparente (sem alterar o sink padrão do sistema)!");
         }
 
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let orig_for_thread = orig.clone();
         let stop_for_thread = Arc::clone(&stop_flag);
 
         let recheck_thread = if mod_null.is_some() && mod_loopback.is_some() && !orig.is_empty() {
             Some(std::thread::spawn(move || {
                 while !stop_for_thread.load(Ordering::Relaxed) {
-                    Self::move_litecord_sink_inputs(&orig_for_thread);
+                    Self::move_other_sink_inputs("LitecordDesktopSink");
                     std::thread::sleep(Duration::from_millis(500));
                 }
             }))
@@ -407,12 +444,6 @@ impl Drop for LinuxLoopbackSinkGuard {
         if let Some(t) = self.recheck_thread.take() {
             let _ = t.join();
         }
-        if !self.original_sink.is_empty() && !self.original_sink.contains("Litecord") {
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", &self.original_sink])
-                .status();
-            info!("🛡️ [LOOPBACK TX] Sink padrão restaurado para '{}'", self.original_sink);
-        }
         if let Some(ref m) = self.mod_loopback {
             let _ = std::process::Command::new("pactl")
                 .args(["unload-module", m])
@@ -424,6 +455,96 @@ impl Drop for LinuxLoopbackSinkGuard {
                 .status();
         }
     }
+}
+
+/// Starts the best available monitor-source capture.  `pulsesrc` is missing on
+/// many PipeWire setups (Ubuntu/Fedora only ship the PipeWire GStreamer
+/// plugin), so prefer `pw-record`, then `parec`, then GStreamer.
+#[cfg(target_os = "linux")]
+fn spawn_linux_loopback_capture(
+    monitor_device: &str,
+) -> Option<(std::process::Child, std::process::ChildStdout, &'static str)> {
+    use std::process::{Command, Stdio};
+
+    let gst_device = format!("device={}", monitor_device);
+    // `parec` goes first: it uses the PulseAudio protocol, where monitors are
+    // real sources (`LitecordDesktopSink.monitor`).  `pw-record` talks to
+    // PipeWire directly, and a null-sink monitor is not exposed as a native
+    // node there: the stream silently falls back to the default microphone,
+    // which is why viewers were hearing noise instead of the shared audio.
+    let attempts: Vec<(&'static str, Vec<String>)> = vec![
+        (
+            "parec",
+            vec![
+                "--device".into(),
+                monitor_device.into(),
+                // Without an explicit low latency the monitor node stays
+                // suspended and parec exits after writing nothing.
+                "--latency-msec=20".into(),
+                "--format=s16le".into(),
+                "--rate=48000".into(),
+                "--channels=1".into(),
+                "--raw".into(),
+            ],
+        ),
+        (
+            "pw-record",
+            vec![
+                "--target".into(),
+                monitor_device.into(),
+                "--rate".into(),
+                "48000".into(),
+                "--channels".into(),
+                "1".into(),
+                "--format".into(),
+                "s16".into(),
+                // Raw PCM: without this pw-record writes an AU/SND header that
+                // the reader would mistake for audio samples.
+                "--raw".into(),
+                "--latency".into(),
+                "20ms".into(),
+                "-".into(),
+            ],
+        ),
+        (
+            "gst-launch-1.0",
+            vec![
+                "-q".into(),
+                "pulsesrc".into(),
+                gst_device,
+                "buffer-time=20000".into(),
+                "latency-time=10000".into(),
+                "!".into(),
+                "audioconvert".into(),
+                "!".into(),
+                "audio/x-raw,format=S16LE,rate=48000,channels=1".into(),
+                "!".into(),
+                "fdsink".into(),
+                "fd=1".into(),
+            ],
+        ),
+    ];
+
+    for (program, args) in attempts {
+        let mut command = Command::new(program);
+        command.env_remove("PIPEWIRE_NODE");
+        command.args(&args);
+        command.stdout(Stdio::piped()).stderr(Stdio::null());
+        let Ok(mut child) = command.spawn() else {
+            continue;
+        };
+        // A spawned process may die immediately when the tool exists but the
+        // required plugin/source does not.
+        std::thread::sleep(Duration::from_millis(120));
+        if child.try_wait().ok().flatten().is_some() {
+            continue;
+        }
+        if let Some(stdout) = child.stdout.take() {
+            return Some((child, stdout, program));
+        }
+        let _ = child.kill();
+    }
+    None
 }
 
 pub fn start_audio_loopback_tx(
@@ -467,68 +588,47 @@ pub fn start_audio_loopback_tx(
 
             #[cfg(target_os = "linux")]
             if try_pulse {
-                let monitor_device = if _sink_guard.mod_null.is_some() {
-                    "LitecordDesktopSink.monitor"
+                let monitor_device = if _sink_guard.mod_null.is_some() && _sink_guard.mod_loopback.is_some() {
+                    "LitecordDesktopSink.monitor".to_string()
+                } else if !_sink_guard.original_sink.is_empty() {
+                    format!("{}.monitor", _sink_guard.original_sink)
                 } else {
-                    "@DEFAULT_SINK@.monitor"
+                    "@DEFAULT_SINK@.monitor".to_string()
                 };
 
-                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (Linux PulseAudio/PipeWire no dispositivo '{}')...", monitor_device);
-                let mut cmd = std::process::Command::new("gst-launch-1.0");
-                cmd.env_remove("PIPEWIRE_NODE");
-                cmd.args([
-                    "-q",
-                    "pulsesrc",
-                    &format!("device={}", monitor_device),
-                    "buffer-time=20000",
-                    "latency-time=10000",
-                    "!",
-                    "audioconvert",
-                    "!",
-                    "audio/x-raw,format=S16LE,rate=48000,channels=1",
-                    "!",
-                    "fdsink",
-                    "fd=1",
-                ]);
-                cmd.stdout(std::process::Stdio::piped());
-                cmd.stderr(std::process::Stdio::null());
+                info!("🎙️ [LOOPBACK TX] Inicializando captura de áudio da transmissão (Linux/PipeWire no dispositivo '{}')...", monitor_device);
+                match spawn_linux_loopback_capture(&monitor_device) {
+                    Some((mut child, mut stdout, backend)) => {
+                        active_sample_rate = 48000;
+                        target_chunk_samples = 480; // 10ms @ 48kHz
+                        let pcm_buf = Arc::clone(&pcm_buffer_cb);
+                        let is_running_reader = Arc::clone(&is_running);
 
-                match cmd.spawn() {
-                    Ok(mut child) => {
-                        if let Some(mut stdout) = child.stdout.take() {
-                            active_sample_rate = 48000;
-                            target_chunk_samples = 480; // 10ms @ 48kHz
-                            let pcm_buf = Arc::clone(&pcm_buffer_cb);
-                            let is_running_reader = Arc::clone(&is_running);
-
-                            std::thread::Builder::new()
-                                .name("gst-audio-loopback-reader".to_string())
-                                .spawn(move || {
-                                    use std::io::Read;
-                                    let mut raw = [0u8; 960]; // 480 samples * 2 bytes = 10ms
-                                    while is_running_reader.load(Ordering::Relaxed) {
-                                        match stdout.read_exact(&mut raw) {
-                                            Ok(_) => {
-                                                let mut buf = pcm_buf.lock().unwrap_or_else(|e| e.into_inner());
-                                                for chunk in raw.chunks_exact(2) {
-                                                    let s = i16::from_le_bytes([chunk[0], chunk[1]]);
-                                                    buf.push(s);
-                                                }
+                        std::thread::Builder::new()
+                            .name("audio-loopback-reader".to_string())
+                            .spawn(move || {
+                                use std::io::Read;
+                                let mut raw = [0u8; 960]; // 480 samples * 2 bytes = 10ms
+                                while is_running_reader.load(Ordering::Relaxed) {
+                                    match stdout.read_exact(&mut raw) {
+                                        Ok(_) => {
+                                            let mut buf = pcm_buf.lock().unwrap_or_else(|e| e.into_inner());
+                                            for chunk in raw.chunks_exact(2) {
+                                                let s = i16::from_le_bytes([chunk[0], chunk[1]]);
+                                                buf.push(s);
                                             }
-                                            Err(_) => break,
                                         }
+                                        Err(_) => break,
                                     }
-                                })
-                                .ok();
+                                }
+                            })
+                            .ok();
 
-                            info!("🔊 [LOOPBACK TX] Captura de áudio do sistema PipeWire/PulseAudio iniciada com sucesso (48000Hz, 1 canal, chunk=480 amostras/10ms)!");
-                            gst_child = Some(child);
-                        } else {
-                            warn!("⚠️ [LOOPBACK TX] Falha ao capturar stdout do GStreamer pulsesrc!");
-                        }
+                        info!("🔊 [LOOPBACK TX] Captura de áudio do sistema iniciada via '{}' (48000Hz, 1 canal, chunk=480 amostras/10ms)!", backend);
+                        gst_child = Some(child);
                     }
-                    Err(e) => {
-                        warn!("⚠️ [LOOPBACK TX] Falha ao iniciar gst-launch-1.0 pulsesrc: {:?}", e);
+                    None => {
+                        warn!("⚠️ [LOOPBACK TX] Nenhum backend de captura de áudio do sistema disponível (pw-record/parec/gst-launch pulsesrc).");
                     }
                 }
             }
@@ -736,12 +836,14 @@ pub fn start_audio_loopback_tx(
                 // Only to the viewers that asked for the stream, with the stream's key.
                 let target_addrs = super::watch::viewer_addrs();
                 let stream_key = super::watch::session_key();
+                let is_go_live_active = crate::native_video::is_broadcasting();
                 for chunk in chunks_to_send {
                     super::web_share::offer_audio(&chunk, active_sample_rate);
-                    let Some(stream_key) = stream_key.filter(|_| !target_addrs.is_empty()) else {
+                    let should_encode = !target_addrs.is_empty() || is_go_live_active;
+                    if !should_encode {
                         opus = None;
                         continue;
-                    };
+                    }
                     if opus.is_none() {
                         opus = super::stream_audio::StreamAudioEncoder::new();
                     }
@@ -749,24 +851,32 @@ pub fn start_audio_loopback_tx(
                     let pts_ms = get_tx_pts_ms();
                     // One packet per 20 ms Opus frame (48 kHz, two equal channels).
                     for frame in encoder.push(&chunk, active_sample_rate) {
-                        seq = seq.wrapping_add(1);
-                        let Some(audio_payload) = encrypt_signaling_payload(&stream_key, &frame) else {
-                            continue;
-                        };
-                        let mut pkt = Vec::with_capacity(40 + audio_payload.len());
-                        pkt.extend_from_slice(MAGIC);
-                        pkt.extend_from_slice(&inst.to_be_bytes());
-                        pkt.push(OP_AUDIO_FRAME);
-                        pkt.extend_from_slice(&cid.to_be_bytes());
-                        pkt.extend_from_slice(&uid.to_be_bytes());
-                        pkt.extend_from_slice(&seq.to_be_bytes());
-                        pkt.extend_from_slice(&pts_ms.to_be_bytes());
-                        pkt.push(2); // channels
-                        pkt.extend_from_slice(&48_000u32.to_be_bytes());
-                        pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
-                        pkt.extend_from_slice(&audio_payload);
-                        for target in &target_addrs {
-                            let _ = socket.send_to(&pkt, target);
+                        // 1. Enviar para Discord Go Live nativo se ativo
+                        if is_go_live_active {
+                            crate::native_video::offer_outbound_audio(&frame);
+                        }
+
+                        // 2. Enviar para espectadores P2P LTPV se presentes
+                        if let Some(ref sk) = stream_key.as_ref().filter(|_| !target_addrs.is_empty()) {
+                            seq = seq.wrapping_add(1);
+                            let Some(audio_payload) = encrypt_signaling_payload(sk, &frame) else {
+                                continue;
+                            };
+                            let mut pkt = Vec::with_capacity(40 + audio_payload.len());
+                            pkt.extend_from_slice(MAGIC);
+                            pkt.extend_from_slice(&inst.to_be_bytes());
+                            pkt.push(OP_AUDIO_FRAME);
+                            pkt.extend_from_slice(&cid.to_be_bytes());
+                            pkt.extend_from_slice(&uid.to_be_bytes());
+                            pkt.extend_from_slice(&seq.to_be_bytes());
+                            pkt.extend_from_slice(&pts_ms.to_be_bytes());
+                            pkt.push(2); // channels
+                            pkt.extend_from_slice(&48_000u32.to_be_bytes());
+                            pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
+                            pkt.extend_from_slice(&audio_payload);
+                            for target in &target_addrs {
+                                let _ = socket.send_to(&pkt, target);
+                            }
                         }
                     }
 

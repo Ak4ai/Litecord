@@ -7,6 +7,7 @@ import "../assets/fonts/Inter-Variable.ttf";
 import { IconButton } from "components/icon_button.slint";
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
 import { SettingsView, LanguageItem, SettingOptionItem, AudioDeviceItem } from "components/settings_view.slint";
+import { OnboardingView, OnboardingPromptItem, OnboardingOptionItem } from "components/onboarding_view.slint";
 import { ChatMessagesView, LinkItem, MessageBlock, MessageLine, MessageAttachment, MessageButton, ChatMessage } from "components/chat_messages_view.slint";
 
 struct CommandSuggestion {
@@ -20,6 +21,40 @@ struct CommandSuggestion {
     param_name: string,
     param_desc: string,
     is_required: bool,
+}
+
+export struct EmojiPickerItem {
+    code: string,
+    name: string,
+    category: string,
+    is_custom: bool,
+}
+
+export struct EmojiRow {
+    emojis: [EmojiPickerItem],
+}
+
+export struct SoundboardItem {
+    id: string,
+    name: string,
+    icon: string,
+    category: string,
+}
+
+export struct SoundboardRow {
+    sounds: [SoundboardItem],
+}
+
+export struct ContextMenuItem {
+    id: string,
+    label: string,
+    icon: string,
+    danger: bool,
+    checked: bool,
+    enabled: bool,
+    // 0 = normal item, 1 = separator, 2 = section title
+    kind: int,
+    submenu: bool,
 }
 
 struct GuildItem {
@@ -39,10 +74,16 @@ struct VoiceParticipant {
     is_speaking: bool,
     audio_level: float,
     is_muted: bool,
+    is_deafened: bool,
+    is_server_muted: bool,
+    role_name: string,
+    role_color: color,
     volume: float,
     priority: int,
     is_self: bool,
     is_streaming: bool,
+    is_screen_streaming: bool,
+    is_camera_streaming: bool,
     is_stream_hidden: bool,
 }
 
@@ -74,6 +115,146 @@ export struct AccountItem {
     is_active: bool,
 }
 
+// Voice/stream volume slider with the Discord boost range (0–200%) and ticks
+// at 50, 100, 125, 150 and 200.  `show-labels` is used in the context menu,
+// where there is room for the percentages; rows keep only the marks.
+component VolumeSlider inherits Rectangle {
+    in property <float> value: 1.0;
+    in property <length> track-length: 110px;
+    in property <bool> show-labels: false;
+    callback changed(float);
+
+    width: show-labels ? track-length + 28px : track-length;
+    height: show-labels ? 30px : 18px;
+
+    // Track first, then the coloured progress, then the ticks on top of it.
+    // Without clipping the fill could paint outside the rounded track.
+    Rectangle {
+        x: 0;
+        y: 7px;
+        width: track-length;
+        height: 4px;
+        background: #3f4147;
+        border-radius: 2px;
+        clip: true;
+
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width * (value.clamp(0.0, 2.0) / 2.0);
+            height: parent.height;
+            background: value <= 0.01 ? AppTheme.danger : AppTheme.accent;
+            border-radius: 2px;
+        }
+    }
+
+    // Tick marks: 50%, 100%, 125%, 150%, 200%, above the filled part.
+    Rectangle {
+        x: track-length * 0.25 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length * 0.50 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length * 0.625 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length * 0.75 - 0.5px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+    Rectangle {
+        x: track-length - 1px;
+        y: 4px;
+        width: 1px;
+        height: 10px;
+        background: #6b6f78;
+    }
+
+    // Thumb
+    Rectangle {
+        x: (value.clamp(0.0, 2.0) / 2.0) * track-length - 4px;
+        y: 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: AppTheme.text-strong;
+    }
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: track-length;
+        height: 18px;
+        mouse-cursor: pointer;
+        clicked => {
+            changed((self.mouse-x / track-length).clamp(0.0, 1.0) * 2.0);
+        }
+        moved => {
+            if (self.pressed) {
+                changed((self.mouse-x / track-length).clamp(0.0, 1.0) * 2.0);
+            }
+        }
+    }
+
+    if show-labels : HorizontalLayout {
+        x: 0;
+        y: 17px;
+        width: track-length;
+        height: 12px;
+        Text {
+            horizontal-stretch: 1;
+            text: "50%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "100%";
+            color: #DBDEE1;
+            font-size: 8px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "125%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "150%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "200%";
+            color: #949BA4;
+            font-size: 8px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
 
 export component AppWindow inherits Window {
     title: "Litecord - Ultra-Lightweight Discord Client";
@@ -89,9 +270,26 @@ export component AppWindow inherits Window {
     // Public bridge for the backend/settings layer. Theme persistence and the
     // visible selector can bind to this property without knowing token details.
     in-out property <bool> use-light-theme: false;
-    changed use-light-theme => {
-        AppTheme.mode = use-light-theme ? ThemeMode.light : ThemeMode.dark;
+    in-out property <string> theme_mode_name: "dark";
+    changed theme_mode_name => {
+        if (theme_mode_name == "amoled") {
+            AppTheme.mode = ThemeMode.amoled;
+            root.use-light-theme = false;
+        } else if (theme_mode_name == "light") {
+            AppTheme.mode = ThemeMode.light;
+            root.use-light-theme = true;
+        } else {
+            AppTheme.mode = ThemeMode.dark;
+            root.use-light-theme = false;
+        }
     }
+    changed use-light-theme => {
+        if (root.theme_mode_name != "amoled") {
+            AppTheme.mode = root.use-light-theme ? ThemeMode.light : ThemeMode.dark;
+            root.theme_mode_name = root.use-light-theme ? "light" : "dark";
+        }
+    }
+    callback select_theme_mode(string);
 
     // Callbacks to Rust backend
     callback drag_window();
@@ -125,6 +323,48 @@ export component AppWindow inherits Window {
     callback toggle_voice_focus();
     callback open_link(string /* url */);
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
+    callback open_image_viewer(image);
+    in-out property <bool> show_image_viewer: false;
+    in-out property <image> image_viewer_source;
+
+    // Discord-style context menus. Rust fills the model; Slint only paints it.
+    callback request_context_menu(string /* id */, length /* x */, length /* y */);
+    callback context_menu_action(string /* action id */);
+    in-out property <bool> context_menu_open: false;
+    in-out property <length> context_menu_x: 0px;
+    in-out property <length> context_menu_y: 0px;
+    in-out property <string> context_menu_title: "";
+    in-out property <[ContextMenuItem]> context_menu_items: [];
+    in-out property <bool> context_menu_submenu_open: false;
+    in-out property <string> context_menu_submenu_title: "";
+    in-out property <[ContextMenuItem]> context_menu_submenu_items: [];
+    callback context_menu_submenu_request(string);
+    // Voice and stream have independent sliders: a user can be streaming while
+    // you still want to tune their microphone separately.
+    in-out property <bool> context_menu_show_voice_slider: false;
+    in-out property <string> context_menu_voice_slider_label: "";
+    in-out property <float> context_menu_voice_slider_value: 1.0;
+    callback context_menu_voice_slider_changed(float);
+    in-out property <bool> context_menu_show_stream_slider: false;
+    in-out property <string> context_menu_stream_slider_label: "";
+    in-out property <float> context_menu_stream_slider_value: 1.0;
+    callback context_menu_stream_slider_changed(float);
+
+    // Channel/server edition and confirmation dialogs.
+    callback edit_modal_save();
+    callback edit_modal_cancel();
+    in-out property <bool> show_edit_modal: false;
+    in-out property <string> edit_modal_title: "";
+    in-out property <string> edit_name: "";
+    in-out property <string> edit_topic: "";
+    in-out property <bool> edit_nsfw: false;
+    in-out property <bool> edit_show_topic: false;
+
+    callback confirm_modal_accept();
+    callback confirm_modal_cancel();
+    in-out property <bool> show_confirm_modal: false;
+    in-out property <string> confirm_title: "";
+    in-out property <string> confirm_message: "";
     callback set_vad_threshold(float /* threshold */);
     callback set_mic_volume(float /* volume */);
     callback toggle_test_mic();
@@ -141,8 +381,10 @@ export component AppWindow inherits Window {
     callback check_for_updates();
     callback reorder_guild(int, int);
     callback reorder_channel(int, int);
+    callback move_voice_member(string /* source row */, string /* target voice channel */);
     // Row a channel dragged from row `from` by `dy` would land on (rows differ in height).
     pure callback channel_drop_row(int, length) -> int;
+    pure callback voice_member_drop_row(int, length) -> int;
     in-out property <int> dragging_guild_idx: -1;
     in-out property <int> drop_target_guild_idx: -1;
     callback load_older_messages();
@@ -155,6 +397,9 @@ export component AppWindow inherits Window {
     callback stop_stream();
     callback open_stream_modal();
     callback close_stream_modal();
+    callback onboarding_toggle(int /* prompt */, int /* option */);
+    callback onboarding_submit();
+    callback onboarding_dismiss();
     callback popout_stream_window(string /* user_id */, string /* username */);
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
@@ -210,10 +455,146 @@ export component AppWindow inherits Window {
     in-out property <string> update_check_feedback: "";
     in-out property <bool> is_checking_update: false;
 
+    // Emoji Picker & Soundboard Callbacks & Properties
+    callback select_emoji(string);
+    callback toggle_emoji_picker();
+    callback play_soundboard_sound(string);
+    callback toggle_soundboard_panel();
+
+    select_emoji(code) => {
+        root.chat_input_text = root.chat_input_text + code + " ";
+        root.show_emoji_picker = false;
+    }
+    toggle_emoji_picker => {
+        root.show_emoji_picker = !root.show_emoji_picker;
+        if (root.show_emoji_picker) {
+            root.show_soundboard_panel = false;
+            root.show_command_suggestions = false;
+        }
+    }
+    toggle_soundboard_panel => {
+        root.show_soundboard_panel = !root.show_soundboard_panel;
+        if (root.show_soundboard_panel) {
+            root.show_emoji_picker = false;
+            root.show_command_suggestions = false;
+        }
+    }
+
+    in-out property <bool> show_emoji_picker: false;
+    in-out property <string> emoji_search_query: "";
+    in-out property <[EmojiRow]> emoji_rows: [
+        { emojis: [
+            { code: "😀", name: "grinning", category: "faces", is_custom: false },
+            { code: "😂", name: "joy", category: "faces", is_custom: false },
+            { code: "🤣", name: "rofl", category: "faces", is_custom: false },
+            { code: "😊", name: "blush", category: "faces", is_custom: false },
+            { code: "😍", name: "heart_eyes", category: "faces", is_custom: false },
+            { code: "🥰", name: "smiling_face_with_3_hearts", category: "faces", is_custom: false },
+            { code: "😎", name: "sunglasses", category: "faces", is_custom: false },
+            { code: "🤔", name: "thinking", category: "faces", is_custom: false },
+            { code: "🤫", name: "shushing", category: "faces", is_custom: false },
+            { code: "😭", name: "sob", category: "faces", is_custom: false },
+            { code: "💀", name: "skull", category: "faces", is_custom: false },
+            { code: "🔥", name: "fire", category: "objects", is_custom: false }
+        ]},
+        { emojis: [
+            { code: "✨", name: "sparkles", category: "objects", is_custom: false },
+            { code: "👍", name: "+1", category: "hands", is_custom: false },
+            { code: "👎", name: "-1", category: "hands", is_custom: false },
+            { code: "👏", name: "clap", category: "hands", is_custom: false },
+            { code: "🙌", name: "raised_hands", category: "hands", is_custom: false },
+            { code: "❤️", name: "heart", category: "objects", is_custom: false },
+            { code: "🎉", name: "tada", category: "objects", is_custom: false },
+            { code: "👀", name: "eyes", category: "faces", is_custom: false },
+            { code: "💯", name: "100", category: "objects", is_custom: false },
+            { code: "🚀", name: "rocket", category: "objects", is_custom: false },
+            { code: "🎮", name: "video_game", category: "objects", is_custom: false },
+            { code: "🍻", name: "beers", category: "objects", is_custom: false }
+        ]},
+        { emojis: [
+            { code: "🍕", name: "pizza", category: "objects", is_custom: false },
+            { code: "💩", name: "poop", category: "faces", is_custom: false },
+            { code: "🥺", name: "pleading_face", category: "faces", is_custom: false },
+            { code: "🥳", name: "partying_face", category: "faces", is_custom: false },
+            { code: "🤯", name: "exploding_head", category: "faces", is_custom: false },
+            { code: "🤝", name: "handshake", category: "hands", is_custom: false },
+            { code: "🙏", name: "pray", category: "hands", is_custom: false },
+            { code: "💪", name: "muscle", category: "hands", is_custom: false },
+            { code: "🧠", name: "brain", category: "faces", is_custom: false },
+            { code: "🤡", name: "clown", category: "faces", is_custom: false },
+            { code: "👻", name: "ghost", category: "faces", is_custom: false },
+            { code: "👾", name: "space_invader", category: "objects", is_custom: false }
+        ]}
+    ];
+
+    in-out property <bool> show_soundboard_panel: false;
+    in-out property <[SoundboardRow]> soundboard_rows: [
+        { sounds: [
+            { id: "airhorn", name: "Airhorn", icon: "🎺", category: "soundboard" },
+            { id: "bruh", name: "Bruh", icon: "🗿", category: "soundboard" },
+            { id: "quack", name: "Quack", icon: "🦆", category: "soundboard" },
+            { id: "badumtss", name: "Ba-Dum-Tss", icon: "🥁", category: "soundboard" }
+        ]},
+        { sounds: [
+            { id: "vineboom", name: "Vine Boom", icon: "💥", category: "soundboard" },
+            { id: "tada", name: "Tada Fanfare", icon: "🎉", category: "soundboard" },
+            { id: "applause", name: "Applause", icon: "👏", category: "soundboard" },
+            { id: "cricket", name: "Crickets", icon: "🦗", category: "soundboard" }
+        ]}
+    ];
+
     // Chat Pagination Properties
     in-out property <bool> is_loading_older_messages: false;
     in-out property <bool> has_more_older_messages: false;
+    in-out property <bool> chat_is_at_bottom: false;
     in-out property <int> scroll_to_bottom_trigger: 0;
+
+    // Entry animations. The chat fades in when a new channel batch is painted
+    // (driven from Rust); the sidebar fades in on the first channel batch of a
+    // new server so frequent in-place updates (voice state, unread badges) stay
+    // flicker-free.
+    //
+    // A plain `animate opacity` would also interpolate the reset, so setting 0
+    // and then 1 a few milliseconds later barely dips the opacity. The
+    // `hidden` state instead enters with a 0 ms transition (snap to 0) and
+    // leaves with the visible fade.
+    in-out property <bool> chat_enter_hidden: false;
+    in-out property <string> chat_painted_channel: "";
+    in-out property <bool> sidebar_enter_hidden: false;
+    in-out property <bool> header_enter_hidden: false;
+    property <string> sidebar_painted_guild: "";
+    changed channels => {
+        if root.active_guild_id != root.sidebar_painted_guild {
+            root.sidebar_painted_guild = root.active_guild_id;
+            root.sidebar_enter_hidden = true;
+            sidebar_fade_timer.start();
+        }
+    }
+    sidebar_fade_timer := Timer {
+        interval: 32ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.sidebar_enter_hidden = false;
+        }
+    }
+    header_fade_timer := Timer {
+        interval: 32ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.header_enter_hidden = false;
+        }
+    }
+
+    // Discord-style server-name tooltip shown while a guild icon is hovered.
+    in-out property <string> guild_tooltip_id: "";
+    in-out property <string> guild_tooltip_text: "";
+    in-out property <length> guild_tooltip_y: 0px;
+    changed guilds => {
+        root.guild_tooltip_id = "";
+        root.guild_tooltip_text = "";
+    }
 
     public function scroll_chat_to_bottom() {
         root.scroll_to_bottom_trigger += 1;
@@ -227,6 +608,11 @@ export component AppWindow inherits Window {
 
     changed active_channel_id => {
         root.scroll_chat_to_bottom();
+        // Fade the outgoing chat out while the new channel loads; the loader
+        // then clears this flag and the new messages fade in.
+        root.chat_enter_hidden = true;
+        root.header_enter_hidden = true;
+        header_fade_timer.start();
     }
 
     public function move_suggestion_up() {
@@ -329,6 +715,7 @@ export component AppWindow inherits Window {
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
     in-out property <bool> use_gpu_renderer: false;
+    in-out property <bool> enable_tray_icon: true;
     in-out property <bool> net_diag_running: false;
     in-out property <int> net_diag_verdict: -1;
     in-out property <bool> net_diag_signaling_ok: true;
@@ -353,6 +740,7 @@ export component AppWindow inherits Window {
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
     callback toggle_gpu_renderer();
+    callback toggle_tray_icon();
     in-out property <length> channel_sidebar_width: 230px;
     callback channel_sidebar_width_committed(length);
     callback run_network_diagnostics();
@@ -404,6 +792,8 @@ export component AppWindow inherits Window {
     in-out property <bool> is_deafened: false;
     in-out property <bool> is_in_voice: false;
     in-out property <bool> is_voice_connecting: false;
+    // Toggled by a UI timer while connecting/ringing to drive the pulse.
+    in-out property <bool> call_pulse: false;
     in-out property <string> current_voice_channel: "";
     in-out property <bool> is_voice_focused: false;
     in-out property <[VoiceParticipant]> voice_participants: [];
@@ -428,7 +818,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected_output_device: "Alto-falantes Padrão do Sistema";
     in-out property <float> mic_level: 0.0; // Real-time mic volume level (0.0 to 1.0)
     in-out property <float> mic_volume: 1.0; // Microphone Input Gain Volume (0.0 to 2.0, 100% = 1.0)
-    in-out property <float> vad_threshold: 0.05; // Voice Activity Detection Threshold (0.0 to 1.0)
+    in-out property <float> vad_threshold: 0.40; // Voice Activity Detection Threshold (0.0 to 1.0, 0.40 = -60 dB)
     in-out property <bool> is_testing_mic: false; // Mic loopback ("Se ouvir") test active
 
     // Screen Share / Live Video Grid Properties
@@ -440,6 +830,14 @@ export component AppWindow inherits Window {
     in-out property <string> web_share_url: "";
     in-out property <string> web_share_error: "";
     in-out property <int> web_share_viewers: 0;
+
+    // Community onboarding questionnaire shown after joining a server.
+    in-out property <bool> show_onboarding_modal: false;
+    in-out property <string> onboarding_guild_id: "";
+    in-out property <string> onboarding_guild_name: "";
+    in-out property <[OnboardingPromptItem]> onboarding_prompts: [];
+    in-out property <bool> onboarding_submitting: false;
+    in-out property <string> onboarding_error: "";
 
     if root.web_share_error != "": Rectangle {
         z: 100;
@@ -485,6 +883,8 @@ export component AppWindow inherits Window {
     callback stream_viewport_changed(length, length, length, length);
     in-out property <bool> is_stream_fullscreen: false;
     in-out property <string> focused_stream_uid: "";
+    // Hides every participant that is not sharing video, leaving the stream area.
+    in-out property <bool> voice_members_collapsed: false;
     in-out property <string> tr_start_screen_share: Tr.start_stream;
     in-out property <string> tr_stop_screen_share: Tr.stop_stream;
     in-out property <string> tr_watching_stream: Tr.watching_stream;
@@ -1026,7 +1426,7 @@ export component AppWindow inherits Window {
                                         border-radius: 6px;
                                         border-width: 1px;
                                         border-color: re_qr_ta.has-hover ? AppTheme.info : AppTheme.border-subtle;
-                                        animate background { duration: 120ms; }
+                                        animate background { duration: 80ms; }
 
                                         HorizontalLayout {
                                             alignment: center;
@@ -1089,22 +1489,24 @@ export component AppWindow inherits Window {
                             alignment: center;
                             width: 8px;
                             Rectangle {
-                                width: 4px;
-                                height: (root.active_guild_id == "@me") ? 36px : (dm_btn_ta.has-hover ? 16px : (root.total_dm_unread_count > 0 ? 8px : 0px));
+                                width: (root.active_guild_id == "@me" || dm_btn_ta.has-hover || root.total_dm_unread_count > 0) ? 4px : 0px;
+                                height: (root.active_guild_id == "@me") ? 40px : (dm_btn_ta.pressed ? 28px : (dm_btn_ta.has-hover ? 20px : (root.total_dm_unread_count > 0 ? 8px : 0px)));
+                                opacity: (root.active_guild_id == "@me" || dm_btn_ta.has-hover || root.total_dm_unread_count > 0) ? 1.0 : 0.0;
                                 background: AppTheme.text-strong;
                                 border-top-right-radius: 4px;
                                 border-bottom-right-radius: 4px;
-                                animate height { duration: 150ms; easing: ease-out; }
+                                animate height, width, opacity { duration: 220ms; easing: ease-out; }
                             }
                         }
 
                         Rectangle {
                             height: 48px;
                             width: 48px;
+                            y: dm_btn_ta.pressed ? 1px : 0px;
                             background: (root.active_guild_id == "@me") ? AppTheme.accent : (dm_btn_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
-                            border-radius: (root.active_guild_id == "@me" || dm_btn_ta.has-hover) ? 14px : 16px;
+                            border-radius: (root.active_guild_id == "@me" || dm_btn_ta.has-hover) ? 15px : 24px;
                             clip: false;
-                            animate border-radius, background { duration: 150ms; easing: ease-out; }
+                            animate border-radius, background, y { duration: 220ms; easing: ease-out; }
 
                             Image {
                                 source: @image-url("../assets/dm-chat.svg");
@@ -1205,23 +1607,25 @@ export component AppWindow inherits Window {
                                             Rectangle {
                                                 x: 0;
                                                 y: (parent.height - self.height) / 2;
-                                                width: 4px;
-                                                height: (guild.id == root.active_guild_id) ? 36px : (guild_ta.has-hover ? 16px : 0px);
+                                                width: (guild.id == root.active_guild_id || guild.id == root.guild_tooltip_id) ? 4px : 0px;
+                                                height: (guild.id == root.active_guild_id) ? 40px : (guild_ta.pressed ? 28px : ((guild.id == root.guild_tooltip_id) ? 20px : 0px));
+                                                opacity: (guild.id == root.active_guild_id || guild.id == root.guild_tooltip_id) ? 1.0 : 0.0;
                                                 background: AppTheme.text-strong;
                                                 border-top-right-radius: 4px;
                                                 border-bottom-right-radius: 4px;
-                                                animate height { duration: 150ms; easing: ease-out; }
+                                                animate height, width, opacity { duration: 220ms; easing: ease-out; }
                                             }
                                         }
 
-                                        Rectangle {
+                                        guild_icon := Rectangle {
                                             height: 48px;
                                             width: 48px;
-                                            background: (guild.id == root.active_guild_id) ? AppTheme.accent : (guild_ta.has-hover ? AppTheme.accent : AppTheme.surface-chat);
-                                            border-radius: (guild.id == root.active_guild_id || guild_ta.has-hover) ? 14px : 16px;
+                                            y: guild_ta.pressed ? 1px : 0px;
+                                            background: (guild.id == root.active_guild_id) ? AppTheme.accent : ((guild.id == root.guild_tooltip_id) ? AppTheme.accent : AppTheme.surface-chat);
+                                            border-radius: (guild.id == root.active_guild_id || guild.id == root.guild_tooltip_id) ? 15px : 24px;
                                             clip: true;
                                             opacity: (root.dragging_guild_idx == idx) ? 0.4 : 1.0;
-                                            animate border-radius, background, opacity { duration: 150ms; easing: ease-out; }
+                                            animate border-radius, background, opacity, y { duration: 220ms; easing: ease-out; }
 
                                             if guild.has_image: Image {
                                                 source: guild.icon_image;
@@ -1242,7 +1646,32 @@ export component AppWindow inherits Window {
 
                                             guild_ta := TouchArea {
                                                 mouse-cursor: pointer;
+
+                                                // Discord shows the server name in a dark pill to the
+                                                // right of the icon. The overlay rectangle lives at the
+                                                // window root so it paints above the channel sidebar.
+                                                changed has-hover => {
+                                                    if (self.has-hover) {
+                                                        if (root.dragging_guild_idx < 0) {
+                                                            root.guild_tooltip_id = guild.id;
+                                                            root.guild_tooltip_text = guild.name;
+                                                            root.guild_tooltip_y = guild_icon.absolute-position.y
+                                                                + (guild_icon.height - 32px) / 2;
+                                                        }
+                                                    } else if (root.guild_tooltip_id == guild.id) {
+                                                        root.guild_tooltip_id = "";
+                                                        root.guild_tooltip_text = "";
+                                                    }
+                                                }
+
                                                 pointer-event(event) => {
+                                                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                                                        root.request_context_menu(
+                                                            "guild:" + guild.id,
+                                                            self.absolute-position.x + self.mouse-x,
+                                                            self.absolute-position.y + self.mouse-y
+                                                        );
+                                                    }
                                                     if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                                                         if (root.dragging_guild_idx >= 0 && root.drop_target_guild_idx >= 0 && root.dragging_guild_idx != root.drop_target_guild_idx) {
                                                             root.reorder_guild(root.dragging_guild_idx, root.drop_target_guild_idx);
@@ -1258,6 +1687,8 @@ export component AppWindow inherits Window {
                                                         let diff_y = self.mouse-y - self.pressed-y;
                                                         if (root.dragging_guild_idx < 0 && (diff_y > 10px || diff_y < -10px)) {
                                                             root.dragging_guild_idx = idx;
+                                                            root.guild_tooltip_id = "";
+                                                            root.guild_tooltip_text = "";
                                                         }
                                                         if (root.dragging_guild_idx == idx) {
                                                             root.drop_target_guild_idx = max(0, min(root.guilds.length - 1, idx + round(diff_y / 58px)));
@@ -1266,6 +1697,8 @@ export component AppWindow inherits Window {
                                                 }
                                                 clicked => {
                                                     if (root.dragging_guild_idx < 0) {
+                                                        root.guild_tooltip_id = "";
+                                                        root.guild_tooltip_text = "";
                                                         root.active_guild_id = guild.id;
                                                         root.select_guild(guild.id);
                                                     }
@@ -1285,6 +1718,7 @@ export component AppWindow inherits Window {
 
             // 2. Channels Sidebar
             ChannelSidebar {
+                content_hidden: root.sidebar_enter_hidden;
                 sidebar_width <=> root.channel_sidebar_width;
                 sidebar_width_committed(w) => { root.channel_sidebar_width_committed(w); }
                 active_guild_name: root.active_guild_name;
@@ -1311,12 +1745,34 @@ export component AppWindow inherits Window {
                 select_channel(id) => { root.select_channel(id); }
                 toggle_category(id) => { root.toggle_category(id); }
                 reorder_channel(from, to) => { root.reorder_channel(from, to); }
+                move_voice_member(source, target_channel) => { root.move_voice_member(source, target_channel); }
+                request_context_menu(id, x, y) => { root.request_context_menu("channel:" + id, x, y); }
                 channel_drop_row(from, dy) => { return root.channel_drop_row(from, dy); }
+                voice_member_drop_row(from, dy) => { return root.voice_member_drop_row(from, dy); }
                 leave_voice => { root.leave_voice(); }
                 toggle_mute => { root.toggle_mute(); }
                 toggle_deafen => { root.toggle_deafen(); }
                 open_settings => { root.open_settings(); }
                 toggle_user_menu => { root.show_user_menu = !root.show_user_menu; }
+                is_screen_sharing: root.is_screen_sharing;
+                soundboard_open: root.show_soundboard_panel;
+                toggle_soundboard_panel => {
+                    root.toggle_soundboard_panel();
+                }
+                open_stream(uid) => {
+                    root.unhide_stream(uid);
+                }
+                open_stream_modal => {
+                    root.stream_source_tab = "screens";
+                    root.open_stream_modal();
+                }
+                open_camera_modal => {
+                    root.stream_source_tab = "cameras";
+                    root.open_stream_modal();
+                }
+                toggle_screen_share => {
+                    root.toggle_screen_share();
+                }
             }
 
             // 3. Main Content View (Text Chat OR Voice Room View)
@@ -1370,14 +1826,90 @@ export component AppWindow inherits Window {
 
                             Rectangle { horizontal-stretch: 1; }
 
+                            // Collapse / expand the voice member list
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_members_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: root.voice_members_collapsed ? @image-url("../assets/chevron-down.svg") : @image-url("../assets/chevron-up.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: AppTheme.text-strong;
+                                                image-fit: contain;
+                                            }
+                                        }
+                                    }
+
+                                    btn_members_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.voice_members_collapsed = !root.voice_members_collapsed; }
+                                    }
+                                }
+                            }
+
+                            // Camera Button
                             VerticalLayout {
                                 alignment: center;
 
                                 Rectangle {
                                     height: 32px;
                                     border-radius: 4px;
-                                    background: btn_share_ta.pressed ? (root.is_screen_sharing ? AppTheme.danger-deep : AppTheme.surface-pressed) : (btn_share_ta.has-hover ? (root.is_screen_sharing ? AppTheme.danger-medium : AppTheme.separator) : (root.is_screen_sharing ? AppTheme.danger-action : AppTheme.surface-chat));
-                                    animate background { duration: 120ms; }
+                                    background: btn_cam_header_ta.pressed ? #16a34a : (btn_cam_header_ta.has-hover ? #22c55e : AppTheme.surface-chat);
+                                    animate background { duration: 80ms; }
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/camera.svg");
+                                                width: 14px;
+                                                height: 14px;
+                                                colorize: btn_cam_header_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: Tr.camera;
+                                            color: btn_cam_header_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong;
+                                            font-size: TypeScale.body;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    btn_cam_header_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.stream_source_tab = "cameras";
+                                            root.open_stream_modal();
+                                        }
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: btn_share_ta.pressed ? (root.is_screen_sharing ? AppTheme.danger-deep : #ea580c) : (btn_share_ta.has-hover ? (root.is_screen_sharing ? AppTheme.danger-medium : #f97316) : (root.is_screen_sharing ? AppTheme.danger-action : AppTheme.surface-chat));
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -1391,14 +1923,14 @@ export component AppWindow inherits Window {
                                                 source: @image-url("../assets/monitor.svg");
                                                 width: 14px;
                                                 height: 14px;
-                                                colorize: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
+                                                colorize: (root.is_screen_sharing || btn_share_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong);
                                                 image-fit: contain;
                                             }
                                         }
 
                                         Text {
                                             text: root.is_screen_sharing ? root.tr_stop_screen_share : root.tr_start_screen_share;
-                                            color: (root.is_screen_sharing ? AppTheme.text-on-accent : AppTheme.text-strong);
+                                            color: (root.is_screen_sharing || btn_share_ta.has-hover ? AppTheme.text-on-accent : AppTheme.text-strong);
                                             font-size: TypeScale.body;
                                             font-weight: 600;
                                             vertical-alignment: center;
@@ -1476,7 +2008,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_chat_ta.pressed ? AppTheme.surface-pressed : (btn_chat_ta.has-hover ? AppTheme.separator : AppTheme.surface-chat);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -1521,7 +2053,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_leave_ta.pressed ? AppTheme.danger-deep : (btn_leave_ta.has-hover ? AppTheme.danger-action : AppTheme.surface-chat);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 12px;
@@ -1580,6 +2112,8 @@ export component AppWindow inherits Window {
                                     background: AppTheme.surface-sidebar;
                                     border-width: 2px;
                                     border-color: AppTheme.accent;
+                                    opacity: root.call_pulse ? 0.35 : 1.0;
+                                    animate opacity { duration: 650ms; easing: ease-in-out; }
 
                                     Image {
                                         source: @image-url("../assets/speaker.svg");
@@ -1643,6 +2177,11 @@ export component AppWindow inherits Window {
 
                             ListView {
                                 for p in root.voice_participants: Rectangle {
+                                    property <bool> show_participant: !root.voice_members_collapsed
+                                        || p.is_streaming
+                                        || (p.is_self && root.is_screen_sharing)
+                                        || root.focused_stream_uid == p.user_id
+                                        || (root.active_stream_user_id != "" && root.active_stream_user_id == p.user_id);
                                     property <bool> is_streaming_attached: (p.is_self && root.is_screen_sharing)
                                         ? (!p.is_stream_hidden && root.popped_out_stream_uid != p.user_id && root.popped_out_stream_uid != "self")
                                         : (root.has_active_stream && (p.is_streaming || root.active_stream_user_id == p.user_id || root.active_stream_user_id == "") && !p.is_stream_hidden && root.popped_out_stream_uid != p.user_id);
@@ -1654,11 +2193,14 @@ export component AppWindow inherits Window {
                                         }
                                     }
 
-                                    height: is_streaming_attached
-                                        ? (is_this_stream_focused
-                                            ? Math.max(360px, voice_stage_container.height - 52px)
-                                            : Math.max(200px, Math.min(280px, (voice_stage_container.height - 80px) * 0.5)))
-                                        : 76px;
+                                    height: !show_participant
+                                        ? 0px
+                                        : (is_streaming_attached
+                                            ? (is_this_stream_focused
+                                                ? Math.max(360px, voice_stage_container.height - 52px)
+                                                : Math.max(200px, Math.min(280px, (voice_stage_container.height - 80px) * 0.5)))
+                                            : 76px);
+                                    clip: true;
                                     animate height { duration: 200ms; }
                                     background: transparent;
 
@@ -1705,6 +2247,22 @@ export component AppWindow inherits Window {
                                             border-radius: 8px;
                                             border-width: p.is_speaking ? 3px : ((p.is_self && root.is_screen_sharing) ? 2px : 1px);
                                             border-color: p.is_speaking ? AppTheme.success : ((p.is_self && root.is_screen_sharing) ? AppTheme.accent : AppTheme.border-subtle);
+                                        }
+
+                                        // Discord behaviour: clicking the stream focuses it (larger).
+                                        // The top bar is declared after this, so its buttons still win.
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            pointer-event(event) => {
+                                                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                                                    root.request_context_menu(
+                                                        "channel:voice-member::" + p.user_id,
+                                                        self.absolute-position.x + self.mouse-x,
+                                                        self.absolute-position.y + self.mouse-y
+                                                    );
+                                                }
+                                            }
+                                            clicked => { root.focus_stream(p.user_id); }
                                         }
 
                                         // Top Overlay Bar (Left: Live badge, username, mute, prio | Right: Popout, Fullscreen)
@@ -1834,36 +2392,12 @@ export component AppWindow inherits Window {
 
                                                                 VerticalLayout {
                                                                     alignment: center;
-                                                                    Rectangle {
-                                                                        width: 55px;
-                                                                        height: 5px;
-                                                                        background: AppTheme.interactive-hover;
-                                                                        border-radius: 2.5px;
-
-                                                                        // Progress fill
-                                                                        Rectangle {
-                                                                            x: 0;
-                                                                            y: 0;
-                                                                            width: parent.width * (root.stream_remote_volume.clamp(0.0, 1.0));
-                                                                            height: 100%;
-                                                                            background: root.stream_remote_volume <= 0.01 ? AppTheme.danger : AppTheme.accent;
-                                                                            border-radius: 2.5px;
-                                                                        }
-
-                                                                        TouchArea {
-                                                                            mouse-cursor: pointer;
-                                                                            clicked => {
-                                                                                let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                                                                root.stream_remote_volume = new_vol;
-                                                                                root.set_stream_volume(p.user_id, new_vol);
-                                                                            }
-                                                                            moved => {
-                                                                                if self.pressed {
-                                                                                    let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                                                                    root.stream_remote_volume = new_vol;
-                                                                                    root.set_stream_volume(p.user_id, new_vol);
-                                                                                }
-                                                                            }
+                                                                    VolumeSlider {
+                                                                        track-length: 110px;
+                                                                        value: root.stream_remote_volume;
+                                                                        changed(val) => {
+                                                                            root.stream_remote_volume = val;
+                                                                            root.set_stream_volume(p.user_id, val);
                                                                         }
                                                                     }
                                                                 }
@@ -1888,9 +2422,9 @@ export component AppWindow inherits Window {
 
                                                             // Stream Mute Button
                                                             Rectangle {
-                                                                width: 26px;
-                                                                height: 24px;
-                                                                border-radius: 4px;
+                                                                width: 30px;
+                                                                height: 28px;
+                                                                border-radius: 6px;
                                                                 background: str_mute_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                                 VerticalLayout {
@@ -1899,8 +2433,8 @@ export component AppWindow inherits Window {
                                                                         alignment: center;
                                                                         Image {
                                                                             source: p.is_muted ? @image-url("../assets/microphone-mute.svg") : @image-url("../assets/microphone.svg");
-                                                                            width: 12px;
-                                                                            height: 12px;
+                                                                            width: 14px;
+                                                                            height: 14px;
                                                                             colorize: p.is_muted ? AppTheme.danger : AppTheme.text-primary;
                                                                             image-fit: contain;
                                                                         }
@@ -1975,9 +2509,9 @@ export component AppWindow inherits Window {
 
                                                     // 3. max (Stream Card Focus / Expand Toggle - Priority 3, hidden when width < 160px)
                                                     if (stream_top_bar.width >= 160px): Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_fs_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -1986,8 +2520,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: is_this_stream_focused ? @image-url("../assets/chrome-restore.svg") : @image-url("../assets/chrome-maximize.svg");
-                                                                    width: 10px;
-                                                                    height: 10px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: is_this_stream_focused ? AppTheme.accent : AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2006,11 +2540,43 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
 
+                                                    // Fullscreen (whole window)
+                                                    if (stream_top_bar.width >= 190px): Rectangle {
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
+                                                        background: card_full_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
+
+                                                        VerticalLayout {
+                                                            alignment: center;
+                                                            HorizontalLayout {
+                                                                alignment: center;
+                                                                Image {
+                                                                    source: @image-url("../assets/chrome-maximize.svg");
+                                                                    width: 14px;
+                                                                    height: 14px;
+                                                                    colorize: root.is_stream_fullscreen ? AppTheme.accent : AppTheme.text-on-accent;
+                                                                    image-fit: contain;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        card_full_ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.focused_stream_uid = (p.is_self && root.is_screen_sharing) ? "self" : p.user_id;
+                                                                if !root.is_stream_fullscreen {
+                                                                    root.toggle_stream_fullscreen();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
                                                     // 2. desanexar (Popout Button - Priority 2, hidden when width < 110px)
                                                     if (stream_top_bar.width >= 110px): Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_pop_ta.has-hover ? AppTheme.backdrop-max : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -2019,8 +2585,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: @image-url("../assets/popout.svg");
-                                                                    width: 12px;
-                                                                    height: 12px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2038,9 +2604,9 @@ export component AppWindow inherits Window {
 
                                                     // 1. x (Stop Screen Share or Hide Stream - Priority 1, ALWAYS visible)
                                                     Rectangle {
-                                                        width: 28px;
-                                                        height: 24px;
-                                                        border-radius: 4px;
+                                                        width: 32px;
+                                                        height: 28px;
+                                                        border-radius: 6px;
                                                         background: card_stop_ta.has-hover ? AppTheme.danger : AppTheme.backdrop;
 
                                                         VerticalLayout {
@@ -2049,8 +2615,8 @@ export component AppWindow inherits Window {
                                                                 alignment: center;
                                                                 Image {
                                                                     source: @image-url("../assets/chrome-close.svg");
-                                                                    width: 10px;
-                                                                    height: 10px;
+                                                                    width: 14px;
+                                                                    height: 14px;
                                                                     colorize: AppTheme.text-on-accent;
                                                                     image-fit: contain;
                                                                 }
@@ -2209,7 +2775,7 @@ export component AppWindow inherits Window {
                                                      spacing: 8px;
                                                      Text {
                                                          text: p.username;
-                                                         color: p.is_self ? AppTheme.accent-medium : (p.is_speaking ? AppTheme.text-on-accent : AppTheme.text-primary);
+                                                         color: (p.role_name != "" && p.role_color != #000000) ? p.role_color : (p.is_self ? AppTheme.accent-medium : (p.is_speaking ? AppTheme.text-on-accent : AppTheme.text-primary));
                                                          font-weight: 700;
                                                          font-size: TypeScale.title;
                                                          vertical-alignment: center;
@@ -2225,6 +2791,23 @@ export component AppWindow inherits Window {
                                                              Text {
                                                                  text: root.tr_badge_you;
                                                                  color: AppTheme.text-on-accent;
+                                                                 font-size: TypeScale.micro;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
+
+                                                     if p.role_name != "" : Rectangle {
+                                                         background: #00000055;
+                                                         border-radius: 4px;
+                                                         height: 16px;
+                                                         HorizontalLayout {
+                                                             padding-left: 6px;
+                                                             padding-right: 6px;
+                                                             Text {
+                                                                 text: p.role_name;
+                                                                 color: (p.role_color != #000000) ? p.role_color : AppTheme.text-muted;
                                                                  font-size: TypeScale.micro;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
@@ -2251,44 +2834,119 @@ export component AppWindow inherits Window {
                                                          }
                                                      }
 
-                                                     // Live Badge if streaming while card is audio-only/hidden
-                                                     if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
+                                                     // Camera badge: green and to the left of the screen
+                                                     // LIVE badge, because both can be active at once.
+                                                     if p.is_camera_streaming: Rectangle {
                                                          horizontal-stretch: 0;
-                                                         background: AppTheme.danger-subtle;
+                                                         background: camera_badge_ta.has-hover ? AppTheme.success-hover : AppTheme.success;
                                                          border-radius: 4px;
-                                                         border-width: 1px;
-                                                         border-color: AppTheme.danger;
-                                                         height: 16px;
+                                                         height: 22px;
+                                                         min-width: 50px;
                                                          HorizontalLayout {
-                                                             padding-left: 6px;
-                                                             padding-right: 6px;
+                                                             padding-left: 7px;
+                                                             padding-right: 8px;
                                                              spacing: 4px;
                                                              VerticalLayout {
                                                                  alignment: center;
-                                                                 Rectangle {
-                                                                     width: 4px;
-                                                                     height: 4px;
-                                                                     border-radius: 2px;
-                                                                     background: AppTheme.danger;
+                                                                 Image {
+                                                                     source: @image-url("../assets/camera.svg");
+                                                                     width: 13px;
+                                                                     height: 13px;
+                                                                     colorize: AppTheme.solid-white;
+                                                                     image-fit: contain;
                                                                  }
                                                              }
                                                              Text {
                                                                  text: Tr.live_badge;
-                                                                 color: AppTheme.danger;
-                                                                 font-size: TypeScale.micro;
+                                                                 color: AppTheme.text-on-accent;
+                                                                 font-size: TypeScale.caption;
                                                                  font-weight: 800;
                                                                  vertical-alignment: center;
                                                              }
                                                          }
+
+                                                         camera_badge_ta := TouchArea {
+                                                             mouse-cursor: pointer;
+                                                             x: -4px;
+                                                             y: -4px;
+                                                             width: parent.width + 8px;
+                                                             height: parent.height + 8px;
+                                                             clicked => { root.unhide_stream(p.user_id); }
+                                                         }
                                                      }
 
-                                                     if p.is_muted: HorizontalLayout {
+                                                     // Discord-style LIVE badge: solid red, next to the name,
+                                                     // and the way to open the stream when it is hidden.
+                                                     if p.is_screen_streaming || (p.is_streaming && !p.is_camera_streaming): Rectangle {
+                                                         horizontal-stretch: 0;
+                                                         background: live_badge_ta.has-hover ? AppTheme.danger-action-hover : AppTheme.danger-action;
+                                                         border-radius: 4px;
+                                                         height: 22px;
+                                                         min-width: 50px;
+                                                         HorizontalLayout {
+                                                             padding-left: 8px;
+                                                             padding-right: 8px;
+                                                             spacing: 5px;
+                                                             VerticalLayout {
+                                                                 alignment: center;
+                                                                 Rectangle {
+                                                                     width: 6px;
+                                                                     height: 6px;
+                                                                     border-radius: 3px;
+                                                                     background: AppTheme.solid-white;
+                                                                 }
+                                                             }
+                                                             Text {
+                                                                 text: Tr.live_badge;
+                                                                 color: AppTheme.text-on-accent;
+                                                                 font-size: TypeScale.caption;
+                                                                 font-weight: 800;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+
+                                                         live_badge_ta := TouchArea {
+                                                             mouse-cursor: pointer;
+                                                             x: -4px;
+                                                             y: -4px;
+                                                             width: parent.width + 8px;
+                                                             height: parent.height + 8px;
+                                                             clicked => { root.unhide_stream(p.user_id); }
+                                                         }
+                                                     }
+
+                                                     if p.is_deafened: HorizontalLayout {
                                                          spacing: 4px;
                                                          alignment: start;
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Image {
-                                                                 source: @image-url("../assets/volume-x.svg");
+                                                                 source: @image-url("../assets/headphones-mute.svg");
+                                                                 width: 14px;
+                                                                 height: 14px;
+                                                                 colorize: AppTheme.danger;
+                                                                 image-fit: contain;
+                                                             }
+                                                         }
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Text {
+                                                                 text: Tr.label_deafened_caps;
+                                                                 color: AppTheme.danger;
+                                                                 font-size: TypeScale.caption;
+                                                                 font-weight: 700;
+                                                                 vertical-alignment: center;
+                                                             }
+                                                         }
+                                                     }
+
+                                                     if (!p.is_deafened && p.is_muted): HorizontalLayout {
+                                                         spacing: 4px;
+                                                         alignment: start;
+                                                         VerticalLayout {
+                                                             alignment: center;
+                                                             Image {
+                                                                 source: @image-url("../assets/microphone-mute.svg");
                                                                  width: 12px;
                                                                  height: 12px;
                                                                  colorize: AppTheme.danger;
@@ -2298,7 +2956,7 @@ export component AppWindow inherits Window {
                                                          VerticalLayout {
                                                              alignment: center;
                                                              Text {
-                                                                 text: Tr.label_muted_caps;
+                                                                 text: (p.is_server_muted ? "SV · " : "") + Tr.label_muted_caps;
                                                                  color: AppTheme.danger;
                                                                  font-size: TypeScale.caption;
                                                                  font-weight: 700;
@@ -2348,48 +3006,6 @@ export component AppWindow inherits Window {
                                                           }
                                                       }
 
-                                                     // The space between the badges and the button below.
-                                                     Rectangle { horizontal-stretch: 1; }
-
-                                                     // Top-right button that shows the stream (ONLY visible while the user streams).
-                                                     // Someone else's stream arrives only after Watch: nothing is received before.
-                                                     if (p.is_streaming || (p.is_self && root.is_screen_sharing)): Rectangle {
-                                                         width: p.is_self ? 26px : watch_label.preferred-width + 34px;
-                                                         height: 22px;
-                                                         border-radius: 4px;
-                                                         background: unhide_stream_ta.has-hover ? AppTheme.accent : (p.is_self ? AppTheme.interactive-hover : AppTheme.accent);
-
-                                                         VerticalLayout {
-                                                             alignment: center;
-                                                             HorizontalLayout {
-                                                                 alignment: center;
-                                                                 spacing: 6px;
-                                                                 Image {
-                                                                     source: @image-url("../assets/window.svg");
-                                                                     width: 12px;
-                                                                     height: 12px;
-                                                                     colorize: AppTheme.text-on-accent;
-                                                                     image-fit: contain;
-                                                                 }
-                                                                 watch_label := Text {
-                                                                     visible: !p.is_self;
-                                                                     width: p.is_self ? 0px : self.preferred-width;
-                                                                     text: Tr.watch_stream;
-                                                                     color: AppTheme.text-on-accent;
-                                                                     font-size: TypeScale.caption;
-                                                                     font-weight: 700;
-                                                                     vertical-alignment: center;
-                                                                 }
-                                                             }
-                                                         }
-
-                                                         unhide_stream_ta := TouchArea {
-                                                             mouse-cursor: pointer;
-                                                             clicked => {
-                                                                 root.unhide_stream(p.user_id);
-                                                             }
-                                                         }
-                                                     }
                                                  }
 
                                                  // Row 2: Controls vs Self Info
@@ -2476,10 +3092,8 @@ export component AppWindow inherits Window {
                                                       // Slider (0% to 200% with amplification boost like Discord)
                                                       VerticalLayout {
                                                           alignment: center;
-                                                          Slider {
-                                                              width: 110px;
-                                                              minimum: 0.0;
-                                                              maximum: 2.0;
+                                                          VolumeSlider {
+                                                              track-length: 110px;
                                                               value: p.volume;
                                                               changed(val) => { root.set_user_volume(p.user_id, val); }
                                                           }
@@ -2604,6 +3218,18 @@ export component AppWindow inherits Window {
                             // Show "@" prefix for DMs, "#" for regular channels
                             Text {
                                 text: (root.active_guild_id == "@me") ? "@" : "#";
+                                opacity: 1.0;
+                                states [
+                                    hidden when root.header_enter_hidden: {
+                                        opacity: 0.15;
+                                        in {
+                                            animate opacity { duration: 0ms; }
+                                        }
+                                        out {
+                                            animate opacity { duration: 280ms; easing: ease-out; }
+                                        }
+                                    }
+                                ]
                                 color: AppTheme.text-subtle;
                                 font-size: TypeScale.heading;
                                 font-weight: 800;
@@ -2612,6 +3238,18 @@ export component AppWindow inherits Window {
 
                             Text {
                                 text: root.active_channel_name;
+                                opacity: 1.0;
+                                states [
+                                    hidden when root.header_enter_hidden: {
+                                        opacity: 0.15;
+                                        in {
+                                            animate opacity { duration: 0ms; }
+                                        }
+                                        out {
+                                            animate opacity { duration: 280ms; easing: ease-out; }
+                                        }
+                                    }
+                                ]
                                 color: AppTheme.text-strong;
                                 font-size: TypeScale.title;
                                 font-weight: 700;
@@ -2630,7 +3268,7 @@ export component AppWindow inherits Window {
                                     background: root.is_in_dm_call
                                         ? (dm_call_btn_ta.pressed ? #c0392b : (dm_call_btn_ta.has-hover ? #e74c3c : #ed4245))
                                         : (dm_call_btn_ta.pressed ? AppTheme.accent-hover : (dm_call_btn_ta.has-hover ? AppTheme.accent : AppTheme.interactive-muted));
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     VerticalLayout {
                                         alignment: center;
@@ -2667,7 +3305,7 @@ export component AppWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: btn_vroom_ta.pressed ? AppTheme.accent-hover : (btn_vroom_ta.has-hover ? AppTheme.accent : AppTheme.interactive-muted);
-                                    animate background { duration: 120ms; }
+                                    animate background { duration: 80ms; }
 
                                     HorizontalLayout {
                                         padding-left: 10px;
@@ -2720,6 +3358,18 @@ export component AppWindow inherits Window {
 
                             // Messages Chat Feed View
                             chat_view := ChatMessagesView {
+                        opacity: 1.0;
+                        states [
+                            hidden when root.chat_enter_hidden: {
+                                opacity: 0.15;
+                                in {
+                                    animate opacity { duration: 140ms; easing: ease-in; }
+                                }
+                                out {
+                                    animate opacity { duration: 280ms; easing: ease-out; }
+                                }
+                            }
+                        ]
                         vertical-stretch: 1;
                         messages: root.messages;
                         has_more_older_messages: root.has_more_older_messages;
@@ -2729,8 +3379,15 @@ export component AppWindow inherits Window {
                         load_older_messages => { root.load_older_messages(); }
                         open_link(url) => { root.open_link(url); }
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
+                        open_image(img) => {
+                            root.image_viewer_source = img;
+                            root.show_image_viewer = true;
+                        }
                         click_command(cmd) => {
                             root.click_command(cmd);
+                        }
+                        bottom_state_changed(flag) => {
+                            root.chat_is_at_bottom = flag;
                         }
                     }
 
@@ -2871,6 +3528,91 @@ export component AppWindow inherits Window {
                                             mouse-cursor: pointer;
                                             clicked => {
                                                 root.select_suggestion(idx);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Discord-style Emoji Picker Box
+                    if root.show_emoji_picker : Rectangle {
+                        height: 240px;
+                        background: AppTheme.surface-sidebar;
+                        border-top-left-radius: 8px;
+                        border-top-right-radius: 8px;
+                        border-width: 1px;
+                        border-color: AppTheme.border-subtle;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: AppTheme.surface-scrim;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                Text {
+                                    text: "Emojis";
+                                    color: AppTheme.text-strong;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: close_emojis_ta.has-hover ? AppTheme.interactive-hover : transparent;
+
+                                    Image {
+                                        source: @image-url("../assets/x.svg");
+                                        width: 10px;
+                                        height: 10px;
+                                        colorize: AppTheme.text-muted;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    close_emojis_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.show_emoji_picker = false; }
+                                    }
+                                }
+                            }
+
+                            // Emoji Grid Container
+                            ScrollView {
+                                vertical-stretch: 1;
+
+                                VerticalLayout {
+                                    spacing: 4px;
+
+                                    for row in root.emoji_rows: HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for e in row.emojis: Rectangle {
+                                            width: 34px;
+                                            height: 34px;
+                                            border-radius: 6px;
+                                            background: emoji_cell_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                                            animate background { duration: 100ms; }
+
+                                            Text {
+                                                text: e.is_custom ? ":" + e.name + ":" : e.code;
+                                                font-size: e.is_custom ? 10px : 20px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+
+                                            emoji_cell_ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.select_emoji(e.code); }
                                             }
                                         }
                                     }
@@ -3064,6 +3806,33 @@ export component AppWindow inherits Window {
                                 }
                             }
 
+                            // Emoji picker trigger button
+                            Rectangle {
+                                width: 34px;
+                                height: 34px;
+                                border-radius: 6px;
+                                background: emoji_btn_ta.has-hover ? AppTheme.interactive-hover : (root.show_emoji_picker ? AppTheme.interactive-selected : transparent);
+                                animate background { duration: 80ms; }
+
+                                Text {
+                                    text: "😊";
+                                    font-size: 16px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                emoji_btn_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.show_emoji_picker = !root.show_emoji_picker;
+                                        if (root.show_emoji_picker) {
+                                            root.show_soundboard_panel = false;
+                                            root.show_command_suggestions = false;
+                                        }
+                                    }
+                                }
+                            }
+
                             Button {
                                 text: root.tr_send;
                                 primary: true;
@@ -3095,6 +3864,36 @@ export component AppWindow inherits Window {
         }
     }
     }
+    }
+
+    // Hover tooltip for the server rail, styled like Discord's floating label.
+    // Anchored at the window root so it can overflow the 72 px rail and paint
+    // above the channel sidebar.
+    if root.is_logged_in && root.guild_tooltip_id != "" && root.dragging_guild_idx < 0: Rectangle {
+        x: 68px;
+        y: max(0px, min(root.guild_tooltip_y, root.height - 40px));
+        width: min(guild_tooltip_label.preferred-width + 24px, 320px);
+        height: 32px;
+        background: #111214;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: #202225;
+        drop-shadow-blur: 4px;
+        drop-shadow-color: #00000040;
+        drop-shadow-offset-y: 2px;
+
+        guild_tooltip_label := Text {
+            x: 12px;
+            width: parent.width - 24px;
+            height: parent.height;
+            text: root.guild_tooltip_text;
+            color: #ffffff;
+            font-size: TypeScale.body;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
     }
 
     // Settings overlay: backend state stays on AppWindow.
@@ -3146,6 +3945,7 @@ export component AppWindow inherits Window {
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
         use_gpu_renderer: root.use_gpu_renderer;
+        enable_tray_icon: root.enable_tray_icon;
         net_diag_running: root.net_diag_running;
         net_diag_verdict: root.net_diag_verdict;
         net_diag_signaling_ok: root.net_diag_signaling_ok;
@@ -3182,6 +3982,7 @@ export component AppWindow inherits Window {
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
         toggle_hardware_monitor => { root.toggle_hardware_monitor(); }
         toggle_gpu_renderer => { root.toggle_gpu_renderer(); }
+        toggle_tray_icon => { root.toggle_tray_icon(); }
         run_network_diagnostics => { root.run_network_diagnostics(); }
         copy_network_diagnostics => { root.copy_network_diagnostics(); }
         select_proxy_mode(arg0) => { root.select_proxy_mode(arg0); }
@@ -3212,7 +4013,7 @@ export component AppWindow inherits Window {
                     border-radius: 12px;
                     border-width: 1px;
                     border-color: AppTheme.border-subtle;
-                    drop-shadow-blur: 24px;
+                    drop-shadow-blur: 12px;
                     drop-shadow-color: AppTheme.backdrop;
 
                     TouchArea {
@@ -3603,6 +4404,547 @@ export component AppWindow inherits Window {
             }
         }
     }
+    // Top-Right Corner (Only active when unmaximized for normal window resizing)
+    if !root.is_maximized && root.drag_area_enabled: TouchArea {
+        x: parent.width - 7px;
+        y: 0px;
+        width: 7px;
+        height: 7px;
+        mouse-cursor: nesw-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.drag_resize("top-right");
+            }
+        }
+    }
+
+    // Drives the "connecting / waiting for answer" pulse without touching Rust.
+    Timer {
+        interval: 700ms;
+        running: root.is_voice_connecting || (root.is_in_dm_call && root.voice_participants.length == 0);
+        triggered => { root.call_pulse = !root.call_pulse; }
+    }
+
+    // Channel / server edit dialog.
+    if root.show_edit_modal : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9600;
+        background: #00000099;
+
+        Rectangle {
+            width: 380px;
+            height: 260px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: AppTheme.surface-sidebar;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: AppTheme.border-subtle;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: root.edit_modal_title;
+                    color: AppTheme.text-strong;
+                    font-size: TypeScale.title;
+                    font-weight: 700;
+                }
+
+                Text { text: "Nombre"; color: AppTheme.text-muted; font-size: TypeScale.small; }
+                LineEdit {
+                    text <=> root.edit_name;
+                    placeholder-text: "Nombre";
+                }
+
+                if root.edit_show_topic : Text {
+                    text: "Tema (opcional)";
+                    color: AppTheme.text-muted;
+                    font-size: TypeScale.small;
+                }
+                if root.edit_show_topic : LineEdit {
+                    text <=> root.edit_topic;
+                    placeholder-text: "Tema del canal";
+                }
+                if root.edit_show_topic : CheckBox {
+                    text: "Canal NSFW";
+                    checked <=> root.edit_nsfw;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        clicked => { root.edit_modal_cancel(); }
+                    }
+                    Button {
+                        text: "Guardar";
+                        primary: true;
+                        clicked => { root.edit_modal_save(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Destructive-action confirmation.
+    if root.show_confirm_modal : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9700;
+        background: #00000099;
+
+        Rectangle {
+            width: 360px;
+            height: 190px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: AppTheme.surface-sidebar;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: AppTheme.border-subtle;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+
+                Text {
+                    text: root.confirm_title;
+                    color: AppTheme.text-strong;
+                    font-size: TypeScale.title;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.confirm_message;
+                    color: AppTheme.text-muted;
+                    font-size: TypeScale.body;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        clicked => { root.confirm_modal_cancel(); }
+                    }
+                    Button {
+                        text: "Confirmar";
+                        primary: true;
+                        clicked => { root.confirm_modal_accept(); }
+                    }
+                }
+            }
+        }
+    }
+
+                    // Discord-style Soundboard Panel Box
+                    if root.show_soundboard_panel : Rectangle {
+                        x: 72px + root.channel_sidebar_width + 8px;
+                        y: root.height - 292px;
+                        width: root.width - (72px + root.channel_sidebar_width) - 16px;
+                        z: 9400;
+                        height: 220px;
+                        background: AppTheme.surface-sidebar;
+                        border-top-left-radius: 8px;
+                        border-top-right-radius: 8px;
+                        border-width: 1px;
+                        border-color: AppTheme.border-subtle;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: AppTheme.surface-scrim;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Painel de Sons";
+                                        color: AppTheme.text-strong;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        background: AppTheme.surface-control;
+                                        border-radius: 4px;
+                                        height: 18px;
+                                        Text {
+                                            text: "Nitro-Free";
+                                            color: AppTheme.accent;
+                                            font-size: 10px;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: close_sb_ta.has-hover ? AppTheme.interactive-hover : transparent;
+
+                                    Image {
+                                        source: @image-url("../assets/x.svg");
+                                        width: 10px;
+                                        height: 10px;
+                                        colorize: AppTheme.text-muted;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    close_sb_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.show_soundboard_panel = false; }
+                                    }
+                                }
+                            }
+
+                            // Soundboard 2-row Grid
+                            VerticalLayout {
+                                vertical-stretch: 1;
+                                spacing: 6px;
+
+                                for srow in root.soundboard_rows: HorizontalLayout {
+                                    spacing: 8px;
+                                    for s in srow.sounds: Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 64px;
+                                        border-radius: 6px;
+                                        background: sb_cell_ta.has-hover ? AppTheme.interactive-selected : AppTheme.surface-elevated;
+                                        border-width: 1px;
+                                        border-color: sb_cell_ta.has-hover ? AppTheme.accent : AppTheme.border-subtle;
+                                        animate background { duration: 80ms; }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+
+                                            Text {
+                                                text: s.icon;
+                                                font-size: 20px;
+                                                horizontal-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: s.name;
+                                                color: AppTheme.text-strong;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        sb_cell_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.play_soundboard_sound(s.id); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+    // Context menu overlay. The transparent layer closes on any outside click;
+    // the menu itself is drawn after it so it wins the pointer.
+    if root.context_menu_open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9500;
+        background: transparent;
+
+        close_context_ta := TouchArea {
+            clicked => { root.context_menu_open = false; }
+        }
+
+        Rectangle {
+            x: min(root.context_menu_x, root.width - 240px);
+            y: min(root.context_menu_y, root.height - 40px);
+            width: 230px;
+            height: menu_layout.preferred-height + 12px;
+            background: #232428;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #3f4147;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            clip: true;
+
+            menu_layout := VerticalLayout {
+                padding: 6px;
+                spacing: 1px;
+
+                if root.context_menu_title != "" : Text {
+                    height: 20px;
+                    text: root.context_menu_title;
+                    color: #949BA4;
+                    font-size: 11px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+
+                if root.context_menu_show_voice_slider : VerticalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 2px;
+                    Text {
+                        text: root.context_menu_voice_slider_label;
+                        color: #DBDEE1;
+                        font-size: 11px;
+                    }
+                    VolumeSlider {
+                        track-length: 174px;
+                        show-labels: true;
+                        value: root.context_menu_voice_slider_value;
+                        changed(val) => {
+                            root.context_menu_voice_slider_value = val;
+                            root.context_menu_voice_slider_changed(val);
+                        }
+                    }
+                }
+
+                if root.context_menu_show_stream_slider : VerticalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 2px;
+                    Text {
+                        text: root.context_menu_stream_slider_label;
+                        color: #DBDEE1;
+                        font-size: 11px;
+                    }
+                    VolumeSlider {
+                        track-length: 174px;
+                        show-labels: true;
+                        value: root.context_menu_stream_slider_value;
+                        changed(val) => {
+                            root.context_menu_stream_slider_value = val;
+                            root.context_menu_stream_slider_changed(val);
+                        }
+                    }
+                }
+
+                for item in root.context_menu_items: Rectangle {
+                    height: item.kind == 1 ? 7px : (item.kind == 2 ? 22px : 28px);
+                    background: (item.kind == 0 && ctx_item_ta.has-hover && item.enabled) ? #3f4147 : transparent;
+                    border-radius: 4px;
+
+                    if item.kind == 1 : Rectangle {
+                        y: 3px;
+                        height: 1px;
+                        background: #3f4147;
+                    }
+
+                    if item.kind == 2 : Text {
+                        text: item.label;
+                        color: #949BA4;
+                        font-size: 10px;
+                        font-weight: 800;
+                        vertical-alignment: center;
+                    }
+
+                    if item.kind == 0 : HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            width: 18px;
+                            text: item.checked ? "✓" : item.icon;
+                            color: item.danger ? #F23F43 : #DBDEE1;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: item.label;
+                            color: !item.enabled ? #6D6F78 : (item.danger ? #F23F43 : #DBDEE1);
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if item.submenu : Text {
+                            text: "›";
+                            color: #949BA4;
+                            font-size: 15px;
+                            vertical-alignment: center;
+                        }
+
+                    }
+
+                    ctx_item_ta := TouchArea {
+                        enabled: item.kind == 0 && item.enabled;
+                        mouse-cursor: item.enabled ? pointer : default;
+                        clicked => {
+                            if (item.kind == 0 && item.enabled) {
+                                if (item.submenu) {
+                                    root.context_menu_submenu_request(item.id);
+                                } else {
+                                    root.context_menu_open = false;
+                                    root.context_menu_submenu_open = false;
+                                    root.context_menu_action(item.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Nested submenu, drawn to the right of the main menu.
+        if root.context_menu_submenu_open : Rectangle {
+            x: min(root.context_menu_x + 236px, root.width - 240px);
+            y: min(root.context_menu_y, root.height - 40px);
+            width: 220px;
+            height: submenu_layout.preferred-height + 12px;
+            background: #232428;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #3f4147;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #000000AA;
+            clip: true;
+
+            submenu_layout := VerticalLayout {
+                padding: 6px;
+                spacing: 1px;
+
+                if root.context_menu_submenu_title != "" : Text {
+                    height: 20px;
+                    text: root.context_menu_submenu_title;
+                    color: #949BA4;
+                    font-size: 11px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+
+                for item in root.context_menu_submenu_items: Rectangle {
+                    height: item.kind == 1 ? 7px : (item.kind == 2 ? 22px : 28px);
+                    background: (item.kind == 0 && ctx_sub_item_ta.has-hover && item.enabled) ? #3f4147 : transparent;
+                    border-radius: 4px;
+
+                    if item.kind == 1 : Rectangle {
+                        y: 3px;
+                        height: 1px;
+                        background: #3f4147;
+                    }
+
+                    if item.kind == 2 : Text {
+                        text: item.label;
+                        color: #949BA4;
+                        font-size: 10px;
+                        font-weight: 800;
+                        vertical-alignment: center;
+                    }
+
+                    if item.kind == 0 : HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            width: 18px;
+                            text: item.checked ? "✓" : item.icon;
+                            color: item.danger ? #F23F43 : #DBDEE1;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: item.label;
+                            color: !item.enabled ? #6D6F78 : (item.danger ? #F23F43 : #DBDEE1);
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+
+                    ctx_sub_item_ta := TouchArea {
+                        enabled: item.kind == 0 && item.enabled;
+                        mouse-cursor: item.enabled ? pointer : default;
+                        clicked => {
+                            if (item.kind == 0 && item.enabled) {
+                                root.context_menu_open = false;
+                                root.context_menu_submenu_open = false;
+                                root.context_menu_action(item.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Full-window lightbox (opened by clicking a downloaded attachment).
+    if root.show_image_viewer : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        z: 9000;
+        background: #000000E6;
+
+        Image {
+            x: 24px;
+            y: 24px;
+            width: parent.width - 48px;
+            height: parent.height - 48px;
+            source: root.image_viewer_source;
+            image-fit: contain;
+        }
+
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.show_image_viewer = false; }
+        }
+
+        Rectangle {
+            x: parent.width - 52px;
+            y: 14px;
+            width: 34px;
+            height: 34px;
+            border-radius: 17px;
+            background: #FFFFFF22;
+            z: 1;
+
+            Text {
+                text: "✕";
+                color: #FFFFFF;
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            close_viewer_ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.show_image_viewer = false; }
+            }
+        }
+    }
 
     // Modal Update Available Dialog
     if root.show_update_dialog: Rectangle {
@@ -3626,7 +4968,7 @@ export component AppWindow inherits Window {
                     border-radius: 12px;
                     border-width: 1px;
                     border-color: AppTheme.border-subtle;
-                    drop-shadow-blur: 24px;
+                    drop-shadow-blur: 12px;
                     drop-shadow-color: AppTheme.backdrop;
 
                     VerticalBox {
@@ -3794,6 +5136,17 @@ export component AppWindow inherits Window {
         }
     }
 
+    // Community onboarding questionnaire.
+    if root.show_onboarding_modal: OnboardingView {
+        guild_name: root.onboarding_guild_name;
+        prompts: root.onboarding_prompts;
+        submitting: root.onboarding_submitting;
+        error_text: root.onboarding_error;
+        toggle_option(prompt, option) => { root.onboarding_toggle(prompt, option); }
+        submit => { root.onboarding_submit(); }
+        dismiss => { root.onboarding_dismiss(); }
+    }
+
     // Web sharing: the link to send to whoever will watch in a browser.
     if root.show_web_share_modal && root.web_share_active: Rectangle {
         background: AppTheme.backdrop;
@@ -3816,7 +5169,7 @@ export component AppWindow inherits Window {
                     border-radius: 12px;
                     border-width: 1px;
                     border-color: AppTheme.border-subtle;
-                    drop-shadow-blur: 24px;
+                    drop-shadow-blur: 12px;
                     drop-shadow-color: AppTheme.backdrop;
 
                     // Clicks inside the window do not close it.
@@ -3999,7 +5352,7 @@ export component AppWindow inherits Window {
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: AppTheme.border-subtle;
-                    drop-shadow-blur: 24px;
+                    drop-shadow-blur: 12px;
                     drop-shadow-color: AppTheme.backdrop;
                     clip: true;
 
@@ -5003,7 +6356,7 @@ export component AppWindow inherits Window {
         background: AppTheme.surface-sidebar;
         border-width: 1px;
         border-color: AppTheme.separator;
-        drop-shadow-blur: 24px;
+        drop-shadow-blur: 12px;
         drop-shadow-color: #00000060;
 
         VerticalLayout {
@@ -5131,6 +6484,106 @@ export component AppWindow inherits Window {
                     ic_reject_ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.reject_call(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Fullscreen stream view ───────────────────────────────────────────────────
+    // Covers the whole window; the Rust side also asks winit for real (borderless)
+    // fullscreen, so this works the same on X11, Wayland, Windows and macOS.
+    if root.is_stream_fullscreen && root.has_active_stream && root.is_in_voice: Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        background: #000000;
+
+        property <bool> showing_self: root.is_screen_sharing
+            && (root.focused_stream_uid == "self" || root.active_stream_user_id == "self");
+
+        // Esc leaves fullscreen; Rust restores the window through the same callback.
+        fs_focus := FocusScope {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.toggle_stream_fullscreen();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Image {
+            width: 100%;
+            height: 100%;
+            source: showing_self ? root.active_stream_frame : root.remote_stream_frame;
+            image-fit: contain;
+        }
+
+        // Exit bar
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 44px;
+            background: AppTheme.surface-media-overlay-strong;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 12px;
+                spacing: 8px;
+
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.active_stream_user;
+                        color: AppTheme.text-strong;
+                        font-size: TypeScale.title;
+                        font-weight: 700;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.remote_stream_fps;
+                        color: AppTheme.text-muted;
+                        font-size: TypeScale.caption;
+                        font-weight: 600;
+                    }
+                }
+
+                Rectangle {
+                    width: 34px;
+                    height: 28px;
+                    border-radius: 4px;
+                    background: fs_exit_ta.has-hover ? AppTheme.danger : AppTheme.backdrop;
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../assets/chrome-restore.svg");
+                                width: 12px;
+                                height: 12px;
+                                colorize: AppTheme.text-on-accent;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+
+                    fs_exit_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle_stream_fullscreen(); }
                     }
                 }
             }
@@ -5334,36 +6787,12 @@ export component PopoutStreamWindow inherits Window {
 
                     VerticalLayout {
                         alignment: center;
-                        Rectangle {
-                            width: 65px;
-                            height: 6px;
-                            background: AppTheme.interactive-hover;
-                            border-radius: 3px;
-
-                            // Volume fill bar
-                            Rectangle {
-                                x: 0;
-                                y: 0;
-                                width: parent.width * (root.stream_volume.clamp(0.0, 1.0));
-                                height: 100%;
-                                background: root.stream_volume <= 0.01 ? AppTheme.danger : AppTheme.accent;
-                                border-radius: 3px;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                    root.stream_volume = new_vol;
-                                    root.stream_volume_changed(root.user_id, new_vol);
-                                }
-                                moved => {
-                                    if self.pressed {
-                                        let new_vol = (self.mouse-x / parent.width).clamp(0.0, 1.0);
-                                        root.stream_volume = new_vol;
-                                        root.stream_volume_changed(root.user_id, new_vol);
-                                    }
-                                }
+                        VolumeSlider {
+                            track-length: 110px;
+                            value: root.stream_volume;
+                            changed(val) => {
+                                root.stream_volume = val;
+                                root.stream_volume_changed(root.user_id, val);
                             }
                         }
                     }

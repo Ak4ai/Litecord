@@ -95,7 +95,7 @@ pub fn start() -> io::Result<String> {
         .find(|ip| ip.is_ipv4() && !ip.is_loopback()).unwrap_or(IpAddr::from([127, 0, 0, 1]));
     let local = SocketAddr::new(ip, socket.local_addr()?.port());
     let (stop, stop_rx) = watch::channel(false);
-    let (frames_tx, frames_rx) = mpsc::channel(32);
+    let (frames_tx, frames_rx) = mpsc::channel(4);
     let (commands_tx, commands_rx) = mpsc::channel(8);
     *COMMANDS.lock().unwrap() = Some(commands_tx.clone());
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
