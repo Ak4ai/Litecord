@@ -233,6 +233,10 @@ jobs:
           ICON: assets/litecord.png
           OUTPATH: ./dist
           OUTNAME: Litecord-x86_64.AppImage
+          # Arch's mesa/libgallium links libLLVM; quick-sharun refuses to bundle it
+          # unless told otherwise. The AppImage is a convenience artifact for this
+          # fork, so accept the extra size instead of failing the whole workflow.
+          I_WANT_FAT_APPIMAGE: 1
           # Slint/winit renders through OpenGL; cpal talks to ALSA, which the
           # PipeWire plugin must serve; tray-icon pulls GTK3 + appindicator.
           DEPLOY_OPENGL: 1
