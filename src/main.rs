@@ -2684,48 +2684,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             let uid_str = uid.to_string();
                             let frame = Image::from_rgba8(pixel_buf);
-                            let rx_fps = screen_capture::get_rx_fps();
-                            let rx_fps_str = if rx_fps > 0.0 {
-                                format!("{:.1} FPS", rx_fps)
-                            } else {
-                                "".to_string()
-                            };
-                            // Next frames are converted at the largest size they are shown at.
-                            {
-                                let main_px = app_w2.upgrade().map(|ui| ui.window().size());
-                                let pop_px = pop_w2.upgrade().filter(|p| p.window().is_visible()).map(|p| p.window().size());
-                                let (mut vw, mut vh) = main_px.map(|s| (s.width, s.height)).unwrap_or((0, 0));
-                                if let Some(p) = pop_px {
-                                    vw = vw.max(p.width);
-                                    vh = vh.max(p.height);
-                                }
-                                screen_capture::set_stream_view_size(vw, vh);
-                            }
+                            // UI-only metadata (quality, name, participant badge,
+                            // fps text, conversion size) does not need to be
+                            // rewritten for every decoded frame at 60 Hz.
+                            static LAST_FPS_UI_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                            static LAST_SYNC_UI_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                             let mut should_update_pop = false;
+                            let mut fps_text: Option<String> = None;
                             if let Some(ui) = app_w2.upgrade() {
+                                let first_frame = !ui.get_has_active_stream()
+                                    || ui.get_active_stream_user_id().as_str() != uid_str.as_str();
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let last_fps = LAST_FPS_UI_MS.load(Ordering::Relaxed);
+                                let last_sync = LAST_SYNC_UI_MS.load(Ordering::Relaxed);
+                                let fps_due = first_frame || now_ms.saturating_sub(last_fps) >= 250;
+                                let sync_due = first_frame || now_ms.saturating_sub(last_sync) >= 1000;
+
+                                if fps_due {
+                                    LAST_FPS_UI_MS.store(now_ms, Ordering::Relaxed);
+                                    let rx_fps = screen_capture::get_rx_fps();
+                                    fps_text = Some(if rx_fps > 0.0 {
+                                        format!("{:.1} FPS", rx_fps)
+                                    } else {
+                                        String::new()
+                                    });
+                                }
+                                if sync_due {
+                                    LAST_SYNC_UI_MS.store(now_ms, Ordering::Relaxed);
+                                    // Next frames are converted at the largest size they are shown at.
+                                    let main_px = ui.window().size();
+                                    let pop_px = pop_w2.upgrade().filter(|p| p.window().is_visible()).map(|p| p.window().size());
+                                    let (mut vw, mut vh) = (main_px.width, main_px.height);
+                                    if let Some(p) = pop_px {
+                                        vw = vw.max(p.width);
+                                        vh = vh.max(p.height);
+                                    }
+                                    screen_capture::set_stream_view_size(vw, vh);
+
+                                    // Keep the participant marked as streaming; this only
+                                    // needs to be repaired once a second, not per frame.
+                                    let cur_model = ui.get_voice_participants();
+                                    for i in 0..cur_model.row_count() {
+                                        if let Some(mut p) = cur_model.row_data(i) {
+                                            if p.user_id == uid_str.as_str() && !p.is_streaming {
+                                                p.is_streaming = true;
+                                                cur_model.set_row_data(i, p);
+                                            }
+                                        }
+                                    }
+                                }
+
                                 let popped_uid = ui.get_popped_out_stream_uid().to_string();
                                 if popped_uid == uid_str {
                                     should_update_pop = true;
                                 }
-                                ui.set_has_active_stream(true);
-                                ui.set_active_stream_user_id(uid_str.clone().into());
-                                ui.set_active_stream_user(uname.into());
-                                ui.set_tr_stream_quality(quality.into());
+                                if first_frame {
+                                    ui.set_has_active_stream(true);
+                                    ui.set_active_stream_user_id(uid_str.clone().into());
+                                    ui.set_active_stream_user(uname.into());
+                                    ui.set_tr_stream_quality(quality.into());
+                                }
                                 ui.set_remote_stream_frame(frame.clone());
-                                ui.set_remote_stream_fps(rx_fps_str.clone().into());
+                                if let Some(ref fps) = fps_text {
+                                    ui.set_remote_stream_fps(fps.clone().into());
+                                }
                                 if let Some(pop) = pop_w2.upgrade() {
                                     crate::ui::gpu_video::refresh(&ui, Some(&pop));
-                                }
-
-                                // Garantir que o participante na lista de voz esteja marcado como streaming
-                                let cur_model = ui.get_voice_participants();
-                                for i in 0..cur_model.row_count() {
-                                    if let Some(mut p) = cur_model.row_data(i) {
-                                        if p.user_id == uid_str.as_str() && !p.is_streaming {
-                                            p.is_streaming = true;
-                                            cur_model.set_row_data(i, p);
-                                        }
-                                    }
                                 }
                             }
                             if should_update_pop {
@@ -2733,7 +2760,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let pop_uid = pop.get_user_id().to_string();
                                     if pop_uid == uid_str || pop_uid.is_empty() {
                                         pop.set_stream_frame(frame);
-                                        pop.set_stream_fps(rx_fps_str.into());
+                                        if let Some(fps) = fps_text {
+                                            pop.set_stream_fps(fps.into());
+                                        }
                                     }
                                 }
                             }
@@ -3843,7 +3872,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     crate::screen_capture::peer_is_streaming(uid)
                                 };
                                 let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(uid);
-                                let (is_muted_saved, _, _) = gateway::get_user_audio_settings(&uid.to_string());
+                                let (is_muted_saved, _, _) = gateway::get_user_audio_settings_by_id(uid);
                                 let muted = is_muted_flag || is_muted_saved;
                                 (uid, name, gateway::is_voice_user_speaking(uid), streaming, muted, is_deaf_flag)
                             })
@@ -3858,6 +3887,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .entry(ch.id.clone())
                             .or_default()
                             .insert(*uid, (*speaking, *streaming));
+                    }
+                    // Empty channels carry no badge state. Keeping them out of the
+                    // fingerprint avoids cloning every channel id four times a second
+                    // on guilds with many empty voice channels.
+                    if structural.is_empty() {
+                        continue;
                     }
                     current_members.push((ch.id.clone(), structural));
                 }
@@ -6830,11 +6865,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageCreated { id, channel_id, author, author_id, created_at, avatar_url, is_bot, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, is_self } => {
-                    invalidate_message_cache(&channel_id);
                     // Deduplicação: ignora se esta mensagem já foi processada anteriormente
                     if !id.is_empty() && crate::ui::helpers::mark_msg_seen(&id) {
                         continue;
                     }
+                    invalidate_message_cache(&channel_id);
 
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // The sidebar shows one list: the DMs ("@me") or the open server's channels.

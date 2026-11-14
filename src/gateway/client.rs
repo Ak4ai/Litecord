@@ -1064,6 +1064,10 @@ impl GatewayClient {
         // Survives reconnections: RESUME replays what came after it.
         let last_seq_arc = Arc::new(std::sync::atomic::AtomicI64::new(-1));
 
+        // Exponential backoff for reconnects (1s → 60s, with jitter). A fixed
+        // 2s retry hammered IDENTIFY during outages and hit the gateway rate limit.
+        let mut reconnect_attempt: u32 = 0;
+
         // Loop Infinito de Auto-Reconexão da Gateway
         loop {
             let resuming = self.resume.lock().unwrap().clone().filter(|_| last_seq_arc.load(Ordering::Relaxed) >= 0);
@@ -1077,6 +1081,7 @@ impl GatewayClient {
             match connect_async(url.as_str()).await {
                 Ok((ws_stream, _)) => {
                     info!("Conexão WebSocket estabelecida com sucesso!");
+                    let connected_at = std::time::Instant::now();
                     crate::screen_capture::invalidate_cached_stun_address();
                     crate::screen_capture::force_signaling_broadcast();
                     let (mut write, mut read) = ws_stream.split();
@@ -1369,6 +1374,9 @@ impl GatewayClient {
                                 if close_frame.as_ref().is_some_and(|f| close_ends_session(u16::from(f.code))) {
                                     *self.resume.lock().unwrap() = None;
                                     last_seq_arc.store(-1, Ordering::Relaxed);
+                                    // Invalid token/session: back off hard instead of
+                                    // re-IDENTIFYing every couple of seconds forever.
+                                    reconnect_attempt = 6;
                                 }
                                 break;
                             }
@@ -1383,7 +1391,10 @@ impl GatewayClient {
                     if let Some(h) = hb_task_handle { h.abort(); }
                     writer_task.abort();
                     *self.ws_tx.lock().await = None;
-                    warn!("⚠️ [GATEWAY] Conexão com o Discord perdida. Tentando reconectar automaticamente em 2s...");
+                    if connected_at.elapsed() >= Duration::from_secs(30) {
+                        reconnect_attempt = 0;
+                    }
+                    warn!("⚠️ [GATEWAY] Conexão com o Discord perdida; aplicando backoff antes de reconectar.");
                 }
                 Err(e) => {
                     if resuming.is_some() {
@@ -1392,11 +1403,16 @@ impl GatewayClient {
                             r.url = "wss://gateway.discord.gg".to_string();
                         }
                     }
-                    warn!("⚠️ [GATEWAY] Falha ao conectar na Gateway do Discord: {:?}. Tentando reconectar em 3s...", e);
-                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    warn!("⚠️ [GATEWAY] Falha ao conectar na Gateway do Discord: {:?}.", e);
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            if reconnect_attempt < 6 {
+                reconnect_attempt += 1;
+            }
+            let backoff_secs = (1u64 << reconnect_attempt).min(60);
+            let jitter_ms = rand::random::<u64>() % 1000;
+            tokio::time::sleep(Duration::from_millis(backoff_secs * 1000 + jitter_ms)).await;
         }
     }
 
@@ -2044,7 +2060,7 @@ impl GatewayClient {
                         if !display_name.is_empty() {
                             register_user_name(event_uid, display_name.clone());
                             register_user_avatar(event_uid, v["d"]["member"]["user"]["avatar"].as_str().unwrap_or(""));
-                            info!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
+                            debug!("VOICE_STATE_UPDATE: Registrado nome de usuário {} -> {}", event_uid, display_name);
                         }
 
                         let event_chan = if let Some(s) = v["d"]["channel_id"].as_str() {
@@ -2057,7 +2073,7 @@ impl GatewayClient {
 
                         let previous_chan = if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                             if let Some(ref cid) = event_chan {
-                                info!("📌 [VOICE_STATE_UPDATE] User {} -> Canal {}", event_uid, cid);
+                                debug!("📌 [VOICE_STATE_UPDATE] User {} -> Canal {}", event_uid, cid);
                                 gvs.insert(event_uid, cid.clone())
                             } else {
                                 remove_user_voice_audio_flags(event_uid);
@@ -2106,9 +2122,8 @@ impl GatewayClient {
                         }
 
                         // Check if this is MY OWN voice state update
-                        let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
-                        let event_uid_str = event_uid.to_string();
-                        if !my_uid.is_empty() && event_uid_str == my_uid {
+                        let my_uid = crate::gateway::get_my_user_id();
+                        if my_uid != 0 && event_uid == my_uid {
                             let event_gid = v["d"]["guild_id"].as_str().map(|s| s.to_string());
                             let my_active_gid = self.voice_guild_id.lock().unwrap().clone();
                             let my_active_cid = self.voice_channel_id.lock().unwrap().clone();
@@ -2210,7 +2225,7 @@ impl GatewayClient {
                             .next()
                             .and_then(|s| s.parse::<u64>().ok())
                             .unwrap_or(0);
-                        let my_uid = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                        let my_uid = crate::gateway::get_my_user_id();
                         if owner == my_uid && my_uid != 0 {
                             info!("🎬 [STREAM_CREATE] Detectado nosso próprio stream criado no Discord! key={}", stream_key);
                             *ACTIVE_OUTBOUND_STREAM_KEY.lock().unwrap() = Some(stream_key.clone());
@@ -2358,9 +2373,9 @@ impl GatewayClient {
                 "MESSAGE_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
-                    let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
+                    let my_uid = crate::gateway::get_my_user_id();
                     let author_id = v["d"]["author"]["id"].as_str().unwrap_or("");
-                    let is_self = !my_uid.is_empty() && author_id == my_uid;
+                    let is_self = my_uid != 0 && author_id.parse::<u64>() == Ok(my_uid);
 
                     // A message for another channel is never painted: the UI only
                     // bumps its unread badge and opening it later fetches the history.
@@ -2488,7 +2503,8 @@ impl GatewayClient {
                 }
                 "CALL_CREATE" | "CALL_UPDATE" => {
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
-                    let my_uid = self.user_id.lock().unwrap().clone().unwrap_or_default();
+                    let my_uid_num = crate::gateway::get_my_user_id();
+                    let my_uid = if my_uid_num != 0 { my_uid_num.to_string() } else { String::new() };
                     info!("📞 {} recebido bruto: {:?}", t, v["d"]);
 
                     // A CALL_UPDATE with ringing=false means the call stopped

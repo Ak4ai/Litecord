@@ -764,24 +764,38 @@ fn yuv420_to_rgba_scaled(
         let i1 = (i0 + 1).min(n_in - 1);
         (i0, i1, ((pos - i0 as f64) * 256.0) as u32)
     };
-    let cols: Vec<(usize, usize, u32)> = (0..out_w).map(|x| map(x, out_w, w)).collect();
-    out[..out_w * out_h * 4].par_chunks_mut(out_w * 4).enumerate().for_each(|(oy, row)| {
-        let (y0, y1, fy) = map(oy, out_h, h);
-        let (r0, r1) = (&y[y0 * y_stride..], &y[y1 * y_stride..]);
-        let chroma_row = y0.min(h - 1) / 2;
-        for (ox, px) in row.chunks_exact_mut(4).enumerate() {
-            let (x0, x1, fx) = cols[ox];
-            let top = r0[x0] as u32 * (256 - fx) + r0[x1] as u32 * fx;
-            let bottom = r1[x0] as u32 * (256 - fx) + r1[x1] as u32 * fx;
-            let luma = ((top * (256 - fy) + bottom * fy + 32768) >> 16) as i32;
-            let (u, v) = chroma(chroma_row, x0 / 2);
-            let (d, e) = (u as i32 - 128, v as i32 - 128);
-            let c = ky * (luma - black);
-            px[0] = ((c + kr * e + 128) >> 8).clamp(0, 255) as u8;
-            px[1] = ((c - kgu * d - kgv * e + 128) >> 8).clamp(0, 255) as u8;
-            px[2] = ((c + kb * d + 128) >> 8).clamp(0, 255) as u8;
-            px[3] = 255;
+    // The column map only depends on (out_w, w). Video runs at a stable size,
+    // so rebuild it on resize instead of doing this f64 math every frame.
+    thread_local! {
+        static COLS_CACHE: std::cell::RefCell<Option<(usize, usize, Vec<(usize, usize, u32)>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    COLS_CACHE.with(|cache| {
+        let mut cached = cache.borrow_mut();
+        let needs_rebuild = !matches!(&*cached, Some((cw, cw_in, _)) if *cw == out_w && *cw_in == w);
+        if needs_rebuild {
+            let cols: Vec<(usize, usize, u32)> = (0..out_w).map(|x| map(x, out_w, w)).collect();
+            *cached = Some((out_w, w, cols));
         }
+        let cols = &cached.as_ref().expect("cols cache").2;
+        out[..out_w * out_h * 4].par_chunks_mut(out_w * 4).enumerate().for_each(|(oy, row)| {
+            let (y0, y1, fy) = map(oy, out_h, h);
+            let (r0, r1) = (&y[y0 * y_stride..], &y[y1 * y_stride..]);
+            let chroma_row = y0.min(h - 1) / 2;
+            for (ox, px) in row.chunks_exact_mut(4).enumerate() {
+                let (x0, x1, fx) = cols[ox];
+                let top = r0[x0] as u32 * (256 - fx) + r0[x1] as u32 * fx;
+                let bottom = r1[x0] as u32 * (256 - fx) + r1[x1] as u32 * fx;
+                let luma = ((top * (256 - fy) + bottom * fy + 32768) >> 16) as i32;
+                let (u, v) = chroma(chroma_row, x0 / 2);
+                let (d, e) = (u as i32 - 128, v as i32 - 128);
+                let c = ky * (luma - black);
+                px[0] = ((c + kr * e + 128) >> 8).clamp(0, 255) as u8;
+                px[1] = ((c - kgu * d - kgv * e + 128) >> 8).clamp(0, 255) as u8;
+                px[2] = ((c + kb * d + 128) >> 8).clamp(0, 255) as u8;
+                px[3] = 255;
+            }
+        });
     });
 }
 

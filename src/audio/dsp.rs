@@ -590,11 +590,13 @@ impl VoiceProcessor {
             // Estimate acoustic echo using delay-aligned tapped delay line
             let mut echo_estimate = 0.0f32;
             let mut power = 1e-4f32;
+            let start_pos = (self.aec_delay_idx + buf_len - base_delay % buf_len) % buf_len;
+            let mut delay_pos = start_pos;
             for tap in 0..num_taps {
-                let delay_pos = (self.aec_delay_idx + buf_len - base_delay - tap) % buf_len;
                 let x = self.aec_delay_buffer[delay_pos];
                 echo_estimate += self.aec_filter[tap] * x;
                 power += x * x;
+                delay_pos = if delay_pos == 0 { buf_len - 1 } else { delay_pos - 1 };
             }
 
             let mic_val = frame[i];
@@ -606,10 +608,12 @@ impl VoiceProcessor {
 
             if power > 0.0005 && !is_double_talk {
                 let norm = mu / power;
+                // Same circular indices as `% buf_len`, without a division per tap.
+                let mut adapt_pos = start_pos;
                 for tap in 0..num_taps {
-                    let delay_pos = (self.aec_delay_idx + buf_len - base_delay - tap) % buf_len;
                     // NLMS adaptation with slight leaky factor
-                    self.aec_filter[tap] = (self.aec_filter[tap] + norm * error * self.aec_delay_buffer[delay_pos]) * 0.99999;
+                    self.aec_filter[tap] = (self.aec_filter[tap] + norm * error * self.aec_delay_buffer[adapt_pos]) * 0.99999;
+                    adapt_pos = if adapt_pos == 0 { buf_len - 1 } else { adapt_pos - 1 };
                 }
             }
 

@@ -2,6 +2,14 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
 use log::{info, warn, error};
 
+/// A hung connection must never keep a UI task (or the updater) waiting forever.
+const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Images can be several MiB; allow a slower connection to finish the body.
+const HTTP_IMAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Hard cap for images/attachments fetched into RAM.
+const MAX_DOWNLOAD_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct DiscordHttpClient {
     client: reqwest::Client,
@@ -22,7 +30,9 @@ impl DiscordHttpClient {
 
         let builder = reqwest::Client::builder()
             .default_headers(headers)
-            .user_agent(crate::utils::client_identity::user_agent());
+            .user_agent(crate::utils::client_identity::user_agent())
+            .timeout(HTTP_REQUEST_TIMEOUT)
+            .connect_timeout(HTTP_CONNECT_TIMEOUT);
         let client = crate::utils::apply_proxy_to_builder(builder)
             .build()
             .unwrap_or_default();
@@ -252,11 +262,17 @@ impl DiscordHttpClient {
     }
 
     pub async fn download_image(&self, url: &str) -> Result<Vec<u8>, String> {
-        match self.client.get(url).send().await {
+        match self.client.get(url).timeout(HTTP_IMAGE_TIMEOUT).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
+                    if resp.content_length().is_some_and(|len| len > MAX_DOWNLOAD_BYTES as u64) {
+                        return Err(format!("Imagem grande demais (limite {} MiB)", MAX_DOWNLOAD_BYTES / (1024 * 1024)));
+                    }
                     if let Ok(bytes) = resp.bytes().await {
+                        if bytes.len() > MAX_DOWNLOAD_BYTES {
+                            return Err(format!("Imagem grande demais (limite {} MiB)", MAX_DOWNLOAD_BYTES / (1024 * 1024)));
+                        }
                         return Ok(bytes.to_vec());
                     }
                 }

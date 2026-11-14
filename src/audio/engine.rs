@@ -469,6 +469,9 @@ fn open_mic_stream(
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&pcm_queue);
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
+            // Reused across callbacks: real-time capture must not allocate per block.
+            let mut mono_samples: Vec<f32> = Vec::with_capacity(1024);
+            let mut resampled_buf: Vec<f32> = Vec::with_capacity(2048);
             target_dev.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &_| {
@@ -477,7 +480,8 @@ fn open_mic_stream(
                     if frames == 0 { return; }
 
                     let mic_gain = gateway::get_mic_volume();
-                    let mut mono_samples = Vec::with_capacity(frames);
+                    mono_samples.clear();
+                    mono_samples.reserve(frames);
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().sum::<f32>() / num_channels as f32) * mic_gain;
@@ -488,7 +492,7 @@ fn open_mic_stream(
                         if sample_rate == 48000 {
                             push_to_mic_queues(&mut q, &mono_samples);
                         } else {
-                            let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
+                            resampled_buf.clear();
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
                             push_to_mic_queues(&mut q, &resampled_buf);
                         }
@@ -503,6 +507,8 @@ fn open_mic_stream(
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&pcm_queue);
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
+            let mut mono_samples: Vec<f32> = Vec::with_capacity(1024);
+            let mut resampled_buf: Vec<f32> = Vec::with_capacity(2048);
             target_dev.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _: &_| {
@@ -511,7 +517,8 @@ fn open_mic_stream(
                     if frames == 0 { return; }
 
                     let mic_gain = gateway::get_mic_volume();
-                    let mut mono_samples = Vec::with_capacity(frames);
+                    mono_samples.clear();
+                    mono_samples.reserve(frames);
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / num_channels as f32) * mic_gain;
@@ -522,7 +529,7 @@ fn open_mic_stream(
                         if sample_rate == 48000 {
                             push_to_mic_queues(&mut q, &mono_samples);
                         } else {
-                            let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
+                            resampled_buf.clear();
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
                             push_to_mic_queues(&mut q, &resampled_buf);
                         }
@@ -537,6 +544,8 @@ fn open_mic_stream(
         cpal::SampleFormat::I32 => {
             let q_arc = Arc::clone(&pcm_queue);
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
+            let mut mono_samples: Vec<f32> = Vec::with_capacity(1024);
+            let mut resampled_buf: Vec<f32> = Vec::with_capacity(2048);
             target_dev.build_input_stream(
                 &stream_config,
                 move |data: &[i32], _: &_| {
@@ -545,7 +554,8 @@ fn open_mic_stream(
                     if frames == 0 { return; }
 
                     let mic_gain = gateway::get_mic_volume();
-                    let mut mono_samples = Vec::with_capacity(frames);
+                    mono_samples.clear();
+                    mono_samples.reserve(frames);
 
                     for frame in data.chunks_exact(num_channels) {
                         let s = (frame.iter().map(|&x| x as f32 / 2147483648.0).sum::<f32>() / num_channels as f32) * mic_gain;
@@ -556,7 +566,7 @@ fn open_mic_stream(
                         if sample_rate == 48000 {
                             push_to_mic_queues(&mut q, &mono_samples);
                         } else {
-                            let mut resampled_buf = Vec::with_capacity(frames * 48000 / sample_rate as usize + 32);
+                            resampled_buf.clear();
                             resampler.resample(&mono_samples, sample_rate, 48000, &mut resampled_buf);
                             push_to_mic_queues(&mut q, &resampled_buf);
                         }

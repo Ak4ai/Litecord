@@ -887,6 +887,11 @@ impl ScreenCaptureManager {
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
                 let mut last_idr = Instant::now() - Duration::from_secs(10);
                 let mut frame_seq: u32 = 0;
+                // Reused per frame/chunk: a 1080p keyframe is hundreds of chunks and
+                // allocating a Vec for each one showed up in the send-loop profile.
+                let mut fec_parity_buf = vec![0u8; CHUNK_SIZE];
+                let mut pkt = Vec::with_capacity(37 + CHUNK_SIZE);
+                let mut fec_pkt = Vec::with_capacity(41 + CHUNK_SIZE);
 
                 let frame_target_interval = Duration::from_micros(1_000_000 / target_fps.max(1));
                 let mut next_tick = Instant::now();
@@ -1162,12 +1167,15 @@ impl ScreenCaptureManager {
                     total_encode_us += enc_dur;
 
                     if let Some(raw_frame_bytes) = frame_bytes_opt {
+                        // One shared, immutable buffer for the three consumers
+                        // below: each used to copy the whole encoded frame.
+                        let raw_frame: std::sync::Arc<[u8]> = raw_frame_bytes.into();
                         // Native Discord stream pump (Go Live / Camera over RTP)
-                        crate::native_video::offer_outbound_frame(&raw_frame_bytes);
+                        crate::native_video::offer_outbound_frame(std::sync::Arc::clone(&raw_frame));
                         // Browsers watching over WebRTC get the same encoded frame.
-                        super::web_share::offer_frame(&raw_frame_bytes);
+                        super::web_share::offer_frame(std::sync::Arc::clone(&raw_frame));
                         let t_crypt_start = Instant::now();
-                        let Some(frame_bytes) = super::watch::session_key().and_then(|k| encrypt_signaling_payload(&k, &raw_frame_bytes)) else {
+                        let Some(frame_bytes) = super::watch::session_key().and_then(|k| encrypt_signaling_payload(&k, raw_frame.as_ref())) else {
                             continue;
                         };
                         let t_crypt_us = t_crypt_start.elapsed().as_micros();
@@ -1183,20 +1191,18 @@ impl ScreenCaptureManager {
 
                         let t_fec_start = Instant::now();
                         // Compute Sunshine-grade Forward Error Correction (FEC) XOR parity
-                        let fec_parity = if total_chunks > 1 {
-                            let mut p = vec![0u8; CHUNK_SIZE];
+                        let has_fec = total_chunks > 1;
+                        if has_fec {
+                            fec_parity_buf.fill(0);
                             for c_idx in 0..total_chunks {
                                 let start = (c_idx as usize) * CHUNK_SIZE;
                                 let end = (start + CHUNK_SIZE).min(total_len);
                                 let slice = &frame_bytes[start..end];
                                 for (i, &b) in slice.iter().enumerate() {
-                                    p[i] ^= b;
+                                    fec_parity_buf[i] ^= b;
                                 }
                             }
-                            Some(p)
-                        } else {
-                            None
-                        };
+                        }
                         let t_fec_us = t_fec_start.elapsed().as_micros();
                         total_fec_us += t_fec_us;
 
@@ -1209,7 +1215,7 @@ impl ScreenCaptureManager {
                             let chunk_slice = &frame_bytes[start..end];
 
                             let inst = get_process_instance_id();
-                            let mut pkt = Vec::with_capacity(37 + chunk_slice.len());
+                            pkt.clear();
                             pkt.extend_from_slice(MAGIC);
                             pkt.extend_from_slice(&inst.to_be_bytes());
                             pkt.push(OP_VIDEO_CHUNK);
@@ -1232,9 +1238,10 @@ impl ScreenCaptureManager {
                         }
 
                         // Emit FEC Parity packet for zero-latency recovery of Wi-Fi single-packet drops
-                        if let Some(parity) = fec_parity {
+                        if has_fec {
+                            let parity = fec_parity_buf.as_slice();
                             let inst = get_process_instance_id();
-                            let mut fec_pkt = Vec::with_capacity(41 + parity.len());
+                            fec_pkt.clear();
                             fec_pkt.extend_from_slice(MAGIC);
                             fec_pkt.extend_from_slice(&inst.to_be_bytes());
                             fec_pkt.push(OP_FEC_PARITY);
@@ -1244,7 +1251,7 @@ impl ScreenCaptureManager {
                             fec_pkt.extend_from_slice(&pts_ms.to_be_bytes());
                             fec_pkt.extend_from_slice(&total_chunks.to_be_bytes());
                             fec_pkt.extend_from_slice(&(total_len as u32).to_be_bytes());
-                            fec_pkt.extend_from_slice(&parity);
+                            fec_pkt.extend_from_slice(parity);
 
                             for target in &target_addrs {
                                 let _ = socket.send_to(&fec_pkt, target);

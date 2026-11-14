@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Rendimiento y memoria
+
+- **Recepción de vídeo**: la ventana ya no reescribe calidad, nombre, FPS ni
+  recorre la lista de participantes por cada frame; esos datos se refrescan a
+  250 ms / 1 s, y el frame se sigue pintando a su tasa completa.
+- **Audio en tiempo real**: se eliminaron las asignaciones por callback en la
+  captura del micrófono y en el hablante I16, y el pico de cada bloque se
+  calcula en local con un único atómico (antes era uno por muestra).
+- **AEC**: el filtro NLMS avanza los índices circulares con un decremento en
+  lugar de un `%` por tap y por muestra, con exactamente los mismos índices.
+- **Streaming**: el frame H.264 se comparte por `Arc` entre el envío nativo y
+  el visor web (antes se copiaba entero), y los paquetes UDP/FEC y el búfer
+  PCM del loopback se reutilizan en vez de asignarse por chunk/frame.
+- **Decoder de vídeo**: los frames en claro ya no se copian (`Cow`) y el mapa
+  de columnas del escalado YUV se cachea hasta que cambia el tamaño.
+- **Markdown**: cada transformación inline solo se ejecuta si su delimitador
+  aparece en la línea; el escaneo de emoji Unicode se salta en bloques que no
+  son el primero.
+- **Sidebar y caches**: orden personalizado O(n log n) con mapas de posición,
+  nombres de canal calculados una vez por fila, filas de voz indexadas solo por
+  los ids que cambian, total de no leídos de DMs en un atómico y directorio de
+  usuarios sin reemplazos idénticos.
+- **Red**: backoff exponencial con jitter en reconexiones del gateway (1→60 s),
+  timeouts en el cliente HTTP y cliente compartido en el updater.
+- **Persistencia**: el snapshot de sesión y el directorio de usuarios se
+  serializan/escriben en `spawn_blocking`, fuera del worker async y del hilo UI.
+
 ### Icono de bandeja y barra de tareas
 
 - **El icono de la bandeja y el de la barra de tareas reflejan lo que está

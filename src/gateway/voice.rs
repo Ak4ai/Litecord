@@ -1095,9 +1095,11 @@ pub async fn connect_voice_gateway(
                                                                             let total_samples = decoded_count * pkt_channels;
                                                                             diag_rx.rx_decode_ok.fetch_add(1, Ordering::Relaxed);
                                                                             diag_rx.rx_samples.fetch_add(total_samples as u64, Ordering::Relaxed);
+                                                                            let mut rx_peak_milli = 0u32;
                                                                             for &s in pcm_out_buf[..total_samples].iter() {
-                                                                                VoiceDiag::note_peak(&diag_rx.rx_peak_milli, s);
+                                                                                rx_peak_milli = rx_peak_milli.max(VoiceDiag::sample_milli(s));
                                                                             }
+                                                                            VoiceDiag::note_peak_milli(&diag_rx.rx_peak_milli, rx_peak_milli);
                                                                             let dump_vec = decoded_voice_pairs(&pcm_out_buf[..total_samples], pkt_channels);
                                                                                     ssrc_last_pkt_time.insert(ssrc_recv, std::time::Instant::now());
 
@@ -1338,8 +1340,8 @@ pub async fn connect_voice_gateway(
                                                                                         .copied()
                                                                                         .unwrap_or(ssrc as u64);
 
-                                                                                    let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
-                                                                                    let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
+                                                                                    let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings_by_id(uid_num);
+                                                                                    let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings_by_id(ssrc as u64);
                                                                                     let is_muted = is_muted_uid || is_muted_ssrc;
                                                                                     let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
                                                                                     let user_prio = prio_uid.max(prio_ssrc);
@@ -1434,9 +1436,11 @@ pub async fn connect_voice_gateway(
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
+                                                                    let mut speaker_peak_milli = 0u32;
                                                                     for &s in output.iter() {
-                                                                        VoiceDiag::note_peak(&diag_f32.speaker_peak_milli, s);
+                                                                        speaker_peak_milli = speaker_peak_milli.max(VoiceDiag::sample_milli(s));
                                                                     }
+                                                                    VoiceDiag::note_peak_milli(&diag_f32.speaker_peak_milli, speaker_peak_milli);
                                                                     #[cfg(feature = "automation")]
                                                                     crate::utils::test_hooks::voice_played_f32(output);
                                                                 },
@@ -1463,6 +1467,12 @@ pub async fn connect_voice_gateway(
                                                             let diag_i16 = Arc::clone(&diag_out);
                                                             let diag_err_i16 = Arc::clone(&diag_out);
                                                             let mut first_tick = true;
+                                                            // Reused across callbacks: allocating maps/vectors on
+                                                            // every audio callback caused periodic jitter.
+                                                            let mut ready_ssrcs = Vec::with_capacity(32);
+                                                            let mut to_remove = Vec::with_capacity(8);
+                                                            let mut ssrc_vol_map_i16 = std::collections::HashMap::with_capacity(32);
+                                                            let mut aec_ref = Vec::with_capacity(1024);
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [i16], _| {
@@ -1504,8 +1514,8 @@ pub async fn connect_voice_gateway(
                                                                         // Keep at least three callbacks buffered: a fixed 40 ms would drain
                                                                         // mid-callback once ALSA hands out larger blocks, chopping syllables.
                                                                         let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
-                                                                        let mut ready_ssrcs = Vec::new();
-                                                                        let mut to_remove = Vec::new();
+                                                                        ready_ssrcs.clear();
+                                                                        to_remove.clear();
 
                                                                         for (&ssrc, q) in queues.iter() {
                                                                             if q.is_empty() {
@@ -1550,7 +1560,7 @@ pub async fn connect_voice_gateway(
 
                                                                         if ready_ssrcs.is_empty() { return; }
 
-                                                                        let mut ssrc_vol_map_i16 = std::collections::HashMap::new();
+                                                                        ssrc_vol_map_i16.clear();
                                                                         let mut max_active_priority_i16 = 0i32;
                                                                         let active_spk_store_i16 = get_active_voice_participants_store();
                                                                         let active_spk_map_i16 = active_spk_store_i16.lock().ok();
@@ -1564,8 +1574,8 @@ pub async fn connect_voice_gateway(
                                                                                         .copied()
                                                                                         .unwrap_or(ssrc as u64);
 
-                                                                                    let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings(&uid_num.to_string());
-                                                                                    let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings(&ssrc.to_string());
+                                                                                    let (is_muted_uid, vol_uid, prio_uid) = get_user_audio_settings_by_id(uid_num);
+                                                                                    let (is_muted_ssrc, vol_ssrc, prio_ssrc) = get_user_audio_settings_by_id(ssrc as u64);
                                                                                     let is_muted = is_muted_uid || is_muted_ssrc;
                                                                                     let user_vol = if vol_uid != 1.0 { vol_uid } else { vol_ssrc };
                                                                                     let user_prio = prio_uid.max(prio_ssrc);
@@ -1581,7 +1591,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
 
-                                                                        let mut aec_ref = Vec::with_capacity(frames);
+                                                                        aec_ref.clear();
                                                                         for f in 0..frames {
                                                                             let mut mixed_l = 0.0f32;
                                                                             let mut mixed_r = 0.0f32;
@@ -1663,9 +1673,11 @@ pub async fn connect_voice_gateway(
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
                                                                     }
+                                                                    let mut speaker_peak_milli = 0u32;
                                                                     for &s in output.iter() {
-                                                                        VoiceDiag::note_peak(&diag_i16.speaker_peak_milli, s as f32 / 32768.0);
+                                                                        speaker_peak_milli = speaker_peak_milli.max(VoiceDiag::sample_milli(s as f32 / 32768.0));
                                                                     }
+                                                                    VoiceDiag::note_peak_milli(&diag_i16.speaker_peak_milli, speaker_peak_milli);
                                                                     #[cfg(feature = "automation")]
                                                                     crate::utils::test_hooks::voice_played_i16(output);
                                                                 },
@@ -1913,9 +1925,11 @@ pub async fn connect_voice_gateway(
                                                             }
                                                         }
                                                     }
+                                                    let mut tx_peak_milli = 0u32;
                                                     for &s in pcm_frame.iter() {
-                                                        VoiceDiag::note_peak(&diag_tx.tx_peak_milli, s);
+                                                        tx_peak_milli = tx_peak_milli.max(VoiceDiag::sample_milli(s));
                                                     }
+                                                    VoiceDiag::note_peak_milli(&diag_tx.tx_peak_milli, tx_peak_milli);
 
                                                     let is_silence_packet = if has_audio {
                                                         speech_hangover_frames = 12; // 240ms hangover
@@ -2653,8 +2667,13 @@ impl VoiceDiag {
     }
 
     /// Highest absolute sample of an interval, in thousandths (integer max is atomic).
-    fn note_peak(cell: &std::sync::atomic::AtomicU32, sample: f32) {
-        let milli = (sample.abs().clamp(0.0, 1.0) * 1000.0) as u32;
+    fn sample_milli(sample: f32) -> u32 {
+        (sample.abs().clamp(0.0, 1.0) * 1000.0) as u32
+    }
+
+    /// Same as `note_peak`, but for a value already reduced over the whole buffer:
+    /// one atomic RMW per callback instead of one per audio sample.
+    fn note_peak_milli(cell: &std::sync::atomic::AtomicU32, milli: u32) {
         cell.fetch_max(milli, Ordering::Relaxed);
     }
 

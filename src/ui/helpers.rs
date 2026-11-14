@@ -23,6 +23,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 static DM_UNREAD_MAP: std::sync::LazyLock<Mutex<HashMap<String, i32>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Running total of `DM_UNREAD_MAP`, so each DM message does not sum every entry.
+static DM_UNREAD_TOTAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
 static PROCESSED_MSG_IDS: std::sync::LazyLock<Mutex<(HashSet<String>, VecDeque<String>)>> =
     std::sync::LazyLock::new(|| Mutex::new((HashSet::new(), VecDeque::new())));
 
@@ -34,17 +37,18 @@ pub fn inc_dm_unread(ch_id: &str) -> i32 {
     let mut map = DM_UNREAD_MAP.lock().unwrap();
     let count = map.entry(ch_id.to_string()).or_insert(0);
     *count += 1;
-    map.values().sum()
+    DM_UNREAD_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }
 
 pub fn clear_dm_unread(ch_id: &str) -> i32 {
     let mut map = DM_UNREAD_MAP.lock().unwrap();
-    map.remove(ch_id);
-    map.values().sum()
+    let removed = map.remove(ch_id).unwrap_or(0);
+    let previous = DM_UNREAD_TOTAL.fetch_sub(removed, std::sync::atomic::Ordering::Relaxed);
+    previous.saturating_sub(removed)
 }
 
 pub fn get_total_dm_unreads() -> i32 {
-    DM_UNREAD_MAP.lock().unwrap().values().sum()
+    DM_UNREAD_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn mark_msg_seen(id: &str) -> bool {
@@ -67,6 +71,7 @@ pub fn mark_msg_seen(id: &str) -> bool {
 
 pub fn reset_unread_and_dedup_state() {
     DM_UNREAD_MAP.lock().unwrap().clear();
+    DM_UNREAD_TOTAL.store(0, std::sync::atomic::Ordering::Relaxed);
     let mut guard = PROCESSED_MSG_IDS.lock().unwrap();
     guard.0.clear();
     guard.1.clear();
@@ -264,6 +269,12 @@ pub fn apply_channel_activity(ui: &AppWindow, activity: &[(String, i32)], active
     // Touch only the rows that changed: replacing the whole model made the sidebar
     // rebuild every visible row (and restart hover/selection) for each message.
     for (id, new_unread) in activity {
+        // Non-DM active channel: the target badge is always 0 and the sidebar
+        // does not reorder server channels, so there is nothing to touch. This
+        // avoids a full row scan (and row clones) for every received message.
+        if !showing_dms && id == active_channel {
+            continue;
+        }
         let Some(pos) = (0..model.row_count())
             .find(|&index| model.row_data(index).is_some_and(|c| c.id == id.as_str()))
         else {
@@ -310,13 +321,22 @@ pub fn clear_channel_unread(ui: &AppWindow, channel_id: &str) {
 /// Rows are matched by id, so the current order (recent DMs first) and unread counts stay.
 pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
     let current = ui.get_channels();
-    let fresh_by_id: HashMap<String, &ChannelItem> = fresh.iter().map(|c| (c.id.to_string(), c)).collect();
-    let same_rows = current.row_count() == fresh.len()
-        && (0..current.row_count()).all(|i| current.row_data(i).is_some_and(|c| fresh_by_id.contains_key(c.id.as_str())));
-    if same_rows {
+    // Borrow the ids instead of allocating a String per row (this runs on every
+    // structural voice update and sidebar rebuild).
+    let fresh_by_id: HashMap<&str, &ChannelItem> = fresh.iter().map(|c| (c.id.as_str(), c)).collect();
+    if current.row_count() == fresh.len() {
+        let mut all_match = true;
+        // Single pass: detect the "same rows" fast path and update changed rows
+        // in the same traversal instead of walking the model twice.
         for i in 0..current.row_count() {
-            let Some(old) = current.row_data(i) else { continue };
-            let new = fresh_by_id[old.id.as_str()];
+            let Some(old) = current.row_data(i) else {
+                all_match = false;
+                break;
+            };
+            let Some(new) = fresh_by_id.get(old.id.as_str()).copied() else {
+                all_match = false;
+                break;
+            };
             if old.voice_count != new.voice_count
                 || old.name != new.name
                 || old.is_speaking != new.is_speaking
@@ -329,7 +349,9 @@ pub fn update_channel_voice_rows(ui: &AppWindow, fresh: Vec<ChannelItem>) {
                 current.set_row_data(i, row);
             }
         }
-        return;
+        if all_match {
+            return;
+        }
     }
     let unread: HashMap<String, i32> = current
         .iter()
@@ -360,25 +382,27 @@ pub fn update_voice_member_rows(ui: &AppWindow, changed: &[(String, u64, bool, b
     let channels = ui.get_channels();
     let row_count = channels.row_count();
 
-    // Index the rows once instead of scanning the list for every member.
-    let mut row_of: HashMap<String, usize> = HashMap::with_capacity(changed.len());
-    for index in 0..row_count {
-        if let Some(row) = channels.row_data(index) {
-            if row.is_voice_member {
-                row_of.entry(row.id.to_string()).or_insert(index);
-            }
-        }
-    }
+    // Only materialize the ids that actually changed: indexing every row with a
+    // String allocated one per sidebar row on every speaking transition.
+    let wanted: HashMap<String, (bool, bool)> = changed
+        .iter()
+        .map(|(channel_id, user_id, speaking, streaming)| {
+            (format!("voice-member:{channel_id}:{user_id}"), (*speaking, *streaming))
+        })
+        .collect();
 
-    for (channel_id, user_id, speaking, streaming) in changed {
-        let row_id = format!("voice-member:{channel_id}:{user_id}");
-        let Some(index) = row_of.get(&row_id).copied() else { continue };
-        let Some(mut row) = channels.row_data(index) else { continue };
-        if row.is_speaking == *speaking && row.is_streaming == *streaming {
+    for index in 0..row_count {
+        let Some(row) = channels.row_data(index) else { continue };
+        if !row.is_voice_member {
             continue;
         }
-        row.is_speaking = *speaking;
-        row.is_streaming = *streaming;
+        let Some(&(speaking, streaming)) = wanted.get(row.id.as_str()) else { continue };
+        if row.is_speaking == speaking && row.is_streaming == streaming {
+            continue;
+        }
+        let mut row = row;
+        row.is_speaking = speaking;
+        row.is_streaming = streaming;
         channels.set_row_data(index, row);
     }
 }
@@ -1038,7 +1062,7 @@ fn command_items_from_index(data: &serde_json::Value) -> Vec<CommandSuggestionIt
             });
         }
     }
-    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    items.sort_by_cached_key(|item| item.name.to_lowercase());
     items
 }
 
@@ -1347,9 +1371,10 @@ pub fn build_ui_channels(
             category_count += 1;
             let is_collapsed = collapsed_cats.contains(&ch.id);
             let has_separator = category_count > 1;
+            let display_name = crate::utils::styled_text::plain_display_name(&ch.name);
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
-                name: crate::utils::styled_text::plain_display_name(&ch.name).as_ref().into(),
+                name: display_name.as_ref().into(),
                 is_voice: false,
                 voice_count: 0,
                 is_voice_member: false,
@@ -1362,7 +1387,7 @@ pub fn build_ui_channels(
                 is_collapsed,
                 has_separator,
                 unread_count: 0,
-                ..crate::ui::helpers::channel_emoji_fields(&crate::utils::styled_text::plain_display_name(&ch.name))
+                ..crate::ui::helpers::channel_emoji_fields(display_name.as_ref())
             });
         } else {
             if let Some(ref pid) = ch.parent_id {
@@ -1376,9 +1401,10 @@ pub fn build_ui_channels(
                 Vec::new()
             };
             let vcount = voice_participants.len() as i32;
+            let display_name = crate::utils::styled_text::plain_display_name(&ch.name);
             ui_channels.push(ChannelItem {
                 id: ch.id.clone().into(),
-                name: crate::utils::styled_text::plain_display_name(&ch.name).as_ref().into(),
+                name: display_name.as_ref().into(),
                 is_voice: ch.is_voice,
                 voice_count: vcount,
                 is_voice_member: false,
@@ -1391,7 +1417,7 @@ pub fn build_ui_channels(
                 is_collapsed: false,
                 has_separator: false,
                 unread_count: 0,
-                ..crate::ui::helpers::channel_emoji_fields(&crate::utils::styled_text::plain_display_name(&ch.name))
+                ..crate::ui::helpers::channel_emoji_fields(display_name.as_ref())
             });
 
             for (user_id, name) in voice_participants {
@@ -1405,7 +1431,7 @@ pub fn build_ui_channels(
                 let my_uid = gateway::get_my_user_id();
                 let is_self_member = user_id == 999999 || (my_uid != 0 && user_id == my_uid);
                 let (is_muted_flag, is_deaf_flag) = gateway::get_user_voice_audio_flags(user_id);
-                let (is_muted_saved, _, _) = gateway::get_user_audio_settings(&user_id.to_string());
+                let (is_muted_saved, _, _) = gateway::get_user_audio_settings_by_id(user_id);
                 let final_muted = is_muted_flag || is_muted_saved;
                 let (role_name, role_color) = gateway::get_user_display_role(user_id).unwrap_or_default();
                 let (is_screen_streaming, is_camera_streaming) = if is_self_member {
@@ -1635,13 +1661,18 @@ pub fn channel_emoji_fields(name: &str) -> ChannelItem {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app else { return };
             let emoji_mgr = emoji_cache::get_emoji_cache();
-            match emoji_mgr.get(&id) {
+            // Never read/decode a PNG on the UI thread: use the RAM copy, or let
+            // the disk/network hydration paths refresh the slot asynchronously.
+            match emoji_mgr.get_cached(&id) {
                 Some(img) => {
                     if let Some(ui) = app.upgrade() {
                         refresh_channel_emoji(&ui, &id, &img);
                     }
                 }
-                None => emoji_mgr.fetch_priority_async(&id, "", app),
+                None => {
+                    emoji_mgr.hydrate_from_disk_async(&id, app.clone());
+                    emoji_mgr.fetch_priority_async(&id, "", app);
+                }
             }
         });
     }

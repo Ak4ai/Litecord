@@ -326,17 +326,10 @@ pub fn is_self_deaf() -> bool {
 
 pub fn get_voice_channel_participant_count(channel_id: &str) -> i32 {
     if channel_id.is_empty() { return 0; }
-    let mut set = std::collections::HashSet::new();
-
-    if let Ok(map) = get_guild_voice_states_store().lock() {
-        for (&uid, cid) in map.iter() {
-            if cid == channel_id {
-                set.insert(uid);
-            }
-        }
-    }
-
-    set.len() as i32
+    get_guild_voice_states_store()
+        .lock()
+        .map(|map| map.values().filter(|cid| cid.as_str() == channel_id).count() as i32)
+        .unwrap_or(0)
 }
 
 pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
@@ -370,12 +363,9 @@ pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
         })
         .collect();
 
-    participants.sort_by(|left, right| {
-        left.1
-            .to_lowercase()
-            .cmp(&right.1.to_lowercase())
-            .then_with(|| left.0.cmp(&right.0))
-    });
+    // Cache the lowercase key once per participant instead of allocating two
+    // Strings on every comparison of the sort.
+    participants.sort_by_cached_key(|(user_id, name)| (name.to_lowercase(), *user_id));
     participants
 }
 
@@ -528,7 +518,9 @@ fn load_persisted_user_audio_settings() -> std::collections::HashMap<String, (bo
 }
 
 fn save_persisted_user_audio_settings(map: &std::collections::HashMap<String, (bool, f32, i32)>) {
-    if let Ok(json) = serde_json::to_string_pretty(map) {
+    // Compact JSON: this can run while a volume slider is being dragged, and the
+    // pretty printer rewrote a much larger buffer on every change.
+    if let Ok(json) = serde_json::to_string(map) {
         let _ = std::fs::write(USER_AUDIO_SETTINGS_FILE, json);
     }
 }
@@ -570,6 +562,30 @@ pub fn set_user_priority(user_id: &str, priority: i32) {
 pub fn get_user_audio_settings(user_id: &str) -> (bool, f32, i32) {
     if let Ok(map) = get_user_audio_settings_store().lock() {
         if let Some(res) = map.get(user_id) {
+            return *res;
+        }
+    }
+    (false, 1.0, 0)
+}
+
+/// Same lookup for a numeric id, without allocating a `String` on every audio
+/// callback / sidebar rebuild.
+pub fn get_user_audio_settings_by_id(user_id: u64) -> (bool, f32, i32) {
+    let mut buf = [0u8; 20];
+    let mut len = 0usize;
+    let mut value = user_id;
+    loop {
+        buf[len] = b'0' + (value % 10) as u8;
+        len += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    buf[..len].reverse();
+    let key = std::str::from_utf8(&buf[..len]).unwrap_or("0");
+    if let Ok(map) = get_user_audio_settings_store().lock() {
+        if let Some(res) = map.get(key) {
             return *res;
         }
     }
@@ -838,6 +854,9 @@ fn evict_half_of_directory(map: &mut std::collections::HashMap<u64, String>, kee
 pub fn register_user_name(user_id: u64, name: String) {
     if user_id > 0 && !name.is_empty() {
         if let Ok(mut map) = get_user_names_store().lock() {
+            if map.get(&user_id).is_some_and(|existing| existing == &name) {
+                return;
+            }
             if map.len() >= MAX_USER_NAMES && !map.contains_key(&user_id) {
                 evict_half_of_directory(&mut map, MAX_USER_NAMES / 2);
             }
@@ -859,6 +878,9 @@ pub fn register_user_avatar(user_id: u64, hash: &str) {
     let _ = get_user_names_store();
     let store = USER_AVATARS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Ok(mut map) = store.lock() {
+        if map.get(&user_id).is_some_and(|existing| existing == hash) {
+            return;
+        }
         if map.len() >= MAX_USER_AVATARS && !map.contains_key(&user_id) {
             evict_half_of_directory(&mut map, MAX_USER_AVATARS / 2);
         }

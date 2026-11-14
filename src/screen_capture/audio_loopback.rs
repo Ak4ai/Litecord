@@ -800,12 +800,17 @@ pub fn start_audio_loopback_tx(
             });
 
             let mut pkts_sent_count: u64 = 0;
+            // Reused across the 8 ms loop: draining PCM used to allocate a Vec for
+            // every chunk and a Vec per frame for the UDP packet.
+            let mut chunk_pool: Vec<Vec<i16>> = Vec::new();
+            let mut chunks_to_send: Vec<Vec<i16>> = Vec::new();
+            let mut audio_pkt: Vec<u8> = Vec::with_capacity(128);
             while is_running.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(8));
 
-                let chunks_to_send: Vec<Vec<i16>> = {
+                chunks_to_send.clear();
+                {
                     let mut buf = pcm_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut res = Vec::new();
                     // Prevent TX buffer accumulation
                     if buf.len() > target_chunk_samples * 6 {
                         let excess = buf.len() - target_chunk_samples * 2;
@@ -817,10 +822,11 @@ pub fn start_audio_loopback_tx(
                         }
                     }
                     while buf.len() >= target_chunk_samples && target_chunk_samples > 0 {
-                        let chunk: Vec<i16> = buf.drain(0..target_chunk_samples).collect();
-                        res.push(chunk);
+                        let mut chunk = chunk_pool.pop().unwrap_or_default();
+                        chunk.clear();
+                        chunk.extend(buf.drain(0..target_chunk_samples));
+                        chunks_to_send.push(chunk);
                     }
-                    res
                 };
 
                 let mut cid = channel_id.load(Ordering::Relaxed);
@@ -837,8 +843,8 @@ pub fn start_audio_loopback_tx(
                 let target_addrs = super::watch::viewer_addrs();
                 let stream_key = super::watch::session_key();
                 let is_go_live_active = crate::native_video::is_broadcasting();
-                for chunk in chunks_to_send {
-                    super::web_share::offer_audio(&chunk, active_sample_rate);
+                for chunk in &chunks_to_send {
+                    super::web_share::offer_audio(chunk, active_sample_rate);
                     let should_encode = !target_addrs.is_empty() || is_go_live_active;
                     if !should_encode {
                         opus = None;
@@ -850,7 +856,7 @@ pub fn start_audio_loopback_tx(
                     let Some(encoder) = opus.as_mut() else { continue };
                     let pts_ms = get_tx_pts_ms();
                     // One packet per 20 ms Opus frame (48 kHz, two equal channels).
-                    for frame in encoder.push(&chunk, active_sample_rate) {
+                    for frame in encoder.push(chunk, active_sample_rate) {
                         // 1. Enviar para Discord Go Live nativo se ativo
                         if is_go_live_active {
                             crate::native_video::offer_outbound_audio(&frame);
@@ -862,26 +868,26 @@ pub fn start_audio_loopback_tx(
                             let Some(audio_payload) = encrypt_signaling_payload(sk, &frame) else {
                                 continue;
                             };
-                            let mut pkt = Vec::with_capacity(40 + audio_payload.len());
-                            pkt.extend_from_slice(MAGIC);
-                            pkt.extend_from_slice(&inst.to_be_bytes());
-                            pkt.push(OP_AUDIO_FRAME);
-                            pkt.extend_from_slice(&cid.to_be_bytes());
-                            pkt.extend_from_slice(&uid.to_be_bytes());
-                            pkt.extend_from_slice(&seq.to_be_bytes());
-                            pkt.extend_from_slice(&pts_ms.to_be_bytes());
-                            pkt.push(2); // channels
-                            pkt.extend_from_slice(&48_000u32.to_be_bytes());
-                            pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
-                            pkt.extend_from_slice(&audio_payload);
+                            audio_pkt.clear();
+                            audio_pkt.extend_from_slice(MAGIC);
+                            audio_pkt.extend_from_slice(&inst.to_be_bytes());
+                            audio_pkt.push(OP_AUDIO_FRAME);
+                            audio_pkt.extend_from_slice(&cid.to_be_bytes());
+                            audio_pkt.extend_from_slice(&uid.to_be_bytes());
+                            audio_pkt.extend_from_slice(&seq.to_be_bytes());
+                            audio_pkt.extend_from_slice(&pts_ms.to_be_bytes());
+                            audio_pkt.push(2); // channels
+                            audio_pkt.extend_from_slice(&48_000u32.to_be_bytes());
+                            audio_pkt.extend_from_slice(&(super::stream_audio::FRAME as u16).to_be_bytes());
+                            audio_pkt.extend_from_slice(&audio_payload);
                             for target in &target_addrs {
-                                let _ = socket.send_to(&pkt, target);
+                                let _ = socket.send_to(&audio_pkt, target);
                             }
                         }
                     }
 
                     let mut peak_tx: i16 = 0;
-                    for &s in &chunk {
+                    for &s in chunk {
                         let abs = s.saturating_abs();
                         if abs > peak_tx { peak_tx = abs; }
                     }
@@ -890,6 +896,10 @@ pub fn start_audio_loopback_tx(
                     if pkts_sent_count % 1000 == 1 {
                         info!("📡 [LOOPBACK TX] Pkt #{} enviado ({} amostras @ {}Hz | Peak Amplitude: {}/32767) para {:?}", pkts_sent_count, target_chunk_samples, active_sample_rate, peak_tx, target_addrs);
                     }
+                }
+                for mut chunk in chunks_to_send.drain(..) {
+                    chunk.clear();
+                    chunk_pool.push(chunk);
                 }
             }
 

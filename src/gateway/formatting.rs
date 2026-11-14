@@ -139,30 +139,30 @@ pub fn parse_discord_markdown(input: &str) -> String {
 /// Applies all inline Discord Markdown transforms to a single line of text.
 /// Code blocks have already been extracted, so this only handles inline syntax.
 fn apply_inline_markdown(input: &str) -> String {
-    let s = input.to_string();
-
     // ── Inline code (backtick) — protect from further parsing ─────────────
     // We replace inline code with a placeholder, process the rest, then restore.
-    let backtick_re_parts: Vec<&str> = s.split('`').collect();
-    let mut reconstructed = String::new();
     let mut code_segments: Vec<String> = Vec::new();
-
-    for (idx, part) in backtick_re_parts.iter().enumerate() {
-        if idx % 2 == 1 {
-            // Inside inline code — protect it
-            let placeholder = format!("\x00CODE{}\x00", code_segments.len());
-            code_segments.push(format!("`{}`", part));
-            reconstructed.push_str(&placeholder);
-        } else {
-            reconstructed.push_str(part);
+    let mut s = if input.contains('`') {
+        let backtick_re_parts: Vec<&str> = input.split('`').collect();
+        let mut reconstructed = String::with_capacity(input.len());
+        for (idx, part) in backtick_re_parts.iter().enumerate() {
+            if idx % 2 == 1 {
+                // Inside inline code — protect it
+                reconstructed.push_str(&format!("\x00CODE{}\x00", code_segments.len()));
+                code_segments.push(format!("`{}`", part));
+            } else {
+                reconstructed.push_str(part);
+            }
         }
-    }
-
-    let mut s = reconstructed;
+        reconstructed
+    } else {
+        // No inline code: avoid splitting/rebuilding the whole line.
+        input.to_string()
+    };
 
     // ── Markdown links [text](url) ─────────────────────────────────────────
     // Parse [label](url) → "label (url)"
-    {
+    if s.contains('[') {
         let mut out = String::with_capacity(s.len());
         let mut rem = s.as_str();
         while let Some(bracket_start) = rem.find('[') {
@@ -197,83 +197,119 @@ fn apply_inline_markdown(input: &str) -> String {
         s = out;
     }
 
+    // Each pass below allocates and copies the whole line, so only run the ones
+    // whose delimiter actually appears. Most messages match two or three.
     // ── Spoilers ||text|| ──────────────────────────────────────────────────
-    s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+    if s.contains("||") {
+        s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+    }
 
     // ── Mentions and Discord entities ──────────────────────────────────────
     // <t:timestamp:format> — Discord timestamps
-    s = regex_replace_simple(&s, "<t:", ">", |inner| {
-        let parts: Vec<&str> = inner.splitn(2, ':').collect();
-        let ts: i64 = parts[0].parse().unwrap_or(0);
-        let style = parts.get(1).copied();
-        format_discord_timestamp(ts, style)
-    });
+    if s.contains("<t:") {
+        s = regex_replace_simple(&s, "<t:", ">", |inner| {
+            let parts: Vec<&str> = inner.splitn(2, ':').collect();
+            let ts: i64 = parts[0].parse().unwrap_or(0);
+            let style = parts.get(1).copied();
+            format_discord_timestamp(ts, style)
+        });
+    }
 
     // <@!USER_ID> and <@USER_ID> — user mentions
-    s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
-    s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
-    s = regex_replace_simple(&s, "<@", ">", |inner| {
-        // Only if purely numeric (user ID)
-        if inner.chars().all(|c| c.is_ascii_digit()) {
-            "@usuário".to_string()
-        } else {
-            format!("<@{}>", inner)
-        }
-    });
+    if s.contains("<@!") {
+        s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
+    }
+    if s.contains("<@&") {
+        s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
+    }
+    if s.contains("<@") {
+        s = regex_replace_simple(&s, "<@", ">", |inner| {
+            // Only if purely numeric (user ID)
+            if inner.chars().all(|c| c.is_ascii_digit()) {
+                "@usuário".to_string()
+            } else {
+                format!("<@{}>", inner)
+            }
+        });
+    }
     // <#CHANNEL_ID> — channel mentions
-    s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
+    if s.contains("<#") {
+        s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
+    }
 
     // <:name:ID> — custom emoji
-    s = regex_replace_simple(&s, "<a:", ">", |inner| {
-        let name = inner.split(':').next().unwrap_or("emoji");
-        format!(":{}:", name)
-    });
-    s = regex_replace_simple(&s, "<:", ">", |inner| {
-        let name = inner.split(':').next().unwrap_or("emoji");
-        format!(":{}:", name)
-    });
+    if s.contains("<a:") {
+        s = regex_replace_simple(&s, "<a:", ">", |inner| {
+            let name = inner.split(':').next().unwrap_or("emoji");
+            format!(":{}:", name)
+        });
+    }
+    if s.contains("<:") {
+        s = regex_replace_simple(&s, "<:", ">", |inner| {
+            let name = inner.split(':').next().unwrap_or("emoji");
+            format!(":{}:", name)
+        });
+    }
 
     // </name:ID> — command mentions
-    s = regex_replace_simple(&s, "</", ">", |inner| {
-        let name = inner.split(':').next().unwrap_or("comando");
-        format!("/{}", name)
-    });
+    if s.contains("</") {
+        s = regex_replace_simple(&s, "</", ">", |inner| {
+            let name = inner.split(':').next().unwrap_or("comando");
+            format!("/{}", name)
+        });
+    }
 
     // ── Text formatting (order matters: most-specific first) ───────────────
     // Bold + Italic ***
-    s = replace_between(&s, "***", "***", |inner| inner.to_string());
+    if s.contains("***") {
+        s = replace_between(&s, "***", "***", |inner| inner.to_string());
+    }
     // Bold **
-    s = replace_between(&s, "**", "**", |inner| inner.to_string());
+    if s.contains("**") {
+        s = replace_between(&s, "**", "**", |inner| inner.to_string());
+    }
     // Italic * (single, but not at word boundaries where it would be a list)
-    s = replace_between(&s, "*", "*", |inner| inner.to_string());
+    if s.contains('*') {
+        s = replace_between(&s, "*", "*", |inner| inner.to_string());
+    }
     // Underline __
-    s = replace_between(&s, "__", "__", |inner| inner.to_string());
+    if s.contains("__") {
+        s = replace_between(&s, "__", "__", |inner| inner.to_string());
+    }
     // Italic _
-    s = replace_between(&s, "_", "_", |inner| inner.to_string());
+    if s.contains('_') {
+        s = replace_between(&s, "_", "_", |inner| inner.to_string());
+    }
     // Strikethrough ~~ (Unicode combining strike \u{0336})
-    s = replace_between(&s, "~~", "~~", |inner| {
-        inner.chars().flat_map(|c| [c, '\u{0336}']).collect::<String>()
-    });
+    if s.contains("~~") {
+        s = replace_between(&s, "~~", "~~", |inner| {
+            inner.chars().flat_map(|c| [c, '\u{0336}']).collect::<String>()
+        });
+    }
 
     // ── Backslash escape removal ───────────────────────────────────────────
-    let mut unescaped = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if matches!(next, '*' | '_' | '~' | '`' | '|' | '>' | '#' | '-' | '\\') {
-                    unescaped.push(next);
-                    chars.next();
-                    continue;
+    if s.contains('\\') {
+        let mut unescaped = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(&next) = chars.peek() {
+                    if matches!(next, '*' | '_' | '~' | '`' | '|' | '>' | '#' | '-' | '\\') {
+                        unescaped.push(next);
+                        chars.next();
+                        continue;
+                    }
                 }
             }
+            unescaped.push(c);
         }
-        unescaped.push(c);
+        s = unescaped;
     }
-    s = unescaped;
 
     // ── HTML entities ──────────────────────────────────────────────────────
-    s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+    if s.contains('&') {
+        s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+    }
 
     // ── Restore inline code segments ──────────────────────────────────────
     for (idx, code) in code_segments.iter().enumerate() {
@@ -558,20 +594,19 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                 (None, Some(hs)) => Some(hs),
                 (None, None) => None,
             };
-            let next_unicode = find_next_unicode_emoji(rem);
+            // Only split unicode emojis if it is a standalone jumbo emoji on the line.
+            // Inline unicode emojis in prose render natively with system fonts in Text with word-wrap!
+            // Skip the full char scan on every subsequent block of the line.
+            let next_unicode = if is_first_block { find_next_unicode_emoji(rem) } else { None };
 
             let mut candidates: Vec<(usize, &str)> = Vec::new();
             if let Some(idx) = next_bracket { candidates.push((idx, "bracket")); }
             if let Some(idx) = next_cmd { candidates.push((idx, "cmd")); }
             if let Some((idx, _)) = next_emoji { candidates.push((idx, "emoji")); }
             if let Some(idx) = next_raw_url { candidates.push((idx, "raw_url")); }
-            // Only split unicode emojis if it is a standalone jumbo emoji on the line.
-            // Inline unicode emojis in prose render natively with system fonts in Text with word-wrap!
-            if is_first_block {
-                if let Some((idx, len, _, _)) = next_unicode {
-                    if idx == 0 && rem.len() == len {
-                        candidates.push((idx, "unicode_emoji"));
-                    }
+            if let Some((idx, len, _, _)) = next_unicode {
+                if idx == 0 && rem.len() == len {
+                    candidates.push((idx, "unicode_emoji"));
                 }
             }
 

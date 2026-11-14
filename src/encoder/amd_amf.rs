@@ -972,7 +972,7 @@ impl AmfD3d11Encoder {
         } else {
             au
         };
-        crate::encoder::h264_vui::declare_colour(&au, 1, 1, 1)
+        crate::encoder::h264_vui::declare_colour_owned(au, 1, 1, 1)
     }
 
     pub fn force_idr(&mut self) {

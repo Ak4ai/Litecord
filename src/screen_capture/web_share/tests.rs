@@ -194,7 +194,7 @@ fn browser_fixture() {
             // Use all-intra frames in this fixture; production uses the shared encoder's IDRs.
             encoder.force_intra_frame();
             let frame = encoder.encode(&yuv).unwrap().to_vec();
-            offer_frame(&frame);
+            offer_frame(frame.into());
         }
         let audio: Vec<i16> = (0..960).map(|i| {
             let t = (n * 960 + i) as f32 / 48000.0;

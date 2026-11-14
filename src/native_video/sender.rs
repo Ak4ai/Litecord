@@ -18,7 +18,7 @@ use super::crypto::{protect_rtcp, protect_rtp, TransportMode};
 use super::h264::H264Packetizer;
 use super::rtp::is_rtcp;
 
-static FRAME_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
+static FRAME_TX: Mutex<Option<mpsc::Sender<Arc<[u8]>>>> = Mutex::new(None);
 static AUDIO_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 static IS_BROADCASTING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_STREAM_KEY: Mutex<Option<String>> = Mutex::new(None);
@@ -30,13 +30,13 @@ pub fn is_broadcasting() -> bool {
 
 /// Hands an Annex-B encoded H.264 frame to the outbound transmitter.
 /// Non-blocking: drops frames if the queue is full to avoid adding latency.
-pub fn offer_outbound_frame(annex_b: &[u8]) {
+pub fn offer_outbound_frame(annex_b: Arc<[u8]>) {
     if !is_broadcasting() || annex_b.is_empty() {
         return;
     }
     let guard = FRAME_TX.lock().unwrap();
     if let Some(tx) = guard.as_ref() {
-        let _ = tx.try_send(annex_b.to_vec());
+        let _ = tx.try_send(annex_b);
     }
 }
 
@@ -91,7 +91,7 @@ pub fn start_sender(
 ) {
     stop_sender("");
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
+    let (tx, mut rx) = mpsc::channel::<Arc<[u8]>>(16);
     *FRAME_TX.lock().unwrap() = Some(tx);
     *ACTIVE_STREAM_KEY.lock().unwrap() = Some(stream_key.clone());
     IS_BROADCASTING.store(true, Ordering::SeqCst);
@@ -192,7 +192,7 @@ pub fn start_sender(
             let dave_encrypted = if let Ok(mut dg) = dave.lock() {
                 if let Some(ref mut d) = *dg {
                     if d.is_ready() {
-                        match d.encrypt(MediaType::VIDEO, Codec::H264, &frame) {
+                        match d.encrypt(MediaType::VIDEO, Codec::H264, frame.as_ref()) {
                             Ok(cow) => Some(cow.into_owned()),
                             Err(error) => {
                                 if frame_count % 120 == 0 {
@@ -210,7 +210,7 @@ pub fn start_sender(
             } else {
                 None
             };
-            let frame_to_packetize = dave_encrypted.as_deref().unwrap_or(&frame);
+            let frame_to_packetize = dave_encrypted.as_deref().unwrap_or(frame.as_ref());
 
             let pts_ms = stream_start.elapsed().as_millis() as u64;
             let packets = packetizer.packetize(frame_to_packetize, pts_ms);

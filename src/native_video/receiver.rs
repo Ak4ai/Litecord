@@ -406,11 +406,15 @@ fn has_dave_marker(frame: &[u8]) -> bool {
     frame.ends_with(&DAVE_MARKER)
 }
 
-fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<u8>> {
+fn decrypt_dave<'a>(
+    ctx: &NativeVideoContext,
+    uid: u64,
+    frame: &'a [u8],
+) -> Option<std::borrow::Cow<'a, [u8]>> {
     let mut guard = ctx.dave.lock().unwrap_or_else(|e| e.into_inner());
     let Some(session) = guard.as_mut() else {
         // No DAVE group at all: media is plain text.
-        return Some(frame.to_vec());
+        return Some(std::borrow::Cow::Borrowed(frame));
     };
     if !session.is_ready() {
         // The group is still forming.  Frames marked as encrypted cannot be
@@ -418,11 +422,11 @@ fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<
         if has_dave_marker(frame) {
             return None;
         }
-        return Some(frame.to_vec());
+        return Some(std::borrow::Cow::Borrowed(frame));
     }
 
     match session.decrypt(uid, MediaType::VIDEO, frame) {
-        Ok(clear) => Some(clear),
+        Ok(clear) => Some(std::borrow::Cow::Owned(clear)),
         Err(error) => {
             // During the transition to plaintext, frames are not encrypted.
             // The DAVE magic tail marks a frame that must not be displayed in
@@ -431,7 +435,7 @@ fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<
                 log::trace!("[DAVE VIDEO] Falha ao decifrar vídeo do usuário {}: {:?}", uid, error);
                 None
             } else {
-                Some(frame.to_vec())
+                Some(std::borrow::Cow::Borrowed(frame))
             }
         }
     }
@@ -465,8 +469,8 @@ mod tests {
     #[test]
     fn without_dave_every_frame_is_plaintext() {
         let ctx = context(None);
-        assert_eq!(decrypt_dave(&ctx, 1, &frame(&[])), Some(frame(&[])));
-        assert_eq!(decrypt_dave(&ctx, 1, &frame(&DAVE_MARKER)), Some(frame(&DAVE_MARKER)));
+        assert_eq!(decrypt_dave(&ctx, 1, &frame(&[])).map(|c| c.into_owned()), Some(frame(&[])));
+        assert_eq!(decrypt_dave(&ctx, 1, &frame(&DAVE_MARKER)).map(|c| c.into_owned()), Some(frame(&DAVE_MARKER)));
     }
 
     #[test]
@@ -476,6 +480,6 @@ mod tests {
         let ctx = context(Some(session));
 
         assert_eq!(decrypt_dave(&ctx, 2, &frame(&DAVE_MARKER)), None);
-        assert_eq!(decrypt_dave(&ctx, 2, &frame(&[])), Some(frame(&[])));
+        assert_eq!(decrypt_dave(&ctx, 2, &frame(&[])).map(|c| c.into_owned()), Some(frame(&[])));
     }
 }

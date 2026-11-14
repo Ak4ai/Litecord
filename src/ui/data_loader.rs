@@ -129,7 +129,6 @@ pub fn save_session_snapshot(
     order: &[String],
     guilds_map: Option<&Arc<Mutex<HashMap<String, GuildData>>>>,
 ) {
-    let _ = std::fs::create_dir_all(".litecord_cache");
     if let Ok(mut slot) = SNAPSHOT_GUILDS.get_or_init(Default::default).lock() {
         if !guilds.is_empty() {
             slot.0 = guilds.to_vec();
@@ -196,13 +195,22 @@ pub fn save_session_snapshot(
         last_channels,
         guild_usage,
     };
-    if let Ok(json) = serde_json::to_string(&snapshot) {
-        let tmp = ".litecord_cache/session_state.json.tmp";
-        let target = ".litecord_cache/session_state.json";
-        if std::fs::write(tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, target);
-        }
-    }
+    // Serializing up to eight guild channel lists and writing the file is
+    // blocking I/O; keep it off the async worker. There are only a few call
+    // sites, so a detached write per save is enough.
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = std::fs::create_dir_all(".litecord_cache");
+            if let Ok(json) = serde_json::to_string(&snapshot) {
+                let tmp = ".litecord_cache/session_state.json.tmp";
+                let target = ".litecord_cache/session_state.json";
+                if std::fs::write(tmp, json).is_ok() {
+                    let _ = std::fs::rename(tmp, target);
+                }
+            }
+        })
+        .await;
+    });
 }
 
 pub async fn fetch_and_populate_guilds(
@@ -404,9 +412,14 @@ pub async fn fetch_and_populate_guilds(
             }
 
             if !ordered_ids.is_empty() {
-                raw_guilds.sort_by_key(|g| {
-                    ordered_ids.iter().position(|id| id == &g.id).unwrap_or(usize::MAX)
-                });
+                // Resolve each guild position once: `position()` inside the
+                // comparator made this O(n² log n) on large servers.
+                let order_pos: std::collections::HashMap<&str, usize> = ordered_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| (id.as_str(), index))
+                    .collect();
+                raw_guilds.sort_by_key(|g| order_pos.get(g.id.as_str()).copied().unwrap_or(usize::MAX));
                 if let Some(first) = raw_guilds.first() {
                     first_guild_id_opt = Some(first.id.clone());
                 }
@@ -979,9 +992,15 @@ pub async fn fetch_and_populate_channels(
         .ok()
         .and_then(|d| serde_json::from_str(&d).ok());
 
+    // Resolve custom positions once; doing a linear `position()` inside the
+    // sort comparator was O(n² log n) on guilds with many channels.
+    let custom_chan_pos: Option<std::collections::HashMap<&str, usize>> = custom_chan_order
+        .as_ref()
+        .map(|order| order.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect());
+
     let sort_channel_list = |list: &mut Vec<RawChan>| {
-        if let Some(ref order) = custom_chan_order {
-            list.sort_by_key(|c| order.iter().position(|id| id == &c.id).unwrap_or(usize::MAX));
+        if let Some(ref pos) = custom_chan_pos {
+            list.sort_by_key(|c| pos.get(c.id.as_str()).copied().unwrap_or(usize::MAX));
         } else {
             list.sort_by(|a, b| {
                 let a_is_voice = a.ch_type == 2 || a.ch_type == 13;

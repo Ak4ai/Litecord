@@ -419,7 +419,7 @@ impl WmfGpuEncoder {
     fn next_output(&mut self) -> Option<Vec<u8>> {
         let au = self.ready.pop_front()?;
         let (p, t, m) = self.colour;
-        Some(super::h264_vui::declare_colour(&au, p, t, m))
+        Some(super::h264_vui::declare_colour_owned(au, p, t, m))
     }
 
     /// Hands `tex` to the encoder and waits briefly for the picture.
