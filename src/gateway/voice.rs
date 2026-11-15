@@ -1909,16 +1909,23 @@ pub async fn connect_voice_gateway(
                                                         let enable_aec = crate::utils::video_settings::get_echo_cancellation();
                                                         let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
 
-                                                        // Prefer WebRTC AEC3 (same engine as Discord/browsers). If it
-                                                        // is unavailable on this platform, the custom NLMS AEC runs
-                                                        // instead; both never run together.
-                                                        let aec3_active = enable_aec
-                                                            && crate::audio::webrtc_aec::process_capture(&mut pcm_frame);
+                                                        // Prefer the WebRTC APM stack (AEC3 / NS / AGC), the same
+                                                        // baseline Discord's SDK documents. Whatever it does not
+                                                        // process falls back to Litecord's custom DSP; a module is
+                                                        // never applied twice.
+                                                        let applied = crate::audio::webrtc_aec::process_capture(&mut pcm_frame);
+                                                        let custom_suppression: &str = if applied.ns {
+                                                            "none"
+                                                        } else if suppression_mode == "discord" {
+                                                            "standard"
+                                                        } else {
+                                                            &suppression_mode
+                                                        };
                                                         let metrics = voice_proc.process_frame(
                                                             &mut pcm_frame,
-                                                            &suppression_mode,
-                                                            enable_aec && !aec3_active,
-                                                            enable_agc,
+                                                            custom_suppression,
+                                                            enable_aec && !applied.aec,
+                                                            enable_agc && !applied.agc,
                                                         );
 
                                                         // Report POST-DSP level to UI meter so user sees exactly what is transmitted

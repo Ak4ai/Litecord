@@ -1,27 +1,64 @@
-//! WebRTC AEC3 echo cancellation for voice capture (Linux).
+//! WebRTC AudioProcessing integration (Linux).
 //!
-//! Discord's client is built on the WebRTC AudioProcessing module; this wires
-//! the same AEC3 engine into Litecord's render (speaker) and capture (mic)
-//! paths. The custom NLMS AEC in `dsp.rs` stays as a fallback for platforms
-//! where this module is not compiled, or if AEC3 fails to initialize.
+//! Discord's baseline voice pipeline (per its public SDK documentation) is the
+//! WebRTC AudioProcessing module: AEC3 echo cancellation, WebRTC noise
+//! suppression and AGC. This module exposes that same open-source stack in
+//! Litecord. The proprietary Krisp model Discord optionally ships is not
+//! reproduced here; the "Discord (WebRTC)" mode is the WebRTC baseline, not
+//! Krisp.
 //!
 //! The engine works on 10 ms frames at 48 kHz. Litecord's capture path works
 //! on 20 ms frames, so they are split here. Render frames are fed directly from
 //! the speaker callback (mono downmix), resampling device rates when needed.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 /// 10 ms at 48 kHz, the frame size required by WebRTC AudioProcessing.
 const APM_FRAME: usize = 480;
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+const MODULE_AEC: u8 = 1 << 0;
+const MODULE_NS: u8 = 1 << 1;
+const MODULE_AGC: u8 = 1 << 2;
 
-pub fn set_enabled(enabled: bool) {
-    ENABLED.store(enabled, Ordering::Relaxed);
-    if enabled {
-        // Initialize the C++ AEC3 processor off the real-time audio callback.
+static MODULES: AtomicU8 = AtomicU8::new(0);
+
+/// Which WebRTC modules actually processed a capture frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Applied {
+    pub aec: bool,
+    pub ns: bool,
+    pub agc: bool,
+}
+
+impl Applied {
+    fn from_modules(modules: u8) -> Self {
+        Self {
+            aec: modules & MODULE_AEC != 0,
+            ns: modules & MODULE_NS != 0,
+            agc: modules & MODULE_AGC != 0,
+        }
+    }
+}
+
+/// Enables the WebRTC submodules. `ns` maps to Litecord's "Discord (WebRTC)"
+/// noise mode; `agc` follows the automatic-gain toggle.
+pub fn configure(aec: bool, ns: bool, agc: bool) {
+    let mut modules = 0u8;
+    if aec {
+        modules |= MODULE_AEC;
+    }
+    if ns {
+        modules |= MODULE_NS;
+    }
+    if agc {
+        modules |= MODULE_AGC;
+    }
+    MODULES.store(modules, Ordering::SeqCst);
+    if modules != 0 {
+        // Initialize the C++ processor off the real-time audio callback.
         imp::warm_up();
+        imp::apply_config();
     }
 }
 
@@ -29,30 +66,49 @@ pub fn set_enabled(enabled: bool) {
 mod imp {
     use super::*;
     use crate::audio::dsp::PhaseResampler;
-    use webrtc_audio_processing::config::{Config, EchoCanceller};
+    use webrtc_audio_processing::config::{
+        Config, EchoCanceller, GainController, GainController2, NoiseSuppression,
+        NoiseSuppressionLevel,
+    };
     use webrtc_audio_processing::Processor;
 
     static PROCESSOR: OnceLock<Option<Processor>> = OnceLock::new();
 
+    fn build_config() -> Config {
+        let modules = MODULES.load(Ordering::Relaxed);
+        let mut config = Config {
+            high_pass_filter: Some(Default::default()),
+            ..Default::default()
+        };
+        if modules & MODULE_AEC != 0 {
+            config.echo_canceller = Some(EchoCanceller::Full { stream_delay_ms: None });
+        }
+        if modules & MODULE_NS != 0 {
+            config.noise_suppression = Some(NoiseSuppression {
+                level: NoiseSuppressionLevel::High,
+                analyze_linear_aec_output: false,
+            });
+        }
+        if modules & MODULE_AGC != 0 {
+            config.gain_controller = Some(GainController::GainController2(GainController2 {
+                input_volume_controller_enabled: false,
+                adaptive_digital: Some(Default::default()),
+                fixed_digital: Default::default(),
+            }));
+        }
+        config
+    }
+
     fn processor() -> Option<&'static Processor> {
         PROCESSOR
             .get_or_init(|| {
-                let processor = Processor::new(48_000).map_err(|e| {
-                    log::warn!("⚠️ [AEC3] WebRTC AudioProcessing no pudo iniciarse: {:?}", e);
-                }).ok()?;
-                processor.set_config(Config {
-                    // Full AEC3; stream_delay_ms = None lets it estimate the
-                    // acoustic delay between the speaker and the microphone.
-                    echo_canceller: Some(EchoCanceller::Full { stream_delay_ms: None }),
-                    // AEC3 needs a high-pass stage; the custom DSP still applies
-                    // its own 80 Hz filter afterwards, which is harmless.
-                    high_pass_filter: Some(Default::default()),
-                    // Noise suppression and AGC stay on Litecord's pipeline.
-                    noise_suppression: None,
-                    gain_controller: None,
-                    ..Default::default()
-                });
-                log::info!("🎙️ [AEC3] Cancelación de eco WebRTC AEC3 activa (48 kHz).");
+                let processor = Processor::new(48_000)
+                    .map_err(|e| {
+                        log::warn!("⚠️ [WebRTC APM] no pudo iniciarse: {:?}", e);
+                    })
+                    .ok()?;
+                processor.set_config(build_config());
+                log::info!("🎙️ [WebRTC APM] AEC3/NS/AGC activos (48 kHz).");
                 Some(processor)
             })
             .as_ref()
@@ -60,6 +116,12 @@ mod imp {
 
     pub fn warm_up() {
         let _ = processor();
+    }
+
+    pub fn apply_config() {
+        if let Some(Some(processor)) = PROCESSOR.get() {
+            processor.set_config(build_config());
+        }
     }
 
     struct RenderState {
@@ -104,7 +166,7 @@ mod imp {
                 let mut frame = [0.0f32; APM_FRAME];
                 frame.copy_from_slice(&self.pending[offset..offset + APM_FRAME]);
                 if let Err(e) = processor.process_render_frame([&mut frame]) {
-                    log::debug!("[AEC3] process_render_frame: {:?}", e);
+                    log::debug!("[WebRTC APM] process_render_frame: {:?}", e);
                     break;
                 }
                 offset += APM_FRAME;
@@ -120,34 +182,33 @@ mod imp {
     }
 
     pub fn push_render(samples: &[f32], sample_rate: u32) {
-        if !ENABLED.load(Ordering::Relaxed) {
+        // Only AEC3 consumes the render reference.
+        if MODULES.load(Ordering::Relaxed) & MODULE_AEC == 0 {
             return;
         }
         let Some(processor) = processor() else { return };
         RENDER.with(|state| state.borrow_mut().push(processor, samples, sample_rate));
     }
 
-    /// Runs AEC3 over a 20 ms capture frame. Returns false when AEC3 is not
-    /// available/enabled, so the caller can fall back to the custom AEC.
-    pub fn process_capture(frame: &mut [f32; 960]) -> bool {
-        if !ENABLED.load(Ordering::Relaxed) {
-            return false;
+    /// Runs the enabled WebRTC modules over a 20 ms capture frame.
+    pub fn process_capture(frame: &mut [f32; 960]) -> Applied {
+        let modules = MODULES.load(Ordering::Relaxed);
+        if modules == 0 {
+            return Applied::default();
         }
-        let Some(processor) = processor() else { return false };
-        let mut processed = false;
+        let Some(processor) = processor() else {
+            return Applied::default();
+        };
         for chunk in frame.chunks_mut(APM_FRAME) {
             if chunk.len() != APM_FRAME {
                 continue;
             }
-            match processor.process_capture_frame([chunk]) {
-                Ok(()) => processed = true,
-                Err(e) => {
-                    log::warn!("⚠️ [AEC3] process_capture_frame falló: {:?}", e);
-                    return false;
-                }
+            if let Err(e) = processor.process_capture_frame([chunk]) {
+                log::warn!("⚠️ [WebRTC APM] process_capture_frame falló: {:?}", e);
+                return Applied::default();
             }
         }
-        processed
+        Applied::from_modules(modules)
     }
 
     #[cfg(test)]
@@ -155,8 +216,8 @@ mod imp {
         use super::*;
 
         #[test]
-        fn aec3_processes_a_render_and_capture_pair() {
-            set_enabled(true);
+        fn webrtc_processes_a_render_and_capture_pair() {
+            configure(true, true, false);
             let mut render = [0.0f32; APM_FRAME];
             let mut capture = [0.0f32; 960];
             for i in 0..APM_FRAME {
@@ -166,9 +227,11 @@ mod imp {
                 capture[APM_FRAME + i] = t * 0.2;
             }
             push_render(&render, 48_000);
-            assert!(process_capture(&mut capture));
+            let applied = process_capture(&mut capture);
+            assert!(applied.aec);
+            assert!(applied.ns);
             assert!(capture.iter().all(|s| s.is_finite()));
-            set_enabled(false);
+            configure(false, false, false);
         }
     }
 }
@@ -179,11 +242,13 @@ mod imp {
 
     pub fn warm_up() {}
 
+    pub fn apply_config() {}
+
     pub fn push_render(_samples: &[f32], _sample_rate: u32) {}
 
-    pub fn process_capture(_frame: &mut [f32; 960]) -> bool {
-        false
+    pub fn process_capture(_frame: &mut [f32; 960]) -> Applied {
+        Applied::default()
     }
 }
 
-pub use imp::{process_capture, push_render};
+pub use imp::{apply_config, process_capture, push_render, warm_up};

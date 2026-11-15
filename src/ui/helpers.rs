@@ -755,7 +755,7 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
         ),
     };
 
-    let ns_items = vec![
+    let mut ns_items = vec![
         SettingOptionItem {
             id: "advanced".into(),
             name: adv_name.into(),
@@ -775,6 +775,33 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
             is_selected: ns == "none" || ns.is_empty(),
         },
     ];
+
+    #[cfg(target_os = "linux")]
+    {
+        let (discord_name, discord_desc) = match lang {
+            i18n::Language::English => (
+                "Discord (WebRTC)",
+                "WebRTC AEC3 + noise suppression + AGC, Discord's documented default voice pipeline. This is not the proprietary Krisp model.",
+            ),
+            i18n::Language::Spanish => (
+                "Discord (WebRTC)",
+                "AEC3 + supresión de ruido + AGC de WebRTC, el pipeline de voz por defecto documentado por Discord. No es el modelo propietario Krisp.",
+            ),
+            _ => (
+                "Discord (WebRTC)",
+                "AEC3 + supressão de ruído + AGC do WebRTC, o pipeline de voz padrão documentado do Discord. Não é o modelo proprietário Krisp.",
+            ),
+        };
+        ns_items.insert(
+            1,
+            SettingOptionItem {
+                id: "discord".into(),
+                name: discord_name.into(),
+                desc: discord_desc.into(),
+                is_selected: ns == "discord",
+            },
+        );
+    }
 
     ui.set_noise_suppression_options(std::rc::Rc::new(slint::VecModel::from(ns_items)).into());
 }

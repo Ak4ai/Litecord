@@ -300,7 +300,20 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
                     frame[i] = q_accum.pop_front().unwrap_or(0.0);
                 }
 
-                let metrics = proc.process_frame(&mut frame, &suppression_mode, enable_aec, enable_agc);
+                let applied = crate::audio::webrtc_aec::process_capture(&mut frame);
+                let custom_suppression: &str = if applied.ns {
+                    "none"
+                } else if suppression_mode == "discord" {
+                    "standard"
+                } else {
+                    &suppression_mode
+                };
+                let metrics = proc.process_frame(
+                    &mut frame,
+                    custom_suppression,
+                    enable_aec && !applied.aec,
+                    enable_agc && !applied.agc,
+                );
                 // Update UI meter with true post-DSP decibel level
                 gateway::set_self_mic_level(metrics.ui_level);
 

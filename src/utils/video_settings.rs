@@ -152,7 +152,11 @@ pub fn get_video_settings_store() -> &'static Mutex<VideoSettings> {
             VideoSettings::default()
         };
         ECHO_CANCELLATION_ENABLED.store(settings.echo_cancellation, Ordering::Relaxed);
-        crate::audio::webrtc_aec::set_enabled(settings.echo_cancellation);
+        crate::audio::webrtc_aec::configure(
+            settings.echo_cancellation,
+            settings.noise_suppression == "discord",
+            settings.automatic_gain_control,
+        );
         info!("⚙️ Configurações de Vídeo e Interface carregadas de {:?}: {:?}", path, settings);
         Mutex::new(settings)
     })
@@ -314,7 +318,16 @@ pub fn get_noise_suppression() -> String {
 pub fn set_noise_suppression(val: String) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.noise_suppression = val;
+    sync_webrtc_modules(&store);
     save_video_settings(&store);
+}
+
+fn sync_webrtc_modules(settings: &VideoSettings) {
+    crate::audio::webrtc_aec::configure(
+        settings.echo_cancellation,
+        settings.noise_suppression == "discord",
+        settings.automatic_gain_control,
+    );
 }
 
 pub fn get_echo_cancellation() -> bool {
@@ -326,7 +339,7 @@ pub fn toggle_echo_cancellation() -> bool {
     store.echo_cancellation = !store.echo_cancellation;
     let new_val = store.echo_cancellation;
     ECHO_CANCELLATION_ENABLED.store(new_val, Ordering::Relaxed);
-    crate::audio::webrtc_aec::set_enabled(new_val);
+    sync_webrtc_modules(&store);
     save_video_settings(&store);
     new_val
 }
@@ -339,6 +352,7 @@ pub fn toggle_automatic_gain_control() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.automatic_gain_control = !store.automatic_gain_control;
     let new_val = store.automatic_gain_control;
+    sync_webrtc_modules(&store);
     save_video_settings(&store);
     new_val
 }
