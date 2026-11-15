@@ -1914,9 +1914,13 @@ pub async fn connect_voice_gateway(
                                                         // process falls back to Litecord's custom DSP; a module is
                                                         // never applied twice.
                                                         let applied = crate::audio::webrtc_aec::process_capture(&mut pcm_frame);
-                                                        let custom_suppression: &str = if applied.ns {
+                                                        let dfn_active = suppression_mode == "deepfilter"
+                                                            && crate::audio::deepfilter::process_capture(&mut pcm_frame);
+                                                        let custom_suppression: &str = if dfn_active || applied.ns {
                                                             "none"
-                                                        } else if suppression_mode == "discord" {
+                                                        } else if suppression_mode == "discord"
+                                                            || suppression_mode == "deepfilter"
+                                                        {
                                                             "standard"
                                                         } else {
                                                             &suppression_mode

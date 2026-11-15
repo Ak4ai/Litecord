@@ -131,6 +131,10 @@ libc = "0.2"
 # WebRTC AudioProcessing (AEC3, the echo canceller also used by browsers and
 # Discord). Bundled so the binary does not depend on the distro's version.
 webrtc-audio-processing = { version = "~2.1", features = ["bundled"] }
+# DeepFilterNet3, the closest open-source counterpart to Discord's optional
+# Krisp noise cancellation. The default DFN3 model is embedded by the crate.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", tag = "v0.5.6", default-features = false, features = ["tract", "default-model"] }
+ndarray = "0.15"
 
 [build-dependencies]
 slint-build = "1.9"

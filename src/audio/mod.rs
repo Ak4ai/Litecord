@@ -2,6 +2,7 @@
 
 pub mod engine;
 pub mod dsp;
+pub mod deepfilter;
 pub mod sound_effects;
 pub mod soundboard;
 pub mod webrtc_aec;

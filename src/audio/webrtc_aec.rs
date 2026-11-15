@@ -99,6 +99,25 @@ mod imp {
         config
     }
 
+    fn modules_label() -> String {
+        let modules = MODULES.load(Ordering::Relaxed);
+        let mut parts = Vec::new();
+        if modules & MODULE_AEC != 0 {
+            parts.push("AEC3");
+        }
+        if modules & MODULE_NS != 0 {
+            parts.push("NS");
+        }
+        if modules & MODULE_AGC != 0 {
+            parts.push("AGC2");
+        }
+        if parts.is_empty() {
+            "desactivado".to_string()
+        } else {
+            parts.join(" + ")
+        }
+    }
+
     fn processor() -> Option<&'static Processor> {
         PROCESSOR
             .get_or_init(|| {
@@ -108,7 +127,7 @@ mod imp {
                     })
                     .ok()?;
                 processor.set_config(build_config());
-                log::info!("🎙️ [WebRTC APM] AEC3/NS/AGC activos (48 kHz).");
+                log::info!("🎙️ [WebRTC APM] motor listo: {} (48 kHz).", modules_label());
                 Some(processor)
             })
             .as_ref()
@@ -121,6 +140,7 @@ mod imp {
     pub fn apply_config() {
         if let Some(Some(processor)) = PROCESSOR.get() {
             processor.set_config(build_config());
+            log::info!("🎙️ [WebRTC APM] módulos activos: {}.", modules_label());
         }
     }
 

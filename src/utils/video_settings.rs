@@ -155,8 +155,9 @@ pub fn get_video_settings_store() -> &'static Mutex<VideoSettings> {
         crate::audio::webrtc_aec::configure(
             settings.echo_cancellation,
             settings.noise_suppression == "discord",
-            settings.automatic_gain_control,
+            settings.automatic_gain_control && settings.noise_suppression != "deepfilter",
         );
+        crate::audio::deepfilter::set_enabled(settings.noise_suppression == "deepfilter");
         info!("⚙️ Configurações de Vídeo e Interface carregadas de {:?}: {:?}", path, settings);
         Mutex::new(settings)
     })
@@ -326,8 +327,9 @@ fn sync_webrtc_modules(settings: &VideoSettings) {
     crate::audio::webrtc_aec::configure(
         settings.echo_cancellation,
         settings.noise_suppression == "discord",
-        settings.automatic_gain_control,
+        settings.automatic_gain_control && settings.noise_suppression != "deepfilter",
     );
+    crate::audio::deepfilter::set_enabled(settings.noise_suppression == "deepfilter");
 }
 
 pub fn get_echo_cancellation() -> bool {

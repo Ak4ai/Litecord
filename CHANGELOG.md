@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   48 kHz.
 - El AEC propio queda como *fallback* cuando WebRTC no está disponible, ahora
   con 512 taps (~10,7 ms de cola) en vez de 64.
+- **Nuevo modo “Tipo Krisp (DeepFilterNet3)”**: supresión de ruido con IA de
+  banda completa (modelo DFN3 embebido, 30 ms de look-ahead), como alternativa
+  open source al Krisp propietario de Discord. No es idéntico a Krisp.
 - La supresión de ruido nunca se aplica dos veces: cada módulo que procesa
   WebRTC se desactiva en el DSP propio, y viceversa.
 

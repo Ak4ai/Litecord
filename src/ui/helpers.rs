@@ -801,6 +801,30 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
                 is_selected: ns == "discord",
             },
         );
+
+        let (dfn_name, dfn_desc) = match lang {
+            i18n::Language::English => (
+                "Krisp-like (DeepFilterNet3)",
+                "Open-source full-band AI noise suppression with 30 ms look-ahead. Closest legal alternative to Krisp; not bit-identical.",
+            ),
+            i18n::Language::Spanish => (
+                "Tipo Krisp (DeepFilterNet3)",
+                "Supresión de ruido con IA de banda completa y 30 ms de look-ahead. La alternativa open source más cercana a Krisp; no es idéntica.",
+            ),
+            _ => (
+                "Tipo Krisp (DeepFilterNet3)",
+                "Supressão de ruído com IA de banda completa e 30 ms de look-ahead. A alternativa open source mais próxima do Krisp; não é idêntica.",
+            ),
+        };
+        ns_items.insert(
+            2,
+            SettingOptionItem {
+                id: "deepfilter".into(),
+                name: dfn_name.into(),
+                desc: dfn_desc.into(),
+                is_selected: ns == "deepfilter",
+            },
+        );
     }
 
     ui.set_noise_suppression_options(std::rc::Rc::new(slint::VecModel::from(ns_items)).into());

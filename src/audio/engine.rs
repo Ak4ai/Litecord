@@ -301,9 +301,11 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
                 }
 
                 let applied = crate::audio::webrtc_aec::process_capture(&mut frame);
-                let custom_suppression: &str = if applied.ns {
+                let dfn_active = suppression_mode == "deepfilter"
+                    && crate::audio::deepfilter::process_capture(&mut frame);
+                let custom_suppression: &str = if dfn_active || applied.ns {
                     "none"
-                } else if suppression_mode == "discord" {
+                } else if suppression_mode == "discord" || suppression_mode == "deepfilter" {
                     "standard"
                 } else {
                     &suppression_mode
