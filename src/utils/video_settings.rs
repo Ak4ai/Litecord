@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use log::info;
@@ -132,6 +133,13 @@ impl Default for VideoSettings {
 
 static VIDEO_SETTINGS: OnceLock<Mutex<VideoSettings>> = OnceLock::new();
 
+/// Lock-free mirror of `echo_cancellation` for the real-time audio callbacks.
+static ECHO_CANCELLATION_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_echo_cancellation_enabled() -> bool {
+    ECHO_CANCELLATION_ENABLED.load(Ordering::Relaxed)
+}
+
 pub fn get_video_settings_store() -> &'static Mutex<VideoSettings> {
     VIDEO_SETTINGS.get_or_init(|| {
         let path = get_video_settings_path();
@@ -143,6 +151,8 @@ pub fn get_video_settings_store() -> &'static Mutex<VideoSettings> {
         } else {
             VideoSettings::default()
         };
+        ECHO_CANCELLATION_ENABLED.store(settings.echo_cancellation, Ordering::Relaxed);
+        crate::audio::webrtc_aec::set_enabled(settings.echo_cancellation);
         info!("⚙️ Configurações de Vídeo e Interface carregadas de {:?}: {:?}", path, settings);
         Mutex::new(settings)
     })
@@ -315,6 +325,8 @@ pub fn toggle_echo_cancellation() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.echo_cancellation = !store.echo_cancellation;
     let new_val = store.echo_cancellation;
+    ECHO_CANCELLATION_ENABLED.store(new_val, Ordering::Relaxed);
+    crate::audio::webrtc_aec::set_enabled(new_val);
     save_video_settings(&store);
     new_val
 }

@@ -4,6 +4,7 @@ pub mod engine;
 pub mod dsp;
 pub mod sound_effects;
 pub mod soundboard;
+pub mod webrtc_aec;
 #[cfg(target_os = "windows")]
 pub mod wasapi_loopback;
 

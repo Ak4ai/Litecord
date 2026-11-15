@@ -397,15 +397,21 @@ impl VolumeAnalyzer {
     }
 }
 
+/// NLMS filter length. 512 taps at 48 kHz covers ~10.7 ms of the acoustic
+/// impulse response around the estimated delay; AEC3 handles the long room tail
+/// on Linux, this is the fallback used when AEC3 is unavailable.
+const AEC_TAPS: usize = 512;
+const AEC_DELAY_BUFFER: usize = 8192;
+
 /// Complete Voice Processing Pipeline:
 /// High-Pass Filter (80Hz) -> Delay-Aligned AEC + RES -> Dual Noise Suppression (Standard/Advanced) -> Voice-Gated AGC2 -> VolumeAnalyzer
 pub struct VoiceProcessor {
     denoiser: Box<nnnoiseless::DenoiseState<'static>>,
     hpf: BiquadHpf,
     volume_analyzer: VolumeAnalyzer,
-    // Echo cancellation adaptive filter coefficients (64 taps NLMS)
-    aec_filter: [f32; 64],
-    aec_delay_buffer: [f32; 8192],
+    // Echo cancellation adaptive filter coefficients (NLMS)
+    aec_filter: [f32; AEC_TAPS],
+    aec_delay_buffer: [f32; AEC_DELAY_BUFFER],
     aec_delay_idx: usize,
     // Delay estimator for acoustic speaker-to-mic alignment
     aec_speaker_energy_hist: [f32; 32],
@@ -439,7 +445,7 @@ impl VoiceProcessor {
             denoiser,
             hpf: BiquadHpf::new_80hz_48khz(),
             volume_analyzer: VolumeAnalyzer::new(),
-            aec_filter: [0.0; 64],
+            aec_filter: [0.0; AEC_TAPS],
             aec_delay_buffer: [0.0; 8192],
             aec_delay_idx: 0,
             aec_speaker_energy_hist: [0.0; 32],

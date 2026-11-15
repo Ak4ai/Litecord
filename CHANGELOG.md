@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Cancelación de eco y ruido
+
+- **Linux usa WebRTC AEC3**, el mismo motor de cancelación de eco de
+  navegadores y del cliente de Discord, en lugar del filtro NLMS propio. El
+  audio del altavoz se alimenta al motor como referencia de render y el
+  micrófono se procesa en bloques de 10 ms a 48 kHz.
+- El AEC propio queda como *fallback* en plataformas sin AEC3, ahora con 512
+  taps (~10,7 ms de cola) en vez de 64.
+- La supresión de ruido sigue siendo la de Litecord (`nnnoiseless` + compuerta
+  transitoria); no se activa la NS de WebRTC para no procesar dos veces.
+
 ### Rendimiento y memoria
 
 - **Recepción de vídeo**: la ventana ya no reescribe calidad, nombre, FPS ni

@@ -98,6 +98,10 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             libxdo-dev \
+            clang \
+            libclang-dev \
+            meson \
+            ninja-build \
             libx11-dev \
             libxkbcommon-dev \
             libwayland-dev \
@@ -154,6 +158,10 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             libxdo-dev \
+            clang \
+            libclang-dev \
+            meson \
+            ninja-build \
             libx11-dev \
             libxkbcommon-dev \
             libwayland-dev \
@@ -206,7 +214,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
-            base-devel git wget file strace rust clang cmake nasm pkgconf patchelf \
+            base-devel git wget file strace rust clang cmake nasm pkgconf patchelf meson ninja \
             alsa-lib openssl gtk3 libayatana-appindicator xdotool \
             libx11 libxcb libxkbcommon libxkbcommon-x11 wayland fontconfig freetype2 \
             mesa vulkan-icd-loader pipewire pipewire-alsa \

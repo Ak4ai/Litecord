@@ -128,6 +128,9 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 x11rb = { version = "0.14", features = ["allow-unsafe-code"] }
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 libc = "0.2"
+# WebRTC AudioProcessing (AEC3, the echo canceller also used by browsers and
+# Discord). Bundled so the binary does not depend on the distro's version.
+webrtc-audio-processing = { version = "~2.1", features = ["bundled"] }
 
 [build-dependencies]
 slint-build = "1.9"

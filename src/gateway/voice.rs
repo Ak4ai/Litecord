@@ -1324,7 +1324,15 @@ pub async fn connect_voice_gateway(
                                                                             ssrc_gains.remove(&ssrc);
                                                                         }
 
-                                                                        if ready_ssrcs.is_empty() { return; }
+                                                                        if ready_ssrcs.is_empty() {
+                                                                            // Keep the AEC render timeline continuous through silence;
+                                                                            // AEC3 uses the render history to estimate the acoustic delay.
+                                                                            aec_ref.clear();
+                                                                            aec_ref.resize(frames, 0.0);
+                                                                            crate::audio::dsp::push_speaker_reference(&aec_ref);
+                                                                            crate::audio::webrtc_aec::push_render(&aec_ref, out_sample_rate);
+                                                                            return;
+                                                                        }
 
                                                                         ssrc_vol_map.clear();
                                                                         let mut max_active_priority = 0i32;
@@ -1435,6 +1443,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
+                                                                        crate::audio::webrtc_aec::push_render(&aec_ref, out_sample_rate);
                                                                     }
                                                                     let mut speaker_peak_milli = 0u32;
                                                                     for &s in output.iter() {
@@ -1558,7 +1567,15 @@ pub async fn connect_voice_gateway(
                                                                             ssrc_gains.remove(&ssrc);
                                                                         }
 
-                                                                        if ready_ssrcs.is_empty() { return; }
+                                                                        if ready_ssrcs.is_empty() {
+                                                                            // Keep the AEC render timeline continuous through silence;
+                                                                            // AEC3 uses the render history to estimate the acoustic delay.
+                                                                            aec_ref.clear();
+                                                                            aec_ref.resize(frames, 0.0);
+                                                                            crate::audio::dsp::push_speaker_reference(&aec_ref);
+                                                                            crate::audio::webrtc_aec::push_render(&aec_ref, out_sample_rate);
+                                                                            return;
+                                                                        }
 
                                                                         ssrc_vol_map_i16.clear();
                                                                         let mut max_active_priority_i16 = 0i32;
@@ -1672,6 +1689,7 @@ pub async fn connect_voice_gateway(
                                                                             }
                                                                         }
                                                                         crate::audio::dsp::push_speaker_reference(&aec_ref);
+                                                                        crate::audio::webrtc_aec::push_render(&aec_ref, out_sample_rate);
                                                                     }
                                                                     let mut speaker_peak_milli = 0u32;
                                                                     for &s in output.iter() {
@@ -1891,7 +1909,17 @@ pub async fn connect_voice_gateway(
                                                         let enable_aec = crate::utils::video_settings::get_echo_cancellation();
                                                         let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
 
-                                                        let metrics = voice_proc.process_frame(&mut pcm_frame, &suppression_mode, enable_aec, enable_agc);
+                                                        // Prefer WebRTC AEC3 (same engine as Discord/browsers). If it
+                                                        // is unavailable on this platform, the custom NLMS AEC runs
+                                                        // instead; both never run together.
+                                                        let aec3_active = enable_aec
+                                                            && crate::audio::webrtc_aec::process_capture(&mut pcm_frame);
+                                                        let metrics = voice_proc.process_frame(
+                                                            &mut pcm_frame,
+                                                            &suppression_mode,
+                                                            enable_aec && !aec3_active,
+                                                            enable_agc,
+                                                        );
 
                                                         // Report POST-DSP level to UI meter so user sees exactly what is transmitted
                                                         set_self_mic_level(metrics.ui_level);
