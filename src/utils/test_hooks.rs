@@ -117,7 +117,7 @@ pub fn run_synth_mic(stop: std::sync::Arc<AtomicBool>) {
             let level = if block.iter().any(|s| *s != 0.0) { 1.0 } else { 0.0 };
             crate::gateway::set_self_mic_level(level);
             if let Ok(mut q) = queue.lock() {
-                crate::audio::engine::push_to_mic_queues(&mut q, &block, &block, level);
+                crate::audio::engine::push_to_mic_queues(&mut q, &block);
             }
         } else {
             std::thread::sleep(std::time::Duration::from_millis(2));

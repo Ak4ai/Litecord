@@ -170,6 +170,7 @@ pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USERNAME: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static MY_VOICE_CHANNEL_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static IS_SELF_SPEAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static VAD_THRESHOLD: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
 pub static IS_TESTING_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static MIC_LOOPBACK_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
@@ -405,6 +406,14 @@ pub fn set_self_mic_level(val: f32) {
 
 pub fn get_self_mic_level() -> f32 {
     f32::from_bits(SELF_MIC_LEVEL.load(Ordering::Relaxed))
+}
+
+pub fn set_self_speaking(val: bool) {
+    IS_SELF_SPEAKING.store(val, Ordering::Relaxed);
+}
+
+pub fn is_self_speaking() -> bool {
+    IS_SELF_SPEAKING.load(Ordering::Relaxed)
 }
 
 /// Signalled by the microphone callback whenever a full 20 ms frame (960 samples)
