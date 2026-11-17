@@ -21,6 +21,10 @@ pub struct ChannelPermissions {
     roles: HashSet<String>,
     base: u64,
     bypass: bool,
+    /// Guild features from the same lookup, so onboarding needs no extra request.
+    features: Vec<String>,
+    /// Membership screening not accepted yet: Discord blocks onboarding until then.
+    pending: bool,
 }
 
 impl ChannelPermissions {
@@ -46,13 +50,27 @@ impl ChannelPermissions {
         if !found.contains(guild_id) || !roles.is_subset(&found) {
             return Err("Incomplete guild roles".into());
         }
+        let features = guild["features"]
+            .as_array()
+            .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default();
         Ok(Self {
             guild_id: guild_id.into(),
             user_id: user_id.into(),
             roles,
             base,
             bypass: owner == user_id || base & ADMINISTRATOR != 0,
+            features,
+            pending: member["pending"].as_bool().unwrap_or(false),
         })
+    }
+
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending
     }
 
     pub fn can_view(&self, channel: &Value) -> Result<bool, String> {

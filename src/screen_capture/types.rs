@@ -149,10 +149,54 @@ pub static ON_STREAM_STATE_CB: Mutex<Option<Arc<dyn Fn(u64, bool) + Send + Sync 
 pub static SIGNALING_FORCE_WAKE: AtomicBool = AtomicBool::new(false);
 pub static SIGNALING_OUT_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>>> = Mutex::new(None);
 pub static PEER_STREAMING_STATES: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
+/// `user_id` -> (`self_stream`, `self_video`) from voice state events.  Cached so
+/// joining a channel can subscribe to streams that were already running.
+pub static VOICE_STREAM_FLAGS: Mutex<Option<HashMap<u64, (bool, bool)>>> = Mutex::new(None);
+
+pub fn set_user_stream_flags(uid: u64, self_stream: bool, self_video: bool) {
+    if let Ok(mut lock) = VOICE_STREAM_FLAGS.lock() {
+        lock.get_or_insert_with(HashMap::new).insert(uid, (self_stream, self_video));
+    }
+}
+
+pub fn get_user_stream_flags(uid: u64) -> (bool, bool) {
+    VOICE_STREAM_FLAGS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|map| map.get(&uid).copied()))
+        .unwrap_or((false, false))
+}
 
 /// The peer announced (over signaling or P2P) that it is streaming.
 pub fn peer_is_streaming(uid: u64) -> bool {
     PEER_STREAMING_STATES.lock().map(|g| g.as_ref().and_then(|m| m.get(&uid).copied()).unwrap_or(false)).unwrap_or(false)
+}
+
+/// Local screen share (Go Live / stream) state. The UI sets it when the share
+/// starts or stops so the sidebar can show our own LIVE badge, just like it does
+/// for the peers in `peer_is_streaming`.
+static SELF_STREAMING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_self_streaming(streaming: bool) {
+    SELF_STREAMING.store(streaming, Ordering::Relaxed);
+}
+
+pub fn is_self_streaming() -> bool {
+    SELF_STREAMING.load(Ordering::Relaxed)
+}
+
+pub fn set_peer_streaming(uid: u64, streaming: bool) {
+    let changed = {
+        let mut lock = PEER_STREAMING_STATES.lock().unwrap_or_else(|e| e.into_inner());
+        let map = lock.get_or_insert_with(HashMap::new);
+        let old = map.insert(uid, streaming);
+        old != Some(streaming)
+    };
+    if changed {
+        if let Some(cb) = ON_STREAM_STATE_CB.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            cb(uid, streaming);
+        }
+    }
 }
 pub static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
 pub static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
@@ -318,6 +362,13 @@ pub fn list_cameras() -> Vec<CameraItemInfo> {
     let mut result = Vec::new();
     if let Ok(devs) = cameras::devices() {
         for (i, dev) in devs.into_iter().enumerate() {
+            // Filtrar nodos de hardware sin formatos válidos (p. ej. nodos de metadatos V4L2 en Linux)
+            if let Ok(caps) = cameras::probe(&dev) {
+                if caps.formats.is_empty() {
+                    log::debug!("📷 [CAMERAS] Ignorando dispositivo '{}' (sin formatos de vídeo reportados)", dev.name);
+                    continue;
+                }
+            }
             let name = dev.name.clone();
             result.push(CameraItemInfo {
                 id: format!("{}", i),
