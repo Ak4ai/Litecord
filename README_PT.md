@@ -21,6 +21,10 @@
 
 <img src="assets/demo_preview.gif" alt="Interface Nativa do Litecord" width="760px" style="border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
 
+<br/><br/>
+
+<img src="assets/promo_preview_pt.gif" alt="Promo do Litecord: ultraleve, P2P e seguro" width="760px" style="border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
+
 </div>
 
 ---
