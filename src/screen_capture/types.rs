@@ -154,6 +154,33 @@ pub static PEER_STREAMING_STATES: Mutex<Option<HashMap<u64, bool>>> = Mutex::new
 pub fn peer_is_streaming(uid: u64) -> bool {
     PEER_STREAMING_STATES.lock().map(|g| g.as_ref().and_then(|m| m.get(&uid).copied()).unwrap_or(false)).unwrap_or(false)
 }
+
+/// Local screen share (Go Live / stream) state. The UI sets it when the share
+/// starts or stops so the sidebar can show our own LIVE badge, just like it does
+/// for the peers in `peer_is_streaming`.
+static SELF_STREAMING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_self_streaming(streaming: bool) {
+    SELF_STREAMING.store(streaming, Ordering::Relaxed);
+}
+
+pub fn is_self_streaming() -> bool {
+    SELF_STREAMING.load(Ordering::Relaxed)
+}
+
+pub fn set_peer_streaming(uid: u64, streaming: bool) {
+    let changed = {
+        let mut lock = PEER_STREAMING_STATES.lock().unwrap_or_else(|e| e.into_inner());
+        let map = lock.get_or_insert_with(HashMap::new);
+        let old = map.insert(uid, streaming);
+        old != Some(streaming)
+    };
+    if changed {
+        if let Some(cb) = ON_STREAM_STATE_CB.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            cb(uid, streaming);
+        }
+    }
+}
 pub static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
 pub static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
 
