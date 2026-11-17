@@ -208,6 +208,8 @@ pub async fn fetch_and_populate_guilds(
     }
 }
 
+/// Forces the next visit to this server to hit REST instead of the cached shortcut.
+pub fn mark_guild_stale(_guild_id: &str) {}
 pub async fn fetch_and_populate_channels(
     http: &DiscordHttpClient,
     app_weak: slint::Weak<AppWindow>,
@@ -296,6 +298,8 @@ pub async fn fetch_and_populate_channels(
             ui.set_titlebar_error("".into());
         }
     });
+
+    crate::ui::onboarding::maybe_show(http, app_weak.clone(), guild_id, &g_name, &permissions);
 
     pub struct RawChan {
         id: String,

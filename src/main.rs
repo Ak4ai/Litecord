@@ -4125,6 +4125,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Community onboarding: pick answers, save them, then reload the server so the
+    // new roles and channels appear immediately.
+    let app_weak_onb_toggle = app_weak.clone();
+    app.on_onboarding_toggle(move |prompt: i32, option: i32| {
+        if let Some(ui) = app_weak_onb_toggle.upgrade() {
+            crate::ui::onboarding::toggle(&ui, prompt.max(0) as usize, option.max(0) as usize);
+        }
+    });
+
+    let app_weak_onb_dismiss = app_weak.clone();
+    app.on_onboarding_dismiss(move || {
+        if let Some(ui) = app_weak_onb_dismiss.upgrade() {
+            ui.set_show_onboarding_modal(false);
+            let guild_id = ui.get_onboarding_guild_id().to_string();
+            crate::ui::onboarding::mark_dismissed(&guild_id);
+        }
+    });
+
+    let app_weak_onb_submit = app_weak.clone();
+    let http_onb = Arc::clone(&http_client);
+    let guilds_map_onb = Arc::clone(&guilds_map);
+    let active_guild_onb = Arc::clone(&active_guild_id);
+    let active_channel_onb = Arc::clone(&active_channel_id);
+    let cmd_tx_onb = Arc::clone(&cmd_tx_store);
+    app.on_onboarding_submit(move || {
+        let Some(ui) = app_weak_onb_submit.upgrade() else { return };
+        if ui.get_onboarding_submitting() {
+            return;
+        }
+        let guild_id = ui.get_onboarding_guild_id().to_string();
+        let submission = match crate::ui::onboarding::take_submission(&ui) {
+            Ok(submission) => submission,
+            Err(err) => {
+                ui.set_onboarding_error(err.into());
+                return;
+            }
+        };
+        let http_opt = http_onb.lock().unwrap().as_ref().cloned();
+        let Some(http) = http_opt else {
+            ui.set_onboarding_error(crate::utils::i18n_ui::ui_text().onboarding_error.into());
+            return;
+        };
+        ui.set_onboarding_submitting(true);
+        ui.set_onboarding_error("".into());
+
+        let app_w = app_weak_onb_submit.clone();
+        let guilds_map = Arc::clone(&guilds_map_onb);
+        let active_guild = Arc::clone(&active_guild_onb);
+        let active_channel = Arc::clone(&active_channel_onb);
+        let cmd_tx = Arc::clone(&cmd_tx_onb);
+        tokio::spawn(async move {
+            let body = crate::ui::onboarding::request_body(&submission);
+            match http.submit_guild_onboarding(&guild_id, &body).await {
+                Ok(()) => {
+                    crate::ui::onboarding::mark_done(&guild_id);
+                    crate::channel_permissions::forget(&guild_id);
+                    crate::ui::data_loader::mark_guild_stale(&guild_id);
+                    let app_hide = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_hide.upgrade() {
+                            ui.set_show_onboarding_modal(false);
+                            ui.set_onboarding_submitting(false);
+                        }
+                    });
+                    fetch_and_populate_channels(
+                        &http,
+                        app_w,
+                        guilds_map,
+                        active_guild,
+                        active_channel,
+                        cmd_tx,
+                        &guild_id,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!("Falha ao salvar onboarding: {}", err);
+                    let message = crate::utils::i18n_ui::ui_text().onboarding_error.to_string();
+                    let app_err = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_err.upgrade() {
+                            ui.set_onboarding_submitting(false);
+                            ui.set_onboarding_error(message.into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+
     // Click Command Callback (fills input with command parameter pill)
     let app_weak_cmd = app_weak.clone();
     app.on_click_command(move |cmd: SharedString| {
