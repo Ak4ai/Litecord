@@ -383,6 +383,24 @@ pub fn set_my_voice_channel_id(cid: u64) {
     MY_VOICE_CHANNEL_ID.store(cid, Ordering::Relaxed);
 }
 
+/// Guild that owns the running voice session. Mute/deafen must address it, not the
+/// guild the user happens to be looking at.
+static MY_VOICE_GUILD_ID: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
+
+pub fn set_my_voice_guild_id(gid: &str) {
+    if let Ok(mut g) = MY_VOICE_GUILD_ID.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).lock() {
+        *g = gid.to_string();
+    }
+}
+
+pub fn get_my_voice_guild_id() -> String {
+    MY_VOICE_GUILD_ID
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(String::new())))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 static VOICE_SECRET_KEY: std::sync::OnceLock<Arc<std::sync::Mutex<Option<[u8; 32]>>>> = std::sync::OnceLock::new();
 
 #[allow(dead_code)]
@@ -537,6 +555,10 @@ pub fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
 
 pub fn clear_voice_participants() {
     set_is_connected_to_voice(false);
+    // No channel is associated with the session anymore, so mute/deafen must not
+    // send a voice state update for someone else's channel.
+    set_my_voice_channel_id(0);
+    set_my_voice_guild_id("");
     if let Ok(mut map) = get_active_voice_participants_store().lock() {
         map.clear();
     }
