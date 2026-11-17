@@ -264,6 +264,12 @@ impl EmojiCache {
 
                                             if any_changed {
                                                 ui.set_messages(slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(updated_msgs))));
+                                                if ui.get_chat_is_at_bottom()
+                                                    || crate::ui::helpers::chat_painted_within(std::time::Duration::from_secs(6))
+                                                {
+                                                    crate::ui::helpers::mark_chat_painted();
+                                                    crate::ui::helpers::request_chat_scroll_to_bottom(app_weak.clone());
+                                                }
                                             }
                                         }
                                     }
