@@ -956,7 +956,14 @@ impl WinitWindowAdapter {
         // that we only update the internal maximized state when the window is
         // not minimized. Otherwise, the window would be restored in a
         // non-maximized state even if it was maximized before being minimized.
+        #[cfg(not(target_os = "macos"))]
         let maximized = winit_window.is_maximized();
+        // On macOS `Window::is_maximized` is a mutating getter for borderless windows:
+        // winit temporarily re-applies the style mask to ask AppKit, which posts
+        // another window event and loops forever here. Borderless windows have no
+        // native maximize button, so keep tracking state set via `set_maximized`.
+        #[cfg(target_os = "macos")]
+        let maximized = self.maximized.get();
         if !self.window().is_minimized() {
             self.maximized.set(maximized);
             if maximized != self.window().is_maximized() {

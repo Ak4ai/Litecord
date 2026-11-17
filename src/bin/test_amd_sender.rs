@@ -1,39 +1,67 @@
+#[cfg(windows)]
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+#[cfg(windows)]
 use std::net::UdpSocket;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 type AVCodec = c_void;
+#[cfg(windows)]
 type AVCodecContext = c_void;
+#[cfg(windows)]
 type AVFrame = c_void;
+#[cfg(windows)]
 type AVPacket = c_void;
 
 #[repr(C)]
+#[cfg(windows)]
 struct AVRational {
     num: c_int,
     den: c_int,
 }
 
+#[cfg(windows)]
 type FnAvcodecFindEncoderByName = unsafe extern "C" fn(name: *const c_char) -> *mut AVCodec;
+#[cfg(windows)]
 type FnAvcodecAllocContext3 = unsafe extern "C" fn(codec: *const AVCodec) -> *mut AVCodecContext;
+#[cfg(windows)]
 type FnAvcodecFreeContext = unsafe extern "C" fn(ctx: *mut *mut AVCodecContext);
+#[cfg(windows)]
 type FnAvcodecOpen2 = unsafe extern "C" fn(ctx: *mut AVCodecContext, codec: *const AVCodec, options: *mut *mut c_void) -> c_int;
+#[cfg(windows)]
 type FnAvFrameAlloc = unsafe extern "C" fn() -> *mut AVFrame;
+#[cfg(windows)]
 type FnAvFrameFree = unsafe extern "C" fn(frame: *mut *mut AVFrame);
+#[cfg(windows)]
 type FnAvFrameGetBuffer = unsafe extern "C" fn(frame: *mut AVFrame, align: c_int) -> c_int;
+#[cfg(windows)]
 type FnAvPacketAlloc = unsafe extern "C" fn() -> *mut AVPacket;
+#[cfg(windows)]
 type FnAvPacketFree = unsafe extern "C" fn(pkt: *mut *mut AVPacket);
+#[cfg(windows)]
 type FnAvcodecSendFrame = unsafe extern "C" fn(ctx: *mut AVCodecContext, frame: *const AVFrame) -> c_int;
+#[cfg(windows)]
 type FnAvcodecReceivePacket = unsafe extern "C" fn(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
+#[cfg(windows)]
 type FnAvPacketUnref = unsafe extern "C" fn(pkt: *mut AVPacket);
+#[cfg(windows)]
 type FnAvOptSet = unsafe extern "C" fn(obj: *mut c_void, name: *const c_char, val: *const c_char, flags: c_int) -> c_int;
+#[cfg(windows)]
 type FnAvDictSet = unsafe extern "C" fn(pm: *mut *mut c_void, key: *const c_char, value: *const c_char, flags: c_int) -> c_int;
+#[cfg(windows)]
 type FnAvDictFree = unsafe extern "C" fn(pm: *mut *mut c_void);
 
+#[cfg(windows)]
 const MAGIC_V3: &[u8; 4] = b"LTPV";
+#[cfg(windows)]
 const OP_VIDEO_CHUNK: u8 = 2;
+#[cfg(windows)]
 const OP_KEYFRAME_REQ: u8 = 3;
+#[cfg(windows)]
 const MAX_UDP_PAYLOAD: usize = 1200;
 
+#[cfg(windows)]
 fn main() {
     println!("==================================================================");
     println!("🚀 LITECORD | TEST_AMD_SENDER (AMF Ultra-Fast Standalone Sender)");
@@ -423,4 +451,9 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    println!("test_amd_sender is only supported on Windows.");
 }
