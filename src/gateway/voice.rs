@@ -23,7 +23,12 @@ use super::types::*;
 // 48 kHz stereo pairs. Cap after admission, including concealed Opus frames.
 const VOICE_QUEUE_LIMIT: usize = 28800;
 const VOICE_PREBUFFER_SAMPLES: usize = 1920;
-const VOICE_RESET_INACTIVE_CALLBACKS: u32 = 3;
+/// Silence after which a stream is considered idle and must re-fill the jitter
+/// pre-buffer before resuming. Measured in samples (60 ms at 48 kHz) so a larger
+/// ALSA callback does not stretch or shrink the threshold.
+const VOICE_RESET_INACTIVE_SAMPLES: u64 = 2_880;
+/// Silence after which the per-SSRC state is forgotten (800 ms at 48 kHz).
+const VOICE_FORGET_SSRC_SAMPLES: u64 = 38_400;
 
 pub async fn connect_voice_gateway(
     raw_endpoint: &str,
@@ -707,7 +712,7 @@ pub async fn connect_voice_gateway(
                                                     let sq = Arc::clone(&speaker_queues_out);
                                                     let ssrc_to_userid_spk = Arc::clone(&ssrc_to_userid_speaker);
                                                     let mut started_ssrcs = std::collections::HashSet::new();
-                                                    let mut inactive_ticks = std::collections::HashMap::new();
+                                                    let mut inactive_samples: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
                                                     // Fractional phase counters per SSRC for smooth Hermite cubic sample rate conversion (48kHz -> out_sample_rate)
                                                     let mut ssrc_phases: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
                                                     let mut ssrc_histories: std::collections::HashMap<u32, [(f32, f32); 4]> = std::collections::HashMap::new();
@@ -716,7 +721,7 @@ pub async fn connect_voice_gateway(
                                                     #[cfg(not(target_os = "linux"))]
                                                     let stream_config: cpal::StreamConfig = config.clone().into();
                                                     #[cfg(target_os = "linux")]
-                                                    let stream_config = crate::audio::engine::linux_voice_stream_config(&device, &config, false);
+                                                    let stream_config = crate::audio::engine::linux_voice_output_config(&device, &config);
 
                                                     // Watchdog: the callbacks count how often they run and the error
                                                     // callback raises a flag; a stream that errors or goes quiet is rebuilt.
@@ -728,10 +733,17 @@ pub async fn connect_voice_gateway(
                                                             let broken_f32 = Arc::clone(&output_broken);
                                                             let sq_f32 = Arc::clone(&sq);
                                                             let ssrc_to_userid_f32 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let mut first_tick = true;
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [f32], _| {
                                                                     ticks_f32.fetch_add(1, Ordering::Relaxed);
+                                                                    if first_tick {
+                                                                        first_tick = false;
+                                                                        let got = output.len() / out_channels.max(1);
+                                                                        info!("🔊 Speaker callback (F32): {} frames ({:.2} ms) @ {} Hz",
+                                                                            got, got as f64 * 1000.0 / out_sample_rate.max(1) as f64, out_sample_rate);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
                                                                         output.fill(0.0);
@@ -745,23 +757,26 @@ pub async fn connect_voice_gateway(
 
                                                                     if let Ok(mut queues) = sq_f32.lock() {
                                                                         let frames = output.len() / out_channels.max(1);
+                                                                        // Keep at least three callbacks buffered: a fixed 40 ms would drain
+                                                                        // mid-callback once ALSA hands out larger blocks, chopping syllables.
+                                                                        let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
                                                                         let mut ready_ssrcs = Vec::new();
                                                                         let mut to_remove = Vec::new();
 
                                                                         for (&ssrc, q) in queues.iter() {
                                                                             if q.is_empty() {
-                                                                                let ticks = inactive_ticks.entry(ssrc).or_insert(0);
-                                                                                *ticks += 1;
-                                                                                if *ticks > VOICE_RESET_INACTIVE_CALLBACKS {
+                                                                                let silence = inactive_samples.entry(ssrc).or_insert(0);
+                                                                                *silence += frames as u64;
+                                                                                if *silence > VOICE_RESET_INACTIVE_SAMPLES {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
                                                                                 }
-                                                                                if *ticks > 150 {
+                                                                                if *silence > VOICE_FORGET_SSRC_SAMPLES {
                                                                                     to_remove.push(ssrc);
                                                                                 }
                                                                             } else {
-                                                                                inactive_ticks.insert(ssrc, 0);
+                                                                                inactive_samples.insert(ssrc, 0);
                                                                             }
 
                                                                             if ssrc >= 0x8000_0000 {
@@ -773,7 +788,7 @@ pub async fn connect_voice_gateway(
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
-                                                                            } else if q.len() >= VOICE_PREBUFFER_SAMPLES { // 40ms Jitter Pre-buffer
+                                                                            } else if q.len() >= prebuffer {
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
@@ -782,7 +797,7 @@ pub async fn connect_voice_gateway(
                                                                         for ssrc in to_remove {
                                                                             queues.remove(&ssrc);
                                                                             started_ssrcs.remove(&ssrc);
-                                                                            inactive_ticks.remove(&ssrc);
+                                                                            inactive_samples.remove(&ssrc);
                                                                             ssrc_phases.remove(&ssrc);
                                                                             ssrc_histories.remove(&ssrc);
                                                                         }
@@ -906,10 +921,17 @@ pub async fn connect_voice_gateway(
                                                             let broken_i16 = Arc::clone(&output_broken);
                                                             let sq_i16 = Arc::clone(&sq);
                                                             let ssrc_to_userid_i16 = Arc::clone(&ssrc_to_userid_spk);
+                                                            let mut first_tick = true;
                                                             device.build_output_stream(
                                                                 &stream_config,
                                                                 move |output: &mut [i16], _| {
                                                                     ticks_i16.fetch_add(1, Ordering::Relaxed);
+                                                                    if first_tick {
+                                                                        first_tick = false;
+                                                                        let got = output.len() / out_channels.max(1);
+                                                                        info!("🔊 Speaker callback (I16): {} frames ({:.2} ms) @ {} Hz",
+                                                                            got, got as f64 * 1000.0 / out_sample_rate.max(1) as f64, out_sample_rate);
+                                                                    }
                                                                     #[cfg(feature = "automation")]
                                                                     if crate::utils::test_hooks::mute_output() {
                                                                         output.fill(0);
@@ -923,23 +945,26 @@ pub async fn connect_voice_gateway(
 
                                                                     if let Ok(mut queues) = sq_i16.lock() {
                                                                         let frames = output.len() / out_channels.max(1);
+                                                                        // Keep at least three callbacks buffered: a fixed 40 ms would drain
+                                                                        // mid-callback once ALSA hands out larger blocks, chopping syllables.
+                                                                        let prebuffer = VOICE_PREBUFFER_SAMPLES.max(frames * 3);
                                                                         let mut ready_ssrcs = Vec::new();
                                                                         let mut to_remove = Vec::new();
 
                                                                         for (&ssrc, q) in queues.iter() {
                                                                             if q.is_empty() {
-                                                                                let ticks = inactive_ticks.entry(ssrc).or_insert(0);
-                                                                                *ticks += 1;
-                                                                                if *ticks > VOICE_RESET_INACTIVE_CALLBACKS {
+                                                                                let silence = inactive_samples.entry(ssrc).or_insert(0);
+                                                                                *silence += frames as u64;
+                                                                                if *silence > VOICE_RESET_INACTIVE_SAMPLES {
                                                                                     started_ssrcs.remove(&ssrc);
                                                                                     ssrc_histories.remove(&ssrc);
                                                                                     ssrc_phases.remove(&ssrc);
                                                                                 }
-                                                                                if *ticks > 150 {
+                                                                                if *silence > VOICE_FORGET_SSRC_SAMPLES {
                                                                                     to_remove.push(ssrc);
                                                                                 }
                                                                             } else {
-                                                                                inactive_ticks.insert(ssrc, 0);
+                                                                                inactive_samples.insert(ssrc, 0);
                                                                             }
 
                                                                             if ssrc >= 0x8000_0000 {
@@ -951,7 +976,7 @@ pub async fn connect_voice_gateway(
                                                                                 if !q.is_empty() {
                                                                                     ready_ssrcs.push(ssrc);
                                                                                 }
-                                                                            } else if q.len() >= VOICE_PREBUFFER_SAMPLES { // 40ms Jitter Pre-buffer
+                                                                            } else if q.len() >= prebuffer {
                                                                                 started_ssrcs.insert(ssrc);
                                                                                 ready_ssrcs.push(ssrc);
                                                                             }
@@ -960,7 +985,7 @@ pub async fn connect_voice_gateway(
                                                                         for ssrc in to_remove {
                                                                             queues.remove(&ssrc);
                                                                             started_ssrcs.remove(&ssrc);
-                                                                            inactive_ticks.remove(&ssrc);
+                                                                            inactive_samples.remove(&ssrc);
                                                                             ssrc_phases.remove(&ssrc);
                                                                             ssrc_histories.remove(&ssrc);
                                                                         }

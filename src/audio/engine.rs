@@ -18,13 +18,76 @@ fn voice_buffer_frames(rate: u32, supported: &cpal::SupportedBufferSize) -> u32 
     }
 }
 
+/// Speaker-only default. 2048 frames = four exact 512-frame PipeWire quanta,
+/// so the ring is not split into a fractional last period like 960/256 was.
+#[cfg(target_os = "linux")]
+const DEFAULT_VOICE_OUT_FRAMES: u32 = 2048;
+/// One 256-frame PipeWire quantum. Anything smaller is tighter than today and
+/// cannot absorb a stall, so it is rejected instead of honoured.
+#[cfg(target_os = "linux")]
+const MIN_VOICE_OUT_FRAMES: u32 = 256;
+
+/// Speaker-only override, read once per stream creation:
+/// `LITECORD_VOICE_OUT_FRAMES=<frames>`; `0` means `BufferSize::Default`
+/// (cpal asks for a 25 ms period / 100 ms ring); unset or invalid means
+/// [`DEFAULT_VOICE_OUT_FRAMES`]. The microphone path never reads this variable.
+#[cfg(target_os = "linux")]
+fn voice_output_frames(supported: &cpal::SupportedBufferSize) -> Option<u32> {
+    let requested = match std::env::var("LITECORD_VOICE_OUT_FRAMES") {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(0) => return None,
+            Ok(frames) if frames >= MIN_VOICE_OUT_FRAMES => frames,
+            Ok(frames) => {
+                log::warn!("LITECORD_VOICE_OUT_FRAMES={frames} é menor que {MIN_VOICE_OUT_FRAMES} frames; usando {DEFAULT_VOICE_OUT_FRAMES}");
+                DEFAULT_VOICE_OUT_FRAMES
+            }
+            Err(_) => {
+                log::warn!("LITECORD_VOICE_OUT_FRAMES inválido ({raw:?}); usando {DEFAULT_VOICE_OUT_FRAMES}");
+                DEFAULT_VOICE_OUT_FRAMES
+            }
+        },
+        Err(_) => DEFAULT_VOICE_OUT_FRAMES,
+    };
+    Some(match supported {
+        cpal::SupportedBufferSize::Range { min, max } => requested.clamp(*min, *max),
+        cpal::SupportedBufferSize::Unknown => requested,
+    })
+}
+
 /// Probe only when opening a Linux voice device; no periodic device work.
+/// The microphone keeps its nominal 20 ms through [`voice_buffer_frames`].
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_voice_stream_config(
     device: &cpal::Device, config: &cpal::SupportedStreamConfig, input: bool,
 ) -> cpal::StreamConfig {
     let frames = voice_buffer_frames(config.sample_rate().0, config.buffer_size());
+    voice_config_with_frames(device, config, Some(frames), input)
+}
+
+/// Speaker stream configuration. Kept apart from the microphone helper so the
+/// transmit path keeps its 20 ms ring no matter what the output override says.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_voice_output_config(
+    device: &cpal::Device, config: &cpal::SupportedStreamConfig,
+) -> cpal::StreamConfig {
+    let frames = voice_output_frames(config.buffer_size());
+    voice_config_with_frames(device, config, frames, false)
+}
+
+#[cfg(target_os = "linux")]
+fn voice_config_with_frames(
+    device: &cpal::Device, config: &cpal::SupportedStreamConfig,
+    frames: Option<u32>, input: bool,
+) -> cpal::StreamConfig {
+    let kind = if input { "entrada" } else { "saída" };
     let mut fixed: cpal::StreamConfig = config.clone().into();
+    let Some(frames) = frames else {
+        // `LITECORD_VOICE_OUT_FRAMES=0`: leave the size to the driver, as cpal's
+        // default does; no probe because there is nothing to validate.
+        fixed.buffer_size = cpal::BufferSize::Default;
+        info!("Buffer de voz Linux: padrão do driver ({kind})");
+        return fixed;
+    };
     fixed.buffer_size = cpal::BufferSize::Fixed(frames);
     let probe = match (input, config.sample_format()) {
         (true, cpal::SampleFormat::F32) => device.build_input_stream(&fixed, |_: &[f32], _| {}, |_| {}, None).map(|_| ()),
@@ -36,7 +99,7 @@ pub(crate) fn linux_voice_stream_config(
     };
     match probe {
         Ok(()) => {
-            info!("Buffer de voz Linux aceito: {} frames ({})", frames, if input { "entrada" } else { "saída" });
+            info!("Buffer de voz Linux aceito: {} frames ({kind})", frames);
             fixed
         },
         Err(error) => {
