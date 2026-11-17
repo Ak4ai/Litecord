@@ -192,7 +192,87 @@ impl GatewayClient {
         }
     }
 
+    /// Rebuild the voice session after the media path dies (NAT rebind, interface
+    /// change). Dropping and re-adding the voice state through the main gateway is
+    /// the same sequence Discord uses; it is the only way to get a fresh UDP socket,
+    /// endpoint and DAVE group without the user leaving the call.
+    async fn force_voice_rejoin(&self) {
+        let target_cid = match self.voice_channel_id.lock().unwrap().clone() {
+            Some(cid) => cid,
+            None => return,
+        };
+        let target_gid = self.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
+        let self_mute = *self.voice_self_mute.lock().unwrap();
+        let self_deaf = is_self_deaf();
+        warn!("🎧 [VOICE] Reconstruindo a sessão de voz de '{}' após perda de mídia...", target_cid);
+
+        let effective_gid = if target_gid.trim().is_empty() || target_gid == "@me" {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(target_gid)
+        };
+
+        // Send the reset first: if the main gateway socket is down, tearing the local
+        // credentials down would leave voice unusable with no way to recover. In that
+        // case keep everything and retry once the socket is back.
+        let reset_payload = serde_json::json!({
+            "op": 4,
+            "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": self_mute, "self_deaf": self_deaf }
+        });
+        let reset_sent = match self.ws_tx.lock().await.as_ref() {
+            Some(tx) => tx.send(Message::Text(reset_payload.to_string().into())).await.is_ok(),
+            None => false,
+        };
+        if !reset_sent {
+            warn!("🎧 [VOICE] Gateway principal indisponível; nova tentativa de reconstrução em instantes.");
+            crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+            return;
+        }
+
+        IS_WATCHDOG_RESETTING.store(true, Ordering::SeqCst);
+        // Tear the dead session down deterministically: the audio threads watch this
+        // counter, so they stop even if the gateway never acknowledges the reset.
+        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+        *self.voice_session_id.lock().unwrap() = None;
+        *self.voice_token.lock().unwrap() = None;
+        *self.voice_endpoint.lock().unwrap() = None;
+        // The old voice task may keep its WebSocket open for a while, so it can still
+        // look "connected" when the rejoin arrives; that would make the state update
+        // skip the reconnect and leave voice silent.
+        set_is_connected_to_voice(false);
+        // Let the gateway emit the disconnect before asking for the channel again;
+        // sent back to back, both updates can be merged and the rejoin ignored.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let rejoin_payload = serde_json::json!({
+            "op": 4,
+            "d": { "guild_id": effective_gid, "channel_id": target_cid, "self_mute": self_mute, "self_deaf": self_deaf }
+        });
+        let rejoin_sent = match self.ws_tx.lock().await.as_ref() {
+            Some(tx) => tx.send(Message::Text(rejoin_payload.to_string().into())).await.is_ok(),
+            None => false,
+        };
+        if !rejoin_sent {
+            warn!("🎧 [VOICE] Não foi possível reentrar no canal após a reconstrução; tentando de novo.");
+            crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+        }
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        IS_WATCHDOG_RESETTING.store(false, Ordering::SeqCst);
+    }
+
     pub async fn start(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<GatewayCommand>) {
+        // Voice media watchdog: the voice connection asks for a rebuild when its UDP
+        // path stays dead. Rejoining needs the main gateway socket, which lives here.
+        let rejoin_client = Arc::clone(&self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if !crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.swap(false, Ordering::SeqCst) {
+                    continue;
+                }
+                rejoin_client.force_voice_rejoin().await;
+            }
+        });
+
         // Spawn GatewayCommand listener loop (permanece vivo entre reconexões do WebSocket)
         let client_cmd = Arc::clone(&self);
         tokio::spawn(async move {
