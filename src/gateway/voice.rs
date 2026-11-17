@@ -991,7 +991,6 @@ pub async fn connect_voice_gateway(
                                                                             was_deaf = false;
                                                                             for q in queues.values_mut() { q.clear(); }
                                                                             started_ssrcs.clear();
-                                                                            inactive_ticks.clear();
                                                                             ssrc_phases.clear();
                                                                             ssrc_histories.clear();
                                                                         }
@@ -1199,7 +1198,6 @@ pub async fn connect_voice_gateway(
                                                                             was_deaf = false;
                                                                             for q in queues.values_mut() { q.clear(); }
                                                                             started_ssrcs.clear();
-                                                                            inactive_ticks.clear();
                                                                             ssrc_phases.clear();
                                                                             ssrc_histories.clear();
                                                                         }
