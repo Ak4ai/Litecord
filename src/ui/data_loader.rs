@@ -1829,16 +1829,16 @@ fn paint_channel_messages(
             ui.set_messages(model.into());
             mark_chat_painted();
 
-            // Fade a freshly painted channel in. Only the first batch of a new
-            // channel resets opacity; live appends and in-place updates keep the
-            // current value. Entering the `hidden` state snaps to zero, and the
-            // timer then leaves it so the Slint transition fades back in.
+            // Fade a freshly painted channel in. Scroll to bottom BEFORE revealing
+            // so the user never sees a top-to-bottom layout shift on channel switch.
             if ui.get_chat_painted_channel().as_str() != ch_id_current {
                 ui.set_chat_painted_channel(ch_id_current.clone().into());
                 ui.set_chat_enter_hidden(true);
+                ui.invoke_scroll_chat_to_bottom();
                 let app_fade = app_weak.clone();
-                slint::Timer::single_shot(std::time::Duration::from_millis(32), move || {
+                slint::Timer::single_shot(std::time::Duration::from_millis(48), move || {
                     if let Some(ui) = app_fade.upgrade() {
+                        ui.invoke_scroll_chat_to_bottom();
                         ui.set_chat_enter_hidden(false);
                     }
                 });

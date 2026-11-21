@@ -493,6 +493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("GDK_GL", "never");
     }
     commit_heap_pages_on_demand();
+    crate::utils::thread_priority::pin_process_to_efficiency_cores();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
     #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -984,7 +985,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     let _gtk_tray_pump_timer = {
         let timer = slint::Timer::default();
-        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(80), || {
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), || {
             while gtk::events_pending() {
                 gtk::main_iteration_do(false);
             }
