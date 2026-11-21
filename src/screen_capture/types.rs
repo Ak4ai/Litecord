@@ -149,10 +149,54 @@ pub static ON_STREAM_STATE_CB: Mutex<Option<Arc<dyn Fn(u64, bool) + Send + Sync 
 pub static SIGNALING_FORCE_WAKE: AtomicBool = AtomicBool::new(false);
 pub static SIGNALING_OUT_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>>> = Mutex::new(None);
 pub static PEER_STREAMING_STATES: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
+/// `user_id` -> (`self_stream`, `self_video`) from voice state events.  Cached so
+/// joining a channel can subscribe to streams that were already running.
+pub static VOICE_STREAM_FLAGS: Mutex<Option<HashMap<u64, (bool, bool)>>> = Mutex::new(None);
+
+pub fn set_user_stream_flags(uid: u64, self_stream: bool, self_video: bool) {
+    if let Ok(mut lock) = VOICE_STREAM_FLAGS.lock() {
+        lock.get_or_insert_with(HashMap::new).insert(uid, (self_stream, self_video));
+    }
+}
+
+pub fn get_user_stream_flags(uid: u64) -> (bool, bool) {
+    VOICE_STREAM_FLAGS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|map| map.get(&uid).copied()))
+        .unwrap_or((false, false))
+}
 
 /// The peer announced (over signaling or P2P) that it is streaming.
 pub fn peer_is_streaming(uid: u64) -> bool {
     PEER_STREAMING_STATES.lock().map(|g| g.as_ref().and_then(|m| m.get(&uid).copied()).unwrap_or(false)).unwrap_or(false)
+}
+
+/// Local screen share (Go Live / stream) state. The UI sets it when the share
+/// starts or stops so the sidebar can show our own LIVE badge, just like it does
+/// for the peers in `peer_is_streaming`.
+static SELF_STREAMING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_self_streaming(streaming: bool) {
+    SELF_STREAMING.store(streaming, Ordering::Relaxed);
+}
+
+pub fn is_self_streaming() -> bool {
+    SELF_STREAMING.load(Ordering::Relaxed)
+}
+
+pub fn set_peer_streaming(uid: u64, streaming: bool) {
+    let changed = {
+        let mut lock = PEER_STREAMING_STATES.lock().unwrap_or_else(|e| e.into_inner());
+        let map = lock.get_or_insert_with(HashMap::new);
+        let old = map.insert(uid, streaming);
+        old != Some(streaming)
+    };
+    if changed {
+        if let Some(cb) = ON_STREAM_STATE_CB.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            cb(uid, streaming);
+        }
+    }
 }
 pub static CACHED_STUN_ADDR: Mutex<Option<(SocketAddr, Instant)>> = Mutex::new(None);
 pub static SHARED_P2P_SOCKET: Mutex<Option<Arc<UdpSocket>>> = Mutex::new(None);
@@ -223,9 +267,6 @@ pub fn trigger_stream_stopped(uid: u64) {
         if let Some(map) = guard.as_mut() {
             map.insert(uid, false);
         }
-    }
-    if let Ok(mut frames) = get_active_stream_frames().lock() {
-        frames.remove(&uid);
     }
     let stream_ssrc: u32 = ((uid as u32) ^ 0x5354524D) | 0x8000_0000;
     if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
@@ -314,19 +355,65 @@ pub struct CameraItemInfo {
     pub index: u32,
 }
 
+/// Cameras that can actually deliver colour pictures.
+///
+/// A UVC webcam usually exposes several `/dev/videoN` nodes: the capture
+/// node(s) plus metadata nodes that only advertise `GREY`/`Y8`.  The
+/// `cameras` crate turns every unknown FourCC into `Mjpeg`, so probing alone
+/// cannot tell them apart; opening a metadata node then produces JPEG decode
+/// errors and no frames ever reach the encoder.  Filter them with a real V4L2
+/// query on Linux.
+#[cfg(target_os = "linux")]
+fn is_colour_capture_device(id: &cameras::DeviceId) -> bool {
+    use v4l::prelude::*;
+    use v4l::video::Capture;
+
+    let Ok(device) = v4l::Device::with_path(&id.0) else {
+        return false;
+    };
+    let Ok(formats) = device.enum_formats() else {
+        return false;
+    };
+    formats.iter().any(|format| {
+        matches!(
+            &format.fourcc.repr,
+            b"MJPG" | b"JPEG" | b"YUYV" | b"YUY2" | b"NV12" | b"RGB3" | b"BGR3"
+                | b"AB24" | b"RGBA" | b"BA24" | b"BGRA"
+        )
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_colour_capture_device(_id: &cameras::DeviceId) -> bool {
+    true
+}
+
+/// Device list used by both the picker and the capture worker.  Indices must
+/// match, otherwise the UI can select one node and the encoder open another.
+pub fn list_camera_devices() -> Vec<cameras::Device> {
+    cameras::devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|device| is_colour_capture_device(&device.id))
+        .filter(|device| {
+            // A node that cannot enumerate a single format is not a camera.
+            cameras::probe(device)
+                .map(|caps| !caps.formats.is_empty())
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 pub fn list_cameras() -> Vec<CameraItemInfo> {
-    let mut result = Vec::new();
-    if let Ok(devs) = cameras::devices() {
-        for (i, dev) in devs.into_iter().enumerate() {
-            let name = dev.name.clone();
-            result.push(CameraItemInfo {
-                id: format!("{}", i),
-                name,
-                index: i as u32,
-            });
-        }
-    }
-    result
+    list_camera_devices()
+        .into_iter()
+        .enumerate()
+        .map(|(i, dev)| CameraItemInfo {
+            id: i.to_string(),
+            name: dev.name,
+            index: i as u32,
+        })
+        .collect()
 }
 
 /// Thread-safe shared frame buffer for double-buffered local stream rendering.
@@ -452,12 +539,7 @@ pub fn get_broadcast_addresses() -> Vec<SocketAddr> {
     addrs
 }
 
-static ACTIVE_STREAM_FRAMES: OnceLock<Arc<Mutex<HashMap<u64, SharedPixelBuffer<Rgba8Pixel>>>>> = OnceLock::new();
 static ACTIVE_STREAM_USERS: OnceLock<Arc<Mutex<HashMap<u64, bool>>>> = OnceLock::new();
-
-pub fn get_active_stream_frames() -> Arc<Mutex<HashMap<u64, SharedPixelBuffer<Rgba8Pixel>>>> {
-    ACTIVE_STREAM_FRAMES.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
-}
 
 pub fn get_active_stream_users() -> Arc<Mutex<HashMap<u64, bool>>> {
     ACTIVE_STREAM_USERS.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
@@ -471,10 +553,12 @@ pub fn is_user_streaming(uid: u64) -> bool {
     }
 }
 
-pub fn get_user_stream_frame(uid: u64) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    if let Ok(frames) = get_active_stream_frames().lock() {
-        frames.get(&uid).cloned()
-    } else {
-        None
-    }
+static IS_CAMERA_STREAM: AtomicBool = AtomicBool::new(false);
+
+pub fn set_is_camera_stream(is_cam: bool) {
+    IS_CAMERA_STREAM.store(is_cam, Ordering::Relaxed);
+}
+
+pub fn is_camera_stream() -> bool {
+    IS_CAMERA_STREAM.load(Ordering::Relaxed)
 }

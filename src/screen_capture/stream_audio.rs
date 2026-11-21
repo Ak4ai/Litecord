@@ -24,6 +24,9 @@ const LATE_WINDOW: u32 = 50;
 pub struct StreamAudioEncoder {
     encoder: OpusEncoder,
     pending: Vec<f32>,
+    /// Scratch buffers reused per packet (this runs every 20 ms while streaming).
+    stereo: Vec<f32>,
+    packet: Vec<u8>,
     rate: u32,
     /// Position of the next output sample, in input samples, and the last input sample.
     pos: f64,
@@ -34,7 +37,15 @@ impl StreamAudioEncoder {
     pub fn new() -> Option<Self> {
         let mut encoder = OpusEncoder::new(RATE as i32, 2, Application::Audio).ok()?;
         encoder.bitrate_bps = BITRATE;
-        Some(Self { encoder, pending: Vec::with_capacity(FRAME * 2), rate: 0, pos: 0.0, last: 0.0 })
+        Some(Self {
+            encoder,
+            pending: Vec::with_capacity(FRAME * 2),
+            stereo: Vec::with_capacity(FRAME * 2),
+            packet: vec![0u8; 1500],
+            rate: 0,
+            pos: 0.0,
+            last: 0.0,
+        })
     }
 
     /// Mono samples at `rate`; returns the Opus packets that are complete.
@@ -68,11 +79,11 @@ impl StreamAudioEncoder {
         }
         let mut out = Vec::new();
         while self.pending.len() >= FRAME {
-            let stereo: Vec<f32> = self.pending[..FRAME].iter().flat_map(|&s| [s, s]).collect();
-            let mut packet = vec![0u8; 1500];
-            if let Ok(len) = self.encoder.encode(&stereo, FRAME, &mut packet) {
-                packet.truncate(len);
-                out.push(packet);
+            self.stereo.clear();
+            self.stereo.extend(self.pending[..FRAME].iter().flat_map(|&s| [s, s]));
+            self.packet.resize(1500, 0);
+            if let Ok(len) = self.encoder.encode(&self.stereo, FRAME, &mut self.packet) {
+                out.push(self.packet[..len].to_vec());
             }
             self.pending.drain(..FRAME);
         }

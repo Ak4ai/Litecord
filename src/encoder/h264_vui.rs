@@ -10,9 +10,21 @@
 /// Annex B `stream` with every SPS declaring (primaries, transfer, matrix); unchanged when
 /// no SPS needs it.
 pub fn declare_colour(stream: &[u8], primaries: u8, transfer: u8, matrix: u8) -> Vec<u8> {
+    declare_colour_owned(stream.to_vec(), primaries, transfer, matrix)
+}
+
+/// Consuming variant used by the encoders: a non-keyframe has no SPS, so it returns
+/// the access unit untouched instead of copying the whole H.264 frame.
+pub fn declare_colour_owned(stream: Vec<u8>, primaries: u8, transfer: u8, matrix: u8) -> Vec<u8> {
+    {
+        let ranges = crate::screen_capture::hw_decode::h264_state::nal_ranges(&stream);
+        if !ranges.iter().any(|range| stream[range.start] & 0x1f == 7) {
+            return stream;
+        }
+    }
     let mut out = Vec::with_capacity(stream.len() + 8);
     let mut last = 0;
-    for range in crate::screen_capture::hw_decode::h264_state::nal_ranges(stream) {
+    for range in crate::screen_capture::hw_decode::h264_state::nal_ranges(&stream) {
         if stream[range.start] & 0x1f != 7 {
             continue;
         }
@@ -22,7 +34,7 @@ pub fn declare_colour(stream: &[u8], primaries: u8, transfer: u8, matrix: u8) ->
         last = range.end;
     }
     if last == 0 {
-        return stream.to_vec();
+        return stream;
     }
     out.extend_from_slice(&stream[last..]);
     out

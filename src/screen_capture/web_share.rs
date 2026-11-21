@@ -95,7 +95,7 @@ pub fn start() -> io::Result<String> {
         .find(|ip| ip.is_ipv4() && !ip.is_loopback()).unwrap_or(IpAddr::from([127, 0, 0, 1]));
     let local = SocketAddr::new(ip, socket.local_addr()?.port());
     let (stop, stop_rx) = watch::channel(false);
-    let (frames_tx, frames_rx) = mpsc::channel(32);
+    let (frames_tx, frames_rx) = mpsc::channel(4);
     let (commands_tx, commands_rx) = mpsc::channel(8);
     *COMMANDS.lock().unwrap() = Some(commands_tx.clone());
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -214,11 +214,11 @@ pub fn answer_manual(offer: SdpOffer) -> Result<SdpAnswer, String> {
     rx.blocking_recv().map_err(|_| "Web sharing stopped".to_string())?
         .map_err(|status| format!("Offer rejected ({status})"))
 }
-pub fn offer_frame(annex_b: &[u8]) {
-    if !is_active() || viewer_count() == 0 || !looks_like_h264(annex_b) { return; }
+pub fn offer_frame(annex_b: Arc<[u8]>) {
+    if !is_active() || viewer_count() == 0 || !looks_like_h264(&annex_b) { return; }
     if let Some(tx) = FRAMES.lock().unwrap().as_ref() {
         let epoch = VIDEO_EPOCH.load(Ordering::Relaxed);
-        if tx.try_send(MediaFrame::Video(Arc::from(annex_b), Instant::now(), epoch)).is_err() {
+        if tx.try_send(MediaFrame::Video(annex_b, Instant::now(), epoch)).is_err() {
             VIDEO_EPOCH.fetch_add(1, Ordering::Relaxed);
             super::request_intra_keyframe();
         }

@@ -24,6 +24,13 @@ pub fn lookup(channel_id: &str) -> Option<(String, String)> {
     names().read().ok()?.get(channel_id).cloned()
 }
 
+/// Forgets every channel name: they belong to the account that was signed in.
+pub fn clear() {
+    if let Ok(mut map) = names().write() {
+        map.clear();
+    }
+}
+
 /// Rewrites `<#id>` mentions as links to the channel, `[#name](https://discord.com/channels/guild/id)`,
 /// so the line parser shows them as clickable links. Unknown channels read `#canal`, as before.
 pub fn link_channel_mentions(input: &str) -> String {

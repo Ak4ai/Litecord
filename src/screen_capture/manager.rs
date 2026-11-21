@@ -12,7 +12,7 @@ static DECODE_RESYNC: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::ne
 /// fresh keyframe than to show the stream seconds late (it used to hold 120 frames).
 const DECODE_QUEUE_FRAMES: usize = 30;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use log::{info, warn};
@@ -268,7 +268,10 @@ impl ScreenCaptureManager {
         super::gpu_tx::begin_stream(
             camera_index.is_none() && super::gpu_capture::choice() != super::gpu_capture::Choice::Cpu,
         );
-        REQUESTED_BITRATE_BPS.store(MAX_STREAM_BITRATE, Ordering::Relaxed);
+        // Discord camera announces its own ceiling in op 12; do not encode a
+        // webcam at the screen-share bitrate, which is much higher.
+        let max_bitrate = if camera_index.is_some() { CAMERA_MAX_BITRATE } else { MAX_STREAM_BITRATE };
+        REQUESTED_BITRATE_BPS.store(max_bitrate, Ordering::Relaxed);
         force_signaling_broadcast();
 
         let on_local_arc: Arc<dyn Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static> = Arc::new(on_local_frame);
@@ -337,12 +340,14 @@ impl ScreenCaptureManager {
                     Arc::new(s)
                 });
 
-                let (tx_frame, rx_frame) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32, u128, u128)>(6);
-                let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
+                let (tx_frame, rx_frame) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32, u128, u128)>(2);
+                #[allow(unused_variables)]
+                let (tx_recycle, rx_recycle) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
                 let is_running_cap = Arc::clone(&is_running);
 
+                let rx_recycle_shared = Arc::new(Mutex::new(rx_recycle));
                 #[cfg(windows)]
-                let rx_recycle_gpu = Arc::new(Mutex::new(rx_recycle));
+                let rx_recycle_gpu = Arc::clone(&rx_recycle_shared);
                 #[cfg(windows)]
                 let selected_gpu_started = camera_index.is_none() && {
                     use windows_capture::monitor::Monitor;
@@ -650,7 +655,8 @@ impl ScreenCaptureManager {
                 let wgc_started = false;
 
                 if !wgc_started {
-                    // Fallback para Câmera ou Captura Tradicional
+                    // Fallback para Câmera ou Captura Tradicional (Linux / Fallback)
+                    let rx_recycle_fallback = Arc::clone(&rx_recycle_shared);
                     std::thread::Builder::new()
                         .name("screen-capture-worker".to_string())
                         .spawn(move || {
@@ -658,63 +664,94 @@ impl ScreenCaptureManager {
 
                             let camera_handle = if let Some(cam_idx) = camera_index {
                                 info!("📷 [CAMERA WORKER] Buscando câmeras disponíveis na thread dedicada (índice selecionado: {})...", cam_idx);
-                                match cameras::devices() {
-                                    Ok(devs) => {
-                                        info!("📷 [CAMERA WORKER] {} dispositivo(s) de câmera encontrado(s) no sistema", devs.len());
+                                {
+                                    let devs = crate::screen_capture::types::list_camera_devices();
+                                    {
+                                        info!("📷 [CAMERA WORKER] {} dispositivo(s) de câmera válido(s) encontrado(s) no sistema", devs.len());
                                         for (i, d) in devs.iter().enumerate() {
                                             info!("📷 [CAMERA WORKER] Dev #{}: '{}' (id: '{:?}')", i, d.name, d.id);
                                         }
-                                        if let Some(dev) = devs.into_iter().nth(cam_idx as usize) {
+                                        let selected = devs.get(cam_idx as usize).cloned().or_else(|| devs.first().cloned());
+                                        if let Some(dev) = selected {
                                             let cam_w = target_w.min(1280);
                                             let cam_h = target_h.min(720);
                                             let cam_fps = (target_fps as u32).min(60);
                                             let mut opened = None;
-                                            let formats = [
-                                                cameras::PixelFormat::Mjpeg,
-                                                cameras::PixelFormat::Bgra8,
-                                                cameras::PixelFormat::Rgba8,
-                                                cameras::PixelFormat::Yuyv,
-                                                cameras::PixelFormat::Rgb8,
-                                            ];
-                                            let resolutions = [
-                                                cameras::Resolution { width: cam_w, height: cam_h },
-                                                cameras::Resolution { width: 1280, height: 720 },
-                                                cameras::Resolution { width: 640, height: 480 },
-                                                cameras::Resolution { width: 640, height: 360 },
-                                                cameras::Resolution { width: 1920, height: 1080 },
-                                            ];
-                                            let framerates = [cam_fps, 30, 15, 10];
-                                            'outer: for fmt in formats {
-                                                for res_test in resolutions {
-                                                    for fps_test in framerates {
-                                                        let config = cameras::StreamConfig {
-                                                            resolution: res_test,
-                                                            framerate: fps_test,
-                                                            pixel_format: fmt,
+
+                                            // 1. Inspecionar capacidades reais do dispositivo antes de abrir
+                                            match cameras::probe(&dev) {
+                                                Ok(caps) => {
+                                                    info!("📷 [CAMERA WORKER] Probe em '{}' reportou {} formatos suportados", dev.name, caps.formats.len());
+                                                    let preferred_pixel_formats = [
+                                                        cameras::PixelFormat::Mjpeg,
+                                                        cameras::PixelFormat::Bgra8,
+                                                        cameras::PixelFormat::Rgba8,
+                                                        cameras::PixelFormat::Yuyv,
+                                                        cameras::PixelFormat::Nv12,
+                                                        cameras::PixelFormat::Rgb8,
+                                                    ];
+
+                                                    // Tentar primeiro com best_format na ordem de menor sobrecarga de conversão
+                                                    for pref_fmt in preferred_pixel_formats {
+                                                        let req_config = cameras::StreamConfig {
+                                                            resolution: cameras::Resolution { width: cam_w, height: cam_h },
+                                                            framerate: cam_fps,
+                                                            pixel_format: pref_fmt,
                                                         };
-                                                        match cameras::open(&dev, config) {
-                                                            Ok(cam) => {
-                                                                info!("📷 [CAMERA WORKER] Câmera '{}' aberta com sucesso ({}x{} @ {} FPS, {:?})!", dev.name, res_test.width, res_test.height, fps_test, fmt);
-                                                                opened = Some(cam);
-                                                                break 'outer;
+                                                        if let Some(best) = cameras::best_format(&caps, &req_config) {
+                                                            let clamped_fps = (cam_fps as f64).clamp(best.framerate_range.min, best.framerate_range.max) as u32;
+                                                            let open_cfg = cameras::StreamConfig {
+                                                                resolution: best.resolution,
+                                                                framerate: clamped_fps.max(1),
+                                                                pixel_format: best.pixel_format,
+                                                            };
+                                                            match cameras::open(&dev, open_cfg) {
+                                                                Ok(cam) => {
+                                                                    info!("📷 [CAMERA WORKER] Câmera '{}' aberta com sucesso via best_format ({}x{} @ {} FPS, {:?})!", 
+                                                                        dev.name, open_cfg.resolution.width, open_cfg.resolution.height, open_cfg.framerate, open_cfg.pixel_format);
+                                                                    opened = Some(cam);
+                                                                    break;
+                                                                }
+                                                                Err(e) => {
+                                                                    log::debug!("📷 [CAMERA WORKER] Erro ao abrir formato sugerido {:?}: {:?}", open_cfg, e);
+                                                                }
                                                             }
-                                                            Err(_e) => {}
+                                                        }
+                                                    }
+
+                                                    // Se best_format não funcionou, tentar diretamente cada formato listado nas capabilities
+                                                    if opened.is_none() {
+                                                        for fmt_desc in &caps.formats {
+                                                            let open_cfg = cameras::StreamConfig {
+                                                                resolution: fmt_desc.resolution,
+                                                                framerate: (fmt_desc.framerate_range.max.min(60.0) as u32).max(1),
+                                                                pixel_format: fmt_desc.pixel_format,
+                                                            };
+                                                            match cameras::open(&dev, open_cfg) {
+                                                                Ok(cam) => {
+                                                                    info!("📷 [CAMERA WORKER] Câmera '{}' aberta com sucesso via fallback caps ({}x{} @ {} FPS, {:?})!", 
+                                                                        dev.name, open_cfg.resolution.width, open_cfg.resolution.height, open_cfg.framerate, open_cfg.pixel_format);
+                                                                    opened = Some(cam);
+                                                                    break;
+                                                                }
+                                                                Err(_) => {}
+                                                            }
                                                         }
                                                     }
                                                 }
+                                                Err(e) => {
+                                                    warn!("⚠️ [CAMERA WORKER] Falha no probe da câmera '{}': {:?}", dev.name, e);
+                                                }
                                             }
+
                                             if opened.is_none() {
-                                                warn!("⚠️ [CAMERA WORKER] Falha ao abrir câmera '{}' em todos os formatos de pixel testados.", dev.name);
+                                                warn!("⚠️ [CAMERA WORKER] Falha ao abrir câmera '{}' em todos os formatos testados.", dev.name);
                                             }
                                             opened
                                         } else {
                                             warn!("⚠️ [CAMERA WORKER] Câmera índice {} fora do alcance de dispositivos disponíveis", cam_idx);
                                             None
                                         }
-                                    }
-                                    Err(e) => {
-                                        warn!("⚠️ [CAMERA WORKER] Erro ao listar dispositivos de câmera: {:?}", e);
-                                        None
                                     }
                                 }
                             } else {
@@ -723,30 +760,68 @@ impl ScreenCaptureManager {
 
                             let frame_interval = Duration::from_nanos(1_000_000_000 / (target_fps as u64).max(1));
                             let mut next_cap_time = Instant::now() + frame_interval;
+                            let camera_frame_seen = Arc::new(AtomicBool::new(false));
+                            let camera_convert_failures = Arc::new(AtomicU32::new(0));
 
+                            let total_canvas_bytes = (target_w * target_h * 4) as usize;
                             while is_running_cap.load(Ordering::Relaxed) {
-                                let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
+                                let mut cur_buf = if let Ok(rx) = rx_recycle_fallback.lock() {
+                                    rx.try_recv().unwrap_or_else(|_| Vec::with_capacity(total_canvas_bytes))
+                                } else {
+                                    Vec::with_capacity(total_canvas_bytes)
+                                };
+                                cur_buf.clear();
 
                                 let cap_res = if camera_index.is_some() {
                                     if let Some(ref cam) = camera_handle {
-                                        if let Ok(frame) = cameras::next_frame(cam, Duration::from_millis(200)) {
-                                            let (w, h) = (frame.width, frame.height);
-                                            let converted = std::panic::catch_unwind(|| {
-                                                cameras::to_rgba8(&frame)
-                                            });
-                                            if let Ok(Ok(mut rgba_bytes)) = converted {
-                                                for chunk in rgba_bytes.chunks_exact_mut(4) {
-                                                    chunk.swap(0, 2); // RGBA -> BGRA
+                                        let cam_timeout = Duration::from_millis(1500);
+                                        match cameras::next_frame(cam, cam_timeout) {
+                                            Ok(frame) => {
+                                                let (w, h) = (frame.width, frame.height);
+                                                let converted = std::panic::catch_unwind(|| {
+                                                    cameras::to_rgba8(&frame)
+                                                });
+                                                match converted {
+                                                    Ok(Ok(mut rgba_bytes)) => {
+                                                        for chunk in rgba_bytes.chunks_exact_mut(4) {
+                                                            chunk.swap(0, 2); // RGBA -> BGRA
+                                                        }
+                                                        if !camera_frame_seen.swap(true, Ordering::Relaxed) {
+                                                            info!(
+                                                                "📷 [CAMERA WORKER] Primeiro quadro real da câmera: {}x{} ({:?})",
+                                                                w, h, frame.pixel_format
+                                                            );
+                                                        }
+                                                        let total_canvas_bytes = (target_w * target_h * 4) as usize;
+                                                        cur_buf.resize(total_canvas_bytes, 0);
+                                                        fit_bgra_to_canvas(&rgba_bytes, w, h, target_w, target_h, &mut cur_buf);
+                                                        Some((target_w, target_h, 0u128, 0u128))
+                                                    }
+                                                    other => {
+                                                        // Decoding a metadata/grey node as MJPEG used to fail here
+                                                        // silently, so the encoder never saw a single frame.
+                                                        let count = camera_convert_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                                                        if count == 1 || count % 120 == 0 {
+                                                            match other {
+                                                                Ok(Err(error)) => warn!(
+                                                                    "⚠️ [CAMERA WORKER] Não foi possível converter o quadro ({:?}); falhas={}",
+                                                                    error, count
+                                                                ),
+                                                                Err(_) => warn!(
+                                                                    "⚠️ [CAMERA WORKER] A conversão do quadro entrou em pânico; falhas={}",
+                                                                    count
+                                                                ),
+                                                                _ => {}
+                                                            }
+                                                        }
+                                                        None
+                                                    }
                                                 }
-                                                let total_canvas_bytes = (target_w * target_h * 4) as usize;
-                                                cur_buf.resize(total_canvas_bytes, 0);
-                                                fit_bgra_to_canvas(&rgba_bytes, w, h, target_w, target_h, &mut cur_buf);
-                                                Some((target_w, target_h, 0u128, 0u128))
-                                            } else {
+                                            }
+                                            Err(e) => {
+                                                log::warn!("📷 [CAMERA WORKER] next_frame erro/timeout: {:?}", e);
                                                 None
                                             }
-                                        } else {
-                                            None
                                         }
                                     } else {
                                         None
@@ -760,8 +835,12 @@ impl ScreenCaptureManager {
                                     let _ = tx_frame.try_send((cur_buf, w, h, blt, pix));
                                 }
 
-                                // Nobody watching: only the local preview uses frames (4 per second).
-                                let frame_interval = if TX_WATCHED.load(Ordering::Relaxed) { frame_interval } else { IDLE_FRAME_INTERVAL };
+                                // Para câmera física o próprio sensor/driver impõe a cadência; para captura de tela usamos o intervalo configurado.
+                                let frame_interval = if TX_WATCHED.load(Ordering::Relaxed) || camera_index.is_some() {
+                                    frame_interval
+                                } else {
+                                    IDLE_FRAME_INTERVAL
+                                };
                                 let now = Instant::now();
                                 if now < next_cap_time {
                                     let rem = next_cap_time - now;
@@ -808,11 +887,16 @@ impl ScreenCaptureManager {
                 let mut last_announce = Instant::now() - Duration::from_secs(10);
                 let mut last_idr = Instant::now() - Duration::from_secs(10);
                 let mut frame_seq: u32 = 0;
+                // Reused per frame/chunk: a 1080p keyframe is hundreds of chunks and
+                // allocating a Vec for each one showed up in the send-loop profile.
+                let mut fec_parity_buf = vec![0u8; CHUNK_SIZE];
+                let mut pkt = Vec::with_capacity(37 + CHUNK_SIZE);
+                let mut fec_pkt = Vec::with_capacity(41 + CHUNK_SIZE);
 
                 let frame_target_interval = Duration::from_micros(1_000_000 / target_fps.max(1));
                 let mut next_tick = Instant::now();
                 let mut latest_cached_frame: Option<(Vec<u8>, u32, u32, u128, u128)> = None;
-                let mut rate = super::watch::RateControl::new(MAX_STREAM_BITRATE);
+                let mut rate = super::watch::RateControl::new(max_bitrate);
                 let mut last_rate_update = Instant::now();
                 let mut was_watched = false;
 
@@ -898,9 +982,14 @@ impl ScreenCaptureManager {
                         }
                     }
 
-                    // Se nenhum quadro chegou ainda, aguarda até 20ms ou usa fallback GDI imediato para captura de tela (vital para notebooks com GPUs híbridas)
+                    // Se nenhum quadro chegou ainda, aguarda até 500ms (câmera) ou 20ms (tela)
                     if latest_cached_frame.is_none() && !gpu_path {
-                        match rx_frame.recv_timeout(Duration::from_millis(20)) {
+                        let wait_dur = if camera_index.is_some() {
+                            Duration::from_millis(500)
+                        } else {
+                            Duration::from_millis(20)
+                        };
+                        match rx_frame.recv_timeout(wait_dur) {
                             Ok(first_frame) => {
                                 latest_cached_frame = Some(first_frame);
                             }
@@ -911,14 +1000,8 @@ impl ScreenCaptureManager {
                                         let mut cur_buf = Vec::with_capacity((target_w * target_h * 4) as usize);
                                         if let Some((blt, pix)) = capture_screen_rgb(target_hwnd, target_w, target_h, target_fps, &mut cur_buf) {
                                             latest_cached_frame = Some((cur_buf, target_w, target_h, blt, pix));
-                                        } else {
-                                            continue;
                                         }
                                     }
-                                    #[cfg(not(windows))]
-                                    continue;
-                                } else {
-                                    continue;
                                 }
                             }
                         }
@@ -964,8 +1047,13 @@ impl ScreenCaptureManager {
                         }
                     }
                     // Decouple UI local preview with fast downsampler (480w) to eliminate UI thread lag and memory overhead
-                    if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| last_local_preview.elapsed() >= Duration::from_millis(250)) {
-                        if (camera_index.is_some() || cfg!(windows)) && cur_w > 0 && cur_h > 0 {
+                    let preview_interval = if camera_index.is_some() {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_millis(150)
+                    };
+                    if let Some((bgra_slice, cur_w, cur_h, _, _)) = cpu_frame.filter(|_| last_local_preview.elapsed() >= preview_interval) {
+                        if cur_w > 0 && cur_h > 0 {
                             let prev_w = 480u32.min(cur_w);
                             let prev_h = (((prev_w as f32 / cur_w as f32) * (cur_h as f32)).round() as u32).max(1);
 
@@ -1023,10 +1111,12 @@ impl ScreenCaptureManager {
                         REQUESTED_BITRATE_BPS.store(bps, Ordering::Relaxed);
                     }
 
-                    // Nobody watching (natively or in a browser): no encoding, nothing sent.
+                    // Nobody watching (natively, in a browser, or on Discord): no encoding, nothing sent.
                     // The first viewer to arrive asks for a keyframe.
                     let viewer_addrs = super::watch::viewer_addrs();
-                    let watched = !viewer_addrs.is_empty() || super::web_share::viewer_count() > 0;
+                    let watched = !viewer_addrs.is_empty()
+                        || super::web_share::viewer_count() > 0
+                        || crate::native_video::is_broadcasting();
                     if watched != was_watched {
                         was_watched = watched;
                         TX_WATCHED.store(watched, Ordering::Relaxed);
@@ -1077,10 +1167,15 @@ impl ScreenCaptureManager {
                     total_encode_us += enc_dur;
 
                     if let Some(raw_frame_bytes) = frame_bytes_opt {
+                        // One shared, immutable buffer for the three consumers
+                        // below: each used to copy the whole encoded frame.
+                        let raw_frame: std::sync::Arc<[u8]> = raw_frame_bytes.into();
+                        // Native Discord stream pump (Go Live / Camera over RTP)
+                        crate::native_video::offer_outbound_frame(std::sync::Arc::clone(&raw_frame));
                         // Browsers watching over WebRTC get the same encoded frame.
-                        super::web_share::offer_frame(&raw_frame_bytes);
+                        super::web_share::offer_frame(std::sync::Arc::clone(&raw_frame));
                         let t_crypt_start = Instant::now();
-                        let Some(frame_bytes) = super::watch::session_key().and_then(|k| encrypt_signaling_payload(&k, &raw_frame_bytes)) else {
+                        let Some(frame_bytes) = super::watch::session_key().and_then(|k| encrypt_signaling_payload(&k, raw_frame.as_ref())) else {
                             continue;
                         };
                         let t_crypt_us = t_crypt_start.elapsed().as_micros();
@@ -1096,20 +1191,18 @@ impl ScreenCaptureManager {
 
                         let t_fec_start = Instant::now();
                         // Compute Sunshine-grade Forward Error Correction (FEC) XOR parity
-                        let fec_parity = if total_chunks > 1 {
-                            let mut p = vec![0u8; CHUNK_SIZE];
+                        let has_fec = total_chunks > 1;
+                        if has_fec {
+                            fec_parity_buf.fill(0);
                             for c_idx in 0..total_chunks {
                                 let start = (c_idx as usize) * CHUNK_SIZE;
                                 let end = (start + CHUNK_SIZE).min(total_len);
                                 let slice = &frame_bytes[start..end];
                                 for (i, &b) in slice.iter().enumerate() {
-                                    p[i] ^= b;
+                                    fec_parity_buf[i] ^= b;
                                 }
                             }
-                            Some(p)
-                        } else {
-                            None
-                        };
+                        }
                         let t_fec_us = t_fec_start.elapsed().as_micros();
                         total_fec_us += t_fec_us;
 
@@ -1122,7 +1215,7 @@ impl ScreenCaptureManager {
                             let chunk_slice = &frame_bytes[start..end];
 
                             let inst = get_process_instance_id();
-                            let mut pkt = Vec::with_capacity(37 + chunk_slice.len());
+                            pkt.clear();
                             pkt.extend_from_slice(MAGIC);
                             pkt.extend_from_slice(&inst.to_be_bytes());
                             pkt.push(OP_VIDEO_CHUNK);
@@ -1145,9 +1238,10 @@ impl ScreenCaptureManager {
                         }
 
                         // Emit FEC Parity packet for zero-latency recovery of Wi-Fi single-packet drops
-                        if let Some(parity) = fec_parity {
+                        if has_fec {
+                            let parity = fec_parity_buf.as_slice();
                             let inst = get_process_instance_id();
-                            let mut fec_pkt = Vec::with_capacity(41 + parity.len());
+                            fec_pkt.clear();
                             fec_pkt.extend_from_slice(MAGIC);
                             fec_pkt.extend_from_slice(&inst.to_be_bytes());
                             fec_pkt.push(OP_FEC_PARITY);
@@ -1157,7 +1251,7 @@ impl ScreenCaptureManager {
                             fec_pkt.extend_from_slice(&pts_ms.to_be_bytes());
                             fec_pkt.extend_from_slice(&total_chunks.to_be_bytes());
                             fec_pkt.extend_from_slice(&(total_len as u32).to_be_bytes());
-                            fec_pkt.extend_from_slice(&parity);
+                            fec_pkt.extend_from_slice(parity);
 
                             for target in &target_addrs {
                                 let _ = socket.send_to(&fec_pkt, target);
@@ -1385,6 +1479,9 @@ impl ScreenCaptureManager {
                                 log::info!("✅ [DECODER RECOVERY] IDR/SPS recebido para peer {} — retomando decodificação!", peer_uid);
                             }
 
+                            // Zero-Copy MPV Player hardware direct feed
+                            super::mpv_player::feed_frame_to_mpv(peer_uid, &peer_name, &frame_data);
+
                             let decoded = decode_video_frame(&mut decoders, peer_uid, &frame_data);
                             let shown = match decoded {
                                 Decoded::Picture(ref buf, _w, h) => {
@@ -1430,9 +1527,6 @@ impl ScreenCaptureManager {
                                         SharedPixelBuffer::<Rgba8Pixel>::new(1, 1)
                                     }
                                 };
-                                if let Ok(mut f_map) = get_active_stream_frames().lock() {
-                                    f_map.insert(peer_uid, pixel_buffer.clone());
-                                }
                                 let quality_label = format!("{}p {}fps (H.264)", h, peer_fps);
 
                                 // Non-blocking Fine Audio-Video Lip Sync Telemetry
@@ -1494,8 +1588,8 @@ impl ScreenCaptureManager {
                     for port in P2P_VIDEO_PORT..=(P2P_VIDEO_PORT + 10) {
                         if let Ok(addr) = format!("0.0.0.0:{}", port).parse::<SocketAddr>() {
                             if let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)) {
-                                let _ = sock.set_send_buffer_size(16 * 1024 * 1024);
-                                let _ = sock.set_recv_buffer_size(16 * 1024 * 1024);
+                                let _ = sock.set_send_buffer_size(2 * 1024 * 1024);
+                                let _ = sock.set_recv_buffer_size(2 * 1024 * 1024);
                                 let _ = sock.set_broadcast(true);
                                 let _ = sock.set_read_timeout(Some(Duration::from_millis(2)));
                                 if sock.bind(&addr.into()).is_ok() {
@@ -1511,8 +1605,8 @@ impl ScreenCaptureManager {
                         None => {
                             if let Ok(addr) = "0.0.0.0:0".parse::<SocketAddr>() {
                                 if let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)) {
-                                    let _ = sock.set_send_buffer_size(16 * 1024 * 1024);
-                                    let _ = sock.set_recv_buffer_size(16 * 1024 * 1024);
+                                    let _ = sock.set_send_buffer_size(2 * 1024 * 1024);
+                                    let _ = sock.set_recv_buffer_size(2 * 1024 * 1024);
                                     let _ = sock.set_broadcast(true);
                                     let _ = sock.set_read_timeout(Some(Duration::from_millis(2)));
                                     if sock.bind(&addr.into()).is_ok() {
@@ -2594,6 +2688,9 @@ pub(super) fn capture_pace(frame_interval: Duration) -> Duration {
 
 /// The highest bitrate a stream starts at and climbs back to.
 const MAX_STREAM_BITRATE: u32 = 8_000_000;
+/// Camera keeps the bitrate Discord expects for 720p video; screen sharing can
+/// use the full stream ceiling.
+const CAMERA_MAX_BITRATE: u32 = 2_500_000;
 
 /// `uid` is in the voice channel `cid` (gateway voice states).
 fn in_my_voice_channel(uid: u64, cid: u64) -> bool {

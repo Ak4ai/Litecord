@@ -13,7 +13,7 @@ pub fn wake_hardware_monitor() {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HardwareMetrics {
     pub cpu_percent: u8,
     pub ram_mb: u32,
@@ -34,6 +34,8 @@ pub fn start_hardware_monitor_loop(
             let _ = MONITOR_THREAD.set(std::thread::current());
             let mut sampler = PlatformHardwareSampler::new();
             let mut last_tooltip = String::new();
+            let mut last_metrics: Option<HardwareMetrics> = None;
+            let mut force_update = true;
 
             loop {
                 // Hidden in the tray nobody sees the HUD or the title: leave a plain
@@ -44,12 +46,22 @@ pub fn start_hardware_monitor_loop(
                     while !crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed) {
                         std::thread::park();
                     }
+                    // Repaint the HUD/title once when the window comes back.
+                    force_update = true;
                 }
                 std::thread::sleep(Duration::from_millis(1000));
 
                 let visible = crate::ui::helpers::APP_IS_VISIBLE.load(Ordering::Relaxed);
                 let sample_gpu = visible && crate::utils::video_settings::get_show_hardware_monitor();
                 let metrics = sampler.sample(sample_gpu);
+
+                // Idle CPU/RAM rarely change: skip the UI-thread wakeup entirely when
+                // nothing changed instead of re-setting six properties every second.
+                if !force_update && last_metrics == Some(metrics) {
+                    continue;
+                }
+                last_metrics = Some(metrics);
+                force_update = false;
 
                 // Format tray tooltip (full detail) and taskbar window title (compact to fit)
                 let tooltip_text = if sample_gpu {

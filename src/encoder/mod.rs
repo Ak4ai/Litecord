@@ -26,6 +26,8 @@ pub mod nvenc_d3d11;
 
 pub mod software;
 pub mod h264_vui;
+#[cfg(target_os = "linux")]
+pub mod vaapi;
 
 pub use nvenc::FfmpegNvencEncoder;
 #[cfg(target_os = "windows")]
@@ -147,6 +149,18 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
                     }
                     Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] NVENC manual indisponível ({}), executando detecção automática...", e),
                 }
+                // On Linux, "ffmpeg" in the settings means the FFmpeg hardware
+                // path (VA-API / QSV / NVENC), not NVENC only.
+                #[cfg(target_os = "linux")]
+                if manual_selection == "ffmpeg" {
+                    match vaapi::VaapiFfmpegEncoder::try_new(target_fps, is_screen_content) {
+                        Ok(enc) => {
+                            info!("🚀 [VIDEO CODEC FACTORY] Codificador manual FFmpeg VA-API ativado com sucesso!");
+                            return Box::new(enc);
+                        }
+                        Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] VA-API manual indisponível ({}), executando detecção automática...", e),
+                    }
+                }
             }
             "amf" => {
                 #[cfg(target_os = "windows")]
@@ -218,14 +232,40 @@ pub fn create_best_encoder(target_fps: u32, is_screen_content: bool) -> Box<dyn 
         let hw = detect_gpu_hardware();
         info!("🎯 [VIDEO CODEC FACTORY] Hardware detectado no sistema: {:?}", hw);
 
-        info!("🎯 [VIDEO CODEC FACTORY] Tentando Hardware GPU Engine via FFmpeg (NVENC / AMF / QSV)...");
-        match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
+        // On Intel/AMD the VA-API path is the fast one.  On NVIDIA try NVENC
+        // first, but still fall back to VA-API when an integrated GPU exists.
+        let nvenc_first = matches!(hw, GpuHardwareType::NvidiaNvenc);
+        if nvenc_first {
+            info!("🎯 [VIDEO CODEC FACTORY] Tentando NVIDIA NVENC via FFmpeg...");
+            match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
+                Ok(enc) => {
+                    info!("🚀 [VIDEO CODEC FACTORY] NVIDIA NVENC ativado com sucesso!");
+                    return Box::new(enc);
+                }
+                Err(e) => warn!("⚠️ [VIDEO CODEC FACTORY] NVENC indisponível ({}), tentando VA-API...", e),
+            }
+        }
+
+        info!("🎯 [VIDEO CODEC FACTORY] Tentando H.264 por VA-API (GPU Intel/AMD)...");
+        match vaapi::VaapiFfmpegEncoder::try_new(target_fps, is_screen_content) {
             Ok(enc) => {
-                info!("🚀 [VIDEO CODEC FACTORY] Hardware GPU Engine via FFmpeg ativado com sucesso!");
+                info!("🚀 [VIDEO CODEC FACTORY] VA-API H.264 ativado com sucesso!");
                 return Box::new(enc);
             }
             Err(e) => {
-                warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU indisponível ({}), usando fallback OpenH264...", e);
+                warn!("⚠️ [VIDEO CODEC FACTORY] VA-API indisponível ({}), tentando NVENC...", e);
+            }
+        }
+
+        if !nvenc_first {
+            match nvenc::FfmpegNvencEncoder::try_new(target_fps, is_screen_content) {
+                Ok(enc) => {
+                    info!("🚀 [VIDEO CODEC FACTORY] Hardware GPU Engine via FFmpeg ativado com sucesso!");
+                    return Box::new(enc);
+                }
+                Err(e) => {
+                    warn!("⚠️ [VIDEO CODEC FACTORY] FFmpeg GPU indisponível ({}), usando fallback OpenH264...", e);
+                }
             }
         }
     }

@@ -21,7 +21,9 @@ pub struct OpenH264Encoder {
 
 impl OpenH264Encoder {
     pub fn new(target_fps: u32, is_screen_content: bool) -> Result<Self, String> {
-        let num_threads = 2u16;
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).clamp(2, 6) as u16)
+            .unwrap_or(4);
 
         let usage = if is_screen_content {
             openh264::encoder::UsageType::ScreenContentRealTime
@@ -35,8 +37,9 @@ impl OpenH264Encoder {
             .num_threads(num_threads)
             .bitrate(openh264::encoder::BitRate::from_bps(initial_bitrate))
             .max_frame_rate(openh264::encoder::FrameRate::from_hz(target_fps as f32))
-            .skip_frames(false)
-            .rate_control_mode(openh264::encoder::RateControlMode::Quality);
+            .skip_frames(true)
+            .complexity(openh264::encoder::Complexity::Low)
+            .rate_control_mode(openh264::encoder::RateControlMode::Bitrate);
 
         let encoder = openh264::encoder::Encoder::with_api_config(
             openh264::OpenH264API::from_source(),

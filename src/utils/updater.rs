@@ -7,6 +7,22 @@ const REPO_OWNER: &str = "Ak4ai";
 const REPO_NAME: &str = "Litecord";
 const CONFIG_FILE: &str = ".litecord_updater_config.json";
 
+/// One client for the updater: reusing it keeps the connection pool (DNS, TLS,
+/// HTTP/2) across checks and downloads instead of rebuilding it each time.
+fn updater_client() -> Result<reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
+        .user_agent("Litecord-App-Updater")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Erro ao inicializar cliente HTTP: {:?}", e))?;
+    let _ = CLIENT.set(client.clone());
+    Ok(client)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseInfo {
     pub tag_name: String,
@@ -143,13 +159,11 @@ pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<Deta
     let url = format!("https://api.github.com/repos/{}/{}/releases/latest", REPO_OWNER, REPO_NAME);
     info!("🔍 Comparando versão local ({}) com a última release do GitHub...", get_local_version_string());
 
-    let client = reqwest::Client::builder()
-        .user_agent("Litecord-App-Updater")
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Erro ao inicializar cliente HTTP: {:?}", e))?;
+    let client = updater_client()?;
 
-    let resp = client.get(&url).send().await
+    let resp = client.get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send().await
         .map_err(|e| format!("Falha de conexão com o GitHub: {:?}", e))?;
 
     if !resp.status().is_success() {
@@ -274,10 +288,7 @@ pub async fn download_and_install_update(
         return Err("URL de atualização rejeitada por segurança: domínio não oficial.".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent("Litecord-App-Updater")
-        .build()
-        .map_err(|e| format!("Erro ao criar cliente HTTP: {:?}", e))?;
+    let client = updater_client()?;
 
     let mut response = client.get(&download_url).send().await
         .map_err(|e| format!("Falha na conexão de download: {:?}", e))?;

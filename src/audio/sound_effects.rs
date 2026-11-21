@@ -13,6 +13,49 @@ pub enum UiSound {
     Undeafen,
     JoinChannel,
     LeaveChannel,
+    CallRinging,
+    CallRingback,
+}
+
+static RING_ACTIVE: AtomicBool = AtomicBool::new(false);
+static RING_INCOMING: AtomicBool = AtomicBool::new(true);
+
+/// Starts a looping ringtone. `incoming = true` plays the receive pattern,
+/// `false` plays the softer outgoing ringback. Calling it while already
+/// ringing just switches the pattern.
+pub fn start_call_ring(incoming: bool) {
+    RING_INCOMING.store(incoming, Ordering::Relaxed);
+    if RING_ACTIVE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("call-ringtone".into())
+        .spawn(move || {
+            while RING_ACTIVE.load(Ordering::Relaxed) {
+                // Play directly instead of going through the shared UI-sound
+                // queue: that queue keeps only the newest sound, so a click or
+                // channel sound arriving at the same time could swallow the
+                // ring on the second call.
+                let kind = if RING_INCOMING.load(Ordering::Relaxed) {
+                    UiSound::CallRinging
+                } else {
+                    UiSound::CallRingback
+                };
+                let samples = generate_sound_samples(kind, 48000);
+                let _ = play_raw_cpal(&samples);
+                // Sleep in small slices so stop_call_ring() is immediate.
+                let mut waited = 0u32;
+                while RING_ACTIVE.load(Ordering::Relaxed) && waited < 2200 {
+                    std::thread::sleep(Duration::from_millis(50));
+                    waited += 50;
+                }
+            }
+        })
+        .ok();
+}
+
+pub fn stop_call_ring() {
+    RING_ACTIVE.store(false, Ordering::SeqCst);
 }
 
 static SOUND_SENDER: std::sync::OnceLock<SyncSender<UiSound>> = std::sync::OnceLock::new();
@@ -63,6 +106,104 @@ pub fn play_ui_sound(sound: UiSound) {
             play_sound_fallback(sound);
         }
     }
+}
+
+/// Plays arbitrary mono 48 kHz samples on the selected output device. Used by
+/// the soundboard so the local user hears their own sound even though the mic
+/// loopback queue is only mixed while the mic test is running.
+pub fn play_samples_local(samples: Vec<f32>) {
+    #[cfg(feature = "automation")]
+    if crate::utils::test_hooks::mute_output() || crate::utils::test_hooks::silent_playback() {
+        return;
+    }
+    if samples.is_empty() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("soundboard-local".into())
+        .spawn(move || {
+            if let Err(e) = play_raw_cpal(&samples) {
+                warn!("⚠️ [SOUNDBOARD] Falha ao reproduzir localmente: {:?}", e);
+            }
+        })
+        .ok();
+}
+
+fn play_raw_cpal(samples: &[f32]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let host = cpal::default_host();
+    let target_dev_name = crate::gateway::get_selected_output_device_store()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let device = if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+        host.output_devices()
+            .ok()
+            .and_then(|mut devs| devs.find(|d| d.name().map_or(false, |n| n == target_dev_name)))
+            .or_else(|| host.default_output_device())
+    } else {
+        host.default_output_device()
+    }
+    .ok_or("Nenhum dispositivo de áudio de saída encontrado")?;
+
+    let config = device.default_output_config()?;
+    let out_rate = config.sample_rate().0;
+    let channels = config.channels() as usize;
+    // The soundboard is generated at 48 kHz; only resample when the device asks
+    // for something else.
+    let mono: Vec<f32> = if out_rate == 48000 {
+        samples.to_vec()
+    } else {
+        let ratio = out_rate as f32 / 48000.0;
+        let len = (samples.len() as f32 * ratio) as usize;
+        (0..len)
+            .map(|i| samples[((i as f32 / ratio) as usize).min(samples.len() - 1)])
+            .collect()
+    };
+    let total = mono.len();
+    let data = Arc::new(mono);
+    let idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let done = Arc::new(AtomicBool::new(false));
+    let idx_cb = Arc::clone(&idx);
+    let done_cb = Arc::clone(&done);
+    let data_cb = Arc::clone(&data);
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => device.build_output_stream(
+            &config.into(),
+            move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                for frame in out.chunks_mut(channels) {
+                    let i = idx_cb.fetch_add(1, Ordering::Relaxed);
+                    let v = if i < total { data_cb[i] } else { done_cb.store(true, Ordering::Relaxed); 0.0 };
+                    for s in frame.iter_mut() { *s = v; }
+                }
+            },
+            |e| warn!("Erro no stream do soundboard: {}", e),
+            None,
+        )?,
+        cpal::SampleFormat::I16 => device.build_output_stream(
+            &config.into(),
+            move |out: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                for frame in out.chunks_mut(channels) {
+                    let i = idx_cb.fetch_add(1, Ordering::Relaxed);
+                    let v = if i < total { data_cb[i] } else { done_cb.store(true, Ordering::Relaxed); 0.0 };
+                    let v = (v * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                    for s in frame.iter_mut() { *s = v; }
+                }
+            },
+            |e| warn!("Erro no stream do soundboard: {}", e),
+            None,
+        )?,
+        _ => return Err("Formato de áudio não suportado".into()),
+    };
+    stream.play()?;
+    let max_wait = ((total as f32 / out_rate as f32) * 1000.0) as u64 + 60;
+    let start = std::time::Instant::now();
+    while !done.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(max_wait) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(10));
+    drop(stream);
+    Ok(())
 }
 
 fn generate_sound_samples(sound: UiSound, sample_rate: u32) -> Vec<f32> {
@@ -216,6 +357,41 @@ fn generate_sound_samples(sound: UiSound, sample_rate: u32) -> Vec<f32> {
                     (phase2.sin() + 0.15 * (phase2 * 2.0).sin()) * 0.75 * attack * decay
                 };
                 samples.push(wave);
+            }
+        }
+        UiSound::CallRinging => {
+            // Discord-like incoming ring: two bright chimes with a short gap.
+            let total = (sample_rate as f32 * 0.85) as usize;
+            let note_len = (sample_rate as f32 * 0.18) as usize;
+            let gap = (sample_rate as f32 * 0.10) as usize;
+            let mut phase = 0.0f32;
+            for i in 0..total {
+                let local = i % (note_len * 2 + gap);
+                let in_note = local < note_len || (local >= note_len + gap && local < note_len * 2 + gap);
+                let wave = if in_note {
+                    let freq = if local < note_len { 587.33 } else { 784.0 };
+                    phase += 2.0 * std::f32::consts::PI * freq * dt;
+                    let n = if local < note_len { local } else { local - note_len - gap };
+                    let t = n as f32 / note_len as f32;
+                    let attack = (n as f32 / (sample_rate as f32 * 0.008)).min(1.0);
+                    let decay = (-t * 2.2).exp();
+                    (phase.sin() + 0.25 * (phase * 2.0).sin()) * 0.65 * attack * decay
+                } else {
+                    0.0
+                };
+                samples.push(wave);
+            }
+        }
+        UiSound::CallRingback => {
+            // Outgoing: soft 425 Hz tone, 1 s on / 2 s off (loop handles the pause).
+            let duration = 1.0;
+            let total = (sample_rate as f32 * duration) as usize;
+            let mut phase = 0.0f32;
+            for i in 0..total {
+                let t = i as f32 / total as f32;
+                phase += 2.0 * std::f32::consts::PI * 425.0 * dt;
+                let env = (t * 40.0).min(1.0) * ((1.0 - t) * 20.0).min(1.0);
+                samples.push(phase.sin() * 0.22 * env);
             }
         }
     }

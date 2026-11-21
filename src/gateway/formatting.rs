@@ -139,30 +139,30 @@ pub fn parse_discord_markdown(input: &str) -> String {
 /// Applies all inline Discord Markdown transforms to a single line of text.
 /// Code blocks have already been extracted, so this only handles inline syntax.
 fn apply_inline_markdown(input: &str) -> String {
-    let s = input.to_string();
-
     // ── Inline code (backtick) — protect from further parsing ─────────────
     // We replace inline code with a placeholder, process the rest, then restore.
-    let backtick_re_parts: Vec<&str> = s.split('`').collect();
-    let mut reconstructed = String::new();
     let mut code_segments: Vec<String> = Vec::new();
-
-    for (idx, part) in backtick_re_parts.iter().enumerate() {
-        if idx % 2 == 1 {
-            // Inside inline code — protect it
-            let placeholder = format!("\x00CODE{}\x00", code_segments.len());
-            code_segments.push(format!("`{}`", part));
-            reconstructed.push_str(&placeholder);
-        } else {
-            reconstructed.push_str(part);
+    let mut s = if input.contains('`') {
+        let backtick_re_parts: Vec<&str> = input.split('`').collect();
+        let mut reconstructed = String::with_capacity(input.len());
+        for (idx, part) in backtick_re_parts.iter().enumerate() {
+            if idx % 2 == 1 {
+                // Inside inline code — protect it
+                reconstructed.push_str(&format!("\x00CODE{}\x00", code_segments.len()));
+                code_segments.push(format!("`{}`", part));
+            } else {
+                reconstructed.push_str(part);
+            }
         }
-    }
-
-    let mut s = reconstructed;
+        reconstructed
+    } else {
+        // No inline code: avoid splitting/rebuilding the whole line.
+        input.to_string()
+    };
 
     // ── Markdown links [text](url) ─────────────────────────────────────────
     // Parse [label](url) → "label (url)"
-    {
+    if s.contains('[') {
         let mut out = String::with_capacity(s.len());
         let mut rem = s.as_str();
         while let Some(bracket_start) = rem.find('[') {
@@ -197,83 +197,119 @@ fn apply_inline_markdown(input: &str) -> String {
         s = out;
     }
 
+    // Each pass below allocates and copies the whole line, so only run the ones
+    // whose delimiter actually appears. Most messages match two or three.
     // ── Spoilers ||text|| ──────────────────────────────────────────────────
-    s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+    if s.contains("||") {
+        s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+    }
 
     // ── Mentions and Discord entities ──────────────────────────────────────
     // <t:timestamp:format> — Discord timestamps
-    s = regex_replace_simple(&s, "<t:", ">", |inner| {
-        let parts: Vec<&str> = inner.splitn(2, ':').collect();
-        let ts: i64 = parts[0].parse().unwrap_or(0);
-        let style = parts.get(1).copied();
-        format_discord_timestamp(ts, style)
-    });
+    if s.contains("<t:") {
+        s = regex_replace_simple(&s, "<t:", ">", |inner| {
+            let parts: Vec<&str> = inner.splitn(2, ':').collect();
+            let ts: i64 = parts[0].parse().unwrap_or(0);
+            let style = parts.get(1).copied();
+            format_discord_timestamp(ts, style)
+        });
+    }
 
     // <@!USER_ID> and <@USER_ID> — user mentions
-    s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
-    s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
-    s = regex_replace_simple(&s, "<@", ">", |inner| {
-        // Only if purely numeric (user ID)
-        if inner.chars().all(|c| c.is_ascii_digit()) {
-            "@usuário".to_string()
-        } else {
-            format!("<@{}>", inner)
-        }
-    });
+    if s.contains("<@!") {
+        s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
+    }
+    if s.contains("<@&") {
+        s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
+    }
+    if s.contains("<@") {
+        s = regex_replace_simple(&s, "<@", ">", |inner| {
+            // Only if purely numeric (user ID)
+            if inner.chars().all(|c| c.is_ascii_digit()) {
+                "@usuário".to_string()
+            } else {
+                format!("<@{}>", inner)
+            }
+        });
+    }
     // <#CHANNEL_ID> — channel mentions
-    s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
+    if s.contains("<#") {
+        s = regex_replace_simple(&s, "<#", ">", |inner| super::channel_names::lookup(inner).map(|(_, name)| format!("#{name}")).unwrap_or_else(|| "#canal".to_string()));
+    }
 
     // <:name:ID> — custom emoji
-    s = regex_replace_simple(&s, "<a:", ">", |inner| {
-        let name = inner.split(':').next().unwrap_or("emoji");
-        format!(":{}:", name)
-    });
-    s = regex_replace_simple(&s, "<:", ">", |inner| {
-        let name = inner.split(':').next().unwrap_or("emoji");
-        format!(":{}:", name)
-    });
+    if s.contains("<a:") {
+        s = regex_replace_simple(&s, "<a:", ">", |inner| {
+            let name = inner.split(':').next().unwrap_or("emoji");
+            format!(":{}:", name)
+        });
+    }
+    if s.contains("<:") {
+        s = regex_replace_simple(&s, "<:", ">", |inner| {
+            let name = inner.split(':').next().unwrap_or("emoji");
+            format!(":{}:", name)
+        });
+    }
 
     // </name:ID> — command mentions
-    s = regex_replace_simple(&s, "</", ">", |inner| {
-        let name = inner.split(':').next().unwrap_or("comando");
-        format!("/{}", name)
-    });
+    if s.contains("</") {
+        s = regex_replace_simple(&s, "</", ">", |inner| {
+            let name = inner.split(':').next().unwrap_or("comando");
+            format!("/{}", name)
+        });
+    }
 
     // ── Text formatting (order matters: most-specific first) ───────────────
     // Bold + Italic ***
-    s = replace_between(&s, "***", "***", |inner| inner.to_string());
+    if s.contains("***") {
+        s = replace_between(&s, "***", "***", |inner| inner.to_string());
+    }
     // Bold **
-    s = replace_between(&s, "**", "**", |inner| inner.to_string());
+    if s.contains("**") {
+        s = replace_between(&s, "**", "**", |inner| inner.to_string());
+    }
     // Italic * (single, but not at word boundaries where it would be a list)
-    s = replace_between(&s, "*", "*", |inner| inner.to_string());
+    if s.contains('*') {
+        s = replace_between(&s, "*", "*", |inner| inner.to_string());
+    }
     // Underline __
-    s = replace_between(&s, "__", "__", |inner| inner.to_string());
+    if s.contains("__") {
+        s = replace_between(&s, "__", "__", |inner| inner.to_string());
+    }
     // Italic _
-    s = replace_between(&s, "_", "_", |inner| inner.to_string());
+    if s.contains('_') {
+        s = replace_between(&s, "_", "_", |inner| inner.to_string());
+    }
     // Strikethrough ~~ (Unicode combining strike \u{0336})
-    s = replace_between(&s, "~~", "~~", |inner| {
-        inner.chars().flat_map(|c| [c, '\u{0336}']).collect::<String>()
-    });
+    if s.contains("~~") {
+        s = replace_between(&s, "~~", "~~", |inner| {
+            inner.chars().flat_map(|c| [c, '\u{0336}']).collect::<String>()
+        });
+    }
 
     // ── Backslash escape removal ───────────────────────────────────────────
-    let mut unescaped = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if matches!(next, '*' | '_' | '~' | '`' | '|' | '>' | '#' | '-' | '\\') {
-                    unescaped.push(next);
-                    chars.next();
-                    continue;
+    if s.contains('\\') {
+        let mut unescaped = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(&next) = chars.peek() {
+                    if matches!(next, '*' | '_' | '~' | '`' | '|' | '>' | '#' | '-' | '\\') {
+                        unescaped.push(next);
+                        chars.next();
+                        continue;
+                    }
                 }
             }
+            unescaped.push(c);
         }
-        unescaped.push(c);
+        s = unescaped;
     }
-    s = unescaped;
 
     // ── HTML entities ──────────────────────────────────────────────────────
-    s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+    if s.contains('&') {
+        s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+    }
 
     // ── Restore inline code segments ──────────────────────────────────────
     for (idx, code) in code_segments.iter().enumerate() {
@@ -558,14 +594,21 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                 (None, Some(hs)) => Some(hs),
                 (None, None) => None,
             };
-            let next_unicode = find_next_unicode_emoji(rem);
+            // Only split unicode emojis if it is a standalone jumbo emoji on the line.
+            // Inline unicode emojis in prose render natively with system fonts in Text with word-wrap!
+            // Skip the full char scan on every subsequent block of the line.
+            let next_unicode = if is_first_block { find_next_unicode_emoji(rem) } else { None };
 
             let mut candidates: Vec<(usize, &str)> = Vec::new();
             if let Some(idx) = next_bracket { candidates.push((idx, "bracket")); }
             if let Some(idx) = next_cmd { candidates.push((idx, "cmd")); }
             if let Some((idx, _)) = next_emoji { candidates.push((idx, "emoji")); }
             if let Some(idx) = next_raw_url { candidates.push((idx, "raw_url")); }
-            if let Some((idx, _, _, _)) = next_unicode { candidates.push((idx, "unicode_emoji")); }
+            if let Some((idx, len, _, _)) = next_unicode {
+                if idx == 0 && rem.len() == len {
+                    candidates.push((idx, "unicode_emoji"));
+                }
+            }
 
             if candidates.is_empty() {
                 let parsed = parse_discord_markdown(rem);
@@ -810,6 +853,7 @@ pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<Mess
                             url: raw_url.to_string(),
                             command_name: String::new(),
                         });
+                        is_first_block = false;
                         if !links.iter().any(|l| l.url == raw_url) {
                             links.push(LinkData {
                                 label: raw_url.to_string(),
@@ -1495,68 +1539,62 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
         }
     }
 
-    // 5. Components V2 → Rich interactive buttons (ActionRows)
+    // 5. Components V2 → text body, media and rich interactive buttons
     if let Some(components) = m["components"].as_array() {
-        for row in components {
-            if let Some(row_components) = row["components"].as_array() {
-                for comp in row_components {
-                    let comp_type = comp["type"].as_u64().unwrap_or(0);
-                    match comp_type {
-                        2 => {
-                            let label = comp["label"].as_str().unwrap_or("").trim();
-                            let url = comp["url"].as_str().unwrap_or("").trim();
-                            let style = comp["style"].as_i64().unwrap_or(if !url.is_empty() { 5 } else { 2 }) as i32;
-                            let is_disabled = comp["disabled"].as_bool().unwrap_or(false);
-                            
-                            let mut emoji_str = String::new();
-                            let mut emoji_id_for_btn = String::new();
-                            if let Some(emoji_obj) = comp.get("emoji") {
-                                if let Some(id) = emoji_obj["id"].as_str() {
-                                    if !id.is_empty() {
-                                        emoji_id_for_btn = id.to_string();
-                                        emoji_str = emoji_obj["name"].as_str().unwrap_or("").to_string();
-                                    }
-                                }
-                                if emoji_id_for_btn.is_empty() {
-                                    if let Some(emoji_name) = emoji_obj["name"].as_str() {
-                                        emoji_str = emoji_name.to_string();
-                                        if let Some((_, _, _, hex_id)) = find_next_unicode_emoji(emoji_name) {
-                                            emoji_id_for_btn = hex_id;
-                                        }
-                                    }
-                                }
-                            }
+        // Discord Components V2 (`flags` 1 << 15) carries the whole message in
+        // `components`: text displays, sections, containers and media galleries.
+        let is_components_v2 = m["flags"].as_u64().is_some_and(|f| f & (1 << 15) != 0)
+            || (m["content"].as_str().unwrap_or("").trim().is_empty()
+                && m["embeds"].as_array().is_none_or(|e| e.is_empty())
+                && components.iter().any(|c| c["type"].as_u64().unwrap_or(0) >= 9));
 
-                            if !label.is_empty() || !emoji_str.is_empty() {
-                                buttons.push(MessageButtonData {
-                                    label: label.to_string(),
-                                    url: url.to_string(),
-                                    emoji: emoji_str,
-                                    emoji_id: emoji_id_for_btn,
-                                    style_type: style,
-                                    is_disabled,
-                                });
-                            }
-                        }
-                        3 | 5 | 6 | 7 | 8 => {
-                            if let Some(placeholder) = comp["placeholder"].as_str() {
-                                if !placeholder.is_empty() {
-                                    buttons.push(MessageButtonData {
-                                        label: placeholder.to_string(),
-                                        url: String::new(),
-                                        emoji: "📋".to_string(),
-                                        emoji_id: "u_1f4cb".to_string(),
-                                        style_type: 2,
-                                        is_disabled: true,
-                                    });
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+        if is_components_v2 {
+            let mut v2_text: Vec<String> = Vec::new();
+            let mut v2_media: Vec<serde_json::Value> = Vec::new();
+            collect_components_v2(components, &mut v2_text, &mut v2_media);
+
+            if !v2_text.is_empty() {
+                let joined = v2_text.join("\n");
+                extract_commands_from_text(&joined, &mut commands);
+                let (cleaned_text, extracted_code) = extract_triple_backtick_code_blocks(&joined);
+                if code_block.is_empty() && !extracted_code.is_empty() {
+                    code_block = extracted_code;
+                }
+                if !cleaned_text.trim().is_empty() {
+                    content_lines.extend(parse_text_into_lines(&cleaned_text, &mut links));
+                    let cleaned = extract_and_clean_links(&cleaned_text, &mut links);
+                    content_parts.push(parse_discord_markdown(&cleaned));
                 }
             }
+
+            let msg_id = m["id"].as_str().unwrap_or("");
+            for (idx, media) in v2_media.iter().enumerate() {
+                let url = media["url"].as_str().or_else(|| media["proxy_url"].as_str()).unwrap_or("");
+                if url.is_empty() {
+                    continue;
+                }
+                let proxy = media["proxy_url"].as_str().unwrap_or(url);
+                links.push(LinkData {
+                    label: "Ver Imagem".to_string(),
+                    url: url.to_string(),
+                });
+                attachments_list.push(MessageAttachmentData {
+                    // The cache is keyed by id: keep it unique across messages.
+                    id: format!("embed_img_v2_{}_{}", msg_id, idx),
+                    filename: "component_image.png".to_string(),
+                    url: url.to_string(),
+                    proxy_url: proxy.to_string(),
+                    size_bytes: 0,
+                    size_str: String::new(),
+                    width: media["width"].as_i64().unwrap_or(0) as i32,
+                    height: media["height"].as_i64().unwrap_or(0) as i32,
+                    content_type: "image/png".to_string(),
+                    is_image: true,
+                });
+            }
         }
+
+        collect_message_buttons(components, &mut buttons);
     }
 
     // Build content string
@@ -1602,6 +1640,135 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     let embed_content = embed_parts_all.join("\n\n");
 
     (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments_list)
+}
+
+/// Flattens a Discord Components V2 tree into text blocks and media items.
+///
+/// Components V2 messages (`flags` bit 1 << 15) leave `content` and `embeds`
+/// empty: the visible text lives in Text Display (10) nodes inside Sections (9)
+/// and Containers (17), and the pictures in Thumbnails (11) and Galleries (12).
+fn collect_components_v2(
+    components: &[serde_json::Value],
+    text_parts: &mut Vec<String>,
+    media: &mut Vec<serde_json::Value>,
+) {
+    for comp in components {
+        let comp_type = comp["type"].as_u64().unwrap_or(0);
+        match comp_type {
+            9 | 17 => {
+                if let Some(children) = comp["components"].as_array() {
+                    collect_components_v2(children, text_parts, media);
+                }
+                // A Section may carry a thumbnail (or a button) on its right side.
+                if comp_type == 9 {
+                    if let Some(accessory) = comp.get("accessory") {
+                        collect_components_v2(std::slice::from_ref(accessory), text_parts, media);
+                    }
+                }
+            }
+            10 => {
+                if let Some(content) = comp["content"].as_str() {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        text_parts.push(trimmed.to_string());
+                    }
+                }
+            }
+            11 => {
+                if comp["media"]["url"].as_str().is_some_and(|u| !u.is_empty()) {
+                    media.push(comp["media"].clone());
+                }
+            }
+            12 => {
+                if let Some(items) = comp["items"].as_array() {
+                    for item in items {
+                        let media_obj = item.get("media").unwrap_or(item);
+                        if media_obj["url"].as_str().is_some_and(|u| !u.is_empty()) {
+                            media.push(media_obj.clone());
+                        }
+                    }
+                }
+            }
+            13 => {
+                let filename = comp["filename"].as_str().unwrap_or("arquivo");
+                if let Some(url) = comp["file"]["url"].as_str().or_else(|| comp["url"].as_str()) {
+                    if !url.is_empty() {
+                        text_parts.push(format!("📎 [{}]({})", filename, url));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Walks a Components V2 tree and keeps every interactive button/select.
+fn collect_message_buttons(components: &[serde_json::Value], buttons: &mut Vec<MessageButtonData>) {
+    for comp in components {
+        match comp["type"].as_u64().unwrap_or(0) {
+            1 | 9 | 17 => {
+                if let Some(children) = comp["components"].as_array() {
+                    collect_message_buttons(children, buttons);
+                }
+                if comp["type"].as_u64() == Some(9) {
+                    if let Some(accessory) = comp.get("accessory") {
+                        collect_message_buttons(std::slice::from_ref(accessory), buttons);
+                    }
+                }
+            }
+            2 => {
+                let label = comp["label"].as_str().unwrap_or("").trim();
+                let url = comp["url"].as_str().unwrap_or("").trim();
+                let style = comp["style"].as_i64().unwrap_or(if !url.is_empty() { 5 } else { 2 }) as i32;
+                let is_disabled = comp["disabled"].as_bool().unwrap_or(false);
+
+                let mut emoji_str = String::new();
+                let mut emoji_id_for_btn = String::new();
+                if let Some(emoji_obj) = comp.get("emoji") {
+                    if let Some(id) = emoji_obj["id"].as_str() {
+                        if !id.is_empty() {
+                            emoji_id_for_btn = id.to_string();
+                            emoji_str = emoji_obj["name"].as_str().unwrap_or("").to_string();
+                        }
+                    }
+                    if emoji_id_for_btn.is_empty() {
+                        if let Some(emoji_name) = emoji_obj["name"].as_str() {
+                            emoji_str = emoji_name.to_string();
+                            if let Some((_, _, _, hex_id)) = find_next_unicode_emoji(emoji_name) {
+                                emoji_id_for_btn = hex_id;
+                            }
+                        }
+                    }
+                }
+
+                if !label.is_empty() || !emoji_str.is_empty() {
+                    buttons.push(MessageButtonData {
+                        label: label.to_string(),
+                        url: url.to_string(),
+                        emoji: emoji_str,
+                        emoji_id: emoji_id_for_btn,
+                        style_type: style,
+                        is_disabled,
+                    });
+                }
+            }
+            3 | 5 | 6 | 7 | 8 => {
+                if let Some(placeholder) = comp["placeholder"].as_str() {
+                    if !placeholder.is_empty() {
+                        buttons.push(MessageButtonData {
+                            label: placeholder.to_string(),
+                            url: String::new(),
+                            emoji: "📋".to_string(),
+                            emoji_id: "u_1f4cb".to_string(),
+                            style_type: 2,
+                            is_disabled: true,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Legacy wrapper — returns combined content + embed as a single string.

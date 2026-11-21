@@ -2,6 +2,14 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
 use log::{info, warn, error};
 
+/// A hung connection must never keep a UI task (or the updater) waiting forever.
+const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Images can be several MiB; allow a slower connection to finish the body.
+const HTTP_IMAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Hard cap for images/attachments fetched into RAM.
+const MAX_DOWNLOAD_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct DiscordHttpClient {
     client: reqwest::Client,
@@ -22,7 +30,9 @@ impl DiscordHttpClient {
 
         let builder = reqwest::Client::builder()
             .default_headers(headers)
-            .user_agent(crate::utils::client_identity::user_agent());
+            .user_agent(crate::utils::client_identity::user_agent())
+            .timeout(HTTP_REQUEST_TIMEOUT)
+            .connect_timeout(HTTP_CONNECT_TIMEOUT);
         let client = crate::utils::apply_proxy_to_builder(builder)
             .build()
             .unwrap_or_default();
@@ -136,6 +146,59 @@ impl DiscordHttpClient {
         }
     }
 
+    pub async fn get_guild_onboarding(&self, guild_id: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/onboarding", guild_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        return Ok(json);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+        }
+    }
+
+    /// Saves the answers of the community onboarding questionnaire.
+    ///
+    /// A member that never finished the flow answers with POST. Once Discord has
+    /// marked onboarding as completed (for example after a previous client), the
+    /// same endpoint only accepts edits through PUT and answers 403 to POST.
+    pub async fn submit_guild_onboarding(
+        &self,
+        guild_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/onboarding-responses", guild_id);
+        let response = self.client.post(&url).json(body).send().await
+            .map_err(|e| format!("Falha de rede ao enviar onboarding: {:?}", e))?;
+        let status = response.status();
+        if status.is_success() {
+            info!("Onboarding do servidor {} enviado.", guild_id);
+            return Ok(());
+        }
+        let first_error = response.text().await.unwrap_or_default();
+        if status.as_u16() != 403 && status.as_u16() != 405 {
+            let err = format!("Onboarding HTTP {}: {}", status, first_error);
+            error!("{}", err);
+            return Err(err);
+        }
+
+        let response = self.client.put(&url).json(body).send().await
+            .map_err(|e| format!("Falha de rede ao enviar onboarding: {:?}", e))?;
+        let status = response.status();
+        if status.is_success() {
+            info!("Onboarding do servidor {} atualizado.", guild_id);
+            return Ok(());
+        }
+        let err = format!("Onboarding HTTP {}: {}", status, response.text().await.unwrap_or_default());
+        error!("{}", err);
+        Err(err)
+    }
+
     pub async fn get_channel_permissions(&self, guild_id: &str) -> Result<crate::channel_permissions::ChannelPermissions, String> {
         if let Some(permissions) = crate::channel_permissions::cached(guild_id) {
             return Ok(permissions);
@@ -199,11 +262,17 @@ impl DiscordHttpClient {
     }
 
     pub async fn download_image(&self, url: &str) -> Result<Vec<u8>, String> {
-        match self.client.get(url).send().await {
+        match self.client.get(url).timeout(HTTP_IMAGE_TIMEOUT).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
+                    if resp.content_length().is_some_and(|len| len > MAX_DOWNLOAD_BYTES as u64) {
+                        return Err(format!("Imagem grande demais (limite {} MiB)", MAX_DOWNLOAD_BYTES / (1024 * 1024)));
+                    }
                     if let Ok(bytes) = resp.bytes().await {
+                        if bytes.len() > MAX_DOWNLOAD_BYTES {
+                            return Err(format!("Imagem grande demais (limite {} MiB)", MAX_DOWNLOAD_BYTES / (1024 * 1024)));
+                        }
                         return Ok(bytes.to_vec());
                     }
                 }
@@ -230,6 +299,74 @@ impl DiscordHttpClient {
             }
             Err(e) => {
                 let err = format!("Falha ao enviar mensagem via HTTP: {:?}", e);
+                error!("{}", err);
+                Err(err)
+            }
+        }
+    }
+
+    pub async fn send_message_with_image(
+        &self,
+        channel_id: &str,
+        content: &str,
+        filename: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
+        let boundary = format!(
+            "----LitecordBoundary{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(1)
+        );
+        let safe_name = filename.replace(['"', '\r', '\n'], "_");
+        let payload_json = json!({
+            "content": content,
+            "attachments": [{ "id": 0, "filename": safe_name }]
+        })
+        .to_string();
+
+        let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + payload_json.len() + 512);
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n",
+        );
+        body.extend_from_slice(payload_json.as_bytes());
+        body.extend_from_slice(b"\r\n");
+
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"files[0]\"; filename=\"{safe_name}\"\r\nContent-Type: {mime}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        match self
+            .client
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    info!("Imagem {} enviada com sucesso para o canal {}", safe_name, channel_id);
+                    Ok(())
+                } else {
+                    let err = format!("Status de erro HTTP ao enviar imagem: {}", resp.status());
+                    error!("{}", err);
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                let err = format!("Falha ao enviar imagem via HTTP: {:?}", e);
                 error!("{}", err);
                 Err(err)
             }
@@ -338,6 +475,58 @@ impl DiscordHttpClient {
         }
     }
 
+    /// Global/user-installed commands. This is the index Discord exposes in
+    /// DMs and the one that includes applications installed only to the user.
+    pub async fn get_user_application_command_index(&self) -> Result<serde_json::Value, String> {
+        let url = "https://discord.com/api/v9/users/@me/application-command-index";
+        match self.client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        return Ok(data);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP ao buscar índice global de comandos: {:?}", e)),
+        }
+    }
+
+    pub async fn add_guild_member_role(
+        &self,
+        guild_id: &str,
+        user_id: &str,
+        role_id: &str,
+    ) -> Result<(), String> {
+        let url = format!(
+            "https://discord.com/api/v10/guilds/{}/members/{}/roles/{}",
+            guild_id, user_id, role_id
+        );
+        match self.client.put(&url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} ao adicionar cargo", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao adicionar cargo: {:?}", e)),
+        }
+    }
+
+    pub async fn remove_guild_member_role(
+        &self,
+        guild_id: &str,
+        user_id: &str,
+        role_id: &str,
+    ) -> Result<(), String> {
+        let url = format!(
+            "https://discord.com/api/v10/guilds/{}/members/{}/roles/{}",
+            guild_id, user_id, role_id
+        );
+        match self.client.delete(&url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} ao remover cargo", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao remover cargo: {:?}", e)),
+        }
+    }
+
     pub async fn send_slash_command_interaction(
         &self,
         guild_id: &str,
@@ -407,6 +596,215 @@ impl DiscordHttpClient {
                 warn!("{}", err);
                 Err(err)
             }
+        }
+    }
+
+    pub async fn create_dm(&self, user_id: &str) -> Result<serde_json::Value, String> {
+        let url = "https://discord.com/api/v10/users/@me/channels";
+        let payload = json!({ "recipient_id": user_id });
+        match self.client.post(url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON DM inválido: {e}"))
+                } else {
+                    Err(format!("Status HTTP {} al abrir DM", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Erro HTTP ao abrir DM: {:?}", e)),
+        }
+    }
+
+    /// Creates an instant invite for a channel. `max_age` is in seconds, `0`
+    /// means never expires; `max_uses` `0` means unlimited.
+    pub async fn create_channel_invite(
+        &self,
+        channel_id: &str,
+        max_age: u64,
+        max_uses: u64,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/channels/{}/invites", channel_id);
+        let payload = serde_json::json!({
+            "max_age": max_age,
+            "max_uses": max_uses,
+            "temporary": false,
+            "validate": serde_json::Value::Null,
+        });
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    resp.json::<serde_json::Value>()
+                        .await
+                        .map_err(|e| format!("JSON de invitación inválido: {e}"))
+                } else {
+                    Err(format!("Status HTTP {} al crear invitación", status))
+                }
+            }
+            Err(e) => Err(format!("Erro HTTP ao criar invitación: {:?}", e)),
+        }
+    }
+
+    pub async fn edit_channel(&self, channel_id: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/channels/{}", channel_id);
+        match self.client.patch(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON de canal inválido: {e}"))
+                } else {
+                    Err(format!("Status HTTP {} al editar canal", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Erro HTTP ao editar canal: {:?}", e)),
+        }
+    }
+
+    pub async fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/channels/{}", channel_id);
+        match self.client.delete(&url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al eliminar canal", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao eliminar canal: {:?}", e)),
+        }
+    }
+
+    pub async fn create_guild_channel(&self, guild_id: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/channels", guild_id);
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON de canal inválido: {e}"))
+                } else {
+                    Err(format!("Status HTTP {} al crear canal", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Erro HTTP ao criar canal: {:?}", e)),
+        }
+    }
+
+    pub async fn edit_guild(&self, guild_id: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}", guild_id);
+        match self.client.patch(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    resp.json::<serde_json::Value>().await.map_err(|e| format!("JSON de servidor inválido: {e}"))
+                } else {
+                    Err(format!("Status HTTP {} al editar servidor", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Erro HTTP ao editar servidor: {:?}", e)),
+        }
+    }
+
+    pub async fn leave_guild(&self, guild_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/users/@me/guilds/{}", guild_id);
+        match self.client.delete(&url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al salir del servidor", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao sair do servidor: {:?}", e)),
+        }
+    }
+
+    /// Server moderation: mute/deafen/move/disconnect a member.
+    pub async fn edit_guild_member(&self, guild_id: &str, user_id: &str, payload: serde_json::Value) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
+        match self.client.patch(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    Ok(())
+                } else {
+                    Err(format!("Status HTTP {} al moderar miembro", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Erro HTTP ao moderar miembro: {:?}", e)),
+        }
+    }
+
+    pub async fn kick_guild_member(&self, guild_id: &str, user_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/members/{}", guild_id, user_id);
+        match self.client.delete(&url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al expulsar", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao expulsar: {:?}", e)),
+        }
+    }
+
+    pub async fn ban_guild_member(&self, guild_id: &str, user_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/bans/{}", guild_id, user_id);
+        match self.client.put(&url).json(&json!({})).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al banear", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao banear: {:?}", e)),
+        }
+    }
+
+    /// Discord relationship types: 1 friend, 2 blocked.
+    pub async fn set_relationship(&self, user_id: &str, kind: u64) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/users/@me/relationships/{}", user_id);
+        match self.client.put(&url).json(&json!({ "type": kind })).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al actualizar relación", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao atualizar relação: {:?}", e)),
+        }
+    }
+
+    pub async fn remove_relationship(&self, user_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/users/@me/relationships/{}", user_id);
+        match self.client.delete(&url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al eliminar relación", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao eliminar relação: {:?}", e)),
+        }
+    }
+
+    pub async fn set_user_note(&self, user_id: &str, note: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/users/@me/notes/{}", user_id);
+        match self.client.put(&url).json(&json!({ "note": note })).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al guardar nota", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao guardar nota: {:?}", e)),
+        }
+    }
+
+    pub async fn set_friend_nickname(&self, user_id: &str, nickname: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/users/@me/relationships/{}", user_id);
+        match self.client.patch(&url).json(&json!({ "nickname": nickname })).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => Err(format!("Status HTTP {} al guardar apodo", resp.status())),
+            Err(e) => Err(format!("Erro HTTP ao guardar apodo: {:?}", e)),
+        }
+    }
+
+    /// Discord's default soundboard catalog (available to every account).
+    pub async fn get_default_soundboard_sounds(&self) -> Result<Vec<serde_json::Value>, String> {
+        let url = "https://discord.com/api/v10/soundboard-default-sounds";
+        match self.client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(list) = resp.json::<Vec<serde_json::Value>>().await {
+                        return Ok(list);
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
+        }
+    }
+
+    /// Guild soundboard sounds. Requires the guild to be available to the user.
+    pub async fn get_guild_soundboard_sounds(&self, guild_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        let url = format!("https://discord.com/api/v10/guilds/{}/soundboard-sounds", guild_id);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        return Ok(json["items"].as_array().cloned().unwrap_or_default());
+                    }
+                }
+                Err(format!("Status HTTP {}", status))
+            }
+            Err(e) => Err(format!("Erro HTTP: {:?}", e)),
         }
     }
 

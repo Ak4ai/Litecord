@@ -20,6 +20,12 @@ on:
 permissions:
   contents: write
 
+# Un push nuevo a la misma rama cancela el build anterior (salvo en main,
+# donde no queremos perder un binario a medio publicar).
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   # Empty on pushes, tags and pull requests; only a manual run can set it.
   CARGO_FEATURES: ${{ inputs.features }}
@@ -54,6 +60,7 @@ jobs:
         run: |
           mkdir -p package_portable
           Copy-Item target/release/litecord.exe package_portable/
+          Copy-Item -Recurse assets package_portable/ -ErrorAction SilentlyContinue
           Copy-Item README.md package_portable/ -ErrorAction SilentlyContinue
           Compress-Archive -Path package_portable/* -DestinationPath litecord-windows-x64-portable.zip
 
@@ -91,6 +98,10 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             libxdo-dev \
+            clang \
+            libclang-dev \
+            meson \
+            ninja-build \
             libx11-dev \
             libxkbcommon-dev \
             libwayland-dev \
@@ -130,6 +141,64 @@ jobs:
           name: litecord-linux-x64
           path: litecord-linux-x64.tar.gz
 
+  build-linux-arm64:
+    name: Build Linux ARM64 (.tar.gz)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux System Dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            clang \
+            libclang-dev \
+            meson \
+            ninja-build \
+            libx11-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libxkbcommon-x11-dev \
+            patchelf \
+            xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache Rust dependencies & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-arm64-release"
+          cache-on-failure: true
+
+      - name: Build Linux ARM64 Binary (Release)
+        run: cargo build --release --bin litecord ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
+
+      - name: Package Linux ARM64 Binary (.tar.gz)
+        run: |
+          mkdir -p release-pkg-arm64
+          cp target/release/litecord release-pkg-arm64/
+          cp -r assets release-pkg-arm64/
+          cp README.md release-pkg-arm64/ 2>/dev/null || true
+          tar -czvf litecord-linux-arm64.tar.gz -C release-pkg-arm64 .
+
+      - name: Upload Linux ARM64 tar.gz Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: litecord-linux-arm64
+          path: litecord-linux-arm64.tar.gz
+
   # Anylinux AppImage, built the way pkgforge-dev documents it:
   # https://pkgforge-dev.github.io/Anylinux-AppImages/HOW-TO-MAKE-THESE.html
   # - build on Arch Linux (never Debian/Fedora), app installed under /usr
@@ -145,7 +214,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
-            base-devel git wget file strace rust clang cmake nasm pkgconf patchelf \
+            base-devel git wget file strace rust clang cmake nasm pkgconf patchelf meson ninja \
             alsa-lib openssl gtk3 libayatana-appindicator xdotool \
             libx11 libxcb libxkbcommon libxkbcommon-x11 wayland fontconfig freetype2 \
             mesa vulkan-icd-loader pipewire pipewire-alsa \
@@ -172,6 +241,10 @@ jobs:
           ICON: assets/litecord.png
           OUTPATH: ./dist
           OUTNAME: Litecord-x86_64.AppImage
+          # Arch's mesa/libgallium links libLLVM; quick-sharun refuses to bundle it
+          # unless told otherwise. The AppImage is a convenience artifact for this
+          # fork, so accept the extra size instead of failing the whole workflow.
+          I_WANT_FAT_APPIMAGE: 1
           # Slint/winit renders through OpenGL; cpal talks to ALSA, which the
           # PipeWire plugin must serve; tray-icon pulls GTK3 + appindicator.
           DEPLOY_OPENGL: 1
@@ -198,9 +271,52 @@ jobs:
           name: Litecord-x86_64.AppImage
           path: dist/Litecord-x86_64.AppImage
 
+  # Publica un release "latest" rodante con cada push a main. Es lo que
+  # scripts/update-from-actions.sh descarga para reemplazar el binario local
+  # sin esperar a un tag ni a un release manual.
+  publish-latest:
+    name: Publish rolling "latest" build
+    needs: [build-linux]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: litecord-linux-x64
+          path: dist
+
+      - name: Extract standalone binary
+        run: |
+          mkdir -p out
+          tar -xzf dist/litecord-linux-x64.tar.gz -C out ./litecord
+          cp out/litecord litecord-linux-x64
+          chmod +x litecord-linux-x64
+
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: latest
+          name: "Litecord latest (auto build ${{ github.sha }})"
+          body: |
+            Build automático de `${{ github.ref_name }}` en el commit `${{ github.sha }}`.
+
+            Instalación local:
+            ```bash
+            ./scripts/update-from-actions.sh
+            ```
+          prerelease: true
+          overwrite_files: true
+          files: |
+            litecord-linux-x64
+            dist/litecord-linux-x64.tar.gz
+
   create-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-linux, build-appimage]
+    needs: [build-windows, build-linux, build-linux-arm64, build-appimage]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true && inputs.features == '')
     runs-on: ubuntu-latest
     steps:
@@ -241,6 +357,7 @@ jobs:
             release-artifacts/Litecord-Setup-x64.exe
             release-artifacts/litecord-windows-x64-portable.zip
             release-artifacts/litecord-linux-x64.tar.gz
+            release-artifacts/litecord-linux-arm64.tar.gz
             release-artifacts/Litecord-x86_64.AppImage
           generate_release_notes: false
           append_body: false
