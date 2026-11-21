@@ -1717,9 +1717,48 @@ pub async fn load_messages_for_channel(
                 previous.len() == compact_msgs.len()
                     && previous.first().map(|m| &m.id) == compact_msgs.first().map(|m| &m.id)
             });
+            let incremental_new: Option<Vec<CompactCachedMessage>> = if !unchanged {
+                cached.as_ref().and_then(|(previous, _)| {
+                    let prev_newest = previous.first()?;
+                    let new_count = compact_msgs.iter().position(|m| m.id == prev_newest.id)?;
+                    if new_count > 0 && new_count <= 20 {
+                        Some(compact_msgs[..new_count].iter().rev().cloned().collect())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             let messages = Arc::new(compact_msgs);
             message_cache_put(channel_id, Arc::clone(&messages));
-            if !unchanged {
+            if let Some(new_msgs) = incremental_new {
+                let ch_id_inc = channel_id.to_string();
+                let app_weak_inc = app_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = app_weak_inc.upgrade() {
+                        if ui.get_active_channel_id().as_str() != ch_id_inc {
+                            return;
+                        }
+                        let model = ui.get_messages();
+                        if let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
+                            let mut ui_new: Vec<ChatMessage> = new_msgs
+                                .iter()
+                                .map(|m| m.to_chat_message(&ch_id_inc, &app_weak_inc))
+                                .collect();
+                            avatar_cache::get_avatar_cache().hydrate(&mut ui_new, &app_weak_inc);
+                            crate::ui::invite_cards::hydrate(&mut ui_new, &app_weak_inc);
+                            for mut row in ui_new {
+                                crate::ui::message_grouping::group_appended_message(&model, &mut row);
+                                vec_model.push(row);
+                            }
+                            request_chat_scroll_to_bottom(app_weak_inc.clone());
+                            return;
+                        }
+                    }
+                    paint_channel_messages(messages, &ch_id_inc, app_weak_inc);
+                });
+            } else if !unchanged {
                 paint_channel_messages(messages, channel_id, app_weak);
             }
             true

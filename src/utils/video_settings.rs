@@ -120,7 +120,7 @@ impl Default for VideoSettings {
             show_hardware_monitor: true,
             use_light_theme: false,
             theme_mode: "dark".to_string(),
-            use_gpu_renderer: false,
+            use_gpu_renderer: cfg!(target_os = "linux") && std::path::Path::new("/dev/dri/renderD128").exists(),
             channel_sidebar_width: default_channel_sidebar_width(),
             noise_suppression: "none".to_string(),
             echo_cancellation: false,

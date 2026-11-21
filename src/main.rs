@@ -3842,7 +3842,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             interval.tick().await;
             let woken = UI_LOOPS_WAKE.notified();
-            if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
+            if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
                 woken.await;
                 continue;
             }
