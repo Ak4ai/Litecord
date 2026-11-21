@@ -305,6 +305,74 @@ impl DiscordHttpClient {
         }
     }
 
+    pub async fn send_message_with_image(
+        &self,
+        channel_id: &str,
+        content: &str,
+        filename: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
+        let boundary = format!(
+            "----LitecordBoundary{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(1)
+        );
+        let safe_name = filename.replace(['"', '\r', '\n'], "_");
+        let payload_json = json!({
+            "content": content,
+            "attachments": [{ "id": 0, "filename": safe_name }]
+        })
+        .to_string();
+
+        let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + payload_json.len() + 512);
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n",
+        );
+        body.extend_from_slice(payload_json.as_bytes());
+        body.extend_from_slice(b"\r\n");
+
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"files[0]\"; filename=\"{safe_name}\"\r\nContent-Type: {mime}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        match self
+            .client
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    info!("Imagem {} enviada com sucesso para o canal {}", safe_name, channel_id);
+                    Ok(())
+                } else {
+                    let err = format!("Status de erro HTTP ao enviar imagem: {}", resp.status());
+                    error!("{}", err);
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                let err = format!("Falha ao enviar imagem via HTTP: {:?}", e);
+                error!("{}", err);
+                Err(err)
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub async fn update_my_voice_state(&self, guild_id: &str, channel_id: &str) -> Result<(), String> {
         let url = format!("https://discord.com/api/v10/guilds/{}/voice-states/@me", guild_id);

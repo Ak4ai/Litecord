@@ -298,6 +298,11 @@ export component AppWindow inherits Window {
     callback close_window();
     callback login(string /* token */);
     callback send_message(string /* content */);
+    in-out property <bool> has_pending_image: false;
+    in-out property <image> pending_image_preview;
+    in-out property <string> pending_image_name: "";
+    callback paste_clipboard_image();
+    callback clear_pending_image();
     callback select_channel(string /* channel_id */);
     callback toggle_category(string /* category_id */);
     callback select_guild(string /* guild_id */);
@@ -590,10 +595,22 @@ export component AppWindow inherits Window {
     // Discord-style server-name tooltip shown while a guild icon is hovered.
     in-out property <string> guild_tooltip_id: "";
     in-out property <string> guild_tooltip_text: "";
+    in-out property <string> guild_tooltip_members: "";
     in-out property <length> guild_tooltip_y: 0px;
+    callback query_guild_hover_members(string /* guild_id */);
     changed guilds => {
         root.guild_tooltip_id = "";
         root.guild_tooltip_text = "";
+        root.guild_tooltip_members = "";
+    }
+
+    chat_enter_failsafe_timer := Timer {
+        interval: 450ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.chat_enter_hidden = false;
+        }
     }
 
     public function scroll_chat_to_bottom() {
@@ -611,6 +628,7 @@ export component AppWindow inherits Window {
         // Fade the outgoing chat out while the new channel loads; the loader
         // then clears this flag and the new messages fade in.
         root.chat_enter_hidden = true;
+        chat_enter_failsafe_timer.restart();
         root.header_enter_hidden = true;
         header_fade_timer.start();
     }
@@ -715,6 +733,8 @@ export component AppWindow inherits Window {
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
     in-out property <bool> use_gpu_renderer: false;
+    in-out property <bool> use_efficiency_cores_only: true;
+    callback toggle_efficiency_cores_only();
     in-out property <bool> enable_tray_icon: true;
     in-out property <bool> net_diag_running: false;
     in-out property <int> net_diag_verdict: -1;
@@ -1655,6 +1675,8 @@ export component AppWindow inherits Window {
                                                         if (root.dragging_guild_idx < 0) {
                                                             root.guild_tooltip_id = guild.id;
                                                             root.guild_tooltip_text = guild.name;
+                                                            root.guild_tooltip_members = "";
+                                                            root.query_guild_hover_members(guild.id);
                                                             root.guild_tooltip_y = guild_icon.absolute-position.y
                                                                 + (guild_icon.height - 32px) / 2;
                                                         }
@@ -3621,6 +3643,67 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Pending pasted image preview bar
+                    if root.has_pending_image : Rectangle {
+                        height: 60px;
+                        background: AppTheme.surface-sidebar;
+                        border-width: 1px;
+                        border-color: AppTheme.separator;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: 10px;
+                            alignment: start;
+
+                            Rectangle {
+                                width: 48px;
+                                height: 48px;
+                                border-radius: 6px;
+                                clip: true;
+                                background: AppTheme.surface-input;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.pending_image_preview;
+                                    image-fit: cover;
+                                }
+                            }
+
+                            Text {
+                                text: root.pending_image_name;
+                                color: AppTheme.text-primary;
+                                font-size: TypeScale.body;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+
+                            Rectangle {
+                                width: 26px;
+                                height: 26px;
+                                border-radius: 6px;
+                                background: clear_img_ta.has-hover ? AppTheme.interactive-hover : transparent;
+
+                                Image {
+                                    source: @image-url("../assets/x.svg");
+                                    width: 12px;
+                                    height: 12px;
+                                    colorize: AppTheme.text-muted;
+                                    image-fit: contain;
+                                }
+
+                                clear_img_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.clear_pending_image(); }
+                                }
+                            }
+                        }
+                    }
+
                     // Message / Smart Command Input Box
                     Rectangle {
                         height: 56px;
@@ -3770,6 +3853,9 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                     single-line: true;
                                     key-pressed(event) => {
+                                        if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
+                                            root.paste_clipboard_image();
+                                        }
                                         if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                             if (event.text == Key.UpArrow) {
                                                 root.move_suggestion_up();
@@ -3797,7 +3883,7 @@ export component AppWindow inherits Window {
                                     accepted => {
                                         if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                             root.select_suggestion(root.active_suggestion_index);
-                                        } else if (root.chat_input_text != "") {
+                                        } else if (root.chat_input_text != "" || root.has_pending_image) {
                                             root.send_message(root.chat_input_text);
                                             root.chat_input_text = "";
                                             root.show_command_suggestions = false;
@@ -3850,7 +3936,7 @@ export component AppWindow inherits Window {
                                         root.command_arg_text = "";
                                     } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                         root.select_suggestion(root.active_suggestion_index);
-                                    } else if (root.chat_input_text != "") {
+                                    } else if (root.chat_input_text != "" || root.has_pending_image) {
                                         root.send_message(root.chat_input_text);
                                         root.chat_input_text = "";
                                         root.show_command_suggestions = false;
@@ -3871,28 +3957,43 @@ export component AppWindow inherits Window {
     // above the channel sidebar.
     if root.is_logged_in && root.guild_tooltip_id != "" && root.dragging_guild_idx < 0: Rectangle {
         x: 68px;
-        y: max(0px, min(root.guild_tooltip_y, root.height - 40px));
-        width: min(guild_tooltip_label.preferred-width + 24px, 320px);
-        height: 32px;
+        y: max(0px, min(root.guild_tooltip_y, root.height - (root.guild_tooltip_members != "" ? 96px : 40px)));
+        width: min(max(guild_tooltip_label.preferred-width, guild_tooltip_members_label.preferred-width) + 24px, 320px);
+        height: root.guild_tooltip_members != "" ? (guild_tooltip_box.preferred-height + 14px) : 32px;
         background: #111214;
-        border-radius: 4px;
+        border-radius: 6px;
         border-width: 1px;
         border-color: #202225;
         drop-shadow-blur: 4px;
         drop-shadow-color: #00000040;
         drop-shadow-offset-y: 2px;
 
-        guild_tooltip_label := Text {
-            x: 12px;
-            width: parent.width - 24px;
-            height: parent.height;
-            text: root.guild_tooltip_text;
-            color: #ffffff;
-            font-size: TypeScale.body;
-            font-weight: 500;
-            vertical-alignment: center;
-            overflow: elide;
-            wrap: no-wrap;
+        guild_tooltip_box := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 4px;
+            alignment: center;
+
+            guild_tooltip_label := Text {
+                text: root.guild_tooltip_text;
+                color: #ffffff;
+                font-size: TypeScale.body;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                wrap: no-wrap;
+            }
+
+            guild_tooltip_members_label := Text {
+                visible: root.guild_tooltip_members != "";
+                height: root.guild_tooltip_members != "" ? self.preferred-height : 0px;
+                text: root.guild_tooltip_members;
+                color: #b5bac1;
+                font-size: TypeScale.caption;
+                wrap: word-wrap;
+            }
         }
     }
 
@@ -3945,6 +4046,8 @@ export component AppWindow inherits Window {
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
         use_gpu_renderer: root.use_gpu_renderer;
+        use_efficiency_cores_only: root.use_efficiency_cores_only;
+        toggle_efficiency_cores_only => { root.toggle_efficiency_cores_only(); }
         enable_tray_icon: root.enable_tray_icon;
         net_diag_running: root.net_diag_running;
         net_diag_verdict: root.net_diag_verdict;

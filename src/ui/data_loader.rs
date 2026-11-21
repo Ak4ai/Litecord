@@ -1778,6 +1778,7 @@ pub async fn load_messages_for_channel(
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_has_more_older_messages(false);
+                    ui.set_chat_enter_hidden(false);
                     let ui_msgs = vec![ChatMessage {
                         id: "".into(),
                         author: "Litecord System".into(),
@@ -1870,7 +1871,9 @@ fn paint_channel_messages(
 
             // Fade a freshly painted channel in. Scroll to bottom BEFORE revealing
             // so the user never sees a top-to-bottom layout shift on channel switch.
-            if ui.get_chat_painted_channel().as_str() != ch_id_current {
+            // Always clear `chat_enter_hidden` even if revisiting the same channel id,
+            // so the view can never stay stuck in the dimmed preload state.
+            if ui.get_chat_painted_channel().as_str() != ch_id_current || ui.get_chat_enter_hidden() {
                 ui.set_chat_painted_channel(ch_id_current.clone().into());
                 ui.set_chat_enter_hidden(true);
                 ui.invoke_scroll_chat_to_bottom();

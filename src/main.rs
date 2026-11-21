@@ -493,7 +493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("GDK_GL", "never");
     }
     commit_heap_pages_on_demand();
-    crate::utils::thread_priority::pin_process_to_efficiency_cores();
+    crate::utils::thread_priority::apply_efficiency_cores_policy(video_settings::get_use_efficiency_cores_only());
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
     #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -4340,6 +4340,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    app.set_use_efficiency_cores_only(video_settings::get_use_efficiency_cores_only());
+    let app_weak_ecores = app.as_weak();
+    app.on_toggle_efficiency_cores_only(move || {
+        let new_val = video_settings::toggle_use_efficiency_cores_only();
+        crate::utils::thread_priority::apply_efficiency_cores_policy(new_val);
+        if let Some(ui) = app_weak_ecores.upgrade() {
+            ui.set_use_efficiency_cores_only(new_val);
+        }
+    });
+
     let app_weak_tray_toggle = app.as_weak();
     app.on_toggle_tray_icon(move || {
         let new_val = video_settings::toggle_enable_tray_icon();
@@ -5781,6 +5791,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_channel_guild_select = Arc::clone(&active_channel_id);
     let cmd_tx_guild_select = Arc::clone(&cmd_tx_store);
 
+    // Server Hover Tooltip: O(voice_channels) RAM-only lookup of connected voice members (zero network, capped at 16).
+    let app_weak_hover_g = app_weak.clone();
+    let guilds_map_hover = Arc::clone(&guilds_map);
+    app.on_query_guild_hover_members(move |guild_id: SharedString| {
+        let gid = guild_id.to_string();
+        if gid.is_empty() || gid == "@me" {
+            return;
+        }
+        let voice_cids: Vec<String> = guilds_map_hover
+            .try_lock()
+            .ok()
+            .and_then(|map| {
+                map.get(&gid).map(|g| {
+                    g.channels
+                        .iter()
+                        .filter(|c| c.is_voice)
+                        .map(|c| c.id.clone())
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        if voice_cids.is_empty() {
+            return;
+        }
+        let mut names: Vec<String> = Vec::new();
+        let mut total_connected: usize = 0;
+        const MAX_HOVER_NAMES: usize = 16;
+        for cid in &voice_cids {
+            let participants = gateway::get_voice_channel_participants(cid);
+            total_connected += participants.len();
+            for (_uid, name) in participants {
+                if names.len() < MAX_HOVER_NAMES && !name.is_empty() && !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        if total_connected == 0 {
+            return;
+        }
+        let summary = if total_connected <= MAX_HOVER_NAMES {
+            format!("En voz ({}): {}", total_connected, names.join(", "))
+        } else {
+            let extra = total_connected.saturating_sub(names.len());
+            format!("En voz ({}): {} +{} más", total_connected, names.join(", "), extra)
+        };
+        if let Some(ui) = app_weak_hover_g.upgrade() {
+            if ui.get_guild_tooltip_id().as_str() == gid {
+                ui.set_guild_tooltip_members(summary.into());
+            }
+        }
+    });
+
     app.on_select_guild(move |guild_id: SharedString| {
         let gid = guild_id.to_string();
         info!("Servidor selecionado pelo usuário: {}", gid);
@@ -6294,18 +6356,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    // Send Message Callback from UI
+    // Pending clipboard image upload state + Send Message Callback from UI
+    let pending_upload_image: Arc<Mutex<Option<(String, String, Vec<u8>)>>> = Arc::new(Mutex::new(None));
+
+    let app_weak_paste = app_weak.clone();
+    let pending_paste = Arc::clone(&pending_upload_image);
+    app.on_paste_clipboard_image(move || {
+        let app_w = app_weak_paste.clone();
+        let pending = Arc::clone(&pending_paste);
+        tokio::task::spawn_blocking(move || {
+            let Some((filename, mime, bytes)) = crate::utils::clipboard_image::read_clipboard_image() else {
+                return;
+            };
+            let preview_rgba = image::load_from_memory(&bytes)
+                .ok()
+                .map(|img| {
+                    let thumb = img.thumbnail(96, 96).to_rgba8();
+                    let (w, h) = (thumb.width(), thumb.height());
+                    (w, h, thumb.into_raw())
+                });
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some((filename.clone(), mime, bytes));
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = app_w.upgrade() {
+                    if let Some((w, h, raw)) = preview_rgba {
+                        let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&raw, w, h);
+                        ui.set_pending_image_preview(slint::Image::from_rgba8(buf));
+                    } else {
+                        ui.set_pending_image_preview(slint::Image::default());
+                    }
+                    ui.set_pending_image_name(filename.into());
+                    ui.set_has_pending_image(true);
+                }
+            });
+        });
+    });
+
+    let app_weak_clear_img = app_weak.clone();
+    let pending_clear = Arc::clone(&pending_upload_image);
+    app.on_clear_pending_image(move || {
+        if let Ok(mut slot) = pending_clear.lock() {
+            *slot = None;
+        }
+        if let Some(ui) = app_weak_clear_img.upgrade() {
+            ui.set_has_pending_image(false);
+            ui.set_pending_image_name("".into());
+            ui.set_pending_image_preview(slint::Image::default());
+        }
+    });
+
     let http_client_msg = Arc::clone(&http_client);
     let active_channel_msg = Arc::clone(&active_channel_id);
+    let app_weak_send_img = app_weak.clone();
+    let pending_send = Arc::clone(&pending_upload_image);
     app.on_send_message(move |content: SharedString| {
         let content_str = content.to_string();
         let channel_id = active_channel_msg.lock().unwrap().clone();
         invalidate_message_cache(&channel_id);
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
+        let pending_img = pending_send.lock().ok().and_then(|mut slot| slot.take());
+
+        if pending_img.is_some() {
+            if let Some(ui) = app_weak_send_img.upgrade() {
+                ui.set_has_pending_image(false);
+                ui.set_pending_image_name("".into());
+                ui.set_pending_image_preview(slint::Image::default());
+            }
+        }
 
         if let Some(http) = http_opt {
             tokio::spawn(async move {
-                let _ = http.send_message(&channel_id, &content_str).await;
+                if let Some((filename, mime, bytes)) = pending_img {
+                    let _ = http
+                        .send_message_with_image(&channel_id, &content_str, &filename, &mime, &bytes)
+                        .await;
+                } else {
+                    let _ = http.send_message(&channel_id, &content_str).await;
+                }
             });
         }
     });

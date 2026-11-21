@@ -64,6 +64,7 @@ export component SettingsView inherits Rectangle {
     in property <bool> enable_self_preview_notice;
     in property <bool> show_hardware_monitor;
     in property <bool> use_gpu_renderer;
+    in property <bool> use_efficiency_cores_only;
     in property <bool> enable_tray_icon: true;
     in property <bool> net_diag_running;
     in property <int> net_diag_verdict: -1; // -1 not run, 0 direct, 1 symmetric, 2 varying IP, 3 UDP blocked
@@ -102,6 +103,7 @@ export component SettingsView inherits Rectangle {
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
     callback toggle_gpu_renderer();
+    callback toggle_efficiency_cores_only();
     callback toggle_tray_icon();
     callback run_network_diagnostics();
     callback copy_network_diagnostics();
@@ -516,6 +518,12 @@ export component SettingsView inherits Rectangle {
                                     desc: Tr.gpu_render_desc;
                                     checked: root.use_gpu_renderer;
                                     toggled => { root.toggle_gpu_renderer(); }
+                                }
+                                SettingsSwitchRow {
+                                    title: "Usar solo Efficiency Cores (E-Cores)";
+                                    desc: "Fija los hilos de Litecord a los núcleos de bajo consumo en CPUs híbridas (deja libres los P-Cores).";
+                                    checked: root.use_efficiency_cores_only;
+                                    toggled => { root.toggle_efficiency_cores_only(); }
                                 }
                                 SettingsSwitchRow {
                                     title: Tr.tray_icon;

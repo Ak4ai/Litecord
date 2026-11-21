@@ -39,15 +39,11 @@ fn detect_efficiency_cores_from_freqs(cpus: &[(usize, u64)]) -> Vec<usize> {
         .collect()
 }
 
-/// Pins the current process (and all threads spawned afterwards) to efficiency cores
-/// on hybrid Linux CPUs (e.g. Intel Core Ultra P+E+LPE), leaving P-cores free for
-/// games and heavy foreground workloads. Opt out with `LITECORD_ALLOW_P_CORES=1`.
-pub fn pin_process_to_efficiency_cores() {
+/// Applies or clears efficiency-core CPU affinity across all threads of the current
+/// process on hybrid Linux CPUs. Opt out globally with `LITECORD_ALLOW_P_CORES=1`.
+pub fn apply_efficiency_cores_policy(enabled: bool) {
     #[cfg(target_os = "linux")]
     {
-        if std::env::var_os("LITECORD_ALLOW_P_CORES").is_some() {
-            return;
-        }
         let mut freqs: Vec<(usize, u64)> = Vec::new();
         if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu") {
             for entry in entries.flatten() {
@@ -67,23 +63,43 @@ pub fn pin_process_to_efficiency_cores() {
         if e_cores.len() < 2 {
             return;
         }
+        let target_cpus: Vec<usize> = if enabled && std::env::var_os("LITECORD_ALLOW_P_CORES").is_none() {
+            e_cores
+        } else {
+            freqs.into_iter().map(|(id, _)| id).collect()
+        };
+
         unsafe {
             let mut set: libc::cpu_set_t = std::mem::zeroed();
             libc::CPU_ZERO(&mut set);
-            for &cpu in &e_cores {
+            for &cpu in &target_cpus {
                 if cpu < libc::CPU_SETSIZE as usize {
                     libc::CPU_SET(cpu, &mut set);
                 }
             }
-            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0 {
-                log::info!(
-                    "⚡ [CPU] Proceso fijado a {} efficiency cores ({:?}) para minimizar huella en P-cores.",
-                    e_cores.len(),
-                    e_cores
-                );
+            let size = std::mem::size_of::<libc::cpu_set_t>();
+            let mut applied_any = false;
+            if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+                for task in tasks.flatten() {
+                    if let Ok(tid) = task.file_name().to_string_lossy().parse::<libc::pid_t>() {
+                        if libc::sched_setaffinity(tid, size, &set) == 0 {
+                            applied_any = true;
+                        }
+                    }
+                }
             }
+            if !applied_any {
+                let _ = libc::sched_setaffinity(0, size, &set);
+            }
+            log::info!(
+                "⚡ [CPU] Afinidad de hilos {}: {:?}",
+                if enabled { "solo E-cores" } else { "todos los núcleos" },
+                target_cpus
+            );
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = enabled;
 }
 
 #[cfg(test)]

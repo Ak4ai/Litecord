@@ -21,6 +21,7 @@ pub mod client_identity;
 pub mod window_state;
 pub mod styled_text;
 pub mod memory;
+pub mod clipboard_image;
 #[cfg(feature = "automation")]
 pub mod test_hooks;
 

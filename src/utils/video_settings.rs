@@ -70,6 +70,8 @@ pub struct VideoSettings {
     /// Whether the system tray icon (and minimize/close-to-tray behavior) is enabled.
     #[serde(default = "default_true")]
     pub enable_tray_icon: bool,
+    #[serde(default = "default_true")]
+    pub use_efficiency_cores_only: bool,
 }
 
 /// Position in physical pixels (a logical position is ambiguous across monitors with
@@ -127,6 +129,7 @@ impl Default for VideoSettings {
             automatic_gain_control: false,
             window: None,
             enable_tray_icon: true,
+            use_efficiency_cores_only: true,
         }
     }
 }
@@ -374,6 +377,18 @@ pub fn toggle_enable_tray_icon() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.enable_tray_icon = !store.enable_tray_icon;
     let new_val = store.enable_tray_icon;
+    save_video_settings(&store);
+    new_val
+}
+
+pub fn get_use_efficiency_cores_only() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).use_efficiency_cores_only
+}
+
+pub fn toggle_use_efficiency_cores_only() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.use_efficiency_cores_only = !store.use_efficiency_cores_only;
+    let new_val = store.use_efficiency_cores_only;
     save_video_settings(&store);
     new_val
 }
