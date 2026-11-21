@@ -1839,6 +1839,7 @@ pub async fn connect_voice_gateway(
                                                 let mut remaining_silence_frames: usize = 10;
                                                 let mut speech_hangover_frames: usize = 0;
                                                 let mut silence_keepalive_counter: u32 = 0;
+                                                let mut was_muted: bool = false;
 
                                                 // Test builds can switch back to the old timer pacing for A/B runs.
                                                 #[cfg(feature = "automation")]
@@ -1869,6 +1870,10 @@ pub async fn connect_voice_gateway(
                                                     timestamp = timestamp.wrapping_add(960);
 
                                                     let is_muted = *self_mute_rx.lock().unwrap();
+                                                    if was_muted && !is_muted {
+                                                        crate::audio::deepfilter::reset();
+                                                    }
+                                                    was_muted = is_muted;
 
                                                     // Extract full 960 f32 PCM samples (20ms of audio at 48000Hz) from microphone buffer
                                                     let mut pcm_frame = [0.0f32; 960];
@@ -1909,13 +1914,15 @@ pub async fn connect_voice_gateway(
                                                         let enable_aec = crate::utils::video_settings::get_echo_cancellation();
                                                         let enable_agc = crate::utils::video_settings::get_automatic_gain_control();
 
-                                                        // Prefer the WebRTC APM stack (AEC3 / NS / AGC), the same
-                                                        // baseline Discord's SDK documents. Whatever it does not
-                                                        // process falls back to Litecord's custom DSP; a module is
-                                                        // never applied twice.
+                                                        // Run DeepFilterNet3 BEFORE WebRTC AEC3 so its complex STFT filter sees
+                                                        // intact microphone phase; AEC3 + AGC2 run afterwards.
+                                                        let dfn_lsnr = if suppression_mode == "deepfilter" {
+                                                            crate::audio::deepfilter::process_capture_lsnr(&mut pcm_frame)
+                                                        } else {
+                                                            None
+                                                        };
+                                                        let dfn_active = dfn_lsnr.is_some();
                                                         let applied = crate::audio::webrtc_aec::process_capture(&mut pcm_frame);
-                                                        let dfn_active = suppression_mode == "deepfilter"
-                                                            && crate::audio::deepfilter::process_capture(&mut pcm_frame);
                                                         let custom_suppression: &str = if dfn_active || applied.ns {
                                                             "none"
                                                         } else if suppression_mode == "discord"
@@ -1925,12 +1932,17 @@ pub async fn connect_voice_gateway(
                                                         } else {
                                                             &suppression_mode
                                                         };
-                                                        let metrics = voice_proc.process_frame(
+                                                        let mut metrics = voice_proc.process_frame(
                                                             &mut pcm_frame,
                                                             custom_suppression,
                                                             enable_aec && !applied.aec,
                                                             enable_agc && !applied.agc,
                                                         );
+                                                        if let Some(lsnr_db) = dfn_lsnr {
+                                                            // Use DFN3's own local SNR instead of RNNoise's
+                                                            // VAD, which under-scores DFN3-cleaned speech.
+                                                            metrics.vad_prob = ((lsnr_db + 5.0) / 15.0).clamp(0.0, 1.0);
+                                                        }
 
                                                         // Report POST-DSP level to UI meter so user sees exactly what is transmitted
                                                         set_self_mic_level(metrics.ui_level);

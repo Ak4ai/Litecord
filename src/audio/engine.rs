@@ -300,9 +300,13 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
                     frame[i] = q_accum.pop_front().unwrap_or(0.0);
                 }
 
+                let dfn_lsnr = if suppression_mode == "deepfilter" && is_testing {
+                    crate::audio::deepfilter::process_capture_lsnr(&mut frame)
+                } else {
+                    None
+                };
+                let dfn_active = dfn_lsnr.is_some();
                 let applied = crate::audio::webrtc_aec::process_capture(&mut frame);
-                let dfn_active = suppression_mode == "deepfilter"
-                    && crate::audio::deepfilter::process_capture(&mut frame);
                 let custom_suppression: &str = if dfn_active || applied.ns {
                     "none"
                 } else if suppression_mode == "discord" || suppression_mode == "deepfilter" {
@@ -310,12 +314,15 @@ pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
                 } else {
                     &suppression_mode
                 };
-                let metrics = proc.process_frame(
+                let mut metrics = proc.process_frame(
                     &mut frame,
                     custom_suppression,
                     enable_aec && !applied.aec,
                     enable_agc && !applied.agc,
                 );
+                if let Some(lsnr_db) = dfn_lsnr {
+                    metrics.vad_prob = ((lsnr_db + 5.0) / 15.0).clamp(0.0, 1.0);
+                }
                 // Update UI meter with true post-DSP decibel level
                 gateway::set_self_mic_level(metrics.ui_level);
 

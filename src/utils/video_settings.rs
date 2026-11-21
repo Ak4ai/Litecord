@@ -327,7 +327,7 @@ fn sync_webrtc_modules(settings: &VideoSettings) {
     crate::audio::webrtc_aec::configure(
         settings.echo_cancellation,
         settings.noise_suppression == "discord",
-        settings.automatic_gain_control && settings.noise_suppression != "deepfilter",
+        settings.automatic_gain_control,
     );
     crate::audio::deepfilter::set_enabled(settings.noise_suppression == "deepfilter");
 }
