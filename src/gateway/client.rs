@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{connect_async_with_config, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use log::{info, error, warn};
@@ -392,7 +392,12 @@ impl GatewayClient {
                 info!("Conectando à Gateway v9 do Discord...");
             }
 
-            match connect_async(url.as_str()).await {
+            // READY for a big account can exceed tungstenite's default 16 MiB frame
+            // limit (issue #85). Discord caps the whole message, so only the frame
+            // limit is lifted here; the message limit stays at tungstenite's 64 MiB.
+            let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                .max_frame_size(None);
+            match connect_async_with_config(url.as_str(), Some(ws_config), false).await {
                 Ok((ws_stream, _)) => {
                     info!("Conexão WebSocket estabelecida com sucesso!");
                     crate::screen_capture::invalidate_cached_stun_address();
