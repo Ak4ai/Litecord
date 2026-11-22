@@ -1571,6 +1571,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // comes back or voice connects (created before the check so no wake is lost).
             let woken = UI_LOOPS_WAKE.notified();
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
+                // Out of the call (or hidden): no ring may stay lit in the sidebar.
+                if gateway::set_speaking_users(Vec::new()) {
+                    push_speaking_to_sidebar(&app_weak_voice_loop);
+                }
                 woken.await;
                 continue;
             }
@@ -1596,6 +1600,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ssrc_levels.insert(ssrc, if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) });
                         }
                     }
+                }
+            }
+
+            // Speaking ring in the channel sidebar: same levels as the bars, so nothing is
+            // measured twice. The UI is touched only when the set of speakers changes.
+            {
+                let mut speaking: Vec<u64> = parts_snapshot
+                    .iter()
+                    .filter(|&&(ssrc, _)| ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) > 0.03)
+                    .map(|&(_, uid)| uid)
+                    .collect();
+                if self_level >= gateway::get_vad_threshold() {
+                    speaking.push(if my_uid != 0 { my_uid } else { 999999 });
+                }
+                if gateway::set_speaking_users(speaking) {
+                    push_speaking_to_sidebar(&app_weak_voice_loop);
                 }
             }
 
@@ -1913,16 +1933,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guilds_map_badges = Arc::clone(&guilds_map);
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
-        // The speaking ring needs a fast tick, but only while someone is in a voice
-        // channel of this server. Otherwise keep the old 1.5 s cadence so an idle
-        // client does not wake up six times more often for nothing.
-        const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(1500);
-        const VOICE_TICK: std::time::Duration = std::time::Duration::from_millis(250);
-        let mut fast = false;
-        let mut last_fingerprint: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::new();
+        // Who is speaking is pushed by the voice panel loop (see `push_speaking_to_sidebar`),
+        // so this loop keeps its 1.5 s cadence and only tracks members and LIVE badges.
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
+        let mut last_fingerprint: Vec<(String, Vec<(u64, String, bool)>)> = Vec::new();
         let mut last_gid = String::new();
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::time::sleep(if fast { VOICE_TICK } else { IDLE_TICK }).await;
+            interval.tick().await;
             let woken = UI_LOOPS_WAKE.notified();
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                 woken.await;
@@ -1953,7 +1971,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 } else {
                                     crate::screen_capture::peer_is_streaming(uid)
                                 };
-                                (uid, name, gateway::is_voice_user_speaking(uid), streaming)
+                                (uid, name, streaming)
                             })
                             .collect()
                     } else {
@@ -1962,7 +1980,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     current_fingerprint.push((ch.id.clone(), participants));
                 }
 
-                fast = current_fingerprint.iter().any(|(_, p)| !p.is_empty());
                 let guild_changed = gid != last_gid;
                 if guild_changed || current_fingerprint != last_fingerprint {
                     last_gid = gid;
@@ -4917,3 +4934,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Lights or clears the speaking ring on the sidebar rows of call members. Only the
+/// `is_speaking` field of rows whose state changed is written, so Slint redraws just
+/// those avatars instead of the whole channel list.
+fn push_speaking_to_sidebar(app_weak: &slint::Weak<AppWindow>) {
+    let app_w = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        let Some(ui) = app_w.upgrade() else { return };
+        let rows = ui.get_channels();
+        for i in 0..rows.row_count() {
+            let Some(mut row) = rows.row_data(i) else { continue };
+            if !row.is_voice_member {
+                continue;
+            }
+            let Some(uid) = row.id.rsplit(':').next().and_then(|u| u.parse::<u64>().ok()) else { continue };
+            let speaking = gateway::is_voice_user_speaking(uid);
+            if row.is_speaking != speaking {
+                row.is_speaking = speaking;
+                rows.set_row_data(i, row);
+            }
+        }
+    });
+}

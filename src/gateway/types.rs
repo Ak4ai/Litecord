@@ -358,41 +358,32 @@ pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
     participants
 }
 
-/// True while this member's decoded audio is above the same threshold the voice
-/// room uses for its level bars. Reads the speaker queues without blocking: the
-/// audio callback must never wait on the UI refresh.
-pub fn is_voice_user_speaking(user_id: u64) -> bool {
-    let my_uid = get_my_user_id();
-    if user_id == 999999 || (my_uid != 0 && user_id == my_uid) {
-        return get_self_mic_level() >= get_vad_threshold();
-    }
+/// Members of our call who are speaking right now, published by the voice panel loop
+/// (it already measures every member's level for its bars). The sidebar only reads it,
+/// so it needs no timer and no access to the audio queues of its own.
+static SPEAKING_USERS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
-    let store = get_active_voice_participants_store();
-    let ssrcs: Vec<u32> = match store.try_lock() {
-        Ok(map) => map.iter().filter(|(_, &uid)| uid == user_id).map(|(&ssrc, _)| ssrc).collect(),
-        Err(_) => return false,
-    };
-    if ssrcs.is_empty() {
+/// Replaces the set of speaking members. Returns false when nothing changed.
+pub fn set_speaking_users(mut users: Vec<u64>) -> bool {
+    users.sort_unstable();
+    users.dedup();
+    let mut current = SPEAKING_USERS.lock().unwrap_or_else(|e| e.into_inner());
+    if *current == users {
         return false;
     }
+    *current = users;
+    true
+}
 
-    let speaker_queues = get_speaker_pcm_queues();
-    let queues = match speaker_queues.try_lock() {
-        Ok(queues) => queues,
-        Err(_) => return false,
-    };
-    for ssrc in ssrcs {
-        let Some(q) = queues.get(&ssrc) else { continue };
-        let sample_cnt = q.len().min(480);
-        if sample_cnt == 0 { continue; }
-        let sum_sq: f32 = q.iter().take(sample_cnt).map(|&(l, r)| { let s = (l + r) * 0.5; s * s }).sum();
-        let rms = (sum_sq / sample_cnt as f32).sqrt();
-        let level = if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) };
-        if level > 0.03 {
-            return true;
-        }
+/// True while this member is speaking in our call. The local user may be listed under
+/// the placeholder id 999999 before READY gives us our real id.
+pub fn is_voice_user_speaking(user_id: u64) -> bool {
+    let my_uid = get_my_user_id();
+    let uid = if user_id == 999999 && my_uid != 0 { my_uid } else { user_id };
+    match SPEAKING_USERS.try_lock() {
+        Ok(users) => users.binary_search(&uid).is_ok() || (user_id == 999999 && users.binary_search(&999999).is_ok()),
+        Err(_) => false,
     }
-    false
 }
 
 pub fn set_my_user_id(id: u64) {
@@ -700,72 +691,14 @@ pub fn get_user_name(user_id: u64) -> String {
 mod speaking_tests {
     use super::*;
 
-    const LOUD_UID: u64 = 7_700_001;
-    const QUIET_UID: u64 = 7_700_002;
-    const LOUD_SSRC: u32 = 7_700_101;
-    const QUIET_SSRC: u32 = 7_700_102;
-
-    // The probes share process-wide audio queues, so these tests must not overlap.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn seed() {
-        let store = get_active_voice_participants_store();
-        {
-            let mut ids = store.lock().unwrap();
-            ids.insert(LOUD_SSRC, LOUD_UID);
-            ids.insert(QUIET_SSRC, QUIET_UID);
-        }
-        let queues = get_speaker_pcm_queues();
-        let mut queues = queues.lock().unwrap();
-        queues.insert(LOUD_SSRC, (0..960).map(|i| if i % 2 == 0 { (0.3, 0.3) } else { (-0.3, -0.3) }).collect());
-        queues.insert(QUIET_SSRC, (0..960).map(|_| (0.0, 0.0)).collect());
-    }
-
     #[test]
-    fn speaking_ring_follows_decoded_audio_level() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        seed();
-        assert!(is_voice_user_speaking(LOUD_UID));
-        assert!(!is_voice_user_speaking(QUIET_UID));
-        assert!(!is_voice_user_speaking(7_700_999), "a member with no stream is not speaking");
-    }
-
-    #[test]
-    fn speaking_probe_never_waits_for_the_audio_queues() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        seed();
-        let queues = get_speaker_pcm_queues();
-        let _held = queues.lock().unwrap();
-        let start = std::time::Instant::now();
-        assert!(!is_voice_user_speaking(LOUD_UID), "a busy lock reads as not speaking");
-        assert!(start.elapsed() < std::time::Duration::from_millis(50));
-    }
-
-    /// Run with `--nocapture` to see the cost of one probe at the 250 ms tick.
-    #[test]
-    fn speaking_probe_cost_stays_tiny() {
-        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        seed();
-        {
-            let store = get_active_voice_participants_store();
-            let queues = get_speaker_pcm_queues();
-            let mut store = store.lock().unwrap();
-            let mut queues = queues.lock().unwrap();
-            for i in 0..20u32 {
-                store.insert(7_701_000 + i, 7_710_000 + i as u64);
-                queues.insert(7_701_000 + i, (0..960).map(|_| (0.2, 0.2)).collect());
-            }
-        }
-        let rounds = 2000u32;
-        let start = std::time::Instant::now();
-        let mut speaking = 0u32;
-        for _ in 0..rounds {
-            for i in 0..20u64 {
-                if is_voice_user_speaking(7_710_000 + i) { speaking += 1; }
-            }
-        }
-        let per_call = start.elapsed().as_secs_f64() * 1e6 / (rounds as f64 * 20.0);
-        println!("is_voice_user_speaking: {per_call:.2} us per call ({speaking} hits)");
-        assert!(per_call < 200.0, "probe too slow: {per_call} us");
+    fn speaking_set_is_published_and_read_back() {
+        assert!(set_speaking_users(vec![42, 7, 42]));
+        assert!(!set_speaking_users(vec![7, 42]), "same set: nothing to update");
+        assert!(is_voice_user_speaking(7));
+        assert!(is_voice_user_speaking(42));
+        assert!(!is_voice_user_speaking(8));
+        assert!(set_speaking_users(Vec::new()));
+        assert!(!is_voice_user_speaking(7));
     }
 }

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use log::info;
@@ -101,9 +102,48 @@ pub fn get_video_settings_store() -> &'static Mutex<VideoSettings> {
     })
 }
 
-pub fn save_video_settings(settings: &VideoSettings) {
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
+static SAVE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WRITTEN_GENERATION: Mutex<u64> = Mutex::new(0);
+
+/// Saves the settings without doing disk I/O under the store's lock: the JSON is built
+/// while the guard is held, the guard is released, and only then is the file written.
+/// The voice thread and the UI read this store, and a slow write (antivirus scanning the
+/// file, a busy disk) must not stall them. Generations keep concurrent saves in order:
+/// an older snapshot never overwrites a newer one.
+fn persist(store: std::sync::MutexGuard<'_, VideoSettings>) {
+    mirror_audio(&store);
+    let generation = SAVE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    let json = serde_json::to_string_pretty(&*store).ok();
+    drop(store);
+    let Some(json) = json else { return };
+    let mut written = WRITTEN_GENERATION.lock().unwrap_or_else(|e| e.into_inner());
+    if *written < generation {
         let _ = std::fs::write(VIDEO_SETTINGS_FILE, json);
+        *written = generation;
+    }
+}
+
+// Audio processing switches mirrored in atomics. The voice thread reads them for every
+// 20 ms frame; reading the store meant taking its lock and cloning a String each time.
+const AUDIO_NOT_LOADED: u8 = u8::MAX;
+static AUDIO_MODE: AtomicU8 = AtomicU8::new(AUDIO_NOT_LOADED);
+static AUDIO_AEC: AtomicBool = AtomicBool::new(false);
+static AUDIO_AGC: AtomicBool = AtomicBool::new(false);
+
+fn mirror_audio(settings: &VideoSettings) {
+    let mode = match settings.noise_suppression.as_str() {
+        "advanced" | "krisp" => 2,
+        "standard" => 1,
+        _ => 0,
+    };
+    AUDIO_AEC.store(settings.echo_cancellation, Ordering::Relaxed);
+    AUDIO_AGC.store(settings.automatic_gain_control, Ordering::Relaxed);
+    AUDIO_MODE.store(mode, Ordering::Release);
+}
+
+fn ensure_audio_loaded() {
+    if AUDIO_MODE.load(Ordering::Acquire) == AUDIO_NOT_LOADED {
+        mirror_audio(&get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()));
     }
 }
 
@@ -114,7 +154,7 @@ pub fn get_video_encoder() -> String {
 pub fn set_video_encoder(val: String) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.video_encoder = val;
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn get_video_capture_backend() -> String {
@@ -124,7 +164,7 @@ pub fn get_video_capture_backend() -> String {
 pub fn set_video_capture_backend(val: String) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.video_capture_backend = val;
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn get_audio_loopback_backend() -> String {
@@ -134,7 +174,7 @@ pub fn get_audio_loopback_backend() -> String {
 pub fn set_audio_loopback_backend(val: String) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.audio_loopback_backend = val;
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn get_enable_self_preview_notice() -> bool {
@@ -144,14 +184,14 @@ pub fn get_enable_self_preview_notice() -> bool {
 pub fn set_enable_self_preview_notice(val: bool) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.enable_self_preview_notice = val;
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn toggle_enable_self_preview_notice() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.enable_self_preview_notice = !store.enable_self_preview_notice;
     let new_val = store.enable_self_preview_notice;
-    save_video_settings(&store);
+    persist(store);
     new_val
 }
 
@@ -163,14 +203,14 @@ pub fn get_show_hardware_monitor() -> bool {
 pub fn set_show_hardware_monitor(val: bool) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.show_hardware_monitor = val;
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn toggle_show_hardware_monitor() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.show_hardware_monitor = !store.show_hardware_monitor;
     let new_val = store.show_hardware_monitor;
-    save_video_settings(&store);
+    persist(store);
     new_val
 }
 
@@ -182,7 +222,7 @@ pub fn get_channel_sidebar_width() -> f32 {
 pub fn set_channel_sidebar_width(width: f32) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.channel_sidebar_width = width.clamp(CHANNEL_SIDEBAR_MIN_WIDTH, CHANNEL_SIDEBAR_MAX_WIDTH);
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn get_window_geometry() -> Option<WindowGeometry> {
@@ -195,7 +235,7 @@ pub fn set_window_geometry(geometry: WindowGeometry) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     if store.window != Some(geometry) {
         store.window = Some(geometry);
-        save_video_settings(&store);
+        persist(store);
     }
 }
 
@@ -208,7 +248,7 @@ pub fn toggle_use_gpu_renderer() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.use_gpu_renderer = !store.use_gpu_renderer;
     let new_val = store.use_gpu_renderer;
-    save_video_settings(&store);
+    persist(store);
     new_val
 }
 
@@ -220,46 +260,49 @@ pub fn toggle_use_light_theme() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.use_light_theme = !store.use_light_theme;
     let new_val = store.use_light_theme;
-    save_video_settings(&store);
+    persist(store);
     new_val
 }
 
-pub fn get_noise_suppression() -> String {
-    let mode = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).noise_suppression.clone();
-    if mode == "krisp" {
-        "advanced".to_string()
-    } else {
-        mode
+/// "advanced", "standard" or "none" ("krisp" from older settings reads as "advanced").
+pub fn get_noise_suppression() -> &'static str {
+    ensure_audio_loaded();
+    match AUDIO_MODE.load(Ordering::Relaxed) {
+        2 => "advanced",
+        1 => "standard",
+        _ => "none",
     }
 }
 
 pub fn set_noise_suppression(val: String) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.noise_suppression = val;
-    save_video_settings(&store);
+    persist(store);
 }
 
 pub fn get_echo_cancellation() -> bool {
-    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).echo_cancellation
+    ensure_audio_loaded();
+    AUDIO_AEC.load(Ordering::Relaxed)
 }
 
 pub fn toggle_echo_cancellation() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.echo_cancellation = !store.echo_cancellation;
     let new_val = store.echo_cancellation;
-    save_video_settings(&store);
+    persist(store);
     new_val
 }
 
 pub fn get_automatic_gain_control() -> bool {
-    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).automatic_gain_control
+    ensure_audio_loaded();
+    AUDIO_AGC.load(Ordering::Relaxed)
 }
 
 pub fn toggle_automatic_gain_control() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.automatic_gain_control = !store.automatic_gain_control;
     let new_val = store.automatic_gain_control;
-    save_video_settings(&store);
+    persist(store);
     new_val
 }
 
