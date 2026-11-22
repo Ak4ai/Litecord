@@ -462,6 +462,26 @@ impl VoiceProcessor {
         enable_aec: bool,
         enable_agc: bool,
     ) -> ProcessedVoiceMetrics {
+        // Bypass: processing is off (the default) and nothing else was asked for. The
+        // samples go through untouched, which is what "Disabled (pure)" promises for
+        // instruments and what keeps a call cheap. The level is the same plain RMS
+        // reading the gate used before the spectral analyzer: it costs one pass over
+        // the frame instead of ~60 us, and a saved VAD threshold keeps its meaning.
+        // `vad_prob = 1.0` makes the callers gate on that level alone.
+        let is_bypass = (suppression_mode == "none" || suppression_mode.is_empty())
+            && !enable_aec
+            && !enable_agc;
+        if is_bypass {
+            let sum_sq: f32 = frame.iter().map(|s| s * s).sum();
+            let level = ((sum_sq / FRAME_SIZE_SAMPLES as f32).sqrt() * 6.0).min(1.0);
+            return ProcessedVoiceMetrics {
+                vad_prob: 1.0,
+                volume_db: VolumeAnalyzer::ui_level_to_db(level),
+                ui_level: level,
+                is_voice: level >= 0.05,
+            };
+        }
+
         // 1. High-Pass Filter (80Hz Butterworth) to eliminate DC offsets, plosive pops, and rumble
         self.hpf.process_frame(frame);
 
@@ -940,6 +960,47 @@ mod tests {
 
         // Assert that processing takes under 100% of the 20ms real-time audio deadline (20,000 µs)
         assert!(elapsed_all_us < 20000.0, "Voice processing must meet 20ms frame budget");
+    }
+
+    /// A speech-like signal: two tones plus a little noise, so the denoiser has work.
+    fn speechlike_frame(seed: &mut u32) -> [f32; FRAME_SIZE_SAMPLES] {
+        let mut frame = [0.0f32; FRAME_SIZE_SAMPLES];
+        for (i, s) in frame.iter_mut().enumerate() {
+            *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let noise = ((*seed >> 16) as f32 / 65535.0 - 0.5) * 0.02;
+            let t = i as f32 / 48_000.0;
+            *s = 0.25 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                + 0.12 * (2.0 * std::f32::consts::PI * 1_100.0 * t).sin()
+                + noise;
+        }
+        frame
+    }
+
+    #[test]
+    fn bypass_leaves_samples_untouched_and_stays_cheap() {
+        let mut vp = VoiceProcessor::new();
+        let mut seed = 7u32;
+        let original = speechlike_frame(&mut seed);
+        let mut frame = original;
+        let metrics = vp.process_frame(&mut frame, "none", false, false);
+        assert_eq!(frame, original, "pure mode must not touch the samples");
+        assert!(metrics.ui_level > 0.05, "a loud frame must read as voice");
+        // The gate compares dB against the slider mapped to dB: it must agree with the
+        // legacy `level >= threshold` rule for any saved threshold.
+        for threshold in [0.05f32, 0.2, 0.5] {
+            let gate_open = metrics.volume_db >= VolumeAnalyzer::ui_level_to_db(threshold);
+            assert_eq!(gate_open, metrics.ui_level >= threshold, "threshold {threshold}");
+        }
+
+        let iters = 500;
+        let start = Instant::now();
+        for _ in 0..iters {
+            let mut f = original;
+            vp.process_frame(&mut f, "none", false, false);
+        }
+        let per_frame_us = start.elapsed().as_micros() as f64 / iters as f64;
+        println!("bypass: {per_frame_us:.2} us per 20 ms frame");
+        assert!(per_frame_us < 40.0, "bypass too expensive: {per_frame_us} us");
     }
 
     #[test]
