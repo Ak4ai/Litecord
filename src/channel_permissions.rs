@@ -14,6 +14,9 @@ fn bits(value: &Value) -> Result<u64, String> {
         .ok_or_else(|| "Invalid permission bitfield".to_string())
 }
 
+/// Guild member flag set by Discord once the member went through onboarding.
+const COMPLETED_ONBOARDING: u64 = 1 << 1;
+
 #[derive(Clone)]
 pub struct ChannelPermissions {
     guild_id: String,
@@ -21,6 +24,12 @@ pub struct ChannelPermissions {
     roles: HashSet<String>,
     base: u64,
     bypass: bool,
+    /// Guild features from the same lookup, so onboarding needs no extra request.
+    features: Vec<String>,
+    /// Membership screening not accepted yet: Discord blocks onboarding until then.
+    pending: bool,
+    /// The member already finished onboarding (member flag COMPLETED_ONBOARDING).
+    onboarding_done: bool,
 }
 
 impl ChannelPermissions {
@@ -46,13 +55,32 @@ impl ChannelPermissions {
         if !found.contains(guild_id) || !roles.is_subset(&found) {
             return Err("Incomplete guild roles".into());
         }
+        let features = guild["features"]
+            .as_array()
+            .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default();
         Ok(Self {
             guild_id: guild_id.into(),
             user_id: user_id.into(),
             roles,
             base,
             bypass: owner == user_id || base & ADMINISTRATOR != 0,
+            features,
+            pending: member["pending"].as_bool().unwrap_or(false),
+            onboarding_done: member["flags"].as_u64().unwrap_or(0) & COMPLETED_ONBOARDING != 0,
         })
+    }
+
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    pub fn finished_onboarding(&self) -> bool {
+        self.onboarding_done
     }
 
     pub fn can_view(&self, channel: &Value) -> Result<bool, String> {
@@ -139,6 +167,18 @@ mod tests {
 
     fn server(id: &str) -> ChannelPermissions {
         ChannelPermissions::new(&json!({"id":id, "owner_id":"o", "roles":[{"id":id, "permissions":"0"}]}), &json!({"roles":[]}), "me").unwrap()
+    }
+
+    #[test]
+    fn onboarding_flag_comes_from_the_member() {
+        let guild = json!({"id":"g", "owner_id":"o", "roles":[{"id":"g", "permissions":"0"}], "features":["GUILD_ONBOARDING"]});
+        let done = ChannelPermissions::new(&guild, &json!({"roles":[], "flags": 2 | 8}), "me").unwrap();
+        let fresh = ChannelPermissions::new(&guild, &json!({"roles":[], "flags": 8}), "me").unwrap();
+        let no_flags = ChannelPermissions::new(&guild, &json!({"roles":[]}), "me").unwrap();
+        assert!(done.finished_onboarding());
+        assert!(!fresh.finished_onboarding(), "only started, not completed");
+        assert!(!no_flags.finished_onboarding());
+        assert!(done.has_feature("GUILD_ONBOARDING"));
     }
 
     #[test]

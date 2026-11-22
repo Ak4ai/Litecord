@@ -137,6 +137,9 @@ export component SettingsView inherits Rectangle {
         TouchArea { clicked => {} }
 
         VerticalLayout {
+            // Keep the children inside the 1px border, so it stays visible all around
+            // instead of being painted over by the navigation panel.
+            padding: 1px;
             // Header: title, version, close.
             Rectangle {
                 height: 56px;
@@ -193,6 +196,8 @@ export component SettingsView inherits Rectangle {
                 Rectangle {
                     width: 220px;
                     background: AppTheme.surface-sidebar;
+                    // Follows the window's rounded corner (12px minus the 1px border).
+                    border-bottom-left-radius: 11px;
                     VerticalLayout {
                         padding: 12px;
                         padding-top: 20px;
