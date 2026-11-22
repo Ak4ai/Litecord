@@ -252,10 +252,15 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     result
 }
 
-/// Kept for backward-compatibility with capture thread handle
-#[allow(dead_code)]
-fn report_mic_level(_level_tx: &mpsc::Sender<f32>, level: f32) {
-    gateway::set_self_mic_level(level);
+/// Forwards the current mic level to the settings meter. The level itself is written by
+/// the processing path (`push_to_mic_queues` outside a call, voice.rs in a call); this
+/// only hands the latest value to the meter task, and only while the meter is on screen,
+/// so a call with the settings closed sends nothing.
+fn report_mic_level(level_tx: &mpsc::Sender<f32>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if crate::ui::helpers::APP_IS_VISIBLE.load(Relaxed) && crate::ui::helpers::MIC_METER_VISIBLE.load(Relaxed) {
+        let _ = level_tx.try_send(gateway::get_self_mic_level());
+    }
 }
 
 pub fn push_to_mic_queues(pcm_q: &mut VecDeque<f32>, pcm_samples: &[f32]) {
@@ -427,7 +432,7 @@ pub(crate) fn select_preferred_48khz_config(
 
 fn open_mic_stream(
     device_name: String,
-    _level_tx: mpsc::Sender<f32>,
+    level_tx: mpsc::Sender<f32>,
 ) -> Option<cpal::Stream> {
     let host = cpal::default_host();
 
@@ -469,6 +474,7 @@ fn open_mic_stream(
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let q_arc = Arc::clone(&pcm_queue);
+            let level_tx = level_tx.clone();
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
             target_dev.build_input_stream(
                 &stream_config,
@@ -494,6 +500,7 @@ fn open_mic_stream(
                             push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
+                    report_mic_level(&level_tx);
                 },
                 move |err| {
                     log::error!("Erro no Stream de Microfone: {:?}", err);
@@ -503,6 +510,7 @@ fn open_mic_stream(
         }
         cpal::SampleFormat::I16 => {
             let q_arc = Arc::clone(&pcm_queue);
+            let level_tx = level_tx.clone();
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
             target_dev.build_input_stream(
                 &stream_config,
@@ -528,6 +536,7 @@ fn open_mic_stream(
                             push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
+                    report_mic_level(&level_tx);
                 },
                 move |err| {
                     log::error!("Erro no Stream de Microfone I16: {:?}", err);
@@ -537,6 +546,7 @@ fn open_mic_stream(
         }
         cpal::SampleFormat::I32 => {
             let q_arc = Arc::clone(&pcm_queue);
+            let level_tx = level_tx.clone();
             let mut resampler = crate::audio::dsp::PhaseResampler::new();
             target_dev.build_input_stream(
                 &stream_config,
@@ -562,6 +572,7 @@ fn open_mic_stream(
                             push_to_mic_queues(&mut q, &resampled_buf);
                         }
                     }
+                    report_mic_level(&level_tx);
                 },
                 move |err| {
                     log::error!("Erro no Stream de Microfone I32: {:?}", err);
@@ -842,3 +853,24 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
     }
 }
 
+#[cfg(test)]
+mod mic_meter_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn settings_meter_gets_the_level_only_while_it_is_on_screen() {
+        let (tx, mut rx) = mpsc::channel::<f32>(4);
+        gateway::set_self_mic_level(0.4);
+
+        crate::ui::helpers::MIC_METER_VISIBLE.store(false, Relaxed);
+        report_mic_level(&tx);
+        assert!(rx.try_recv().is_err(), "meter hidden: nothing is sent");
+
+        crate::ui::helpers::MIC_METER_VISIBLE.store(true, Relaxed);
+        report_mic_level(&tx);
+        crate::ui::helpers::MIC_METER_VISIBLE.store(false, Relaxed);
+        let got = rx.try_recv().expect("meter visible: the level reaches it");
+        assert!((got - 0.4).abs() < 1e-6, "got {got}");
+    }
+}

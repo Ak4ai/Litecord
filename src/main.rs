@@ -501,7 +501,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_send = std::time::Instant::now();
         let mut last_level = -1.0f32;
         while let Some(level) = level_rx.recv().await {
-            gateway::set_self_mic_level(level);
+            // The level is already published by the processing path; this task only
+            // carries it to the settings meter.
             // Only the settings meter shows this value (the voice panel reads the level
             // directly), so the UI is not woken for it otherwise.
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !MIC_METER_VISIBLE.load(Ordering::Relaxed) {
