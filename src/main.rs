@@ -10,6 +10,7 @@ pub mod http;
 pub mod channel_permissions;
 pub mod encoder;
 pub mod screen_capture;
+pub mod native_video;
 #[cfg(feature = "automation")]
 mod automation;
 
@@ -1075,6 +1076,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if active {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
+                gateway::delete_stream();
                 ui.set_is_screen_sharing(false);
                 screen_capture::set_self_streaming(false);
                 ui.set_web_share_active(false);
@@ -1184,6 +1186,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
                 ui.set_is_screen_sharing(true);
                 screen_capture::set_self_streaming(true);
+                // Native Go Live rides on the frames encoded above: nothing extra
+                // runs unless the user switched it on for this share.
+                let go_live = ui.get_stream_go_live() && source_tab != "cameras";
+                video_settings::set_go_live(ui.get_stream_go_live());
+                if go_live && cid != 0 {
+                    let gid = gateway::get_my_voice_guild_id();
+                    let gid_opt = if !gid.is_empty() && gid != "@me" { Some(gid) } else { None };
+                    info!("🎬 [GO LIVE] Pedindo transmissão nativa no canal {} (guild={:?})", cid, gid_opt);
+                    gateway::create_stream(gid_opt, cid);
+                }
                 if video_settings::get_enable_self_preview_notice() {
                     ui.set_show_self_preview_notice(true);
                     let app_weak_notice = app_weak_ss.clone();
@@ -1380,6 +1392,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_available_cameras(std::rc::Rc::new(slint::VecModel::from(ui_cameras)).into());
 
             ui.set_stream_selected_source_index(0);
+            ui.set_stream_go_live(video_settings::get_go_live());
             if ui.get_stream_source_tab() == "windows" {
                 ui.set_stream_selected_window_id(first_win_id.into());
                 ui.set_stream_include_audio(true);
@@ -2582,6 +2595,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Close the microphone: it was opened on join and kept capturing after leaving.
         *active_mic_leave.lock().unwrap() = None;
         sm_leave.stop();
+        gateway::delete_stream();
         sm_leave.set_context(0, 0, "");
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();

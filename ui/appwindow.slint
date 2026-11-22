@@ -481,6 +481,7 @@ export component AppWindow inherits Window {
     in-out property <int> stream_selected_source_index: 0;
     in-out property <string> stream_selected_window_id: "";
     in-out property <bool> stream_include_audio: true;
+    in-out property <bool> stream_go_live: false;
     in-out property <[ScreenSourceItem]> available_screens: [];
     in-out property <[WindowSourceItem]> available_windows: [];
     in-out property <[CameraSourceItem]> available_cameras: [];
@@ -4788,6 +4789,84 @@ export component AppWindow inherits Window {
                                                 mouse-cursor: pointer;
                                                 clicked => {
                                                     root.stream_include_audio = !root.stream_include_audio;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5b. Native Go Live: same frames, also sent to Discord's stream server
+                            if root.stream_source_tab != "cameras": Rectangle {
+                                background: AppTheme.surface-sidebar;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                height: 52px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: start;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/monitor.svg");
+                                                width: 18px;
+                                                height: 18px;
+                                                colorize: root.stream_go_live ? AppTheme.accent : AppTheme.text-subtle;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+
+                                            Text {
+                                                text: Tr.stream_go_live;
+                                                color: AppTheme.text-strong;
+                                                font-size: TypeScale.small;
+                                                font-weight: 700;
+                                            }
+
+                                            Text {
+                                                text: Tr.stream_go_live_desc;
+                                                color: AppTheme.text-muted;
+                                                font-size: TypeScale.micro;
+                                            }
+                                        }
+                                    }
+
+                                    // Switch Toggle Button
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 40px;
+                                            height: 22px;
+                                            border-radius: 11px;
+                                            background: root.stream_go_live ? AppTheme.success : AppTheme.surface-control;
+
+                                            // Knob
+                                            Rectangle {
+                                                x: root.stream_go_live ? 20px : 2px;
+                                                y: 2px;
+                                                width: 18px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: AppTheme.solid-white;
+                                                animate x { duration: 150ms; easing: ease-out; }
+                                            }
+
+                                            TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.stream_go_live = !root.stream_go_live;
                                                 }
                                             }
                                         }

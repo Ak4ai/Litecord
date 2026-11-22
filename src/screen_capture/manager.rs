@@ -1026,7 +1026,8 @@ impl ScreenCaptureManager {
                     // Nobody watching (natively or in a browser): no encoding, nothing sent.
                     // The first viewer to arrive asks for a keyframe.
                     let viewer_addrs = super::watch::viewer_addrs();
-                    let watched = !viewer_addrs.is_empty() || super::web_share::viewer_count() > 0;
+                    let watched = !viewer_addrs.is_empty() || super::web_share::viewer_count() > 0
+                        || crate::native_video::is_broadcasting();
                     if watched != was_watched {
                         was_watched = watched;
                         TX_WATCHED.store(watched, Ordering::Relaxed);
@@ -1079,6 +1080,7 @@ impl ScreenCaptureManager {
                     if let Some(raw_frame_bytes) = frame_bytes_opt {
                         // Browsers watching over WebRTC get the same encoded frame.
                         super::web_share::offer_frame(&raw_frame_bytes);
+                        crate::native_video::offer_outbound_frame(&raw_frame_bytes);
                         let t_crypt_start = Instant::now();
                         let Some(frame_bytes) = super::watch::session_key().and_then(|k| encrypt_signaling_payload(&k, &raw_frame_bytes)) else {
                             continue;

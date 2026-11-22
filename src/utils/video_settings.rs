@@ -29,6 +29,9 @@ pub struct VideoSettings {
     pub echo_cancellation: bool,         // default false
     #[serde(default)]
     pub automatic_gain_control: bool,    // default false
+    /// Share to official Discord clients through native Go Live too.
+    #[serde(default)]
+    pub go_live: bool,                   // default false
     /// Where the main window was when it last moved or resized. None until it does.
     #[serde(default)]
     pub window: Option<WindowGeometry>,
@@ -82,6 +85,7 @@ impl Default for VideoSettings {
             noise_suppression: "none".to_string(),
             echo_cancellation: false,
             automatic_gain_control: false,
+            go_live: false,
             window: None,
         }
     }
@@ -195,6 +199,18 @@ pub fn toggle_enable_self_preview_notice() -> bool {
     new_val
 }
 
+
+pub fn get_go_live() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).go_live
+}
+
+pub fn set_go_live(val: bool) {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    if store.go_live != val {
+        store.go_live = val;
+        persist(store);
+    }
+}
 
 pub fn get_show_hardware_monitor() -> bool {
     get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).show_hardware_monitor

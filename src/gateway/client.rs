@@ -35,6 +35,56 @@ struct ResumeSession {
     url: String,
 }
 
+/// Writer of the live main-gateway connection, for the Go Live opcodes.
+static GO_LIVE_WS: std::sync::Mutex<Option<mpsc::Sender<Message>>> = std::sync::Mutex::new(None);
+/// Our own stream: (`stream_key`, `rtc_server_id`) once STREAM_CREATE arrives.
+static OUTBOUND_STREAM: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+fn send_go_live(payload: Value) {
+    let tx = GO_LIVE_WS.lock().ok().and_then(|g| g.clone());
+    if let Some(tx) = tx {
+        info!("🎬 [GO LIVE] op={}", payload["op"]);
+        let _ = tx.try_send(Message::Text(payload.to_string().into()));
+    }
+}
+
+/// Opcode 18 payload; a DM call has no guild.
+fn stream_create_payload(guild_id: Option<&str>, channel_id: u64) -> Value {
+    match guild_id {
+        Some(gid) => serde_json::json!({ "op": 18, "d": {
+            "type": "guild", "guild_id": gid, "channel_id": channel_id.to_string(), "preferred_region": null } }),
+        None => serde_json::json!({ "op": 18, "d": {
+            "type": "call", "channel_id": channel_id.to_string(), "preferred_region": null } }),
+    }
+}
+
+/// Starts a native Go Live broadcast of the current share (opcode 18).
+pub fn create_stream(guild_id: Option<String>, channel_id: u64) {
+    send_go_live(stream_create_payload(guild_id.as_deref(), channel_id));
+}
+
+/// Ends our Go Live broadcast (opcode 19).  No-op when none is active.
+pub fn delete_stream() {
+    let own = OUTBOUND_STREAM.lock().ok().and_then(|mut g| g.take());
+    crate::native_video::stream::stop_stream_sender("");
+    if let Some((stream_key, _)) = own {
+        send_go_live(serde_json::json!({ "op": 19, "d": { "stream_key": stream_key } }));
+    }
+}
+
+/// Opcode 22 on the main gateway (stream paused flag).
+pub fn set_stream_paused(paused: bool) {
+    let key = OUTBOUND_STREAM.lock().ok().and_then(|g| g.as_ref().map(|(k, _)| k.clone()));
+    if let Some(stream_key) = key {
+        send_go_live(serde_json::json!({ "op": 22, "d": { "stream_key": stream_key, "paused": paused } }));
+    }
+}
+
+/// Owner id at the end of `guild:{g}:{c}:{owner}` / `call:{c}:{owner}`.
+fn stream_owner(stream_key: &str) -> u64 {
+    stream_key.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
 const GATEWAY_URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
 
 /// Close codes after which the session cannot be resumed (Discord gateway docs).
@@ -53,6 +103,9 @@ const HANDLED_EVENTS: &[&str] = &[
     "GUILD_MEMBERS_CHUNK",
     "VOICE_STATE_UPDATE",
     "VOICE_SERVER_UPDATE",
+    "STREAM_CREATE",
+    "STREAM_SERVER_UPDATE",
+    "STREAM_DELETE",
     "MESSAGE_CREATE",
     "MESSAGE_UPDATE",
     "MESSAGE_DELETE",
@@ -406,6 +459,7 @@ impl GatewayClient {
                     let (ws_out_tx, mut ws_out_rx) = mpsc::channel::<Message>(100);
 
                     *self.ws_tx.lock().await = Some(ws_out_tx.clone());
+                    *GO_LIVE_WS.lock().unwrap() = Some(ws_out_tx.clone());
 
                     // Worker para envio ordenado de mensagens no WebSocket
                     let writer_task = tokio::spawn(async move {
@@ -907,6 +961,61 @@ impl GatewayClient {
                         warn!("VOICE_SERVER_UPDATE recebido com campos ausentes ou nulos: token_empty={}, endpoint_empty={}", token.is_empty(), endpoint.is_empty());
                     }
                 }
+                "STREAM_CREATE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let my_uid = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                    if my_uid != 0 && stream_owner(&stream_key) == my_uid {
+                        let rtc_server_id = v["d"]["rtc_server_id"].as_str().map(str::to_string)
+                            .or_else(|| v["d"]["rtc_server_id"].as_u64().map(|n| n.to_string()))
+                            .unwrap_or_default();
+                        info!("🎬 [GO LIVE] STREAM_CREATE key={}", stream_key);
+                        *OUTBOUND_STREAM.lock().unwrap() = Some((stream_key, rtc_server_id));
+                        set_stream_paused(false);
+                    }
+                }
+                "STREAM_SERVER_UPDATE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let token = v["d"]["token"].as_str().unwrap_or("").to_string();
+                    let endpoint = v["d"]["endpoint"].as_str().unwrap_or("").to_string();
+                    let own = OUTBOUND_STREAM.lock().unwrap().clone();
+                    // Only our own broadcast: watching others' Go Live is a later phase.
+                    if let Some((own_key, mut rtc_server_id)) = own.filter(|(k, _)| *k == stream_key) {
+                        let parts: Vec<&str> = own_key.split(':').collect();
+                        let (guild_id, channel_id) = if parts.first() == Some(&"guild") {
+                            (parts.get(1).copied().unwrap_or(""), parts.get(2).copied().unwrap_or(""))
+                        } else {
+                            ("", parts.get(1).copied().unwrap_or(""))
+                        };
+                        if rtc_server_id.is_empty() {
+                            rtc_server_id = if guild_id.is_empty() { channel_id.to_string() } else { guild_id.to_string() };
+                        }
+                        let channel_id = channel_id.to_string();
+                        let session_id = self.resume.lock().unwrap().as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
+                        let user_id = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                        if token.is_empty() || endpoint.is_empty() || session_id.is_empty() || user_id == 0 {
+                            warn!("🎬 [GO LIVE] STREAM_SERVER_UPDATE incompleto key={}", own_key);
+                        } else {
+                            tokio::spawn(crate::native_video::stream::connect_stream_sender(
+                                endpoint, token, rtc_server_id, channel_id, session_id, user_id, own_key,
+                            ));
+                        }
+                    }
+                }
+                "STREAM_DELETE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let ours = {
+                        let mut own = OUTBOUND_STREAM.lock().unwrap();
+                        let ours = own.as_ref().map(|(k, _)| k == &stream_key).unwrap_or(false);
+                        if ours {
+                            *own = None;
+                        }
+                        ours
+                    };
+                    if ours {
+                        info!("🎬 [GO LIVE] STREAM_DELETE key={} reason={:?}", stream_key, v["d"]["reason"].as_str());
+                        crate::native_video::stream::stop_stream_sender(&stream_key);
+                    }
+                }
                 "MESSAGE_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();
                     let channel_id = v["d"]["channel_id"].as_str().unwrap_or("").to_string();
@@ -1198,5 +1307,23 @@ mod tests {
         for code in [4004, 4007, 4009, 4010, 4011, 4012, 4013, 4014] {
             assert!(close_ends_session(code), "{code}");
         }
+    }
+}
+
+#[cfg(test)]
+mod go_live_tests {
+    use super::*;
+
+    #[test]
+    fn stream_create_payload_matches_guild_and_call() {
+        let guild = stream_create_payload(Some("1"), 2);
+        assert_eq!(guild["op"], 18);
+        assert_eq!(guild["d"]["type"], "guild");
+        assert_eq!(guild["d"]["channel_id"], "2");
+        let call = stream_create_payload(None, 3);
+        assert_eq!(call["d"]["type"], "call");
+        assert!(call["d"]["guild_id"].is_null());
+        assert_eq!(stream_owner("guild:1:2:42"), 42);
+        assert_eq!(stream_owner("call:2:43"), 43);
     }
 }
