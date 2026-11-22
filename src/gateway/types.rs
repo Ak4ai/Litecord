@@ -687,3 +687,76 @@ pub fn get_user_name(user_id: u64) -> String {
     }
 }
 
+#[cfg(test)]
+mod speaking_tests {
+    use super::*;
+
+    const LOUD_UID: u64 = 7_700_001;
+    const QUIET_UID: u64 = 7_700_002;
+    const LOUD_SSRC: u32 = 7_700_101;
+    const QUIET_SSRC: u32 = 7_700_102;
+
+    // The probes share process-wide audio queues, so these tests must not overlap.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn seed() {
+        let store = get_active_voice_participants_store();
+        {
+            let mut ids = store.lock().unwrap();
+            ids.insert(LOUD_SSRC, LOUD_UID);
+            ids.insert(QUIET_SSRC, QUIET_UID);
+        }
+        let queues = get_speaker_pcm_queues();
+        let mut queues = queues.lock().unwrap();
+        queues.insert(LOUD_SSRC, (0..960).map(|i| if i % 2 == 0 { (0.3, 0.3) } else { (-0.3, -0.3) }).collect());
+        queues.insert(QUIET_SSRC, (0..960).map(|_| (0.0, 0.0)).collect());
+    }
+
+    #[test]
+    fn speaking_ring_follows_decoded_audio_level() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        seed();
+        assert!(is_voice_user_speaking(LOUD_UID));
+        assert!(!is_voice_user_speaking(QUIET_UID));
+        assert!(!is_voice_user_speaking(7_700_999), "a member with no stream is not speaking");
+    }
+
+    #[test]
+    fn speaking_probe_never_waits_for_the_audio_queues() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        seed();
+        let queues = get_speaker_pcm_queues();
+        let _held = queues.lock().unwrap();
+        let start = std::time::Instant::now();
+        assert!(!is_voice_user_speaking(LOUD_UID), "a busy lock reads as not speaking");
+        assert!(start.elapsed() < std::time::Duration::from_millis(50));
+    }
+
+    /// Run with `--nocapture` to see the cost of one probe at the 250 ms tick.
+    #[test]
+    fn speaking_probe_cost_stays_tiny() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        seed();
+        {
+            let store = get_active_voice_participants_store();
+            let queues = get_speaker_pcm_queues();
+            let mut store = store.lock().unwrap();
+            let mut queues = queues.lock().unwrap();
+            for i in 0..20u32 {
+                store.insert(7_701_000 + i, 7_710_000 + i as u64);
+                queues.insert(7_701_000 + i, (0..960).map(|_| (0.2, 0.2)).collect());
+            }
+        }
+        let rounds = 2000u32;
+        let start = std::time::Instant::now();
+        let mut speaking = 0u32;
+        for _ in 0..rounds {
+            for i in 0..20u64 {
+                if is_voice_user_speaking(7_710_000 + i) { speaking += 1; }
+            }
+        }
+        let per_call = start.elapsed().as_secs_f64() * 1e6 / (rounds as f64 * 20.0);
+        println!("is_voice_user_speaking: {per_call:.2} us per call ({speaking} hits)");
+        assert!(per_call < 200.0, "probe too slow: {per_call} us");
+    }
+}

@@ -1890,14 +1890,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guilds_map_badges = Arc::clone(&guilds_map);
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
-        // Fast enough for the speaking ring to track the voice; the fingerprint
-        // below still avoids touching the UI when nothing changed.
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+        // The speaking ring needs a fast tick, but only while someone is in a voice
+        // channel of this server. Otherwise keep the old 1.5 s cadence so an idle
+        // client does not wake up six times more often for nothing.
+        const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(1500);
+        const VOICE_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+        let mut fast = false;
         let mut last_fingerprint: Vec<(String, Vec<(u64, String, bool, bool)>)> = Vec::new();
         let mut last_gid = String::new();
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            interval.tick().await;
+            tokio::time::sleep(if fast { VOICE_TICK } else { IDLE_TICK }).await;
             let woken = UI_LOOPS_WAKE.notified();
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) {
                 woken.await;
@@ -1937,6 +1939,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     current_fingerprint.push((ch.id.clone(), participants));
                 }
 
+                fast = current_fingerprint.iter().any(|(_, p)| !p.is_empty());
                 let guild_changed = gid != last_gid;
                 if guild_changed || current_fingerprint != last_fingerprint {
                     last_gid = gid;
