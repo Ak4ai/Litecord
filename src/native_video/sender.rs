@@ -21,6 +21,42 @@ static FRAME_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 static IS_BROADCASTING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_STREAM_KEY: Mutex<Option<String>> = Mutex::new(None);
 
+/// Encoder ceiling while broadcasting (LITECORD_GL_BITRATE, default 6 Mbps):
+/// the stream server and the viewers' links take bursts worse than P2P.
+static GO_LIVE_BITRATE: AtomicU32 = AtomicU32::new(6_000_000);
+
+/// Caps the encoder bitrate while a Go Live is on; unchanged otherwise.
+pub fn cap_bitrate(bps: u32) -> u32 {
+    if is_broadcasting() {
+        bps.min(GO_LIVE_BITRATE.load(Ordering::Relaxed))
+    } else {
+        bps
+    }
+}
+
+/// Sends spread out at `rate_bps` so a keyframe is not one burst. Returns how
+/// long to wait before the next packet, if at all.
+struct Pacer {
+    next: Instant,
+    rate_bps: u64,
+}
+
+impl Pacer {
+    fn new(rate_bps: u64) -> Self {
+        Self { next: Instant::now(), rate_bps: rate_bps.max(1_000_000) }
+    }
+
+    fn after_send(&mut self, bytes: usize, now: Instant) -> Option<Instant> {
+        // No saved-up credit beyond a few ms: idle time must not allow a burst.
+        let floor = now.checked_sub(std::time::Duration::from_millis(3)).unwrap_or(now);
+        if self.next < floor {
+            self.next = floor;
+        }
+        self.next += std::time::Duration::from_nanos(bytes as u64 * 8 * 1_000_000_000 / self.rate_bps);
+        (self.next > now + std::time::Duration::from_millis(1)).then_some(self.next)
+    }
+}
+
 /// Returns true if an outbound Discord stream is actively broadcasting.
 pub fn is_broadcasting() -> bool {
     IS_BROADCASTING.load(Ordering::Relaxed)
@@ -125,10 +161,16 @@ pub fn start_sender(
         // LITECORD_GL_NO_DAVE=1 (send frames without E2EE).
         let env_num = |name: &str, default: usize| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
         let mtu = env_num("LITECORD_GL_MTU", 900);
+        let bitrate = env_num("LITECORD_GL_BITRATE", 6_000_000).clamp(1_500_000, 12_000_000) as u32;
+        GO_LIVE_BITRATE.store(bitrate, Ordering::Relaxed);
+        // Pace at 2.5x the video rate: frames still leave well within their
+        // interval, but a keyframe is spread over ~100 ms instead of one burst.
+        let mut pacer = Pacer::new(bitrate as u64 * 5 / 2);
+        let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
         let pt = env_num("LITECORD_GL_PT", 102) as u8;
         let no_dave = std::env::var("LITECORD_GL_NO_DAVE").map(|v| v == "1").unwrap_or(false);
         let dave = if no_dave { None } else { dave };
-        info!("🧪 [GO LIVE TX] mtu={} pt={} dave={}", mtu, pt, dave.is_some());
+        info!("🧪 [GO LIVE TX] mtu={} pt={} dave={} bitrate={}", mtu, pt, dave.is_some(), bitrate);
         let mut packetizer = H264Packetizer::new(video_ssrc, pt).with_mtu(mtu);
         let mut frame_count = 0u64;
 
@@ -170,6 +212,9 @@ pub fn start_sender(
                     if let Err(e) = socket_send.send_to(&encrypted, target_addr).await {
                         warn!("⚠️ [GO LIVE TX] Falha ao enviar pacote RTP: {:?}", e);
                         break;
+                    }
+                    if let Some(at) = pacer.after_send(encrypted.len(), Instant::now()) {
+                        tokio::time::sleep_until(at.into()).await;
                     }
                 }
             }
@@ -401,6 +446,22 @@ fn parse_nack_fci(fci: &[u8]) -> Vec<u16> {
 #[cfg(test)]
 mod rtx_tests {
     use super::*;
+
+    #[test]
+    fn pacer_spreads_a_burst_and_keeps_no_idle_credit() {
+        let mut p = Pacer::new(8_000_000); // 1 byte per microsecond
+        let t0 = Instant::now();
+        let mut wait = None;
+        for _ in 0..10 {
+            wait = p.after_send(1000, t0);
+        }
+        // 10 kB at 8 Mbps = 10 ms after t0.
+        let w = wait.unwrap().duration_since(t0).as_millis();
+        assert!((9..=11).contains(&w), "{w}");
+        // After a long idle gap the next packet goes out at once.
+        let later = t0 + std::time::Duration::from_secs(5);
+        assert!(p.after_send(1000, later).is_none());
+    }
 
     #[test]
     fn nack_fci_expands_the_bitmask() {

@@ -1016,7 +1016,7 @@ impl ScreenCaptureManager {
                     if last_rate_update.elapsed() >= Duration::from_secs(1) {
                         last_rate_update = Instant::now();
                         let before = rate.current();
-                        let bps = rate.update(super::watch::worst_loss(), last_rate_update);
+                        let bps = crate::native_video::sender::cap_bitrate(rate.update(super::watch::worst_loss(), last_rate_update));
                         if bps != before {
                             info!("📶 [ABR] Taxa da transmissão: {:.1} -> {:.1} Mbps (pior perda entre espectadores: {:?}‰)", before as f64 / 1e6, bps as f64 / 1e6, super::watch::worst_loss());
                         }
