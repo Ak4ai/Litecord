@@ -57,7 +57,9 @@ pub fn start_sender(
     key: Vec<u8>,
     mode: TransportMode,
     video_ssrc: u32,
+    audio_ssrc: u32,
     stream_key: String,
+    dave: Option<Arc<Mutex<Option<davey::DaveSession>>>>,
 ) {
     stop_sender("");
 
@@ -85,6 +87,7 @@ pub fn start_sender(
     let total_octets_rtcp = Arc::clone(&total_octets);
     let nonce_counter_rtcp = Arc::clone(&nonce_counter);
     let key_rtcp = key.clone();
+    let key_rr = key.clone();
 
     // 1. Outbound Video RTP Worker Task
     tokio::spawn(async move {
@@ -93,13 +96,58 @@ pub fn start_sender(
             target_addr, video_ssrc, mode
         );
         crate::gateway::set_stream_paused(false);
-        let mut packetizer = H264Packetizer::new(video_ssrc, 103);
+        // Five Opus silence frames on the stream's audio SSRC, as official
+        // clients send when a stream has no sound, so the server sees the
+        // connection's audio track as started.
+        {
+            let mut seq: u16 = 1;
+            for i in 0..5u32 {
+                let mut header = [0u8; 12];
+                header[0] = 0x80;
+                header[1] = 111;
+                header[2..4].copy_from_slice(&seq.to_be_bytes());
+                header[4..8].copy_from_slice(&(i * 960).to_be_bytes());
+                header[8..12].copy_from_slice(&audio_ssrc.to_be_bytes());
+                seq = seq.wrapping_add(1);
+                let cnt = nonce_counter.fetch_add(1, Ordering::Relaxed);
+                if let Some(pkt) = protect_rtp(&key, mode, &header, &[0xF8, 0xFF, 0xFE], cnt) {
+                    let _ = socket_send.send_to(&pkt, target_addr).await;
+                }
+            }
+        }
+        // Debug knobs, read once per stream: LITECORD_GL_MTU, LITECORD_GL_PT,
+        // LITECORD_GL_NO_DAVE=1 (send frames without E2EE).
+        let env_num = |name: &str, default: usize| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+        let mtu = env_num("LITECORD_GL_MTU", 900);
+        let pt = env_num("LITECORD_GL_PT", 102) as u8;
+        let no_dave = std::env::var("LITECORD_GL_NO_DAVE").map(|v| v == "1").unwrap_or(false);
+        let dave = if no_dave { None } else { dave };
+        info!("🧪 [GO LIVE TX] mtu={} pt={} dave={}", mtu, pt, dave.is_some());
+        let mut packetizer = H264Packetizer::new(video_ssrc, pt).with_mtu(mtu);
         let mut frame_count = 0u64;
 
         while let Some(frame) = rx.recv().await {
             if !IS_BROADCASTING.load(Ordering::Relaxed) {
                 break;
             }
+            // With DAVE the whole frame is end-to-end encrypted before RTP;
+            // until the group is ready nothing may be sent in the clear.
+            let frame = match dave.as_ref() {
+                None => frame,
+                Some(dave) => {
+                    let mut guard = dave.lock().unwrap_or_else(|e| e.into_inner());
+                    match guard.as_mut().filter(|s| s.is_ready()) {
+                        Some(session) => match session.encrypt(davey::MediaType::VIDEO, davey::Codec::H264, &frame) {
+                            Ok(encrypted) => encrypted.into_owned(),
+                            Err(e) => {
+                                warn!("⚠️ [GO LIVE TX] DAVE encrypt falhou: {:?}", e);
+                                continue;
+                            }
+                        },
+                        None => continue,
+                    }
+                }
+            };
             let pts_ms = stream_start.elapsed().as_millis() as u64;
             let packets = packetizer.packetize(&frame, pts_ms);
 
@@ -107,6 +155,20 @@ pub fn start_sender(
                 let cnt = nonce_counter.fetch_add(1, Ordering::Relaxed);
                 total_packets_rtp.fetch_add(1, Ordering::Relaxed);
                 total_octets_rtp.fetch_add(payload.len() as u32, Ordering::Relaxed);
+                // Like the official client: X bit + one-byte header extension
+                // (RFC 8285) carrying playout-delay (id 5) = 0.  In rtpsize mode
+                // the 4-byte extension header stays clear, its body is encrypted.
+                let mut clear = [0u8; 16];
+                clear[..12].copy_from_slice(&header);
+                clear[0] |= 0x10;
+                clear[12..16].copy_from_slice(&[0xBE, 0xDE, 0x00, 0x01]);
+                let mut body = Vec::with_capacity(4 + payload.len());
+                body.extend_from_slice(&[0x52, 0x00, 0x00, 0x00]);
+                body.extend_from_slice(&payload);
+                // The server accepts our plain 12-byte audio packets (its reports
+                // count them) but never counted a video packet carrying the
+                // extension, so video goes out in the same plain layout.
+                let _ = (&clear, &body);
                 if let Some(encrypted) = protect_rtp(&key, mode, &header, &payload, cnt) {
                     if let Err(e) = socket_send.send_to(&encrypted, target_addr).await {
                         warn!("⚠️ [GO LIVE TX] Falha ao enviar pacote RTP: {:?}", e);
@@ -116,6 +178,10 @@ pub fn start_sender(
             }
 
             frame_count += 1;
+            if frame_count == 1 {
+                let nal_types: Vec<u8> = frame.windows(4).filter(|w| w[..3] == [0, 0, 1]).map(|w| w[3] & 0x1F).take(8).collect();
+                info!("🎬 [GO LIVE TX] primeiro frame enviado: {} bytes, NALs={:?}, dave={}", frame.len(), nal_types, dave.is_some());
+            }
             if frame_count % 300 == 0 {
                 info!(
                     "🎬 [GO LIVE TX] {} frames H.264 transmitidos com sucesso para Discord!",
@@ -167,6 +233,9 @@ pub fn start_sender(
             match socket_recv.recv_from(&mut buf).await {
                 Ok((len, _from)) => {
                     if is_rtcp(&buf[..len]) {
+                        let pt = buf.get(1).copied().unwrap_or(0);
+                        let detail = if pt == 201 { describe_rr(&key_rr, &buf[..len]) } else { String::new() };
+                        info!("📨 [GO LIVE TX] RTCP do Discord: pt={} {} bytes {}", pt, len, detail);
                         // Discord sends RTCP Feedback (PLI=1 / FIR=4) when viewers connect
                         crate::screen_capture::types::request_intra_keyframe();
                     }
@@ -181,4 +250,34 @@ pub fn start_sender(
     });
 
     info!("✅ [GO LIVE TX] Transmissão nativa ativa key={}", stream_key_clone);
+}
+
+/// Decrypts a receiver report (aead_aes256_gcm_rtpsize) and shows what the
+/// server says it got from us: source SSRC, lost packets and highest sequence.
+fn describe_rr(key: &[u8], packet: &[u8]) -> String {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    if packet.len() < 8 + 16 + 4 {
+        return String::new();
+    }
+    let (aad, rest) = packet.split_at(8);
+    let (ct, suffix) = rest.split_at(rest.len() - 4);
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(suffix);
+    let Ok(cipher) = Aes256Gcm::new_from_slice(key) else { return String::new() };
+    match cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: ct, aad }) {
+        Ok(plain) if plain.len() >= 24 => {
+            let blocks = (packet[0] & 0x1F) as usize;
+            let mut out = format!("RR blocos={} plain={}", blocks, plain.len());
+            for b in plain.chunks_exact(24).take(blocks.max(1)) {
+                let ssrc = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+                let lost = u32::from_be_bytes([0, b[5], b[6], b[7]]);
+                let seq = u32::from_be_bytes([b[8], b[9], b[10], b[11]]);
+                out.push_str(&format!(" | ssrc={} perdidos={} maior_seq={}", ssrc, lost, seq));
+            }
+            out
+        }
+        Ok(plain) => format!("RR sem blocos ({} bytes)", plain.len()),
+        Err(_) => "RR não decifrou".to_string(),
+    }
 }

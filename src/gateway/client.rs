@@ -37,8 +37,8 @@ struct ResumeSession {
 
 /// Writer of the live main-gateway connection, for the Go Live opcodes.
 static GO_LIVE_WS: std::sync::Mutex<Option<mpsc::Sender<Message>>> = std::sync::Mutex::new(None);
-/// Our own stream: (`stream_key`, `rtc_server_id`) once STREAM_CREATE arrives.
-static OUTBOUND_STREAM: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+/// Our own stream: (`stream_key`, `rtc_server_id`, `rtc_channel_id`) once STREAM_CREATE arrives.
+static OUTBOUND_STREAM: std::sync::Mutex<Option<(String, String, String)>> = std::sync::Mutex::new(None);
 
 fn send_go_live(payload: Value) {
     let tx = GO_LIVE_WS.lock().ok().and_then(|g| g.clone());
@@ -67,14 +67,14 @@ pub fn create_stream(guild_id: Option<String>, channel_id: u64) {
 pub fn delete_stream() {
     let own = OUTBOUND_STREAM.lock().ok().and_then(|mut g| g.take());
     crate::native_video::stream::stop_stream_sender("");
-    if let Some((stream_key, _)) = own {
+    if let Some((stream_key, _, _)) = own {
         send_go_live(serde_json::json!({ "op": 19, "d": { "stream_key": stream_key } }));
     }
 }
 
 /// Opcode 22 on the main gateway (stream paused flag).
 pub fn set_stream_paused(paused: bool) {
-    let key = OUTBOUND_STREAM.lock().ok().and_then(|g| g.as_ref().map(|(k, _)| k.clone()));
+    let key = OUTBOUND_STREAM.lock().ok().and_then(|g| g.as_ref().map(|(k, _, _)| k.clone()));
     if let Some(stream_key) = key {
         send_go_live(serde_json::json!({ "op": 22, "d": { "stream_key": stream_key, "paused": paused } }));
     }
@@ -968,8 +968,13 @@ impl GatewayClient {
                         let rtc_server_id = v["d"]["rtc_server_id"].as_str().map(str::to_string)
                             .or_else(|| v["d"]["rtc_server_id"].as_u64().map(|n| n.to_string()))
                             .unwrap_or_default();
-                        info!("🎬 [GO LIVE] STREAM_CREATE key={}", stream_key);
-                        *OUTBOUND_STREAM.lock().unwrap() = Some((stream_key, rtc_server_id));
+                        // The stream has its own RTC channel: the server expects it in
+                        // Identify and it is the DAVE group id viewers use.
+                        let rtc_channel_id = v["d"]["rtc_channel_id"].as_str().map(str::to_string)
+                            .or_else(|| v["d"]["rtc_channel_id"].as_u64().map(|n| n.to_string()))
+                            .unwrap_or_default();
+                        info!("🎬 [GO LIVE] STREAM_CREATE key={} rtc_server={} rtc_channel={}", stream_key, rtc_server_id, rtc_channel_id);
+                        *OUTBOUND_STREAM.lock().unwrap() = Some((stream_key, rtc_server_id, rtc_channel_id));
                         set_stream_paused(false);
                     }
                 }
@@ -979,7 +984,7 @@ impl GatewayClient {
                     let endpoint = v["d"]["endpoint"].as_str().unwrap_or("").to_string();
                     let own = OUTBOUND_STREAM.lock().unwrap().clone();
                     // Only our own broadcast: watching others' Go Live is a later phase.
-                    if let Some((own_key, mut rtc_server_id)) = own.filter(|(k, _)| *k == stream_key) {
+                    if let Some((own_key, mut rtc_server_id, rtc_channel_id)) = own.filter(|(k, _, _)| *k == stream_key) {
                         let parts: Vec<&str> = own_key.split(':').collect();
                         let (guild_id, channel_id) = if parts.first() == Some(&"guild") {
                             (parts.get(1).copied().unwrap_or(""), parts.get(2).copied().unwrap_or(""))
@@ -989,7 +994,7 @@ impl GatewayClient {
                         if rtc_server_id.is_empty() {
                             rtc_server_id = if guild_id.is_empty() { channel_id.to_string() } else { guild_id.to_string() };
                         }
-                        let channel_id = channel_id.to_string();
+                        let channel_id = if rtc_channel_id.is_empty() { channel_id.to_string() } else { rtc_channel_id };
                         let session_id = self.resume.lock().unwrap().as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
                         let user_id = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
                         if token.is_empty() || endpoint.is_empty() || session_id.is_empty() || user_id == 0 {
@@ -1005,7 +1010,7 @@ impl GatewayClient {
                     let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
                     let ours = {
                         let mut own = OUTBOUND_STREAM.lock().unwrap();
-                        let ours = own.as_ref().map(|(k, _)| k == &stream_key).unwrap_or(false);
+                        let ours = own.as_ref().map(|(k, _, _)| k == &stream_key).unwrap_or(false);
                         if ours {
                             *own = None;
                         }

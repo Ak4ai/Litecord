@@ -169,6 +169,12 @@ impl H264Packetizer {
         }
     }
 
+    /// Largest RTP payload per packet (FU-A fragments above it).
+    pub fn with_mtu(mut self, mtu: usize) -> Self {
+        self.mtu = mtu.clamp(200, 1400);
+        self
+    }
+
     /// Packetizes an Annex-B frame into a series of `([u8; 12], Vec<u8>)` (header, payload).
     pub fn packetize(&mut self, frame: &[u8], pts_ms: u64) -> Vec<([u8; 12], Vec<u8>)> {
         let nals = split_annex_b(frame);

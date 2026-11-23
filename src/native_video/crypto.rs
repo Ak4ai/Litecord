@@ -124,7 +124,7 @@ pub fn protect_rtcp(key: &[u8], mode: TransportMode, packet: &[u8], counter: u32
 pub fn protect_rtp(
     key: &[u8],
     mode: TransportMode,
-    header: &[u8; 12],
+    header: &[u8],
     payload: &[u8],
     counter: u32,
 ) -> Option<Vec<u8>> {
@@ -139,7 +139,7 @@ pub fn protect_rtp(
             let mut nonce = [0u8; 12];
             nonce[0..4].copy_from_slice(&suffix);
             cipher
-                .encrypt(Nonce::from_slice(&nonce), Payload { msg: payload, aad: header.as_slice() })
+                .encrypt(Nonce::from_slice(&nonce), Payload { msg: payload, aad: header })
                 .ok()?
         }
         TransportMode::XChaCha20Poly1305 => {
@@ -147,12 +147,12 @@ pub fn protect_rtp(
             let mut nonce = [0u8; 24];
             nonce[0..4].copy_from_slice(&suffix);
             cipher
-                .encrypt(XNonce::from_slice(&nonce), Payload { msg: payload, aad: header.as_slice() })
+                .encrypt(XNonce::from_slice(&nonce), Payload { msg: payload, aad: header })
                 .ok()?
         }
     };
 
-    let mut out = Vec::with_capacity(12 + ciphertext.len() + 4);
+    let mut out = Vec::with_capacity(header.len() + ciphertext.len() + 4);
     out.extend_from_slice(header);
     out.extend_from_slice(&ciphertext);
     out.extend_from_slice(&suffix);
