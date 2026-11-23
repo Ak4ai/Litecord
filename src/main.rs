@@ -3058,6 +3058,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(http) = http_opt {
             if let Some(ui) = app_w.upgrade() {
+                // History browsing has its own cap, so "load older" cannot grow
+                // the scene forever; live appends trim back and re-enable it.
+                if ui.get_messages().row_count() >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY {
+                    ui.set_has_more_older_messages(false);
+                    return;
+                }
                 ui.set_is_loading_older_messages(true);
             }
 
@@ -3122,8 +3128,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 regroup_messages(&mut combined);
                                 avatar_cache::get_avatar_cache().hydrate(&mut combined, &app_w_inner);
                                 crate::ui::invite_cards::hydrate(&mut combined, &app_w_inner);
+                                let window_is_full = combined.len() >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY;
                                 let model = std::rc::Rc::new(slint::VecModel::from(combined));
                                 ui.set_messages(model.into());
+                                if window_is_full {
+                                    ui.set_has_more_older_messages(false);
+                                }
                             }
                         });
                     }
@@ -4893,6 +4903,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let messages = ui.get_messages();
                                 if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
                                     model.push(appended);
+                                    // Bounded while the reader is at the bottom; the rows that
+                                    // leave are above the viewport and "load older" brings them back.
+                                    if ui.get_chat_is_at_bottom()
+                                        && crate::ui::message_grouping::trim_chat_window_and_rebase(model, &channel_id)
+                                    {
+                                        ui.set_has_more_older_messages(true);
+                                    }
                                 } else {
                                     current_msgs.push(appended);
                                     ui.set_messages(std::rc::Rc::new(slint::VecModel::from(current_msgs)).into());

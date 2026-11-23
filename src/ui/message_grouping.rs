@@ -79,6 +79,57 @@ pub fn set_message_metadata(message: &mut ChatMessage, author_id: &str, created_
 
 /// Recompute the visual boundaries after a history prepend, live append, edit,
 /// or deletion. This never combines message records or changes their IDs.
+/// Rows kept in the chat model while the reader is at the bottom.
+///
+/// The chat view is not virtualized, so every row stays instantiated. Live
+/// appends used to grow it for the whole visit; keeping a window bounds the
+/// model while the rows that leave are far above the viewport.
+pub const MAX_CHAT_ROWS: usize = 300;
+
+/// Hard cap while the user walks back through the history with "load older".
+/// Live appends trim back to [`MAX_CHAT_ROWS`] and re-enable the button.
+pub const MAX_CHAT_ROWS_WITH_HISTORY: usize = 600;
+
+/// Drops the oldest rows when `model` grew past `max_rows`. Returns the id of
+/// the new oldest message when rows were removed.
+pub fn trim_chat_window(model: &slint::VecModel<ChatMessage>, max_rows: usize) -> Option<Option<String>> {
+    use slint::Model;
+
+    let row_count = model.row_count();
+    if row_count <= max_rows {
+        return None;
+    }
+    for _ in 0..(row_count - max_rows) {
+        model.remove(0);
+    }
+    let oldest_id = (0..model.row_count()).find_map(|index| {
+        let row = model.row_data(index)?;
+        (!row.id.is_empty()).then(|| row.id.to_string())
+    });
+    Some(oldest_id)
+}
+
+/// Trims the window and keeps pagination coherent: the "oldest message" cursor
+/// moves to the new first row (so "load older" refetches what was dropped) and
+/// that row gets its header and day label back. Returns true when rows went.
+pub fn trim_chat_window_and_rebase(model: &slint::VecModel<ChatMessage>, channel_id: &str) -> bool {
+    use slint::Model;
+
+    let Some(oldest_id) = trim_chat_window(model, MAX_CHAT_ROWS) else {
+        return false;
+    };
+    if let Some(oldest_id) = oldest_id {
+        if let Ok(mut map) = crate::ui::data_loader::get_oldest_message_map().lock() {
+            map.insert(channel_id.to_string(), oldest_id);
+        }
+    }
+    if let Some(mut first) = model.row_data(0) {
+        regroup_messages(std::slice::from_mut(&mut first));
+        model.set_row_data(0, first);
+    }
+    true
+}
+
 pub fn regroup_messages(messages: &mut [ChatMessage]) {
     let mut previous: Option<(String, String, DateTime<Local>)> = None;
     let mut previous_day: Option<NaiveDate> = None;
@@ -218,6 +269,28 @@ fn parse_local_time(timestamp: &str) -> Option<DateTime<Local>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn chat_window_drops_the_oldest_rows_and_reports_the_new_cursor() {
+        use slint::Model;
+
+        fn message(id: &str) -> ChatMessage {
+            ChatMessage {
+                id: id.into(),
+                author_id: "1".into(),
+                author: "Ana".into(),
+                created_at: "2026-09-24T12:00:00Z".into(),
+                ..Default::default()
+            }
+        }
+
+        let model = slint::VecModel::from((0..10).map(|i| message(&i.to_string())).collect::<Vec<_>>());
+        assert!(trim_chat_window(&model, 10).is_none(), "at the cap nothing moves");
+        assert_eq!(trim_chat_window(&model, 4), Some(Some("6".to_string())));
+        assert_eq!(model.row_count(), 4);
+        assert_eq!(model.row_data(0).unwrap().id.as_str(), "6");
+    }
+
     use super::*;
 
     #[test]

@@ -30,8 +30,9 @@ pub struct VideoSettings {
     #[serde(default)]
     pub automatic_gain_control: bool,    // default false
     /// Share to official Discord clients through native Go Live too.
+    /// None until the user chooses: on by default outside pt-BR systems.
     #[serde(default)]
-    pub go_live: bool,                   // default false
+    pub go_live: Option<bool>,
     /// Go Live above the free tier (1080p/60) without Nitro, at the user's risk.
     #[serde(default)]
     pub go_live_unlock: bool,            // default false
@@ -88,7 +89,7 @@ impl Default for VideoSettings {
             noise_suppression: "none".to_string(),
             echo_cancellation: false,
             automatic_gain_control: false,
-            go_live: false,
+            go_live: None,
             go_live_unlock: false,
             window: None,
         }
@@ -205,13 +206,19 @@ pub fn toggle_enable_self_preview_notice() -> bool {
 
 
 pub fn get_go_live() -> bool {
-    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).go_live
+    get_video_settings_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .go_live
+        // Users outside Brazil watch through official apps more often than
+        // through Litecord; in Brazil Go Live is blocked by default.
+        .unwrap_or_else(|| !crate::utils::i18n::os_is_brazilian_portuguese())
 }
 
 pub fn set_go_live(val: bool) {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
-    if store.go_live != val {
-        store.go_live = val;
+    if store.go_live != Some(val) {
+        store.go_live = Some(val);
         persist(store);
     }
 }
