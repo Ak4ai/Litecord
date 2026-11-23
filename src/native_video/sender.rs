@@ -68,10 +68,32 @@ pub fn offer_outbound_frame(annex_b: &[u8]) {
     if !is_broadcasting() || annex_b.is_empty() {
         return;
     }
+    // Each P-frame depends on the one before it: after a drop, everything up to
+    // the next keyframe would decode into smears. So a full queue drops until
+    // a keyframe and asks the encoder for one.
+    if WAITING_KEYFRAME.load(Ordering::Relaxed) {
+        if !is_keyframe(annex_b) {
+            FRAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        WAITING_KEYFRAME.store(false, Ordering::Relaxed);
+    }
     let guard = FRAME_TX.lock().unwrap();
     if let Some(tx) = guard.as_ref() {
-        let _ = tx.try_send(annex_b.to_vec());
+        if tx.try_send(annex_b.to_vec()).is_err() {
+            FRAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            WAITING_KEYFRAME.store(true, Ordering::Relaxed);
+            crate::screen_capture::types::request_intra_keyframe();
+        }
     }
+}
+
+static WAITING_KEYFRAME: AtomicBool = AtomicBool::new(false);
+static FRAMES_DROPPED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether an Annex-B access unit carries an IDR slice (NAL type 5).
+fn is_keyframe(annex_b: &[u8]) -> bool {
+    annex_b.windows(4).any(|w| w[0] == 0 && w[1] == 0 && w[2] == 1 && (w[3] & 0x1F) == 5)
 }
 
 /// Stops any active outbound stream sender.
@@ -100,7 +122,9 @@ pub fn start_sender(
 ) {
     stop_sender("");
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(5);
+    WAITING_KEYFRAME.store(false, Ordering::Relaxed);
+    FRAMES_DROPPED.store(0, Ordering::Relaxed);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(30);
     *FRAME_TX.lock().unwrap() = Some(tx);
     *ACTIVE_STREAM_KEY.lock().unwrap() = Some(stream_key.clone());
     IS_BROADCASTING.store(true, Ordering::SeqCst);
@@ -165,7 +189,7 @@ pub fn start_sender(
         GO_LIVE_BITRATE.store(bitrate, Ordering::Relaxed);
         // Pace at 2.5x the video rate: frames still leave well within their
         // interval, but a keyframe is spread over ~100 ms instead of one burst.
-        let mut pacer = Pacer::new(bitrate as u64 * 5 / 2);
+        let mut pacer = Pacer::new((bitrate as u64 * 4).max(20_000_000));
         let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
         let pt = env_num("LITECORD_GL_PT", 102) as u8;
         let no_dave = std::env::var("LITECORD_GL_NO_DAVE").map(|v| v == "1").unwrap_or(false);
@@ -312,8 +336,9 @@ pub fn start_sender(
                         if pt == 201 {
                             rr_count += 1;
                             if rr_count % 10 == 1 {
-                                info!("📨 [GO LIVE TX] {} rtx={}/{}", describe_rr(&key_rr, &buf[..len]),
-                                    RTX_SENT.load(Ordering::Relaxed), RTX_ASKED.load(Ordering::Relaxed));
+                                info!("📨 [GO LIVE TX] {} rtx={}/{} quadros_descartados={}", describe_rr(&key_rr, &buf[..len]),
+                                    RTX_SENT.load(Ordering::Relaxed), RTX_ASKED.load(Ordering::Relaxed),
+                                    FRAMES_DROPPED.load(Ordering::Relaxed));
                             }
                         }
                     }
@@ -371,7 +396,7 @@ struct RtxHistory {
 }
 
 impl RtxHistory {
-    const SIZE: usize = 1024;
+    const SIZE: usize = 2048;
 
     fn new() -> Self {
         Self { slots: vec![None; Self::SIZE], rtx_seq: 0 }
@@ -448,6 +473,12 @@ mod rtx_tests {
     use super::*;
 
     #[test]
+    fn keyframe_detection_looks_for_idr_slices() {
+        assert!(is_keyframe(&[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 9]));
+        assert!(!is_keyframe(&[0, 0, 0, 1, 0x41, 9, 9]));
+    }
+
+    #[test]
     fn pacer_spreads_a_burst_and_keeps_no_idle_credit() {
         let mut p = Pacer::new(8_000_000); // 1 byte per microsecond
         let t0 = Instant::now();
@@ -483,6 +514,6 @@ mod rtx_tests {
         assert_eq!(&rh[8..12], &77u32.to_be_bytes());
         assert_eq!(rp, vec![0x01, 0xF4, 1, 2, 3]);
         // Overwritten slot is not resent as the wrong packet.
-        assert!(h.rtx_packet(500 + 1024, 77).is_none());
+        assert!(h.rtx_packet(500 + 2048, 77).is_none());
     }
 }
