@@ -472,6 +472,7 @@ pub async fn connect_stream_sender(
                                 mode,
                                 video_ssrc,
                                 sender_ssrc,
+                                rtx_ssrc,
                                 stream_key.clone(),
                                 dave_for_sender,
                             );

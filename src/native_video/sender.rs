@@ -58,6 +58,7 @@ pub fn start_sender(
     mode: TransportMode,
     video_ssrc: u32,
     audio_ssrc: u32,
+    rtx_ssrc: u32,
     stream_key: String,
     dave: Option<Arc<Mutex<Option<davey::DaveSession>>>>,
 ) {
@@ -88,6 +89,11 @@ pub fn start_sender(
     let nonce_counter_rtcp = Arc::clone(&nonce_counter);
     let key_rtcp = key.clone();
     let key_rr = key.clone();
+    let key_rtx = key.clone();
+    let socket_rtx = Arc::clone(&socket);
+    let nonce_counter_rtx = Arc::clone(&nonce_counter);
+    let history = Arc::new(Mutex::new(RtxHistory::new()));
+    let history_rtp = Arc::clone(&history);
 
     // 1. Outbound Video RTP Worker Task
     tokio::spawn(async move {
@@ -155,21 +161,12 @@ pub fn start_sender(
                 let cnt = nonce_counter.fetch_add(1, Ordering::Relaxed);
                 total_packets_rtp.fetch_add(1, Ordering::Relaxed);
                 total_octets_rtp.fetch_add(payload.len() as u32, Ordering::Relaxed);
-                // Like the official client: X bit + one-byte header extension
-                // (RFC 8285) carrying playout-delay (id 5) = 0.  In rtpsize mode
-                // the 4-byte extension header stays clear, its body is encrypted.
-                let mut clear = [0u8; 16];
-                clear[..12].copy_from_slice(&header);
-                clear[0] |= 0x10;
-                clear[12..16].copy_from_slice(&[0xBE, 0xDE, 0x00, 0x01]);
-                let mut body = Vec::with_capacity(4 + payload.len());
-                body.extend_from_slice(&[0x52, 0x00, 0x00, 0x00]);
-                body.extend_from_slice(&payload);
-                // The server accepts our plain 12-byte audio packets (its reports
-                // count them) but never counted a video packet carrying the
-                // extension, so video goes out in the same plain layout.
-                let _ = (&clear, &body);
+                // Plain 12-byte header: the server dropped video packets that
+                // carried a header extension.
                 if let Some(encrypted) = protect_rtp(&key, mode, &header, &payload, cnt) {
+                    if let Ok(mut h) = history_rtp.lock() {
+                        h.remember(&header, &payload);
+                    }
                     if let Err(e) = socket_send.send_to(&encrypted, target_addr).await {
                         warn!("⚠️ [GO LIVE TX] Falha ao enviar pacote RTP: {:?}", e);
                         break;
@@ -229,15 +226,51 @@ pub fn start_sender(
     // 2. Inbound RTCP Receiver Task (Handling PLI/FIR requests from Discord)
     tokio::spawn(async move {
         let mut buf = [0u8; 2048];
+        let mut last_keyframe_request = Instant::now();
+        let mut rr_count = 0u64;
         while IS_BROADCASTING.load(Ordering::Relaxed) {
             match socket_recv.recv_from(&mut buf).await {
                 Ok((len, _from)) => {
                     if is_rtcp(&buf[..len]) {
                         let pt = buf.get(1).copied().unwrap_or(0);
-                        let detail = if pt == 201 { describe_rr(&key_rr, &buf[..len]) } else { String::new() };
-                        info!("📨 [GO LIVE TX] RTCP do Discord: pt={} {} bytes {}", pt, len, detail);
-                        // Discord sends RTCP Feedback (PLI=1 / FIR=4) when viewers connect
-                        crate::screen_capture::types::request_intra_keyframe();
+                        let fmt = buf[0] & 0x1F;
+                        if pt == 205 && fmt == 1 {
+                            // Generic NACK: resend the lost packets on the RTX SSRC.
+                            let lost = nack_sequences(&key_rtx, &buf[..len]);
+                            let resend: Vec<([u8; 12], Vec<u8>)> = match history.lock() {
+                                Ok(mut h) => lost.iter().filter_map(|seq| h.rtx_packet(*seq, rtx_ssrc)).collect(),
+                                Err(_) => Vec::new(),
+                            };
+                            RTX_SENT.fetch_add(resend.len() as u32, Ordering::Relaxed);
+                            RTX_ASKED.fetch_add(lost.len() as u32, Ordering::Relaxed);
+                            for (header, payload) in resend {
+                                let cnt = nonce_counter_rtx.fetch_add(1, Ordering::Relaxed);
+                                if let Some(pkt) = protect_rtp(&key_rtx, mode, &header, &payload, cnt) {
+                                    let _ = socket_rtx.send_to(&pkt, target_addr).await;
+                                }
+                            }
+                            continue;
+                        }
+                        if pt == 205 || pt == 204 {
+                            continue;
+                        }
+                        // Only a real picture-loss request (PLI fmt 1 / FIR fmt 4)
+                        // asks for a keyframe, at most once a second: every
+                        // keyframe is a large burst, and RTX repairs single losses.
+                        if pt == 206 && (fmt == 1 || fmt == 4) {
+                            if last_keyframe_request.elapsed() >= std::time::Duration::from_secs(1) {
+                                last_keyframe_request = Instant::now();
+                                crate::screen_capture::types::request_intra_keyframe();
+                            }
+                            continue;
+                        }
+                        if pt == 201 {
+                            rr_count += 1;
+                            if rr_count % 10 == 1 {
+                                info!("📨 [GO LIVE TX] {} rtx={}/{}", describe_rr(&key_rr, &buf[..len]),
+                                    RTX_SENT.load(Ordering::Relaxed), RTX_ASKED.load(Ordering::Relaxed));
+                            }
+                        }
                     }
                 }
                 Err(_) => {
@@ -279,5 +312,116 @@ fn describe_rr(key: &[u8], packet: &[u8]) -> String {
         }
         Ok(plain) => format!("RR sem blocos ({} bytes)", plain.len()),
         Err(_) => "RR não decifrou".to_string(),
+    }
+}
+
+static RTX_SENT: AtomicU32 = AtomicU32::new(0);
+static RTX_ASKED: AtomicU32 = AtomicU32::new(0);
+
+/// Last packets sent, for retransmission (RFC 4588).  1024 slots of ~900
+/// bytes: under 1 MB, alive only while broadcasting.
+struct RtxHistory {
+    slots: Vec<Option<([u8; 12], Vec<u8>)>>,
+    rtx_seq: u16,
+}
+
+impl RtxHistory {
+    const SIZE: usize = 1024;
+
+    fn new() -> Self {
+        Self { slots: vec![None; Self::SIZE], rtx_seq: 0 }
+    }
+
+    fn remember(&mut self, header: &[u8; 12], payload: &[u8]) {
+        let seq = u16::from_be_bytes([header[2], header[3]]);
+        let slot = &mut self.slots[seq as usize % Self::SIZE];
+        match slot {
+            Some((h, p)) => {
+                *h = *header;
+                p.clear();
+                p.extend_from_slice(payload);
+            }
+            None => *slot = Some((*header, payload.to_vec())),
+        }
+    }
+
+    /// RTX packet for original `seq`: PT 103, RTX SSRC, own sequence, same
+    /// timestamp/marker, payload prefixed with the original sequence number.
+    fn rtx_packet(&mut self, seq: u16, rtx_ssrc: u32) -> Option<([u8; 12], Vec<u8>)> {
+        let (h, p) = self.slots[seq as usize % Self::SIZE].as_ref()?;
+        if u16::from_be_bytes([h[2], h[3]]) != seq {
+            return None;
+        }
+        self.rtx_seq = self.rtx_seq.wrapping_add(1);
+        let mut header = *h;
+        header[1] = (h[1] & 0x80) | 103;
+        header[2..4].copy_from_slice(&self.rtx_seq.to_be_bytes());
+        header[8..12].copy_from_slice(&rtx_ssrc.to_be_bytes());
+        let mut payload = Vec::with_capacity(2 + p.len());
+        payload.extend_from_slice(&seq.to_be_bytes());
+        payload.extend_from_slice(p);
+        Some((header, payload))
+    }
+}
+
+/// Lost sequence numbers in an encrypted Generic NACK (rtpsize: the first
+/// 8 bytes are clear, then media SSRC + FCI entries of PID/BLP).
+fn nack_sequences(key: &[u8], packet: &[u8]) -> Vec<u16> {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    if packet.len() < 8 + 16 + 4 {
+        return Vec::new();
+    }
+    let (aad, rest) = packet.split_at(8);
+    let (ct, suffix) = rest.split_at(rest.len() - 4);
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(suffix);
+    let Ok(cipher) = Aes256Gcm::new_from_slice(key) else { return Vec::new() };
+    let Ok(plain) = cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: ct, aad }) else {
+        return Vec::new();
+    };
+    parse_nack_fci(plain.get(4..).unwrap_or(&[]))
+}
+
+fn parse_nack_fci(fci: &[u8]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for entry in fci.chunks_exact(4) {
+        let pid = u16::from_be_bytes([entry[0], entry[1]]);
+        let blp = u16::from_be_bytes([entry[2], entry[3]]);
+        out.push(pid);
+        for bit in 0..16 {
+            if blp & (1 << bit) != 0 {
+                out.push(pid.wrapping_add(bit + 1));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod rtx_tests {
+    use super::*;
+
+    #[test]
+    fn nack_fci_expands_the_bitmask() {
+        assert_eq!(parse_nack_fci(&[0, 10, 0b0000_0000, 0b0000_0101]), vec![10, 11, 13]);
+    }
+
+    #[test]
+    fn rtx_packet_carries_the_original_sequence() {
+        let mut h = RtxHistory::new();
+        let mut header = [0u8; 12];
+        header[0] = 0x80;
+        header[1] = 0x80 | 102;
+        header[2..4].copy_from_slice(&500u16.to_be_bytes());
+        header[4..8].copy_from_slice(&9000u32.to_be_bytes());
+        h.remember(&header, &[1, 2, 3]);
+        let (rh, rp) = h.rtx_packet(500, 77).unwrap();
+        assert_eq!(rh[1], 0x80 | 103);
+        assert_eq!(&rh[4..8], &9000u32.to_be_bytes());
+        assert_eq!(&rh[8..12], &77u32.to_be_bytes());
+        assert_eq!(rp, vec![0x01, 0xF4, 1, 2, 3]);
+        // Overwritten slot is not resent as the wrong packet.
+        assert!(h.rtx_packet(500 + 1024, 77).is_none());
     }
 }
