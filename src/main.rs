@@ -910,7 +910,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
     let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
 
-    screen_manager.start_receiver(
+    let rx_frame_cb: crate::native_video::FrameCallback = Arc::new(
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
@@ -957,6 +957,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     should_update_pop = true;
                                 }
                                 ui.set_has_active_stream(true);
+                                if ui.get_connecting_stream_uid() == uid_str.as_str() {
+                                    ui.set_connecting_stream_uid("".into());
+                                }
                                 ui.set_active_stream_user_id(uid_str.clone().into());
                                 ui.set_active_stream_user(uname.into());
                                 ui.set_tr_stream_quality(quality.into());
@@ -992,7 +995,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        },
+    });
+    // Go Live from official clients is drawn by the same renderer.
+    crate::native_video::set_frame_callback(Arc::clone(&rx_frame_cb));
+    screen_manager.start_receiver(
+        move |uid, uname, quality, pixel_buf| rx_frame_cb(uid, uname, quality, pixel_buf),
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
@@ -1119,7 +1126,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => 720,
                 };
                 let fps_val = ui.get_stream_selected_fps();
-                let target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
+                let mut target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
+                // Go Live without the unlock: no more than an account without
+                // Nitro may send (720p 30fps).
+                let mut res_val = res_val;
+                let mut res_str = res_str;
+                if ui.get_stream_go_live()
+                    && ui.get_stream_source_tab().as_str() != "cameras"
+                    && !video_settings::get_go_live_unlock()
+                {
+                    if res_val > 720 {
+                        res_val = 720;
+                        res_str = "720p".to_string();
+                    }
+                    target_fps = target_fps.min(30);
+                }
 
                 let source_tab = ui.get_stream_source_tab().to_string();
                 let (target_hwnd, screen_index, camera_index, include_audio) = if source_tab == "cameras" {
@@ -1435,6 +1456,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hidden_streams_hide.lock().unwrap().insert(uid.clone());
         // Hiding someone's stream stops receiving it (the sender stops sending to us).
         screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), false);
+        if let Some(key) = gateway::stream_key_for(uid.parse().unwrap_or(0)) {
+            gateway::unwatch_stream(&key);
+        }
+        if let Some(ui) = app_weak_hide.upgrade() {
+            if ui.get_connecting_stream_uid() == uid.as_str() {
+                ui.set_connecting_stream_uid("".into());
+            }
+        }
         if let Some(ui) = app_weak_hide.upgrade() {
             if ui.get_focused_stream_uid() == uid.as_str() {
                 ui.set_focused_stream_uid("".into());
@@ -1462,6 +1491,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
         // Watch: ask the sender for the stream.
         screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), true);
+        let uid_n: u64 = uid.parse().unwrap_or(0);
+        if crate::native_video::is_native_live(uid_n) {
+            if let Some(key) = gateway::stream_key_for(uid_n) {
+                gateway::watch_stream(&key);
+                if let Some(ui) = app_weak_unhide.upgrade() {
+                    ui.set_connecting_stream_uid(uid.as_str().into());
+                    // No frame in 10 s: give the button back so it can be retried.
+                    let weak = app_weak_unhide.clone();
+                    let uid_t = uid.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_secs(10), move || {
+                        if let Some(ui) = weak.upgrade() {
+                            if ui.get_connecting_stream_uid() == uid_t.as_str() {
+                                ui.set_connecting_stream_uid("".into());
+                                gateway::unwatch_stream(&key);
+                            }
+                        }
+                    });
+                }
+            }
+        }
         if let Some(ui) = app_weak_unhide.upgrade() {
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
@@ -2349,6 +2398,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_glu = app_weak.clone();
+    app.on_toggle_go_live_unlock(move || {
+        let new_val = video_settings::toggle_go_live_unlock();
+        if let Some(ui) = app_weak_glu.upgrade() {
+            ui.set_go_live_unlock(new_val);
+        }
+    });
+
     let app_weak_hw = app_weak.clone();
     app.on_toggle_hardware_monitor(move || {
         let new_val = video_settings::toggle_show_hardware_monitor();
@@ -2596,6 +2653,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         *active_mic_leave.lock().unwrap() = None;
         sm_leave.stop();
         gateway::delete_stream();
+        gateway::clear_watched_streams();
         sm_leave.set_context(0, 0, "");
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();

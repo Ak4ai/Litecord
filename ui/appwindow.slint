@@ -163,6 +163,8 @@ export component AppWindow inherits Window {
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
     callback unhide_stream(string /* user_id */);
+    // Go Live being opened: its Watch button reads "Connecting…" until the first frame.
+    in-out property <string> connecting_stream_uid: "";
     callback launch_stream_browser();
     callback click_command(string /* command_name */);
     callback handle_input_change(string /* text */);
@@ -333,6 +335,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected_audio_loopback_backend: "auto";
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
+    in-out property <bool> go_live_unlock: false;
     in-out property <bool> use_gpu_renderer: false;
     in-out property <bool> net_diag_running: false;
     in-out property <int> net_diag_verdict: -1;
@@ -357,6 +360,7 @@ export component AppWindow inherits Window {
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
+    callback toggle_go_live_unlock();
     callback toggle_gpu_renderer();
     in-out property <length> channel_sidebar_width: 230px;
     callback channel_sidebar_width_committed(length);
@@ -2388,7 +2392,7 @@ export component AppWindow inherits Window {
                                                                  watch_label := Text {
                                                                      visible: !p.is_self;
                                                                      width: p.is_self ? 0px : self.preferred-width;
-                                                                     text: Tr.watch_stream;
+                                                                     text: root.connecting_stream_uid == p.user_id ? Tr.stream_connecting : Tr.watch_stream;
                                                                      color: AppTheme.text-on-accent;
                                                                      font-size: TypeScale.caption;
                                                                      font-weight: 700;
@@ -3162,6 +3166,7 @@ export component AppWindow inherits Window {
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
+        go_live_unlock: root.go_live_unlock;
         use_gpu_renderer: root.use_gpu_renderer;
         net_diag_running: root.net_diag_running;
         net_diag_verdict: root.net_diag_verdict;
@@ -3198,6 +3203,7 @@ export component AppWindow inherits Window {
         select_audio_loopback_backend(arg0) => { root.select_audio_loopback_backend(arg0); }
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
         toggle_hardware_monitor => { root.toggle_hardware_monitor(); }
+        toggle_go_live_unlock => { root.toggle_go_live_unlock(); }
         toggle_gpu_renderer => { root.toggle_gpu_renderer(); }
         run_network_diagnostics => { root.run_network_diagnostics(); }
         copy_network_diagnostics => { root.copy_network_diagnostics(); }
@@ -4802,7 +4808,7 @@ export component AppWindow inherits Window {
                                 border-radius: 8px;
                                 border-width: 1px;
                                 border-color: AppTheme.border-subtle;
-                                height: 52px;
+                                height: 66px;
 
                                 HorizontalLayout {
                                     padding-left: 14px;
@@ -4811,7 +4817,7 @@ export component AppWindow inherits Window {
 
                                     HorizontalLayout {
                                         spacing: 12px;
-                                        alignment: start;
+                                        horizontal-stretch: 1;
 
                                         VerticalLayout {
                                             alignment: center;
@@ -4839,6 +4845,8 @@ export component AppWindow inherits Window {
                                                 text: Tr.stream_go_live_desc;
                                                 color: AppTheme.text-muted;
                                                 font-size: TypeScale.micro;
+                                                wrap: word-wrap;
+                                                horizontal-stretch: 1;
                                             }
                                         }
                                     }

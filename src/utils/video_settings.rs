@@ -32,6 +32,9 @@ pub struct VideoSettings {
     /// Share to official Discord clients through native Go Live too.
     #[serde(default)]
     pub go_live: bool,                   // default false
+    /// Go Live above the free tier (1080p/60) without Nitro, at the user's risk.
+    #[serde(default)]
+    pub go_live_unlock: bool,            // default false
     /// Where the main window was when it last moved or resized. None until it does.
     #[serde(default)]
     pub window: Option<WindowGeometry>,
@@ -86,6 +89,7 @@ impl Default for VideoSettings {
             echo_cancellation: false,
             automatic_gain_control: false,
             go_live: false,
+            go_live_unlock: false,
             window: None,
         }
     }
@@ -210,6 +214,18 @@ pub fn set_go_live(val: bool) {
         store.go_live = val;
         persist(store);
     }
+}
+
+pub fn get_go_live_unlock() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).go_live_unlock
+}
+
+pub fn toggle_go_live_unlock() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.go_live_unlock = !store.go_live_unlock;
+    let new_val = store.go_live_unlock;
+    persist(store);
+    new_val
 }
 
 pub fn get_show_hardware_monitor() -> bool {
