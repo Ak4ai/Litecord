@@ -152,6 +152,14 @@ jobs:
             gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire \
             xorg-server-xvfb
 
+      # quick-sharun refuses Arch's libgallium (it links libLLVM, +100 MiB, and
+      # needs recent kernels): swap in the Anylinux Mesa build without LLVM.
+      - name: Install Mesa without LLVM for bundling
+        run: |
+          wget --retry-connrefused --tries=5 -q             https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/get-debloated-pkgs.sh             -O ./get-debloated-pkgs.sh
+          sh ./get-debloated-pkgs.sh --add-opengl
+          rm -f ./get-debloated-pkgs.sh
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
