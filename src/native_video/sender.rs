@@ -23,7 +23,7 @@ static AUDIO_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 static IS_BROADCASTING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_STREAM_KEY: Mutex<Option<String>> = Mutex::new(None);
 
-/// Encoder ceiling while broadcasting (LITECORD_GL_BITRATE, default 6 Mbps):
+/// Encoder ceiling while broadcasting (6 Mbps):
 /// the stream server and the viewers' links take bursts worse than P2P.
 static GO_LIVE_BITRATE: AtomicU32 = AtomicU32::new(6_000_000);
 
@@ -253,20 +253,15 @@ pub fn start_sender(
                 }
             }
         }
-        // Debug knobs, read once per stream: LITECORD_GL_MTU, LITECORD_GL_PT,
-        // LITECORD_GL_NO_DAVE=1 (send frames without E2EE).
-        let env_num = |name: &str, default: usize| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
-        let mtu = env_num("LITECORD_GL_MTU", 900);
-        let bitrate = env_num("LITECORD_GL_BITRATE", 6_000_000).clamp(1_500_000, 12_000_000) as u32;
-        GO_LIVE_BITRATE.store(bitrate, Ordering::Relaxed);
+        // 900-byte packets: larger ones were dropped on paths with a smaller
+        // MTU (VPNs). PT 102 is H.264 as official clients send it.
+        let mtu = 900;
+        let pt = 102u8;
+        let bitrate = GO_LIVE_BITRATE.load(Ordering::Relaxed);
         // Pace at 2.5x the video rate: frames still leave well within their
         // interval, but a keyframe is spread over ~100 ms instead of one burst.
         let mut pacer = Pacer::new((bitrate as u64 * 4).max(20_000_000));
         let _fine_timer = crate::utils::timer_resolution::FineTimerGuard::new();
-        let pt = env_num("LITECORD_GL_PT", 102) as u8;
-        let no_dave = std::env::var("LITECORD_GL_NO_DAVE").map(|v| v == "1").unwrap_or(false);
-        let dave = if no_dave { None } else { dave };
-        info!("🧪 [GO LIVE TX] mtu={} pt={} dave={} bitrate={}", mtu, pt, dave.is_some(), bitrate);
         let mut packetizer = H264Packetizer::new(video_ssrc, pt).with_mtu(mtu);
         let mut frame_count = 0u64;
 
@@ -408,7 +403,7 @@ pub fn start_sender(
                         if pt == 201 {
                             rr_count += 1;
                             if rr_count % 10 == 1 {
-                                info!("📨 [GO LIVE TX] {} rtx={}/{} quadros_descartados={}", describe_rr(&key_rr, &buf[..len]),
+                                log::debug!("📨 [GO LIVE TX] {} rtx={}/{} quadros_descartados={}", describe_rr(&key_rr, &buf[..len]),
                                     RTX_SENT.load(Ordering::Relaxed), RTX_ASKED.load(Ordering::Relaxed),
                                     FRAMES_DROPPED.load(Ordering::Relaxed));
                             }

@@ -71,26 +71,10 @@ pub struct NativeVideoSession {
     /// Last primary video SSRC: RTX (PT 103) is mapped onto it when the server
     /// never announced the RTX SSRC.
     last_media_ssrc: Option<u32>,
-    stats: RxStats,
     /// Opus decoder of the stream's audio, created on its first packet.
     audio: Option<crate::screen_capture::stream_audio::StreamAudioDecoder>,
 }
 
-#[derive(Default)]
-struct RxStats {
-    since: Option<Instant>,
-    media: u32,
-    rtx: u32,
-    other_pt: u32,
-    decrypt_fail: u32,
-    nacks: u32,
-    nacked: u32,
-    plis: u32,
-    skips: u32,
-    frames: u32,
-    dave_fail: u32,
-    audio: u32,
-}
 
 struct FpsCounter {
     frames: u32,
@@ -110,7 +94,6 @@ impl Default for NativeVideoSession {
             last_pli: HashMap::new(),
             last_nack: HashMap::new(),
             last_media_ssrc: None,
-            stats: RxStats::default(),
             audio: None,
         }
     }
@@ -163,7 +146,6 @@ impl NativeVideoSession {
             .unwrap_or(TransportMode::Aes256Gcm);
 
         let Some(mut payload) = decrypt_payload(&key, mode, datagram, &header) else {
-            self.stats.decrypt_fail += 1;
             return;
         };
 
@@ -174,14 +156,6 @@ impl NativeVideoSession {
             .as_ref()
             .is_some_and(|i| i.rtx_ssrc == header.ssrc && i.ssrc != header.ssrc);
         let is_rtx = announced_rtx || header.payload_type == RTX_PAYLOAD_TYPE;
-        if is_rtx {
-            self.stats.rtx += 1;
-        } else if header.payload_type == 102 {
-            self.stats.media += 1;
-        } else {
-            self.stats.other_pt += 1;
-        }
-        self.log_stats();
         let media_ssrc = if is_rtx {
             info.as_ref()
                 .map(|i| i.ssrc)
@@ -220,9 +194,6 @@ impl NativeVideoSession {
             .get_mut(&media_ssrc)
             .map(|jitter| jitter.flush_stale(STALE_AFTER, now))
             .unwrap_or_default();
-        if !stale.is_empty() {
-            self.stats.skips += 1;
-        }
 
         for (_seq, payload, marker) in ordered.into_iter().chain(stale) {
             let complete = self
@@ -243,9 +214,7 @@ impl NativeVideoSession {
         // clearing each other's state.
         set_wanted(uid, true);
         set_peer_streaming(uid, true);
-        self.stats.frames += 1;
         let Some(frame) = decrypt_dave(ctx, uid, frame) else {
-            self.stats.dave_fail += 1;
             self.send_pli(ctx, ssrc);
             return;
         };
@@ -312,22 +281,7 @@ impl NativeVideoSession {
         }
         let Some(decoder) = self.audio.as_mut() else { return };
         let pcm = decoder.decode(header.sequence as u32, &opus);
-        self.stats.audio += 1;
         crate::screen_capture::manager::play_stream_audio(uid, &pcm);
-    }
-
-    fn log_stats(&mut self) {
-        let now = Instant::now();
-        let since = *self.stats.since.get_or_insert(now);
-        if now.duration_since(since) < Duration::from_secs(2) {
-            return;
-        }
-        let st = std::mem::take(&mut self.stats);
-        log::info!(
-            "📊 [GO LIVE RX] 2s: media={} rtx={} outros_pt={} decrypt_fail={} nack={}({} seq) pli={} pulos={} quadros={} dave_fail={} audio={}",
-            st.media, st.rtx, st.other_pt, st.decrypt_fail, st.nacks, st.nacked, st.plis, st.skips, st.frames, st.dave_fail, st.audio
-        );
-        self.stats.since = Some(now);
     }
 
     fn mark_started(&mut self, uid: u64) {
@@ -372,7 +326,6 @@ impl NativeVideoSession {
             return;
         }
         self.last_pli.insert(ssrc, now);
-        self.stats.plis += 1;
         self.send_rtcp(ctx, rtcp::build_pli(ctx.sender_ssrc, ssrc));
     }
 
@@ -412,8 +365,6 @@ impl NativeVideoSession {
             return;
         }
         self.last_nack.insert(ssrc, now);
-        self.stats.nacks += 1;
-        self.stats.nacked += missing.len() as u32;
         if let Some(packet) = rtcp::build_nack(ctx.sender_ssrc, ssrc, missing) {
             self.send_rtcp(ctx, packet);
         }

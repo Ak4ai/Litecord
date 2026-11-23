@@ -925,7 +925,7 @@ pub async fn connect_stream_sender(
                         }
                     }
                     3 | 6 => {}
-                    _ => log::info!("🎬 [GO LIVE TX] op={} ignorado: {}", op, value["d"]),
+                    _ => log::debug!("🎬 [GO LIVE TX] op={} ignorado", op),
                 }
             }
             Message::Binary(data) => {
@@ -936,7 +936,7 @@ pub async fn connect_stream_sender(
                     }
                     last_seq.store(u16::from_be_bytes([data[0], data[1]]) as i64, Ordering::Relaxed);
                     let data = &data[2..];
-                    log::info!("🎬 [GO LIVE TX] DAVE binário op={} ({} bytes)", data[0], data.len());
+                    log::debug!("🎬 [GO LIVE TX] DAVE binário op={} ({} bytes)", data[0], data.len());
                     if let Err(e) = handle_dave_binary(data, &dave, &external_sender, user_id, dave_group, &write).await {
                         log::warn!("🎬 [GO LIVE TX] DAVE: {}", e);
                     }

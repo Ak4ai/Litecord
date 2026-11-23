@@ -259,7 +259,7 @@ pub async fn connect_voice_gateway(
                                         }
                                     });
 
-                                    info!("Enviando OP 0 Voice Identify para a Voice Gateway: {}", voice_identify);
+                                    info!("Enviando OP 0 Voice Identify para a Voice Gateway (server_id={}, user_id={})", guild_id, user_id);
                                     {
                                         let mut w = write_arc.lock().await;
                                         if let Err(e) = w.send(Message::Text(voice_identify.to_string().into())).await {

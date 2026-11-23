@@ -988,7 +988,7 @@ impl GatewayClient {
                     }
                 }
                 "VOICE_SERVER_UPDATE" => {
-                    info!("VOICE_SERVER_UPDATE bruto recebido: {:?}", v["d"]);
+                    info!("VOICE_SERVER_UPDATE recebido: endpoint={:?}", v["d"]["endpoint"].as_str());
                     let token = v["d"]["token"].as_str().unwrap_or("").to_string();
                     let guild_id = v["d"]["guild_id"].as_str()
                         .or_else(|| v["d"]["channel_id"].as_str())
