@@ -72,6 +72,8 @@ pub struct NativeVideoSession {
     /// never announced the RTX SSRC.
     last_media_ssrc: Option<u32>,
     stats: RxStats,
+    /// Opus decoder of the stream's audio, created on its first packet.
+    audio: Option<crate::screen_capture::stream_audio::StreamAudioDecoder>,
 }
 
 #[derive(Default)]
@@ -87,6 +89,7 @@ struct RxStats {
     skips: u32,
     frames: u32,
     dave_fail: u32,
+    audio: u32,
 }
 
 struct FpsCounter {
@@ -108,6 +111,7 @@ impl Default for NativeVideoSession {
             last_nack: HashMap::new(),
             last_media_ssrc: None,
             stats: RxStats::default(),
+            audio: None,
         }
     }
 }
@@ -128,7 +132,11 @@ impl NativeVideoSession {
         };
         // Opus is payload type 120 in Discord.  Anything else on this socket is
         // video (or a probe).
-        if header.payload_type == 111 || header.payload_type == 120 || header.payload_type == 0 {
+        if header.payload_type == 120 || header.payload_type == 0 {
+            return;
+        }
+        if header.payload_type == 111 {
+            self.ingest_audio(ctx, datagram, &header);
             return;
         }
 
@@ -283,6 +291,31 @@ impl NativeVideoSession {
         }
     }
 
+    /// Opus of a watched Go Live (PT 111): transport and DAVE decrypt, then
+    /// the same decoder and output as Litecord's own stream audio.
+    fn ingest_audio(&mut self, ctx: &NativeVideoContext, datagram: &[u8], header: &rtp::RtpHeader) {
+        let Some(uid) = ctx.stream_owner else { return };
+        let Some(key) = ctx.secret_key.lock().ok().and_then(|g| g.clone()) else { return };
+        let mode = ctx
+            .mode
+            .lock()
+            .map(|guard| TransportMode::from_name(&guard))
+            .unwrap_or(TransportMode::Aes256Gcm);
+        let Some(payload) = decrypt_payload(&key, mode, datagram, header) else { return };
+        let Some(opus) = decrypt_dave_as(ctx, uid, &payload, MediaType::AUDIO) else { return };
+        // Opus silence frames carry nothing to play.
+        if opus.len() <= 3 {
+            return;
+        }
+        if self.audio.is_none() {
+            self.audio = crate::screen_capture::stream_audio::StreamAudioDecoder::new();
+        }
+        let Some(decoder) = self.audio.as_mut() else { return };
+        let pcm = decoder.decode(header.sequence as u32, &opus);
+        self.stats.audio += 1;
+        crate::screen_capture::manager::play_stream_audio(uid, &pcm);
+    }
+
     fn log_stats(&mut self) {
         let now = Instant::now();
         let since = *self.stats.since.get_or_insert(now);
@@ -291,8 +324,8 @@ impl NativeVideoSession {
         }
         let st = std::mem::take(&mut self.stats);
         log::info!(
-            "📊 [GO LIVE RX] 2s: media={} rtx={} outros_pt={} decrypt_fail={} nack={}({} seq) pli={} pulos={} quadros={} dave_fail={}",
-            st.media, st.rtx, st.other_pt, st.decrypt_fail, st.nacks, st.nacked, st.plis, st.skips, st.frames, st.dave_fail
+            "📊 [GO LIVE RX] 2s: media={} rtx={} outros_pt={} decrypt_fail={} nack={}({} seq) pli={} pulos={} quadros={} dave_fail={} audio={}",
+            st.media, st.rtx, st.other_pt, st.decrypt_fail, st.nacks, st.nacked, st.plis, st.skips, st.frames, st.dave_fail, st.audio
         );
         self.stats.since = Some(now);
     }
@@ -407,6 +440,10 @@ fn has_dave_marker(frame: &[u8]) -> bool {
 }
 
 fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<u8>> {
+    decrypt_dave_as(ctx, uid, frame, MediaType::VIDEO)
+}
+
+fn decrypt_dave_as(ctx: &NativeVideoContext, uid: u64, frame: &[u8], media: MediaType) -> Option<Vec<u8>> {
     let mut guard = ctx.dave.lock().unwrap_or_else(|e| e.into_inner());
     let Some(session) = guard.as_mut() else {
         // No DAVE group at all: media is plain text.
@@ -421,7 +458,7 @@ fn decrypt_dave(ctx: &NativeVideoContext, uid: u64, frame: &[u8]) -> Option<Vec<
         return Some(frame.to_vec());
     }
 
-    match session.decrypt(uid, MediaType::VIDEO, frame) {
+    match session.decrypt(uid, media, frame) {
         Ok(clear) => Some(clear),
         Err(error) => {
             // During the transition to plaintext, frames are not encrypted.

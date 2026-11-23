@@ -18,6 +18,8 @@ use super::h264::H264Packetizer;
 use super::rtp::is_rtcp;
 
 static FRAME_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
+/// Opus frames (20 ms, 48 kHz stereo) of the shared audio, for the stream.
+static AUDIO_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 static IS_BROADCASTING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_STREAM_KEY: Mutex<Option<String>> = Mutex::new(None);
 
@@ -88,6 +90,17 @@ pub fn offer_outbound_frame(annex_b: &[u8]) {
     }
 }
 
+/// Hands one 20 ms Opus frame of the shared audio to the outbound stream.
+/// Non-blocking: a full queue drops the frame (a 20 ms gap, not latency).
+pub fn offer_outbound_audio(opus: &[u8]) {
+    if !is_broadcasting() || opus.is_empty() {
+        return;
+    }
+    if let Some(tx) = AUDIO_TX.lock().unwrap().as_ref() {
+        let _ = tx.try_send(opus.to_vec());
+    }
+}
+
 static WAITING_KEYFRAME: AtomicBool = AtomicBool::new(false);
 static FRAMES_DROPPED: AtomicU32 = AtomicU32::new(0);
 
@@ -104,6 +117,7 @@ pub fn stop_sender(stream_key: &str) {
         IS_BROADCASTING.store(false, Ordering::SeqCst);
         let mut tx_guard = FRAME_TX.lock().unwrap();
         *tx_guard = None;
+        *AUDIO_TX.lock().unwrap() = None;
         info!("🛑 [GO LIVE TX] Transmissor nativo de stream encerrado: {}", stream_key);
     }
 }
@@ -154,6 +168,64 @@ pub fn start_sender(
     let nonce_counter_rtx = Arc::clone(&nonce_counter);
     let history = Arc::new(Mutex::new(RtxHistory::new()));
     let history_rtp = Arc::clone(&history);
+
+    // Shared audio: Opus on the stream's audio SSRC (PT 111), end-to-end
+    // encrypted like the video. Sequence and timestamp continue after the
+    // five silence frames sent at start.
+    {
+        let (atx, mut arx) = mpsc::channel::<Vec<u8>>(50);
+        *AUDIO_TX.lock().unwrap() = Some(atx);
+        let socket_audio = Arc::clone(&socket);
+        let key_audio = key.clone();
+        let nonce_audio = Arc::clone(&nonce_counter);
+        let dave_audio = dave.clone();
+        tokio::spawn(async move {
+            let mut seq: u16 = 6;
+            let mut last_ts: Option<u32> = None;
+            let mut sent = 0u64;
+            while let Some(frame) = arx.recv().await {
+                if !IS_BROADCASTING.load(Ordering::Relaxed) {
+                    break;
+                }
+                let frame = match dave_audio.as_ref() {
+                    None => frame,
+                    Some(dave) => {
+                        let mut guard = dave.lock().unwrap_or_else(|e| e.into_inner());
+                        match guard.as_mut().filter(|s| s.is_ready()) {
+                            Some(session) => match session.encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &frame) {
+                                Ok(encrypted) => encrypted.into_owned(),
+                                Err(_) => continue,
+                            },
+                            None => continue,
+                        }
+                    }
+                };
+                // RTP clock follows wall time, so a pause in the audio does
+                // not squeeze the next sound against the last one.
+                let wall = (stream_start.elapsed().as_millis() as u64 * 48) as u32 / 960 * 960 + 5 * 960;
+                let ts = match last_ts {
+                    Some(prev) if wall <= prev.wrapping_add(960) => prev.wrapping_add(960),
+                    _ => wall,
+                };
+                last_ts = Some(ts);
+                let mut header = [0u8; 12];
+                header[0] = 0x80;
+                header[1] = 111;
+                header[2..4].copy_from_slice(&seq.to_be_bytes());
+                header[4..8].copy_from_slice(&ts.to_be_bytes());
+                header[8..12].copy_from_slice(&audio_ssrc.to_be_bytes());
+                seq = seq.wrapping_add(1);
+                let cnt = nonce_audio.fetch_add(1, Ordering::Relaxed);
+                if let Some(pkt) = protect_rtp(&key_audio, mode, &header, &frame, cnt) {
+                    let _ = socket_audio.send_to(&pkt, target_addr).await;
+                    sent += 1;
+                    if sent == 1 || sent % 3000 == 0 {
+                        info!("🔊 [GO LIVE TX] áudio da transmissão: {} pacotes", sent);
+                    }
+                }
+            }
+        });
+    }
 
     // 1. Outbound Video RTP Worker Task
     tokio::spawn(async move {

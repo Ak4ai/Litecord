@@ -2333,84 +2333,7 @@ impl ScreenCaptureManager {
 
                                         let pts_ms = u32::from_be_bytes(recv_buf[29..33].try_into().unwrap());
                                         update_audio_clock_pts(pts_ms);
-                                        let vol = get_stream_volume(pkt_uid);
-                                        if vol > 0.001 && !samples_i16.is_empty() {
-                                            let is_voice_active = crate::gateway::is_connected_to_voice();
-
-                                            if is_voice_active {
-                                                // 1. Direct feed EXCLUSIVELY to Voice Gateway Master Speaker Mixer (SSRC 0x8000_5354)
-                                                let stream_ssrc: u32 = 0x8000_5354;
-                                                if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
-                                                    let q = queues.entry(stream_ssrc).or_insert_with(|| std::collections::VecDeque::with_capacity(48000));
-                                                    if q.len() > 9600 {
-                                                        let excess = q.len() - 4800;
-                                                        q.drain(0..excess);
-                                                        let fade_len = 32.min(q.len());
-                                                        for i in 0..fade_len {
-                                                            let factor = i as f32 / fade_len as f32;
-                                                            let (l, r) = q[i];
-                                                            q[i] = (l * factor, r * factor);
-                                                        }
-                                                    }
-                                                    if sample_rate == 48000 || sample_rate == 0 {
-                                                        for s in &samples_i16 {
-                                                            let f = (*s as f32 / 32768.0) * vol;
-                                                            q.push_back((f, f));
-                                                        }
-                                                    } else {
-                                                        let ratio = 48000.0 / (sample_rate as f32);
-                                                        let out_count = ((samples_i16.len() as f32) * ratio).round() as usize;
-                                                        for j in 0..out_count {
-                                                            let src_idx = (j as f32) / ratio;
-                                                            let i0 = (src_idx.floor() as usize).min(samples_i16.len() - 1);
-                                                            let i1 = (i0 + 1).min(samples_i16.len() - 1);
-                                                            let frac = src_idx - (i0 as f32);
-                                                            let s = (samples_i16[i0] as f32) * (1.0 - frac) + (samples_i16[i1] as f32) * frac;
-                                                            let f = (s / 32768.0) * vol;
-                                                            q.push_back((f, f));
-                                                        }
-                                                    }
-                                                }
-                                                // Clear standalone queue so it never contains leftover echoes
-                                                if let Ok(mut q_guard) = get_stream_audio_queue().lock() {
-                                                    if !q_guard.is_empty() {
-                                                        q_guard.clear();
-                                                    }
-                                                }
-                                            } else {
-                                                // 2. Direct feed to Standalone Stream Audio Queue ONLY when not in a voice call
-                                                mark_stream_audio_activity();
-                                                ensure_stream_audio_playback_started();
-                                                let queue = get_stream_audio_queue();
-                                                let mut q_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
-                                                if q_guard.len() > 4800 {
-                                                    let excess = q_guard.len() - 2400;
-                                                    q_guard.drain(0..excess);
-                                                    let fade_len = 32.min(q_guard.len());
-                                                    for i in 0..fade_len {
-                                                        let factor = i as f32 / fade_len as f32;
-                                                        q_guard[i] *= factor;
-                                                    }
-                                                }
-
-                                                if sample_rate == 48000 || sample_rate == 0 {
-                                                    for s in &samples_i16 {
-                                                        q_guard.push_back((*s as f32 / 32768.0) * vol);
-                                                    }
-                                                } else {
-                                                    let ratio = 48000.0 / (sample_rate as f32);
-                                                    let out_count = ((samples_i16.len() as f32) * ratio).round() as usize;
-                                                    for j in 0..out_count {
-                                                        let src_idx = (j as f32) / ratio;
-                                                        let i0 = (src_idx.floor() as usize).min(samples_i16.len() - 1);
-                                                        let i1 = (i0 + 1).min(samples_i16.len() - 1);
-                                                        let frac = src_idx - (i0 as f32);
-                                                        let s = (samples_i16[i0] as f32) * (1.0 - frac) + (samples_i16[i1] as f32) * frac;
-                                                        q_guard.push_back((s / 32768.0) * vol);
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        play_stream_audio(pkt_uid, &samples_i16);
                                     }
                                 }
                                 _ => {}
@@ -2558,6 +2481,91 @@ fn encode_on_gpu(
     enc.submit(f);
     gpu_output(encoder, ENCODED_WAIT)
 }
+
+/// Plays decoded stream audio (48 kHz, mono) of `uid`: through the voice mixer
+/// while in a call, otherwise on the standalone stream output.
+pub fn play_stream_audio(uid: u64, samples_i16: &[i16]) {
+    let sample_rate = 48_000u32;
+    let vol = get_stream_volume(uid);
+    if vol > 0.001 && !samples_i16.is_empty() {
+        let is_voice_active = crate::gateway::is_connected_to_voice();
+
+        if is_voice_active {
+            // 1. Direct feed EXCLUSIVELY to Voice Gateway Master Speaker Mixer (SSRC 0x8000_5354)
+            let stream_ssrc: u32 = 0x8000_5354;
+            if let Ok(mut queues) = crate::gateway::get_speaker_pcm_queues().lock() {
+                let q = queues.entry(stream_ssrc).or_insert_with(|| std::collections::VecDeque::with_capacity(48000));
+                if q.len() > 9600 {
+                    let excess = q.len() - 4800;
+                    q.drain(0..excess);
+                    let fade_len = 32.min(q.len());
+                    for i in 0..fade_len {
+                        let factor = i as f32 / fade_len as f32;
+                        let (l, r) = q[i];
+                        q[i] = (l * factor, r * factor);
+                    }
+                }
+                if sample_rate == 48000 || sample_rate == 0 {
+                    for s in samples_i16 {
+                        let f = (*s as f32 / 32768.0) * vol;
+                        q.push_back((f, f));
+                    }
+                } else {
+                    let ratio = 48000.0 / (sample_rate as f32);
+                    let out_count = ((samples_i16.len() as f32) * ratio).round() as usize;
+                    for j in 0..out_count {
+                        let src_idx = (j as f32) / ratio;
+                        let i0 = (src_idx.floor() as usize).min(samples_i16.len() - 1);
+                        let i1 = (i0 + 1).min(samples_i16.len() - 1);
+                        let frac = src_idx - (i0 as f32);
+                        let s = (samples_i16[i0] as f32) * (1.0 - frac) + (samples_i16[i1] as f32) * frac;
+                        let f = (s / 32768.0) * vol;
+                        q.push_back((f, f));
+                    }
+                }
+            }
+            // Clear standalone queue so it never contains leftover echoes
+            if let Ok(mut q_guard) = get_stream_audio_queue().lock() {
+                if !q_guard.is_empty() {
+                    q_guard.clear();
+                }
+            }
+        } else {
+            // 2. Direct feed to Standalone Stream Audio Queue ONLY when not in a voice call
+            mark_stream_audio_activity();
+            ensure_stream_audio_playback_started();
+            let queue = get_stream_audio_queue();
+            let mut q_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+            if q_guard.len() > 4800 {
+                let excess = q_guard.len() - 2400;
+                q_guard.drain(0..excess);
+                let fade_len = 32.min(q_guard.len());
+                for i in 0..fade_len {
+                    let factor = i as f32 / fade_len as f32;
+                    q_guard[i] *= factor;
+                }
+            }
+
+            if sample_rate == 48000 || sample_rate == 0 {
+                for s in samples_i16 {
+                    q_guard.push_back((*s as f32 / 32768.0) * vol);
+                }
+            } else {
+                let ratio = 48000.0 / (sample_rate as f32);
+                let out_count = ((samples_i16.len() as f32) * ratio).round() as usize;
+                for j in 0..out_count {
+                    let src_idx = (j as f32) / ratio;
+                    let i0 = (src_idx.floor() as usize).min(samples_i16.len() - 1);
+                    let i1 = (i0 + 1).min(samples_i16.len() - 1);
+                    let frac = src_idx - (i0 as f32);
+                    let s = (samples_i16[i0] as f32) * (1.0 - frac) + (samples_i16[i1] as f32) * frac;
+                    q_guard.push_back((s / 32768.0) * vol);
+                }
+            }
+        }
+    }
+}
+
 
 /// Opens the texture encoder of `device` unless it is open already. Opening Quick Sync
 /// takes over half a second, so this runs as soon as the capture knows its device rather
