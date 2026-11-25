@@ -736,12 +736,14 @@ pub fn start_audio_loopback_tx(
                 // Only to the viewers that asked for the stream, with the stream's key.
                 let target_addrs = super::watch::viewer_addrs();
                 let stream_key = super::watch::session_key();
+                let go_live = crate::native_video::is_broadcasting();
                 for chunk in chunks_to_send {
                     super::web_share::offer_audio(&chunk, active_sample_rate);
-                    let Some(stream_key) = stream_key.filter(|_| !target_addrs.is_empty()) else {
+                    let p2p_key = stream_key.filter(|_| !target_addrs.is_empty());
+                    if p2p_key.is_none() && !go_live {
                         opus = None;
                         continue;
-                    };
+                    }
                     if opus.is_none() {
                         opus = super::stream_audio::StreamAudioEncoder::new();
                     }
@@ -749,6 +751,10 @@ pub fn start_audio_loopback_tx(
                     let pts_ms = get_tx_pts_ms();
                     // One packet per 20 ms Opus frame (48 kHz, two equal channels).
                     for frame in encoder.push(&chunk, active_sample_rate) {
+                        if go_live {
+                            crate::native_video::sender::offer_outbound_audio(&frame);
+                        }
+                        let Some(stream_key) = p2p_key else { continue };
                         seq = seq.wrapping_add(1);
                         let Some(audio_payload) = encrypt_signaling_payload(&stream_key, &frame) else {
                             continue;

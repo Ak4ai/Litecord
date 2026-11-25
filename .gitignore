@@ -73,3 +73,6 @@ desktop.ini
 *.env
 *.env.*
 *.bat
+
+# Configuracao local de build (caminhos da maquina de cada pessoa)
+.cargo/config.toml

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{connect_async_with_config, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use log::{info, error, warn};
@@ -35,6 +35,105 @@ struct ResumeSession {
     url: String,
 }
 
+/// Writer of the live main-gateway connection, for the Go Live opcodes.
+static GO_LIVE_WS: std::sync::Mutex<Option<mpsc::Sender<Message>>> = std::sync::Mutex::new(None);
+/// Our own stream: (`stream_key`, `rtc_server_id`, `rtc_channel_id`) once STREAM_CREATE arrives.
+static OUTBOUND_STREAM: std::sync::Mutex<Option<(String, String, String)>> = std::sync::Mutex::new(None);
+
+fn send_go_live(payload: Value) {
+    let tx = GO_LIVE_WS.lock().ok().and_then(|g| g.clone());
+    if let Some(tx) = tx {
+        info!("🎬 [GO LIVE] op={}", payload["op"]);
+        let _ = tx.try_send(Message::Text(payload.to_string().into()));
+    }
+}
+
+/// Opcode 18 payload; a DM call has no guild.
+fn stream_create_payload(guild_id: Option<&str>, channel_id: u64) -> Value {
+    match guild_id {
+        Some(gid) => serde_json::json!({ "op": 18, "d": {
+            "type": "guild", "guild_id": gid, "channel_id": channel_id.to_string(), "preferred_region": null } }),
+        None => serde_json::json!({ "op": 18, "d": {
+            "type": "call", "channel_id": channel_id.to_string(), "preferred_region": null } }),
+    }
+}
+
+/// Starts a native Go Live broadcast of the current share (opcode 18).
+pub fn create_stream(guild_id: Option<String>, channel_id: u64) {
+    send_go_live(stream_create_payload(guild_id.as_deref(), channel_id));
+}
+
+/// Ends our Go Live broadcast (opcode 19).  No-op when none is active.
+pub fn delete_stream() {
+    let own = OUTBOUND_STREAM.lock().ok().and_then(|mut g| g.take());
+    crate::native_video::stream::stop_stream_sender("");
+    if let Some((stream_key, _, _)) = own {
+        send_go_live(serde_json::json!({ "op": 19, "d": { "stream_key": stream_key } }));
+    }
+}
+
+/// Opcode 22 on the main gateway (stream paused flag).
+pub fn set_stream_paused(paused: bool) {
+    let key = OUTBOUND_STREAM.lock().ok().and_then(|g| g.as_ref().map(|(k, _, _)| k.clone()));
+    if let Some(stream_key) = key {
+        send_go_live(serde_json::json!({ "op": 22, "d": { "stream_key": stream_key, "paused": paused } }));
+    }
+}
+
+/// Streams we asked to watch (opcode 20), and (`rtc_server_id`, `rtc_channel_id`)
+/// of every stream STREAM_CREATE told us about.
+static WATCHED_STREAMS: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+static STREAM_SERVERS: std::sync::Mutex<Option<std::collections::HashMap<String, (String, String)>>> = std::sync::Mutex::new(None);
+
+/// Starts watching someone's native Go Live (main gateway opcode 20).
+pub fn watch_stream(stream_key: &str) {
+    let new = WATCHED_STREAMS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(stream_key.to_string());
+    if !new {
+        return;
+    }
+    send_go_live(serde_json::json!({ "op": 20, "d": { "stream_key": stream_key } }));
+}
+
+/// Stops watching a Go Live (opcode 19 for a viewer leaves the stream).
+pub fn unwatch_stream(stream_key: &str) {
+    let was = WATCHED_STREAMS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).remove(stream_key);
+    crate::native_video::stream::stop_stream_viewer(stream_key);
+    if was {
+        send_go_live(serde_json::json!({ "op": 19, "d": { "stream_key": stream_key } }));
+    }
+}
+
+/// Forgets every watched Go Live (left the call).
+pub fn clear_watched_streams() {
+    let keys: Vec<String> = WATCHED_STREAMS.lock().unwrap_or_else(|e| e.into_inner()).take().map(|s| s.into_iter().collect()).unwrap_or_default();
+    for key in keys {
+        crate::native_video::stream::stop_stream_viewer(&key);
+    }
+}
+
+fn is_watched(stream_key: &str) -> bool {
+    WATCHED_STREAMS.lock().ok().and_then(|g| g.as_ref().map(|s| s.contains(stream_key))).unwrap_or(false)
+}
+
+/// `guild:{g}:{c}:{owner}` or `call:{c}:{owner}` for a user live in our call.
+pub fn stream_key_for(owner: u64) -> Option<String> {
+    let cid = get_my_voice_channel_id();
+    if cid == 0 || owner == 0 {
+        return None;
+    }
+    let gid = get_my_voice_guild_id();
+    Some(if !gid.is_empty() && gid != "@me" {
+        format!("guild:{}:{}:{}", gid, cid, owner)
+    } else {
+        format!("call:{}:{}", cid, owner)
+    })
+}
+
+/// Owner id at the end of `guild:{g}:{c}:{owner}` / `call:{c}:{owner}`.
+fn stream_owner(stream_key: &str) -> u64 {
+    stream_key.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
 const GATEWAY_URL: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
 
 /// Close codes after which the session cannot be resumed (Discord gateway docs).
@@ -53,6 +152,9 @@ const HANDLED_EVENTS: &[&str] = &[
     "GUILD_MEMBERS_CHUNK",
     "VOICE_STATE_UPDATE",
     "VOICE_SERVER_UPDATE",
+    "STREAM_CREATE",
+    "STREAM_SERVER_UPDATE",
+    "STREAM_DELETE",
     "MESSAGE_CREATE",
     "MESSAGE_UPDATE",
     "MESSAGE_DELETE",
@@ -192,7 +294,87 @@ impl GatewayClient {
         }
     }
 
+    /// Rebuild the voice session after the media path dies (NAT rebind, interface
+    /// change). Dropping and re-adding the voice state through the main gateway is
+    /// the same sequence Discord uses; it is the only way to get a fresh UDP socket,
+    /// endpoint and DAVE group without the user leaving the call.
+    async fn force_voice_rejoin(&self) {
+        let target_cid = match self.voice_channel_id.lock().unwrap().clone() {
+            Some(cid) => cid,
+            None => return,
+        };
+        let target_gid = self.voice_guild_id.lock().unwrap().clone().unwrap_or_default();
+        let self_mute = *self.voice_self_mute.lock().unwrap();
+        let self_deaf = is_self_deaf();
+        warn!("🎧 [VOICE] Reconstruindo a sessão de voz de '{}' após perda de mídia...", target_cid);
+
+        let effective_gid = if target_gid.trim().is_empty() || target_gid == "@me" {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(target_gid)
+        };
+
+        // Send the reset first: if the main gateway socket is down, tearing the local
+        // credentials down would leave voice unusable with no way to recover. In that
+        // case keep everything and retry once the socket is back.
+        let reset_payload = serde_json::json!({
+            "op": 4,
+            "d": { "guild_id": effective_gid.clone(), "channel_id": null, "self_mute": self_mute, "self_deaf": self_deaf }
+        });
+        let reset_sent = match self.ws_tx.lock().await.as_ref() {
+            Some(tx) => tx.send(Message::Text(reset_payload.to_string().into())).await.is_ok(),
+            None => false,
+        };
+        if !reset_sent {
+            warn!("🎧 [VOICE] Gateway principal indisponível; nova tentativa de reconstrução em instantes.");
+            crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+            return;
+        }
+
+        IS_WATCHDOG_RESETTING.store(true, Ordering::SeqCst);
+        // Tear the dead session down deterministically: the audio threads watch this
+        // counter, so they stop even if the gateway never acknowledges the reset.
+        CURRENT_VOICE_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+        *self.voice_session_id.lock().unwrap() = None;
+        *self.voice_token.lock().unwrap() = None;
+        *self.voice_endpoint.lock().unwrap() = None;
+        // The old voice task may keep its WebSocket open for a while, so it can still
+        // look "connected" when the rejoin arrives; that would make the state update
+        // skip the reconnect and leave voice silent.
+        set_is_connected_to_voice(false);
+        // Let the gateway emit the disconnect before asking for the channel again;
+        // sent back to back, both updates can be merged and the rejoin ignored.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let rejoin_payload = serde_json::json!({
+            "op": 4,
+            "d": { "guild_id": effective_gid, "channel_id": target_cid, "self_mute": self_mute, "self_deaf": self_deaf }
+        });
+        let rejoin_sent = match self.ws_tx.lock().await.as_ref() {
+            Some(tx) => tx.send(Message::Text(rejoin_payload.to_string().into())).await.is_ok(),
+            None => false,
+        };
+        if !rejoin_sent {
+            warn!("🎧 [VOICE] Não foi possível reentrar no canal após a reconstrução; tentando de novo.");
+            crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.store(true, Ordering::SeqCst);
+        }
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        IS_WATCHDOG_RESETTING.store(false, Ordering::SeqCst);
+    }
+
     pub async fn start(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<GatewayCommand>) {
+        // Voice media watchdog: the voice connection asks for a rebuild when its UDP
+        // path stays dead. Rejoining needs the main gateway socket, which lives here.
+        let rejoin_client = Arc::clone(&self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if !crate::gateway::voice::VOICE_MEDIA_REJOIN_REQUESTED.swap(false, Ordering::SeqCst) {
+                    continue;
+                }
+                rejoin_client.force_voice_rejoin().await;
+            }
+        });
+
         // Spawn GatewayCommand listener loop (permanece vivo entre reconexões do WebSocket)
         let client_cmd = Arc::clone(&self);
         tokio::spawn(async move {
@@ -312,7 +494,12 @@ impl GatewayClient {
                 info!("Conectando à Gateway v9 do Discord...");
             }
 
-            match connect_async(url.as_str()).await {
+            // READY for a big account can exceed tungstenite's default 16 MiB frame
+            // limit (issue #85). Discord caps the whole message, so only the frame
+            // limit is lifted here; the message limit stays at tungstenite's 64 MiB.
+            let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                .max_frame_size(None);
+            match connect_async_with_config(url.as_str(), Some(ws_config), false).await {
                 Ok((ws_stream, _)) => {
                     info!("Conexão WebSocket estabelecida com sucesso!");
                     crate::screen_capture::invalidate_cached_stun_address();
@@ -321,6 +508,7 @@ impl GatewayClient {
                     let (ws_out_tx, mut ws_out_rx) = mpsc::channel::<Message>(100);
 
                     *self.ws_tx.lock().await = Some(ws_out_tx.clone());
+                    *GO_LIVE_WS.lock().unwrap() = Some(ws_out_tx.clone());
 
                     // Worker para envio ordenado de mensagens no WebSocket
                     let writer_task = tokio::spawn(async move {
@@ -573,6 +761,7 @@ impl GatewayClient {
                                         String::new()
                                     };
                                     if u_id > 0 && !c_str.is_empty() {
+                                        crate::native_video::note_voice_state(u_id, true, vs["self_stream"].as_bool().unwrap_or(false));
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
                                             info!("📌 [READY] Pré-carregado estado de voz: User {} -> Canal {}", u_id, c_str);
@@ -636,6 +825,7 @@ impl GatewayClient {
                                         String::new()
                                     };
                                     if u_id > 0 && !c_str.is_empty() {
+                                        crate::native_video::note_voice_state(u_id, true, vs["self_stream"].as_bool().unwrap_or(false));
                                         if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                             gvs.insert(u_id, c_str.clone());
                                             info!("📌 [READY_SUPPLEMENTAL] Estado de voz pré-carregado: User {} -> Canal {}", u_id, c_str);
@@ -709,6 +899,8 @@ impl GatewayClient {
                         } else {
                             None
                         };
+
+                        crate::native_video::note_voice_state(event_uid, event_chan.is_some(), v["d"]["self_stream"].as_bool().unwrap_or(false));
 
                         let previous_chan = if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                             if let Some(ref cid) = event_chan {
@@ -796,7 +988,7 @@ impl GatewayClient {
                     }
                 }
                 "VOICE_SERVER_UPDATE" => {
-                    info!("VOICE_SERVER_UPDATE bruto recebido: {:?}", v["d"]);
+                    info!("VOICE_SERVER_UPDATE recebido: endpoint={:?}", v["d"]["endpoint"].as_str());
                     let token = v["d"]["token"].as_str().unwrap_or("").to_string();
                     let guild_id = v["d"]["guild_id"].as_str()
                         .or_else(|| v["d"]["channel_id"].as_str())
@@ -820,6 +1012,96 @@ impl GatewayClient {
                         self.try_trigger_voice_connect();
                     } else {
                         warn!("VOICE_SERVER_UPDATE recebido com campos ausentes ou nulos: token_empty={}, endpoint_empty={}", token.is_empty(), endpoint.is_empty());
+                    }
+                }
+                "STREAM_CREATE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    {
+                        let id = |f: &str| v["d"][f].as_str().map(str::to_string)
+                            .or_else(|| v["d"][f].as_u64().map(|n| n.to_string()))
+                            .unwrap_or_default();
+                        STREAM_SERVERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default)
+                            .insert(stream_key.clone(), (id("rtc_server_id"), id("rtc_channel_id")));
+                    }
+                    let my_uid = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                    if my_uid != 0 && stream_owner(&stream_key) == my_uid {
+                        let rtc_server_id = v["d"]["rtc_server_id"].as_str().map(str::to_string)
+                            .or_else(|| v["d"]["rtc_server_id"].as_u64().map(|n| n.to_string()))
+                            .unwrap_or_default();
+                        // The stream has its own RTC channel: the server expects it in
+                        // Identify and it is the DAVE group id viewers use.
+                        let rtc_channel_id = v["d"]["rtc_channel_id"].as_str().map(str::to_string)
+                            .or_else(|| v["d"]["rtc_channel_id"].as_u64().map(|n| n.to_string()))
+                            .unwrap_or_default();
+                        info!("🎬 [GO LIVE] STREAM_CREATE key={} rtc_server={} rtc_channel={}", stream_key, rtc_server_id, rtc_channel_id);
+                        *OUTBOUND_STREAM.lock().unwrap() = Some((stream_key, rtc_server_id, rtc_channel_id));
+                        set_stream_paused(false);
+                    }
+                }
+                "STREAM_SERVER_UPDATE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let token = v["d"]["token"].as_str().unwrap_or("").to_string();
+                    let endpoint = v["d"]["endpoint"].as_str().unwrap_or("").to_string();
+                    let own = OUTBOUND_STREAM.lock().unwrap().clone();
+                    let owner = stream_owner(&stream_key);
+                    let my_uid = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                    if owner != my_uid && is_watched(&stream_key) {
+                        let (rtc_server_id, rtc_channel_id) = STREAM_SERVERS.lock().ok()
+                            .and_then(|g| g.as_ref().and_then(|m| m.get(&stream_key).cloned()))
+                            .unwrap_or_default();
+                        let session_id = self.resume.lock().unwrap().as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
+                        if token.is_empty() || endpoint.is_empty() || session_id.is_empty() || rtc_channel_id.is_empty() {
+                            warn!("🎬 [GO LIVE RX] STREAM_SERVER_UPDATE incompleto key={}", stream_key);
+                        } else {
+                            info!("🎬 [GO LIVE RX] assistindo key={} rtc_channel={}", stream_key, rtc_channel_id);
+                            tokio::spawn(crate::native_video::stream::connect_stream_viewer(
+                                endpoint.clone(), token.clone(), rtc_server_id, rtc_channel_id, session_id, my_uid, owner, stream_key.clone(),
+                            ));
+                        }
+                    }
+                    if let Some((own_key, mut rtc_server_id, rtc_channel_id)) = own.filter(|(k, _, _)| *k == stream_key) {
+                        let parts: Vec<&str> = own_key.split(':').collect();
+                        let (guild_id, channel_id) = if parts.first() == Some(&"guild") {
+                            (parts.get(1).copied().unwrap_or(""), parts.get(2).copied().unwrap_or(""))
+                        } else {
+                            ("", parts.get(1).copied().unwrap_or(""))
+                        };
+                        if rtc_server_id.is_empty() {
+                            rtc_server_id = if guild_id.is_empty() { channel_id.to_string() } else { guild_id.to_string() };
+                        }
+                        let channel_id = if rtc_channel_id.is_empty() { channel_id.to_string() } else { rtc_channel_id };
+                        let session_id = self.resume.lock().unwrap().as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
+                        let user_id = self.user_id.lock().unwrap().as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                        if token.is_empty() || endpoint.is_empty() || session_id.is_empty() || user_id == 0 {
+                            warn!("🎬 [GO LIVE] STREAM_SERVER_UPDATE incompleto key={}", own_key);
+                        } else {
+                            tokio::spawn(crate::native_video::stream::connect_stream_sender(
+                                endpoint, token, rtc_server_id, channel_id, session_id, user_id, own_key,
+                            ));
+                        }
+                    }
+                }
+                "STREAM_DELETE" => {
+                    let stream_key = v["d"]["stream_key"].as_str().unwrap_or("").to_string();
+                    let ours = {
+                        let mut own = OUTBOUND_STREAM.lock().unwrap();
+                        let ours = own.as_ref().map(|(k, _, _)| k == &stream_key).unwrap_or(false);
+                        if ours {
+                            *own = None;
+                        }
+                        ours
+                    };
+                    if ours {
+                        info!("🎬 [GO LIVE] STREAM_DELETE key={} reason={:?}", stream_key, v["d"]["reason"].as_str());
+                        crate::native_video::stream::stop_stream_sender(&stream_key);
+                    } else {
+                        if let Ok(mut g) = WATCHED_STREAMS.lock() {
+                            if let Some(set) = g.as_mut() { set.remove(&stream_key); }
+                        }
+                        crate::native_video::stream::stop_stream_viewer(&stream_key);
+                    }
+                    if let Ok(mut g) = STREAM_SERVERS.lock() {
+                        if let Some(m) = g.as_mut() { m.remove(&stream_key); }
                     }
                 }
                 "MESSAGE_CREATE" => {
@@ -1022,6 +1304,7 @@ impl GatewayClient {
                             };
 
                             if uid > 0 && !cid_str.is_empty() {
+                                crate::native_video::note_voice_state(uid, true, vs["self_stream"].as_bool().unwrap_or(false));
                                 if let Ok(mut gvs) = get_guild_voice_states_store().lock() {
                                     gvs.insert(uid, cid_str.clone());
                                     info!("📌 [GUILD_CREATE] Pré-carregado estado de voz: User {} -> Canal {}", uid, cid_str);
@@ -1113,5 +1396,23 @@ mod tests {
         for code in [4004, 4007, 4009, 4010, 4011, 4012, 4013, 4014] {
             assert!(close_ends_session(code), "{code}");
         }
+    }
+}
+
+#[cfg(test)]
+mod go_live_tests {
+    use super::*;
+
+    #[test]
+    fn stream_create_payload_matches_guild_and_call() {
+        let guild = stream_create_payload(Some("1"), 2);
+        assert_eq!(guild["op"], 18);
+        assert_eq!(guild["d"]["type"], "guild");
+        assert_eq!(guild["d"]["channel_id"], "2");
+        let call = stream_create_payload(None, 3);
+        assert_eq!(call["d"]["type"], "call");
+        assert!(call["d"]["guild_id"].is_null());
+        assert_eq!(stream_owner("guild:1:2:42"), 42);
+        assert_eq!(stream_owner("call:2:43"), 43);
     }
 }

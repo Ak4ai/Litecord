@@ -507,6 +507,26 @@ pub fn save_persisted_language_config(lang: Language) {
     }
 }
 
+/// Whether the system is set to Brazilian Portuguese (pt-BR), not just any
+/// Portuguese: used as a "probably in Brazil" hint.
+pub fn os_is_brazilian_portuguese() -> bool {
+    if let Ok(lang) = std::env::var("LANG").or_else(|_| std::env::var("LC_ALL")) {
+        let lower = lang.to_lowercase().replace('-', "_");
+        if lower.starts_with("pt") {
+            return lower.starts_with("pt_br");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // MAKELANGID(LANG_PORTUGUESE, SUBLANG_PORTUGUESE_BRAZILIAN)
+        windows_sys::Win32::Globalization::GetUserDefaultUILanguage() == 0x0416
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn detect_os_language() -> Language {
     if let Ok(lang) = std::env::var("LANG").or_else(|_| std::env::var("LC_ALL")) {

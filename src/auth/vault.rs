@@ -237,9 +237,13 @@ pub struct AccountVault {
 
 pub fn load_account_vault() -> AccountVault {
     let (primary_path, fallback_path) = get_secure_token_paths();
-    let raw = match std::fs::read_to_string(&primary_path).or_else(|_| std::fs::read_to_string(&fallback_path)) {
-        Ok(s) => s,
-        Err(_) => return AccountVault::default(),
+    // The copy in the working folder is only read to move it to the profile folder.
+    let (raw, from_fallback) = match std::fs::read_to_string(&primary_path) {
+        Ok(s) => (s, false),
+        Err(_) => match std::fs::read_to_string(&fallback_path) {
+            Ok(s) => (s, true),
+            Err(_) => return AccountVault::default(),
+        },
     };
     let trimmed = raw.trim();
 
@@ -278,12 +282,23 @@ pub fn load_account_vault() -> AccountVault {
         }
     };
 
+    let was_encrypted = decrypted_str.is_some();
     let content = decrypted_str.unwrap_or_else(|| trimmed.to_string());
     if content.is_empty() {
         return AccountVault::default();
     }
 
-    if let Ok(vault) = serde_json::from_str::<AccountVault>(&content) {
+    let vault = parse_vault(&content);
+    // Older versions wrote plain text when encryption failed, and a copy next to
+    // wherever the app was started: rewrite it encrypted in the profile folder.
+    if (from_fallback || !was_encrypted) && !vault.accounts.is_empty() {
+        save_account_vault(&vault);
+    }
+    vault
+}
+
+fn parse_vault(content: &str) -> AccountVault {
+    if let Ok(vault) = serde_json::from_str::<AccountVault>(content) {
         return vault;
     }
 
@@ -317,33 +332,43 @@ pub fn save_account_vault(vault: &AccountVault) {
         Err(_) => return,
     };
 
+    // Tokens are never written in plain text: if encryption fails the accounts
+    // stay in memory for this session only.
     #[cfg(target_os = "windows")]
-    {
-        if let Some(encrypted) = dpapi_protect(json_str.as_bytes()) {
-            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
-            let payload = format!("DPAPI:{}", b64);
-            let _ = std::fs::write(&primary_path, &payload);
-            let _ = std::fs::write(&fallback_path, &payload);
-        } else {
-            let _ = std::fs::write(&primary_path, &json_str);
-            let _ = std::fs::write(&fallback_path, &json_str);
-        }
-    }
-
+    let payload = dpapi_protect(json_str.as_bytes())
+        .map(|e| format!("DPAPI:{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &e)));
     #[cfg(not(target_os = "windows"))]
+    let payload = linux_vault_protect(json_str.as_bytes())
+        .map(|e| format!("LNX_VAULT:{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &e)));
+
+    let Some(payload) = payload else {
+        log::warn!("Não foi possível criptografar as contas salvas; nada foi gravado em disco.");
+        return;
+    };
+    if std::fs::write(&primary_path, &payload).is_err() {
+        log::warn!("Não foi possível gravar as contas salvas em {:?}", primary_path);
+        return;
+    }
+    #[cfg(unix)]
     {
-        if let Some(encrypted) = linux_vault_protect(json_str.as_bytes()) {
-            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
-            let payload = format!("LNX_VAULT:{}", b64);
-            let _ = std::fs::write(&primary_path, &payload);
-            let _ = std::fs::write(&fallback_path, &payload);
-        } else {
-            let _ = std::fs::write(&primary_path, &json_str);
-            let _ = std::fs::write(&fallback_path, &json_str);
-        }
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&primary_path, std::fs::Permissions::from_mode(0o600));
-        let _ = std::fs::set_permissions(&fallback_path, std::fs::Permissions::from_mode(0o600));
+    }
+    // Copies in the working folder (older versions) are wiped once the profile
+    // folder holds the accounts.
+    if fallback_path != primary_path {
+        wipe_file(&fallback_path);
+    }
+}
+
+/// Overwrites a file with zeros before removing it.
+fn wipe_file(path: &std::path::Path) {
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let len = metadata.len() as usize;
+        if len > 0 {
+            let _ = std::fs::write(path, vec![0u8; len]);
+        }
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -398,16 +423,7 @@ pub fn delete_secure_token() {
     }
     let (primary_path, fallback_path) = get_secure_token_paths();
     for path in [&primary_path, &fallback_path] {
-        if path.exists() {
-            if let Ok(metadata) = std::fs::metadata(path) {
-                let len = metadata.len() as usize;
-                if len > 0 {
-                    let zeroes = vec![0u8; len];
-                    let _ = std::fs::write(path, &zeroes);
-                }
-            }
-            let _ = std::fs::remove_file(path);
-        }
+        wipe_file(path);
     }
 }
 

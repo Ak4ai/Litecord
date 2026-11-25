@@ -10,6 +10,7 @@ pub mod http;
 pub mod channel_permissions;
 pub mod encoder;
 pub mod screen_capture;
+pub mod native_video;
 #[cfg(feature = "automation")]
 mod automation;
 
@@ -141,13 +142,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("🖥️ Inicializando Slint AppWindow (renderizador: {})...",
         std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "GPU".to_string()));
+    let configure_window = |ui: &AppWindow| {
+        if let Some(saved) = video_settings::get_window_geometry() {
+            ui.window().set_size(slint::LogicalSize::new(
+                saved.width as f32,
+                saved.height as f32,
+            ));
+            #[cfg(not(target_os = "linux"))]
+            if let (Some(x), Some(y)) = (saved.x, saved.y) {
+                ui.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+            }
+            if saved.maximized {
+                ui.window().set_maximized(true);
+                ui.set_is_maximized(true);
+            }
+        }
+    };
+
     let app = match AppWindow::new() {
         Ok(app) => {
+            configure_window(&app);
             info!("🖥️ Exibindo janela principal (app.show())...");
             if let Err(e) = app.show() {
                 log::warn!("⚠️ Falha ao exibir janela com GPU ({:?}). Ativando fallback automático para Software Renderer...", e);
                 std::env::set_var("SLINT_BACKEND", "software");
                 let sw_app = AppWindow::new()?;
+                configure_window(&sw_app);
                 sw_app.show()?;
                 info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
                 sw_app
@@ -160,6 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("⚠️ Falha ao inicializar backend gráfico ({:?}). Ativando fallback automático para Software Renderer...", e);
             std::env::set_var("SLINT_BACKEND", "software");
             let sw_app = AppWindow::new()?;
+            configure_window(&sw_app);
             sw_app.show()?;
             info!("🖥️ Janela Slint exibida com sucesso via Software Renderer!");
             sw_app
@@ -252,8 +273,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
-                        if ui.get_is_maximized() != w.is_maximized() {
-                            ui.set_is_maximized(w.is_maximized());
+                        let is_max = crate::ui::window_place::is_maximized(w);
+                        if ui.get_is_maximized() != is_max {
+                            ui.set_is_maximized(is_max);
                         }
                     }
                 });
@@ -303,6 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if crate::ui::window_place::restore(winit_win) {
                     ui.set_is_maximized(true);
                 }
+                crate::ui::window_place::register(&app_weak_init);
                 winit_win.set_visible(true);
                 winit_win.set_minimized(false);
                 // A frameless window gets no drop shadow, so over another light window its
@@ -315,27 +338,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 winit_win.focus_window();
                 winit_win.request_redraw();
+                #[cfg(target_os = "windows")]
                 if let Some(pop_win) = popout_weak_init.upgrade() {
                     pop_win.window().with_winit_window(|winit_pop| {
                         winit_pop.set_decorations(false);
                         let _ = winit_pop.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
                         winit_pop.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                         winit_pop.set_visible(false);
-                        #[cfg(target_os = "windows")]
-                        {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            if let Ok(handle) = winit_pop.window_handle() {
-                                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                                    let hwnd = win32_handle.hwnd.get() as isize;
-                                    *pop_hwnd_c.lock().unwrap() = Some(hwnd);
-                                    set_dark_titlebar_color(hwnd);
-                                    unsafe {
-                                        use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
-                                        };
-                                        let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
-                                        SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
-                                    }
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        if let Ok(handle) = winit_pop.window_handle() {
+                            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                                let hwnd = win32_handle.hwnd.get() as isize;
+                                *pop_hwnd_c.lock().unwrap() = Some(hwnd);
+                                set_dark_titlebar_color(hwnd);
+                                unsafe {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                        GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+                                    };
+                                    let style = GetWindowLongPtrW(hwnd as _, GWL_STYLE) as u32;
+                                    SetWindowLongPtrW(hwnd as _, GWL_STYLE, (style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize);
                                 }
                             }
                         }
@@ -511,7 +532,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_send = std::time::Instant::now();
         let mut last_level = -1.0f32;
         while let Some(level) = level_rx.recv().await {
-            gateway::set_self_mic_level(level);
+            // The level is already published by the processing path; this task only
+            // carries it to the settings meter.
             // Only the settings meter shows this value (the voice panel reads the level
             // directly), so the UI is not woken for it otherwise.
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !MIC_METER_VISIBLE.load(Ordering::Relaxed) {
@@ -649,6 +671,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 let _ = pop_win.window().with_winit_window(|w| {
+                    w.set_decorations(false);
+                    let _ = w.request_inner_size(winit::dpi::LogicalSize::new(640.0, 360.0));
+                    w.set_min_inner_size(Some(winit::dpi::LogicalSize::new(180.0, 100.0)));
                     w.set_visible(true);
                     w.set_minimized(false);
                     w.focus_window();
@@ -915,7 +940,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latest_rx_frame_cb = Arc::clone(&latest_rx_frame);
     let is_rx_ui_pending_cb = Arc::clone(&is_rx_ui_pending);
 
-    screen_manager.start_receiver(
+    let rx_frame_cb: crate::native_video::FrameCallback = Arc::new(
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
@@ -962,6 +987,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     should_update_pop = true;
                                 }
                                 ui.set_has_active_stream(true);
+                                if ui.get_connecting_stream_uid() == uid_str.as_str() {
+                                    ui.set_connecting_stream_uid("".into());
+                                }
                                 ui.set_active_stream_user_id(uid_str.clone().into());
                                 ui.set_active_stream_user(uname.into());
                                 ui.set_tr_stream_quality(quality.into());
@@ -997,7 +1025,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        },
+    });
+    // Go Live from official clients is drawn by the same renderer.
+    crate::native_video::set_frame_callback(Arc::clone(&rx_frame_cb));
+    screen_manager.start_receiver(
+        move |uid, uname, quality, pixel_buf| rx_frame_cb(uid, uname, quality, pixel_buf),
         {
             let app_w = app_weak_rx.clone();
             let pop_w = pop_w_rx.clone();
@@ -1081,7 +1113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if active {
                 info!("🛑 Encerrando transmissão de tela P2P...");
                 sm.stop();
+                gateway::delete_stream();
                 ui.set_is_screen_sharing(false);
+                screen_capture::set_self_streaming(false);
                 ui.set_web_share_active(false);
                 ui.set_web_share_url("".into());
                 ui.set_web_share_viewers(0);
@@ -1122,7 +1156,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => 720,
                 };
                 let fps_val = ui.get_stream_selected_fps();
-                let target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
+                let mut target_fps: i32 = if fps_val <= 0 { 30 } else { fps_val };
+                // Go Live without the unlock: no more than an account without
+                // Nitro may send (720p 30fps).
+                let mut res_val = res_val;
+                let mut res_str = res_str;
+                if ui.get_stream_go_live()
+                    && ui.get_stream_source_tab().as_str() != "cameras"
+                    && !video_settings::get_go_live_unlock()
+                {
+                    if res_val > 720 {
+                        res_val = 720;
+                        res_str = "720p".to_string();
+                    }
+                    target_fps = target_fps.min(30);
+                }
 
                 let source_tab = ui.get_stream_source_tab().to_string();
                 let (target_hwnd, screen_index, camera_index, include_audio) = if source_tab == "cameras" {
@@ -1188,6 +1236,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
                 ui.set_is_screen_sharing(true);
+                screen_capture::set_self_streaming(true);
+                // Native Go Live rides on the frames encoded above: nothing extra
+                // runs unless the user switched it on for this share.
+                let go_live = ui.get_stream_go_live() && source_tab != "cameras";
+                video_settings::set_go_live(ui.get_stream_go_live());
+                if go_live && cid != 0 {
+                    let gid = gateway::get_my_voice_guild_id();
+                    let gid_opt = if !gid.is_empty() && gid != "@me" { Some(gid) } else { None };
+                    info!("🎬 [GO LIVE] Pedindo transmissão nativa no canal {} (guild={:?})", cid, gid_opt);
+                    gateway::create_stream(gid_opt, cid);
+                }
                 if video_settings::get_enable_self_preview_notice() {
                     ui.set_show_self_preview_notice(true);
                     let app_weak_notice = app_weak_ss.clone();
@@ -1384,6 +1443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_available_cameras(std::rc::Rc::new(slint::VecModel::from(ui_cameras)).into());
 
             ui.set_stream_selected_source_index(0);
+            ui.set_stream_go_live(video_settings::get_go_live());
             if ui.get_stream_source_tab() == "windows" {
                 ui.set_stream_selected_window_id(first_win_id.into());
                 ui.set_stream_include_audio(true);
@@ -1426,6 +1486,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hidden_streams_hide.lock().unwrap().insert(uid.clone());
         // Hiding someone's stream stops receiving it (the sender stops sending to us).
         screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), false);
+        if let Some(key) = gateway::stream_key_for(uid.parse().unwrap_or(0)) {
+            gateway::unwatch_stream(&key);
+        }
+        if let Some(ui) = app_weak_hide.upgrade() {
+            if ui.get_connecting_stream_uid() == uid.as_str() {
+                ui.set_connecting_stream_uid("".into());
+            }
+        }
         if let Some(ui) = app_weak_hide.upgrade() {
             if ui.get_focused_stream_uid() == uid.as_str() {
                 ui.set_focused_stream_uid("".into());
@@ -1453,6 +1521,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hidden_streams_unhide.lock().unwrap().remove(uid.as_str());
         // Watch: ask the sender for the stream.
         screen_capture::watch::set_wanted(uid.parse().unwrap_or(0), true);
+        let uid_n: u64 = uid.parse().unwrap_or(0);
+        if crate::native_video::is_native_live(uid_n) {
+            if let Some(key) = gateway::stream_key_for(uid_n) {
+                gateway::watch_stream(&key);
+                if let Some(ui) = app_weak_unhide.upgrade() {
+                    ui.set_connecting_stream_uid(uid.as_str().into());
+                    // No frame in 10 s: give the button back so it can be retried.
+                    let weak = app_weak_unhide.clone();
+                    let uid_t = uid.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_secs(10), move || {
+                        if let Some(ui) = weak.upgrade() {
+                            if ui.get_connecting_stream_uid() == uid_t.as_str() {
+                                ui.set_connecting_stream_uid("".into());
+                                gateway::unwatch_stream(&key);
+                            }
+                        }
+                    });
+                }
+            }
+        }
         if let Some(ui) = app_weak_unhide.upgrade() {
             if ui.get_popped_out_stream_uid() == uid.as_str() {
                 ui.set_popped_out_stream_uid("".into());
@@ -1576,6 +1664,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // comes back or voice connects (created before the check so no wake is lost).
             let woken = UI_LOOPS_WAKE.notified();
             if !APP_IS_VISIBLE.load(Ordering::Relaxed) || !gateway::is_connected_to_voice() {
+                // Out of the call (or hidden): no ring may stay lit in the sidebar.
+                if gateway::set_speaking_users(Vec::new()) {
+                    push_speaking_to_sidebar(&app_weak_voice_loop);
+                }
                 woken.await;
                 continue;
             }
@@ -1601,6 +1693,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ssrc_levels.insert(ssrc, if rms < 0.005 { 0.0 } else { (rms * 3.5).clamp(0.0, 1.0) });
                         }
                     }
+                }
+            }
+
+            // Speaking ring in the channel sidebar: same levels as the bars, so nothing is
+            // measured twice. The UI is touched only when the set of speakers changes.
+            {
+                let mut speaking: Vec<u64> = parts_snapshot
+                    .iter()
+                    .filter(|&&(ssrc, _)| ssrc_levels.get(&ssrc).copied().unwrap_or(0.0) > 0.03)
+                    .map(|&(_, uid)| uid)
+                    .collect();
+                if self_level >= gateway::get_vad_threshold() {
+                    speaking.push(if my_uid != 0 { my_uid } else { 999999 });
+                }
+                if gateway::set_speaking_users(speaking) {
+                    push_speaking_to_sidebar(&app_weak_voice_loop);
                 }
             }
 
@@ -1918,8 +2026,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guilds_map_badges = Arc::clone(&guilds_map);
     let active_guild_badges = Arc::clone(&active_guild_id);
     tokio::spawn(async move {
+        // Who is speaking is pushed by the voice panel loop (see `push_speaking_to_sidebar`),
+        // so this loop keeps its 1.5 s cadence and only tracks members and LIVE badges.
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
-        let mut last_fingerprint: Vec<(String, Vec<(u64, String)>)> = Vec::new();
+        let mut last_fingerprint: Vec<(String, Vec<(u64, String, bool)>)> = Vec::new();
         let mut last_gid = String::new();
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -1941,10 +2051,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if let Some(chans) = channels_opt {
+                let my_uid = gateway::get_my_user_id();
                 let mut current_fingerprint = Vec::with_capacity(chans.len());
                 for ch in &chans {
                     let participants = if ch.is_voice {
                         gateway::get_voice_channel_participants(&ch.id)
+                            .into_iter()
+                            .map(|(uid, name)| {
+                                let is_self_member = uid == 999999 || (my_uid != 0 && uid == my_uid);
+                                let streaming = if is_self_member {
+                                    crate::screen_capture::is_self_streaming()
+                                } else {
+                                    crate::screen_capture::peer_is_streaming(uid)
+                                };
+                                (uid, name, streaming)
+                            })
+                            .collect()
                     } else {
                         Vec::new()
                     };
@@ -1972,6 +2094,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if old_c.voice_count != new_c.voice_count
                                             || old_c.name != new_c.name
                                             || old_c.id != new_c.id
+                                            || old_c.is_speaking != new_c.is_speaking
+                                            || old_c.is_streaming != new_c.is_streaming
                                         {
                                             cur_chans.set_row_data(i, new_c.clone());
                                         }
@@ -2304,6 +2428,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let app_weak_glu = app_weak.clone();
+    app.on_toggle_go_live_unlock(move || {
+        let new_val = video_settings::toggle_go_live_unlock();
+        if let Some(ui) = app_weak_glu.upgrade() {
+            ui.set_go_live_unlock(new_val);
+        }
+    });
+
     let app_weak_hw = app_weak.clone();
     app.on_toggle_hardware_monitor(move || {
         let new_val = video_settings::toggle_show_hardware_monitor();
@@ -2550,6 +2682,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Close the microphone: it was opened on join and kept capturing after leaving.
         *active_mic_leave.lock().unwrap() = None;
         sm_leave.stop();
+        gateway::delete_stream();
+        gateway::clear_watched_streams();
         sm_leave.set_context(0, 0, "");
         screen_capture::clear_stream_audio_queue();
         hidden_streams_leave.lock().unwrap().clear();
@@ -2568,6 +2702,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_current_voice_channel("".into());
             ui.set_is_in_dm_call(false); // também encerra chamada DM se estava ativa
             ui.set_is_screen_sharing(false);
+            screen_capture::set_self_streaming(false);
             ui.set_show_self_preview_notice(false);
             ui.set_web_share_active(false);
             ui.set_web_share_url("".into());
@@ -2953,6 +3088,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(http) = http_opt {
             if let Some(ui) = app_w.upgrade() {
+                // History browsing has its own cap, so "load older" cannot grow
+                // the scene forever; live appends trim back and re-enable it.
+                if ui.get_messages().row_count() >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY {
+                    ui.set_has_more_older_messages(false);
+                    return;
+                }
                 ui.set_is_loading_older_messages(true);
             }
 
@@ -3017,8 +3158,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 regroup_messages(&mut combined);
                                 avatar_cache::get_avatar_cache().hydrate(&mut combined, &app_w_inner);
                                 crate::ui::invite_cards::hydrate(&mut combined, &app_w_inner);
+                                let window_is_full = combined.len() >= crate::ui::message_grouping::MAX_CHAT_ROWS_WITH_HISTORY;
                                 let model = std::rc::Rc::new(slint::VecModel::from(combined));
                                 ui.set_messages(model.into());
+                                if window_is_full {
+                                    ui.set_has_more_older_messages(false);
+                                }
                             }
                         });
                     }
@@ -3959,6 +4104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let clean_name = crate::utils::styled_text::plain_display_name(ch_name.trim_start_matches('#').trim());
                 ui.set_active_channel_name(clean_name.as_ref().into());
                 ui.set_active_channel_id(ch_id.clone().into());
+                remember_last_channel(&gid, &ch_id);
                 ui.set_is_voice_focused(false);
                 request_chat_scroll_to_bottom(app_weak_chan_select.clone());
 
@@ -3990,7 +4136,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mute Button Toggle Callback
     let cmd_tx_mute = Arc::clone(&cmd_tx_store);
     let active_guild_mute = Arc::clone(&active_guild_id);
-    let active_channel_mute = Arc::clone(&active_channel_id);
     let app_weak_mute = app_weak.clone();
 
     app.on_toggle_mute(move || {
@@ -4003,17 +4148,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound_effects::UiSound::Unmute
             });
 
-            let gid = active_guild_mute.lock().unwrap().clone();
-            let cid = active_channel_mute.lock().unwrap().clone();
             let deafened = ui.get_is_deafened();
+            // Always address the channel and guild we are actually in voice with:
+            // using the ones open in the UI sends the mute somewhere else and tears
+            // the running voice session down.
+            let voice_cid = gateway::get_my_voice_channel_id();
+            let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+            let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+            let gid = if in_voice { gateway::get_my_voice_guild_id() } else { active_guild_mute.lock().unwrap().clone() };
 
-            if let Some(cmd_tx_guard) = cmd_tx_mute.lock().unwrap().as_ref() {
-                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
-                    channel_id: Some(cid),
-                    self_mute: new_muted,
-                    self_deaf: deafened,
-                });
+            if !cid.is_empty() {
+                if let Some(cmd_tx_guard) = cmd_tx_mute.lock().unwrap().as_ref() {
+                    let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                        guild_id: gid,
+                        channel_id: Some(cid),
+                        self_mute: new_muted,
+                        self_deaf: deafened,
+                    });
+                }
             }
         }
     });
@@ -4021,7 +4173,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deafen Button Toggle Callback
     let cmd_tx_deafen = Arc::clone(&cmd_tx_store);
     let active_guild_deafen = Arc::clone(&active_guild_id);
-    let active_channel_deafen = Arc::clone(&active_channel_id);
     let app_weak_deafen = app_weak.clone();
 
     app.on_toggle_deafen(move || {
@@ -4035,17 +4186,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound_effects::UiSound::Undeafen
             });
 
-            let gid = active_guild_deafen.lock().unwrap().clone();
-            let cid = active_channel_deafen.lock().unwrap().clone();
             let muted = ui.get_is_muted();
+            let voice_cid = gateway::get_my_voice_channel_id();
+            let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+            let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+            let gid = if in_voice { gateway::get_my_voice_guild_id() } else { active_guild_deafen.lock().unwrap().clone() };
 
-            if let Some(cmd_tx_guard) = cmd_tx_deafen.lock().unwrap().as_ref() {
-                let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                    guild_id: gid,
-                    channel_id: Some(cid),
-                    self_mute: muted,
-                    self_deaf: new_deafened,
-                });
+            if !cid.is_empty() {
+                if let Some(cmd_tx_guard) = cmd_tx_deafen.lock().unwrap().as_ref() {
+                    let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                        guild_id: gid,
+                        channel_id: Some(cid),
+                        self_mute: muted,
+                        self_deaf: new_deafened,
+                    });
+                }
             }
         }
     });
@@ -4054,12 +4209,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_kb_mute = app_weak.clone();
     let cmd_tx_kb_mute = Arc::clone(&cmd_tx_store);
     let active_guild_kb_mute = Arc::clone(&active_guild_id);
-    let active_channel_kb_mute = Arc::clone(&active_channel_id);
 
     let app_weak_kb_deaf = app_weak.clone();
     let cmd_tx_kb_deaf = Arc::clone(&cmd_tx_store);
     let active_guild_kb_deaf = Arc::clone(&active_guild_id);
-    let active_channel_kb_deaf = Arc::clone(&active_channel_id);
 
     let app_weak_kb_rec = app_weak.clone();
 
@@ -4068,7 +4221,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w = app_weak_kb_mute.clone();
             let cmd_tx = Arc::clone(&cmd_tx_kb_mute);
             let agid = Arc::clone(&active_guild_kb_mute);
-            let acid = Arc::clone(&active_channel_kb_mute);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let new_muted = !ui.get_is_muted();
@@ -4079,17 +4231,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sound_effects::UiSound::Unmute
                     });
 
-                    let gid = agid.lock().unwrap().clone();
-                    let cid = acid.lock().unwrap().clone();
                     let deafened = ui.get_is_deafened();
+                    let voice_cid = gateway::get_my_voice_channel_id();
+                    let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+                    let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+                    let gid = if in_voice { gateway::get_my_voice_guild_id() } else { agid.lock().unwrap().clone() };
 
-                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
-                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                            guild_id: gid,
-                            channel_id: Some(cid),
-                            self_mute: new_muted,
-                            self_deaf: deafened,
-                        });
+                    if !cid.is_empty() {
+                        if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                                guild_id: gid,
+                                channel_id: Some(cid),
+                                self_mute: new_muted,
+                                self_deaf: deafened,
+                            });
+                        }
                     }
                 }
             });
@@ -4098,7 +4254,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_w = app_weak_kb_deaf.clone();
             let cmd_tx = Arc::clone(&cmd_tx_kb_deaf);
             let agid = Arc::clone(&active_guild_kb_deaf);
-            let acid = Arc::clone(&active_channel_kb_deaf);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = app_w.upgrade() {
                     let new_deafened = !ui.get_is_deafened();
@@ -4110,17 +4265,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sound_effects::UiSound::Undeafen
                     });
 
-                    let gid = agid.lock().unwrap().clone();
-                    let cid = acid.lock().unwrap().clone();
                     let muted = ui.get_is_muted();
+                    let voice_cid = gateway::get_my_voice_channel_id();
+                    let in_voice = ui.get_is_in_voice() && voice_cid > 0;
+                    let cid = if in_voice { voice_cid.to_string() } else { String::new() };
+                    let gid = if in_voice { gateway::get_my_voice_guild_id() } else { agid.lock().unwrap().clone() };
 
-                    if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
-                        let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
-                            guild_id: gid,
-                            channel_id: Some(cid),
-                            self_mute: muted,
-                            self_deaf: new_deafened,
-                        });
+                    if !cid.is_empty() {
+                        if let Some(cmd_tx_guard) = cmd_tx.lock().unwrap().as_ref() {
+                            let _ = cmd_tx_guard.try_send(GatewayCommand::UpdateVoiceState {
+                                guild_id: gid,
+                                channel_id: Some(cid),
+                                self_mute: muted,
+                                self_deaf: new_deafened,
+                            });
+                        }
                     }
                 }
             });
@@ -4146,6 +4305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_send_message(move |content: SharedString| {
         let content_str = content.to_string();
         let channel_id = active_channel_msg.lock().unwrap().clone();
+        invalidate_message_cache(&channel_id);
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
 
         if let Some(http) = http_opt {
@@ -4153,6 +4313,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = http.send_message(&channel_id, &content_str).await;
             });
         }
+    });
+
+    // Community onboarding: pick answers, save them, then reload the server so the
+    // new roles and channels appear immediately.
+    let app_weak_onb_toggle = app_weak.clone();
+    app.on_onboarding_toggle(move |prompt: i32, option: i32| {
+        if let Some(ui) = app_weak_onb_toggle.upgrade() {
+            crate::ui::onboarding::toggle(&ui, prompt.max(0) as usize, option.max(0) as usize);
+        }
+    });
+
+    let app_weak_onb_dismiss = app_weak.clone();
+    app.on_onboarding_dismiss(move || {
+        if let Some(ui) = app_weak_onb_dismiss.upgrade() {
+            ui.set_show_onboarding_modal(false);
+            let guild_id = ui.get_onboarding_guild_id().to_string();
+            crate::ui::onboarding::mark_dismissed(&guild_id);
+        }
+    });
+
+    let app_weak_onb_submit = app_weak.clone();
+    let http_onb = Arc::clone(&http_client);
+    let guilds_map_onb = Arc::clone(&guilds_map);
+    let active_guild_onb = Arc::clone(&active_guild_id);
+    let active_channel_onb = Arc::clone(&active_channel_id);
+    let cmd_tx_onb = Arc::clone(&cmd_tx_store);
+    app.on_onboarding_submit(move || {
+        let Some(ui) = app_weak_onb_submit.upgrade() else { return };
+        if ui.get_onboarding_submitting() {
+            return;
+        }
+        let guild_id = ui.get_onboarding_guild_id().to_string();
+        let submission = match crate::ui::onboarding::take_submission(&ui) {
+            Ok(submission) => submission,
+            Err(err) => {
+                ui.set_onboarding_error(err.into());
+                return;
+            }
+        };
+        let http_opt = http_onb.lock().unwrap().as_ref().cloned();
+        let Some(http) = http_opt else {
+            ui.set_onboarding_error(crate::utils::i18n_ui::ui_text().onboarding_error.into());
+            return;
+        };
+        ui.set_onboarding_submitting(true);
+        ui.set_onboarding_error("".into());
+
+        let app_w = app_weak_onb_submit.clone();
+        let guilds_map = Arc::clone(&guilds_map_onb);
+        let active_guild = Arc::clone(&active_guild_onb);
+        let active_channel = Arc::clone(&active_channel_onb);
+        let cmd_tx = Arc::clone(&cmd_tx_onb);
+        tokio::spawn(async move {
+            let body = crate::ui::onboarding::request_body(&submission);
+            match http.submit_guild_onboarding(&guild_id, &body).await {
+                Ok(()) => {
+                    crate::ui::onboarding::mark_done(&guild_id);
+                    crate::channel_permissions::forget(&guild_id);
+                    crate::ui::data_loader::mark_guild_stale(&guild_id);
+                    let app_hide = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_hide.upgrade() {
+                            ui.set_show_onboarding_modal(false);
+                            ui.set_onboarding_submitting(false);
+                        }
+                    });
+                    fetch_and_populate_channels(
+                        &http,
+                        app_w,
+                        guilds_map,
+                        active_guild,
+                        active_channel,
+                        cmd_tx,
+                        &guild_id,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    warn!("Falha ao salvar onboarding: {}", err);
+                    let message = crate::utils::i18n_ui::ui_text().onboarding_error.to_string();
+                    let app_err = app_w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = app_err.upgrade() {
+                            ui.set_onboarding_submitting(false);
+                            ui.set_onboarding_error(message.into());
+                        }
+                    });
+                }
+            }
+        });
     });
 
     // Click Command Callback (fills input with command parameter pill)
@@ -4458,9 +4708,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            // The UI property is the source of truth: on macOS querying winit's state is a
-            // mutating getter for borderless windows (see the window event handler above).
-            let next = !app_instance.get_is_maximized();
+            // `window().is_maximized()` misses the state on some Wayland compositors; on
+            // macOS querying winit's state is a mutating getter for borderless windows, so
+            // there the UI property is the source of truth.
+            #[allow(unused_mut)]
+            let mut is_max = app_instance.get_is_maximized();
+            #[cfg(not(target_os = "macos"))]
+            app_instance.window().with_winit_window(|w| {
+                is_max = crate::ui::window_place::is_maximized(w);
+            });
+            let next = !is_max;
             app_instance.window().set_maximized(next);
             app_instance.set_is_maximized(next);
         }
@@ -4474,6 +4731,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "linux")]
         screen_capture::kill_portal_child();
         std::process::exit(0);
+    });
+
+    let sm_for_close_req = Arc::clone(&screen_manager);
+    app.window().on_close_requested(move || {
+        info!("Solicitação nativa de fechamento da janela recebida (Alt+F4 / Taskbar)...");
+        crate::ui::window_place::save_now();
+        sm_for_close_req.stop();
+        #[cfg(target_os = "linux")]
+        screen_capture::kill_portal_child();
+        std::process::exit(0);
+        #[allow(unreachable_code)]
+        slint::CloseRequestResponse::HideWindow
     });
 
     // Handle Gateway Events in Tokio Task and Dispatch to Slint UI Thread
@@ -4507,6 +4776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.set_is_in_voice(false);
                             ui.set_is_voice_connecting(false);
                             ui.set_is_screen_sharing(false);
+                            screen_capture::set_self_streaming(false);
                             ui.set_has_active_stream(false);
                             ui.set_popped_out_stream_uid("".into());
                             ui.set_voice_participants(slint::ModelRc::new(slint::VecModel::from(vec![])));
@@ -4547,6 +4817,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageCreated { id, channel_id, author, author_id, created_at, avatar_url, is_bot, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments, is_self } => {
+                    invalidate_message_cache(&channel_id);
                     // Deduplicação: ignora se esta mensagem já foi processada anteriormente
                     if !id.is_empty() && crate::ui::helpers::mark_msg_seen(&id) {
                         continue;
@@ -4666,6 +4937,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let messages = ui.get_messages();
                                 if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
                                     model.push(appended);
+                                    // Bounded while the reader is at the bottom; the rows that
+                                    // leave are above the viewport and "load older" brings them back.
+                                    if ui.get_chat_is_at_bottom()
+                                        && crate::ui::message_grouping::trim_chat_window_and_rebase(model, &channel_id)
+                                    {
+                                        ui.set_has_more_older_messages(true);
+                                    }
                                 } else {
                                     current_msgs.push(appended);
                                     ui.set_messages(std::rc::Rc::new(slint::VecModel::from(current_msgs)).into());
@@ -4677,6 +4955,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 GatewayEvent::MessageUpdated { id, channel_id, content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments } => {
+                    invalidate_message_cache(&channel_id);
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // Hidden: the open channel is refetched when the window comes back.
                     if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
@@ -4755,6 +5034,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 GatewayEvent::MessageDeleted { id, channel_id } => {
+                    invalidate_message_cache(&channel_id);
                     let current_active_ch = active_channel_inner.lock().unwrap().clone();
                     // Hidden: the open channel is refetched when the window comes back.
                     if channel_id != current_active_ch || !APP_IS_VISIBLE.load(Ordering::Relaxed) {
@@ -4901,3 +5181,25 @@ mod tests {
     }
 }
 
+/// Lights or clears the speaking ring on the sidebar rows of call members. Only the
+/// `is_speaking` field of rows whose state changed is written, so Slint redraws just
+/// those avatars instead of the whole channel list.
+fn push_speaking_to_sidebar(app_weak: &slint::Weak<AppWindow>) {
+    let app_w = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        let Some(ui) = app_w.upgrade() else { return };
+        let rows = ui.get_channels();
+        for i in 0..rows.row_count() {
+            let Some(mut row) = rows.row_data(i) else { continue };
+            if !row.is_voice_member {
+                continue;
+            }
+            let Some(uid) = row.id.rsplit(':').next().and_then(|u| u.parse::<u64>().ok()) else { continue };
+            let speaking = gateway::is_voice_user_speaking(uid);
+            if row.is_speaking != speaking {
+                row.is_speaking = speaking;
+                rows.set_row_data(i, row);
+            }
+        }
+    });
+}

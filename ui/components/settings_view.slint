@@ -63,6 +63,7 @@ export component SettingsView inherits Rectangle {
     in property <[SettingOptionItem]> audio_loopback_options;
     in property <bool> enable_self_preview_notice;
     in property <bool> show_hardware_monitor;
+    in property <bool> go_live_unlock;
     in property <bool> use_gpu_renderer;
     in property <bool> net_diag_running;
     in property <int> net_diag_verdict: -1; // -1 not run, 0 direct, 1 symmetric, 2 varying IP, 3 UDP blocked
@@ -100,6 +101,7 @@ export component SettingsView inherits Rectangle {
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
+    callback toggle_go_live_unlock();
     callback toggle_gpu_renderer();
     callback run_network_diagnostics();
     callback copy_network_diagnostics();
@@ -137,6 +139,9 @@ export component SettingsView inherits Rectangle {
         TouchArea { clicked => {} }
 
         VerticalLayout {
+            // Keep the children inside the 1px border, so it stays visible all around
+            // instead of being painted over by the navigation panel.
+            padding: 1px;
             // Header: title, version, close.
             Rectangle {
                 height: 56px;
@@ -193,6 +198,8 @@ export component SettingsView inherits Rectangle {
                 Rectangle {
                     width: 220px;
                     background: AppTheme.surface-sidebar;
+                    // Follows the window's rounded corner (12px minus the 1px border).
+                    border-bottom-left-radius: 11px;
                     VerticalLayout {
                         padding: 12px;
                         padding-top: 20px;
@@ -234,13 +241,16 @@ export component SettingsView inherits Rectangle {
                     }
                 }
 
-                ScrollView {
+                settings_scroll := ScrollView {
                     horizontal-stretch: 1;
+                    // Measured at the visible width so wrapped descriptions count
+                    // their real height; the end of every page stays reachable.
                     VerticalLayout {
+                        width: settings_scroll.visible-width;
                         padding-left: 40px;
                         padding-right: 40px;
                         padding-top: 28px;
-                        padding-bottom: 40px;
+                        padding-bottom: 120px;
                         alignment: start;
 
                         // ── Voice and audio ─────────────────────────────────────
@@ -390,6 +400,12 @@ export component SettingsView inherits Rectangle {
                                     desc: Tr.economy_notice_desc;
                                     checked: root.enable_self_preview_notice;
                                     toggled => { root.toggle_enable_self_preview_notice(); }
+                                }
+                                SettingsSwitchRow {
+                                    title: Tr.go_live_unlock;
+                                    desc: Tr.go_live_unlock_desc;
+                                    checked: root.go_live_unlock;
+                                    toggled => { root.toggle_go_live_unlock(); }
                                 }
                                 if root.stream_capture_status != "": Text {
                                     text: root.stream_capture_status;

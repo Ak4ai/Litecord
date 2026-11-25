@@ -5,6 +5,48 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.2-beta] - 2026-11-23 — Go Live com o Discord oficial
+
+**Em resumo:** quem usa o Discord oficial (PC, web ou celular) agora assiste a sua transmissão e você assiste a deles, com imagem e som, pelo Go Live do próprio Discord. A voz ganhou um processamento novo, se recupera quando a rede troca e conecta mais rápido em redes com IPv6 quebrado; o chat mostra mensagens Components V2, troca de canal na hora e não acumula memória; a lista de voz mostra quem está falando e quem está ao vivo; e os tokens salvos nunca mais vão para o disco sem criptografia. Parado, o Litecord fica em ~14 MB de RAM e 0,005% de CPU com a janela aberta.
+
+**In English:** people on the official Discord apps (desktop, web or phone) can now watch your stream, and you can watch theirs, with picture and sound, through Discord's own Go Live. Voice gets a new processing pipeline, recovers when the network changes and connects faster on networks with broken IPv6; chat renders Components V2 messages, switches channels instantly and no longer piles up memory; the voice list shows who is speaking and who is live; and saved tokens are never written to disk unencrypted. Idle with the window open, Litecord sits at ~14 MB of RAM and 0.005% CPU. Thanks to @stickyfran for most of the contributions in this release, and to @BossDarkReaper for the gateway report.
+
+### 📺 Go Live nativo do Discord
+- **Transmitir para o Discord oficial**: a opção **Go Live no Discord** na janela de transmissão envia a mesma imagem que o Litecord já codifica para o servidor de stream do Discord, com a criptografia ponta a ponta DAVE. Quem está no Discord oficial vê o selo AO VIVO e assiste normalmente. Baseado na #82 de @stickyfran.
+- **Assistir o Go Live de quem usa o Discord oficial**: o botão **Assistir** aparece para quem está ao vivo pelo app oficial, e a imagem é desenhada pelo mesmo renderizador das transmissões entre Litecords. Enquanto conecta, o botão mostra "Conectando…"; se nenhuma imagem chegar em 10 s, ele volta e dá para tentar de novo.
+- **Som nos dois sentidos**: o áudio do sistema capturado na transmissão vai junto pelo Go Live, e o som de um Go Live assistido toca com o volume da própria transmissão.
+- **Imagem estável em redes ruins**: pacotes perdidos são reenviados (RTX) quando o Discord pede; um quadro perdido não deixa mais a imagem "borrada" até o próximo quadro completo; o envio é espaçado para um quadro-chave não sair de uma vez; pedidos de quadro-chave são limitados a um por segundo. Na recepção, o reenvio do Discord é aceito e uma falha espera até 300 ms pelo pacote antes de seguir.
+- **Limite do Nitro**: sem Nitro, o Discord só permite 720p a 30 FPS no Go Live. Com a nova opção **Desbloquear limite Nitro do Go Live** desligada (padrão), o Litecord respeita esse limite; ligada, envia a qualidade escolhida (até 1080p 60 FPS) por conta e risco de quem usa. Fica em Configurações → Vídeo e Interface.
+- O Go Live vem **ligado por padrão em sistemas que não estão em português do Brasil** e desligado no pt-BR, até a pessoa escolher.
+
+### 🎙️ Voz e chamadas
+- **Processamento de voz renovado**: 48 kHz nativo, reamostragem mais fiel, cancelamento de eco alinhado ao atraso real, supressão de cliques de teclado e preservação de consoantes no fim das palavras; com tudo desligado, o áudio passa direto sem custo. Contribuição de @stickyfran (#74).
+- **A chamada se recupera quando a rede muda** (troca de Wi-Fi, NAT da operadora): a sessão de voz é refeita quando o caminho do áudio morre, e o modo de criptografia AES-GCM é negociado em vez de usar o primeiro da lista. Contribuição de @stickyfran (#79).
+- **Conexão de voz rápida em redes com IPv6 quebrado**: IPv4 primeiro e tempo limite de 1,5 s, em vez de esperar ~2 min pelo sistema. Contribuição de @stickyfran (#73).
+- **Sem cortes no áudio de saída no Linux**: o buffer do alto-falante ganhou folga para pausas do PipeWire, sem mexer no microfone. Contribuição de @stickyfran (#76).
+- **A conexão com o Discord não entra mais em laço de reconexão** com o erro "MessageTooLong" em contas com muitos servidores, que também impedia de entrar em chamadas (#85, relatado por @BossDarkReaper).
+- O medidor do microfone nas configurações voltou a funcionar, o painel de voz ficou mais leve e as configurações de áudio são lidas sem travas.
+
+### 💬 Chat e servidores
+- **Mensagens Components V2** (o formato novo usado por muitos bots) aparecem com texto e imagens, em vez de vazias. Contribuição de @stickyfran (#80).
+- **Troca de canal instantânea**, sem a tela cinza esperando a resposta do Discord. Contribuição de @stickyfran (#80).
+- **Memória do chat limitada**: com você no fim da conversa ficam no máximo 300 mensagens; navegando pelo histórico, até 600. As que saem voltam com "carregar mais antigas". Antes, um canal movimentado aberto por horas crescia sem parar. Baseado na #83 de @stickyfran.
+- **Questionário de boas-vindas (Onboarding)** dos servidores comunitários: perguntas, cargos e canais padrão aparecem e podem ser respondidos no Litecord. Contribuição de @stickyfran (#81).
+- Emojis e links no meio do texto não quebram mais a linha.
+
+### 🪟 Janela e interface
+- **Lista de voz como no Discord**: anel verde em quem está falando e selo AO VIVO em quem está transmitindo. Contribuição de @stickyfran (#77).
+- **A janela volta com o tamanho e o estado de maximizada no Wayland**, sem ícone duplicado na barra de tarefas no Linux. Contribuição de @stickyfran (#75).
+- As páginas de Configurações rolam até o fim mesmo com descrições longas, e a opção Go Live quebra o texto em vez de passar da borda.
+
+### 🔒 Segurança e privacidade
+- **Tokens nunca são gravados sem criptografia**: se a criptografia do sistema falhar, as contas ficam só na memória até fechar o app. Antes, o cofre de contas ia para o disco em texto puro.
+- **Sem cópia do cofre na pasta onde o app foi aberto**: versões anteriores gravavam um `.litecord_token` também na pasta atual (Downloads, área de trabalho...). Ao abrir esta versão, o cofre é regravado criptografado na pasta do perfil e a cópia é apagada.
+- O log não mostra mais o token de voz nem o ID de sessão ao entrar numa chamada.
+
+### 📦 Dependências
+- davey 0.1.5, libc 0.2.191 e openh264 0.9.9 (#66, #67, #68).
+
 ## [v1.3.1-beta] - 2026-10-26
 
 **Em resumo:** transmissões que não engasgam em notebooks com duas placas de vídeo nem com espectadores no celular, voz que se recupera sozinha quando o dispositivo de áudio, a sinalização ou a criptografia DAVE falham, uma tela de configurações nova, janela que reabre onde ficou, cards de convite e de evento no chat, e muitas correções de interface vindas de contribuidores. Parado, o Litecord continua em ~40 MB e 0,2% de CPU com a janela aberta.

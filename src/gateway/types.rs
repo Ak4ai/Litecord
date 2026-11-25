@@ -170,6 +170,7 @@ pub static MY_USER_ID: AtomicU64 = AtomicU64::new(0);
 pub static MY_USERNAME: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
 pub static MY_VOICE_CHANNEL_ID: AtomicU64 = AtomicU64::new(0);
 pub static SELF_MIC_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static IS_SELF_SPEAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static VAD_THRESHOLD: std::sync::OnceLock<std::sync::atomic::AtomicU32> = std::sync::OnceLock::new();
 pub static IS_TESTING_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static MIC_LOOPBACK_QUEUE: std::sync::OnceLock<Arc<std::sync::Mutex<VecDeque<f32>>>> = std::sync::OnceLock::new();
@@ -357,6 +358,34 @@ pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
     participants
 }
 
+/// Members of our call who are speaking right now, published by the voice panel loop
+/// (it already measures every member's level for its bars). The sidebar only reads it,
+/// so it needs no timer and no access to the audio queues of its own.
+static SPEAKING_USERS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Replaces the set of speaking members. Returns false when nothing changed.
+pub fn set_speaking_users(mut users: Vec<u64>) -> bool {
+    users.sort_unstable();
+    users.dedup();
+    let mut current = SPEAKING_USERS.lock().unwrap_or_else(|e| e.into_inner());
+    if *current == users {
+        return false;
+    }
+    *current = users;
+    true
+}
+
+/// True while this member is speaking in our call. The local user may be listed under
+/// the placeholder id 999999 before READY gives us our real id.
+pub fn is_voice_user_speaking(user_id: u64) -> bool {
+    let my_uid = get_my_user_id();
+    let uid = if user_id == 999999 && my_uid != 0 { my_uid } else { user_id };
+    match SPEAKING_USERS.try_lock() {
+        Ok(users) => users.binary_search(&uid).is_ok() || (user_id == 999999 && users.binary_search(&999999).is_ok()),
+        Err(_) => false,
+    }
+}
+
 pub fn set_my_user_id(id: u64) {
     MY_USER_ID.store(id, Ordering::Relaxed);
 }
@@ -383,6 +412,24 @@ pub fn set_my_voice_channel_id(cid: u64) {
     MY_VOICE_CHANNEL_ID.store(cid, Ordering::Relaxed);
 }
 
+/// Guild that owns the running voice session. Mute/deafen must address it, not the
+/// guild the user happens to be looking at.
+static MY_VOICE_GUILD_ID: std::sync::OnceLock<Arc<std::sync::Mutex<String>>> = std::sync::OnceLock::new();
+
+pub fn set_my_voice_guild_id(gid: &str) {
+    if let Ok(mut g) = MY_VOICE_GUILD_ID.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).lock() {
+        *g = gid.to_string();
+    }
+}
+
+pub fn get_my_voice_guild_id() -> String {
+    MY_VOICE_GUILD_ID
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(String::new())))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 static VOICE_SECRET_KEY: std::sync::OnceLock<Arc<std::sync::Mutex<Option<[u8; 32]>>>> = std::sync::OnceLock::new();
 
 #[allow(dead_code)]
@@ -405,6 +452,14 @@ pub fn set_self_mic_level(val: f32) {
 
 pub fn get_self_mic_level() -> f32 {
     f32::from_bits(SELF_MIC_LEVEL.load(Ordering::Relaxed))
+}
+
+pub fn set_self_speaking(val: bool) {
+    IS_SELF_SPEAKING.store(val, Ordering::Relaxed);
+}
+
+pub fn is_self_speaking() -> bool {
+    IS_SELF_SPEAKING.load(Ordering::Relaxed)
 }
 
 /// Signalled by the microphone callback whenever a full 20 ms frame (960 samples)
@@ -537,6 +592,10 @@ pub fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
 
 pub fn clear_voice_participants() {
     set_is_connected_to_voice(false);
+    // No channel is associated with the session anymore, so mute/deafen must not
+    // send a voice state update for someone else's channel.
+    set_my_voice_channel_id(0);
+    set_my_voice_guild_id("");
     if let Ok(mut map) = get_active_voice_participants_store().lock() {
         map.clear();
     }
@@ -628,3 +687,18 @@ pub fn get_user_name(user_id: u64) -> String {
     }
 }
 
+#[cfg(test)]
+mod speaking_tests {
+    use super::*;
+
+    #[test]
+    fn speaking_set_is_published_and_read_back() {
+        assert!(set_speaking_users(vec![42, 7, 42]));
+        assert!(!set_speaking_users(vec![7, 42]), "same set: nothing to update");
+        assert!(is_voice_user_speaking(7));
+        assert!(is_voice_user_speaking(42));
+        assert!(!is_voice_user_speaking(8));
+        assert!(set_speaking_users(Vec::new()));
+        assert!(!is_voice_user_speaking(7));
+    }
+}

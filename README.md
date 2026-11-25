@@ -21,6 +21,10 @@
 
 <img src="assets/demo_preview.gif" alt="Litecord Native Interface Demo" width="760px" style="border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
 
+<br/><br/>
+
+<img src="assets/promo_preview_en.gif" alt="Litecord promo: ultra-light, peer-to-peer and secure" width="760px" style="border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
+
 </div>
 
 ---
@@ -29,6 +33,7 @@
 
 - 🏆 **Zero In-Game FPS Drops & Micro-Stutters**: Reclaims CPU threads eaten by Chromium/Electron, improving 1% low framerates in competitive titles (*CS2, Valorant, Warzone, Apex Legends, Fortnite, League of Legends*).
 - 📺 **Full HD 1080p 60 FPS Screen Sharing on the GPU**: The captured screen never leaves the GPU: it is scaled, converted and encoded there (NVENC, Quick Sync or AMF), and the viewer's GPU decodes it and draws it straight to the window. Sending 1080p60 costs ~13% of one CPU core and watching ~8%.
+- 🤝 **Go Live with the Official Discord**: Friends on the official Discord apps (desktop, web or phone) watch your stream through Discord's own Go Live, with sound, and you watch theirs inside Litecord. Without Nitro it stays within Discord's free 720p 30 FPS unless you unlock it in Settings.
 - 👀 **Watch on Demand**: A new stream shows up as LIVE with a **Watch** button, like on Discord. Nothing is sent to anyone who is not watching, and with no viewers the sender does not encode at all.
 - 🌍 **Share to a Browser**: Send your stream to up to three friends who do not have Litecord, through a link they open in Chrome, Edge or Firefox, with no login.
 - 👑 **Squad Leader & IGL Priority Ducking**: Set shot-callers to Priority 2 (`[ - ] P:2 [ + ]`) so critical tactical callouts automatically duck background chatter and music bots during clutch moments.
@@ -210,10 +215,10 @@ Pre-compiled production binaries are available under [GitHub Releases](https://g
 
 | Distribution | File | Details |
 | :--- | :--- | :--- |
-| **🪟 Windows Setup (Beta 1.3.1)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
-| **🪟 Windows Portable (Beta 1.3.1)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
-| **🐧 Linux AppImage (Beta 1.3.1 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
-| **🐧 Linux Standalone (Beta 1.3.1)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
+| **🪟 Windows Setup (Beta 1.3.2)** | `Litecord-Setup-x64.exe` | Inno Setup installer with Desktop shortcut and uninstaller. |
+| **🪟 Windows Portable (Beta 1.3.2)** | `litecord-windows-x64-portable.zip` | Standalone executable (`litecord.exe`). Statically linked CRT (`+crt-static`). |
+| **🐧 Linux AppImage (Beta 1.3.2 - Recommended)** | `Litecord-x86_64.AppImage` | Universal distro-agnostic AppImage (quick-sharun). Runs on any x86_64 Linux distro out of the box. |
+| **🐧 Linux Standalone (Beta 1.3.2)** | `litecord-linux-x64.tar.gz` | Native x86_64 Linux binary compiled with ALSA, X11/PipeWire and System Tray support. |
 
 ### 🚀 Running the AppImage on Linux
 ```bash
@@ -317,9 +322,9 @@ Litecord is built to be a **simple, clean, and ultra-lightweight interface for g
 | :--- | :--- | :--- |
 | [**Ak4ai**](https://github.com/Ak4ai) | Project Creator & Lead Maintainer (Core architecture, Slint UI, Audio Pipeline, Ducking Engine, Security) | **100% (Core)** |
 | [**Starzinho (@starzynhobr)**](https://github.com/starzynhobr) | Community Contributor (Light theme system, voice channel participants preview, permission-based channel filtering, Slint UI modularization, grouped chat messages with day separators & persistent avatars, settings window redesign, invite & event cards, channel mentions, resizable channel list, type scale, window shadow) | **PR #22, #23, #26, #46–#59** |
-| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Community Contributor (Rich bot messages, polls & markdown, Discord server order with drag-and-drop reordering, Discord-style user bar, faster server switching, quiet speech preservation & Linux voice buffers, optional voice processing, forwarded messages, window position memory, permission cache, DAVE downgrade audio, Linux app id) | **PR #36–#41, #44, #45, #61, #62, #65** |
+| [**Franco Muscó (@stickyfran)**](https://github.com/stickyfran) | Community Contributor (Rich bot messages, polls & markdown, Discord server order with drag-and-drop reordering, Discord-style user bar, faster server switching, quiet speech preservation & Linux voice buffers, optional voice processing, forwarded messages, window position memory, permission cache, DAVE downgrade audio, Linux app id, native Discord Go Live, 48 kHz voice pipeline with delay-aligned echo cancellation, voice recovery on network changes, IPv4-first voice connect, speaking ring & LIVE badge, Components V2 messages, instant channel switching, server onboarding, chat memory cap, Wayland window restore) | **PR #36–#41, #44, #45, #61, #62, #65, #73–#77, #79–#83** |
 | [**Pedro Zamecki (@PedroZamecki)**](https://github.com/PedroZamecki) | Community Contributor (Mouse buttons as mute/deafen shortcuts, on Windows and Linux) | **PR #31, #43** |
-| **Bug hunters & testers** | [@SabinoRotondi](https://github.com/SabinoRotondi) (frame-time stability that drove the 1.3.0 lightness work, mute hotkey), [@linuxmobile](https://github.com/linuxmobile) (client identity audit), [@3941](https://github.com/3941) (Nobara/Fedora install & AppImage), [@SirWalkerCZ](https://github.com/SirWalkerCZ) (localization), [@begadmoh1](https://github.com/begadmoh1) (DMs, profile pictures), [@kazam0180](https://github.com/kazam0180) (AnyLinux AppImage), [@mirkohubtv](https://github.com/mirkohubtv) (proxy support), [@ProbablyM-S](https://github.com/ProbablyM-S) (Linux build) | **Issues #1, #19–#21, #24, #25, #27–#30** |
+| **Bug hunters & testers** | [@SabinoRotondi](https://github.com/SabinoRotondi) (frame-time stability that drove the 1.3.0 lightness work, mute hotkey), [@linuxmobile](https://github.com/linuxmobile) (client identity audit), [@3941](https://github.com/3941) (Nobara/Fedora install & AppImage), [@SirWalkerCZ](https://github.com/SirWalkerCZ) (localization), [@begadmoh1](https://github.com/begadmoh1) (DMs, profile pictures), [@kazam0180](https://github.com/kazam0180) (AnyLinux AppImage), [@mirkohubtv](https://github.com/mirkohubtv) (proxy support), [@ProbablyM-S](https://github.com/ProbablyM-S) (Linux build), [@BossDarkReaper](https://github.com/BossDarkReaper) (gateway reconnect loop) | **Issues #1, #19–#21, #24, #25, #27–#30, #85** |
 | *Your Name Here* | *Submit a Pull Request to be credited here!* | *%* |
 
 ---

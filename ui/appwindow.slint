@@ -7,6 +7,7 @@ import "../assets/fonts/Inter-Variable.ttf";
 import { IconButton } from "components/icon_button.slint";
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
 import { SettingsView, LanguageItem, SettingOptionItem, AudioDeviceItem } from "components/settings_view.slint";
+import { OnboardingView, OnboardingPromptItem, OnboardingOptionItem } from "components/onboarding_view.slint";
 import { ChatMessagesView, LinkItem, MessageBlock, MessageLine, MessageAttachment, MessageButton, ChatMessage } from "components/chat_messages_view.slint";
 
 struct CommandSuggestion {
@@ -155,10 +156,15 @@ export component AppWindow inherits Window {
     callback stop_stream();
     callback open_stream_modal();
     callback close_stream_modal();
+    callback onboarding_toggle(int /* prompt */, int /* option */);
+    callback onboarding_submit();
+    callback onboarding_dismiss();
     callback popout_stream_window(string /* user_id */, string /* username */);
     callback close_popout_window();
     callback hide_stream(string /* user_id */);
     callback unhide_stream(string /* user_id */);
+    // Go Live being opened: its Watch button reads "Connecting…" until the first frame.
+    in-out property <string> connecting_stream_uid: "";
     callback launch_stream_browser();
     callback click_command(string /* command_name */);
     callback handle_input_change(string /* text */);
@@ -213,6 +219,7 @@ export component AppWindow inherits Window {
     // Chat Pagination Properties
     in-out property <bool> is_loading_older_messages: false;
     in-out property <bool> has_more_older_messages: false;
+    in-out property <bool> chat_is_at_bottom: false;
     in-out property <int> scroll_to_bottom_trigger: 0;
 
     public function scroll_chat_to_bottom() {
@@ -328,6 +335,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected_audio_loopback_backend: "auto";
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
+    in-out property <bool> go_live_unlock: false;
     in-out property <bool> use_gpu_renderer: false;
     in-out property <bool> net_diag_running: false;
     in-out property <int> net_diag_verdict: -1;
@@ -352,6 +360,7 @@ export component AppWindow inherits Window {
     callback select_audio_loopback_backend(string);
     callback toggle_enable_self_preview_notice();
     callback toggle_hardware_monitor();
+    callback toggle_go_live_unlock();
     callback toggle_gpu_renderer();
     in-out property <length> channel_sidebar_width: 230px;
     callback channel_sidebar_width_committed(length);
@@ -441,6 +450,14 @@ export component AppWindow inherits Window {
     in-out property <string> web_share_error: "";
     in-out property <int> web_share_viewers: 0;
 
+    // Community onboarding questionnaire shown after joining a server.
+    in-out property <bool> show_onboarding_modal: false;
+    in-out property <string> onboarding_guild_id: "";
+    in-out property <string> onboarding_guild_name: "";
+    in-out property <[OnboardingPromptItem]> onboarding_prompts: [];
+    in-out property <bool> onboarding_submitting: false;
+    in-out property <string> onboarding_error: "";
+
     if root.web_share_error != "": Rectangle {
         z: 100;
         x: (root.width - self.width) / 2;
@@ -468,6 +485,7 @@ export component AppWindow inherits Window {
     in-out property <int> stream_selected_source_index: 0;
     in-out property <string> stream_selected_window_id: "";
     in-out property <bool> stream_include_audio: true;
+    in-out property <bool> stream_go_live: false;
     in-out property <[ScreenSourceItem]> available_screens: [];
     in-out property <[WindowSourceItem]> available_windows: [];
     in-out property <[CameraSourceItem]> available_cameras: [];
@@ -2374,7 +2392,7 @@ export component AppWindow inherits Window {
                                                                  watch_label := Text {
                                                                      visible: !p.is_self;
                                                                      width: p.is_self ? 0px : self.preferred-width;
-                                                                     text: Tr.watch_stream;
+                                                                     text: root.connecting_stream_uid == p.user_id ? Tr.stream_connecting : Tr.watch_stream;
                                                                      color: AppTheme.text-on-accent;
                                                                      font-size: TypeScale.caption;
                                                                      font-weight: 700;
@@ -2731,6 +2749,9 @@ export component AppWindow inherits Window {
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
                         click_command(cmd) => {
                             root.click_command(cmd);
+                        }
+                        bottom_state_changed(flag) => {
+                            root.chat_is_at_bottom = flag;
                         }
                     }
 
@@ -3145,6 +3166,7 @@ export component AppWindow inherits Window {
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
+        go_live_unlock: root.go_live_unlock;
         use_gpu_renderer: root.use_gpu_renderer;
         net_diag_running: root.net_diag_running;
         net_diag_verdict: root.net_diag_verdict;
@@ -3181,6 +3203,7 @@ export component AppWindow inherits Window {
         select_audio_loopback_backend(arg0) => { root.select_audio_loopback_backend(arg0); }
         toggle_enable_self_preview_notice => { root.toggle_enable_self_preview_notice(); }
         toggle_hardware_monitor => { root.toggle_hardware_monitor(); }
+        toggle_go_live_unlock => { root.toggle_go_live_unlock(); }
         toggle_gpu_renderer => { root.toggle_gpu_renderer(); }
         run_network_diagnostics => { root.run_network_diagnostics(); }
         copy_network_diagnostics => { root.copy_network_diagnostics(); }
@@ -3792,6 +3815,17 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Community onboarding questionnaire.
+    if root.show_onboarding_modal: OnboardingView {
+        guild_name: root.onboarding_guild_name;
+        prompts: root.onboarding_prompts;
+        submitting: root.onboarding_submitting;
+        error_text: root.onboarding_error;
+        toggle_option(prompt, option) => { root.onboarding_toggle(prompt, option); }
+        submit => { root.onboarding_submit(); }
+        dismiss => { root.onboarding_dismiss(); }
     }
 
     // Web sharing: the link to send to whoever will watch in a browser.
@@ -4761,6 +4795,86 @@ export component AppWindow inherits Window {
                                                 mouse-cursor: pointer;
                                                 clicked => {
                                                     root.stream_include_audio = !root.stream_include_audio;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5b. Native Go Live: same frames, also sent to Discord's stream server
+                            if root.stream_source_tab != "cameras": Rectangle {
+                                background: AppTheme.surface-sidebar;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                height: 66px;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        horizontal-stretch: 1;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: @image-url("../assets/monitor.svg");
+                                                width: 18px;
+                                                height: 18px;
+                                                colorize: root.stream_go_live ? AppTheme.accent : AppTheme.text-subtle;
+                                                image-fit: contain;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 2px;
+
+                                            Text {
+                                                text: Tr.stream_go_live;
+                                                color: AppTheme.text-strong;
+                                                font-size: TypeScale.small;
+                                                font-weight: 700;
+                                            }
+
+                                            Text {
+                                                text: Tr.stream_go_live_desc;
+                                                color: AppTheme.text-muted;
+                                                font-size: TypeScale.micro;
+                                                wrap: word-wrap;
+                                                horizontal-stretch: 1;
+                                            }
+                                        }
+                                    }
+
+                                    // Switch Toggle Button
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 40px;
+                                            height: 22px;
+                                            border-radius: 11px;
+                                            background: root.stream_go_live ? AppTheme.success : AppTheme.surface-control;
+
+                                            // Knob
+                                            Rectangle {
+                                                x: root.stream_go_live ? 20px : 2px;
+                                                y: 2px;
+                                                width: 18px;
+                                                height: 18px;
+                                                border-radius: 9px;
+                                                background: AppTheme.solid-white;
+                                                animate x { duration: 150ms; easing: ease-out; }
+                                            }
+
+                                            TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.stream_go_live = !root.stream_go_live;
                                                 }
                                             }
                                         }
