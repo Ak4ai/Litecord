@@ -575,6 +575,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app_weak_dl = app_weak.clone();
+    let app_weak_play = app_weak.clone();
+    app.on_play_audio(move |url: SharedString| {
+        audio::clip_player::toggle(url.to_string(), app_weak_play.clone());
+    });
+
     app.on_download_attachment(move |att_id: SharedString, filename: SharedString, url: SharedString| {
         let cache = attachment_cache::get_attachment_cache();
         cache.download_full_async(att_id.as_str(), filename.as_str(), url.as_str(), app_weak_dl.clone());

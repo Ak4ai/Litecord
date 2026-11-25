@@ -999,6 +999,11 @@ pub fn map_message_attachments(
             width,
             height,
             is_image: a.is_image,
+            is_audio: !a.is_image && {
+                let f = a.filename.to_ascii_lowercase();
+                a.content_type.starts_with("audio/")
+                    || [".ogg", ".opus", ".wav", ".mp3", ".m4a", ".flac", ".aac"].iter().any(|e| f.ends_with(e))
+            },
             is_downloaded,
             is_loading: false,
             full_img,

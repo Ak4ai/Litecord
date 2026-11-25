@@ -126,6 +126,8 @@ export component AppWindow inherits Window {
     callback toggle_voice_focus();
     callback open_link(string /* url */);
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
+    callback play_audio(string /* url */);
+    in-out property <string> playing_audio_url: "";
     callback set_vad_threshold(float /* threshold */);
     callback set_mic_volume(float /* volume */);
     callback toggle_test_mic();
@@ -2747,6 +2749,8 @@ export component AppWindow inherits Window {
                         load_older_messages => { root.load_older_messages(); }
                         open_link(url) => { root.open_link(url); }
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
+                        play_audio(url) => { root.play_audio(url); }
+                        playing_audio_url: root.playing_audio_url;
                         click_command(cmd) => {
                             root.click_command(cmd);
                         }

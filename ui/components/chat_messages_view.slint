@@ -48,6 +48,7 @@ export struct MessageAttachment {
     width: int,
     height: int,
     is_image: bool,
+    is_audio: bool,
     is_downloaded: bool,
     is_loading: bool,
     full_img: image,
@@ -104,6 +105,9 @@ export component ChatMessagesView inherits Rectangle {
     callback load_older_messages();
     callback open_link(string);
     callback download_attachment(string, string, string);
+    // Plays or stops an audio attachment inside the app (by its URL).
+    callback play_audio(string);
+    in property <string> playing_audio_url;
     callback click_command(string);
     callback bottom_state_changed(bool);
 
@@ -1181,11 +1185,20 @@ export component ChatMessagesView inherits Rectangle {
                                 spacing: 10px;
                                 alignment: center;
 
-                                Image {
+                                if !att.is_audio : Image {
                                     source: @image-url("../../assets/external-link.svg");
                                     width: 16px;
                                     height: 16px;
                                     colorize: AppTheme.text-muted;
+                                }
+
+                                if att.is_audio : Text {
+                                    width: 16px;
+                                    text: root.playing_audio_url == att.url ? "■" : "▶";
+                                    color: AppTheme.accent-link-hover;
+                                    font-size: TypeScale.body;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
                                 }
 
                                 Text {
@@ -1203,10 +1216,18 @@ export component ChatMessagesView inherits Rectangle {
                                     font-size: TypeScale.caption;
                                     vertical-alignment: center;
                                 }
+                            }
 
-                                non_img_ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.open_link(att.url); }
+                            // Covers the whole card: inside the layout above it got no
+                            // width of its own, so clicks on the file did nothing.
+                            if !att.is_image : TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if (att.is_audio) {
+                                        root.play_audio(att.url);
+                                    } else {
+                                        root.open_link(att.url);
+                                    }
                                 }
                             }
                         }

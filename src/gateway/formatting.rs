@@ -1452,18 +1452,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
 
             if is_voice {
                 let dur = duration_secs.map(|d| format!(" ({:.0}s)", d)).unwrap_or_default();
-                content_parts.push(format!("🎤 [Mensagem de Voz{}]", dur));
-                if !url.is_empty() {
-                    links.push(LinkData {
-                        label: format!("▶ Ouvir Mensagem de Voz{}", dur),
-                        url: url.clone(),
-                    });
-                }
+                content_parts.push(format!("🎤 [{}{}]", crate::utils::i18n_ui::en_pt("Voice message", "Mensagem de Voz"), dur));
             } else if !is_image {
                 let label = if content_type.starts_with("video/") {
-                    "Video"
+                    crate::utils::i18n_ui::en_pt("Video", "Vídeo")
                 } else if content_type.starts_with("audio/") {
-                    "Audio"
+                    crate::utils::i18n_ui::en_pt("Audio", "Áudio")
                 } else {
                     crate::utils::i18n_ui::ui_text().attachment_label
                 };
@@ -1476,7 +1470,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 }
             } else if !url.is_empty() {
                 links.push(LinkData {
-                    label: format!("Imagem: {}", filename),
+                    label: format!("{}: {}", crate::utils::i18n_ui::en_pt("Image", "Imagem"), filename),
                     url: url.clone(),
                 });
             }
@@ -1906,9 +1900,9 @@ mod tests {
             ]
         });
         let (content, _, _, _, _, _, _, _, _, _, _, links, _, attachments) = format_discord_message_parts(&msg);
-        assert!(content.contains("Mensagem de Voz"));
+        assert!(content.contains("Voice message") || content.contains("Mensagem de Voz"));
         assert!(content.contains("15s"));
-        assert!(links.iter().any(|l| l.label.contains("Ouvir Mensagem de Voz")));
+        assert!(!links.iter().any(|l| l.label.contains("15s")));
         assert!(attachments.iter().any(|a| a.is_image && a.url.contains("game-banner.png")));
     }
 
