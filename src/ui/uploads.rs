@@ -124,8 +124,25 @@ pub fn kind_of(name: &str) -> &'static str {
     }
 }
 
+static STATUS_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Shows an error under the bar and clears it after 10 seconds, unless
+/// something else replaced it meanwhile.
+pub fn show_error(app_weak: &slint::Weak<crate::AppWindow>, status: String) {
+    refresh_ui(app_weak, status);
+    let gen = STATUS_GEN.load(std::sync::atomic::Ordering::SeqCst);
+    let w = app_weak.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        if STATUS_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
+            refresh_ui(&w, String::new());
+        }
+    });
+}
+
 /// Shows the pending files and a status line (empty for none).
 pub fn refresh_ui(app_weak: &slint::Weak<crate::AppWindow>, status: String) {
+    STATUS_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let items: Vec<(String, String, bool)> = pending()
         .iter()
         .map(|f| {

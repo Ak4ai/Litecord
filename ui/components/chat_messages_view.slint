@@ -76,6 +76,7 @@ export struct MessageAttachment {
     is_image: bool,
     spoiler: bool,
     is_audio: bool,
+    is_video: bool,
     is_downloaded: bool,
     is_loading: bool,
     full_img: image,
@@ -134,6 +135,8 @@ export component ChatMessagesView inherits Rectangle {
     callback download_attachment(string, string, string);
     // Plays or stops an audio attachment inside the app (by its URL).
     callback play_audio(string);
+    in property <image> playing_video_frame;
+    in property <bool> playing_video_shown;
     // Jumps the playing clip to a point (0..1) of its length.
     callback seek_audio(string, float);
     in property <string> playing_audio_url;
@@ -1140,7 +1143,10 @@ export component ChatMessagesView inherits Rectangle {
                             property <bool> revealed: false;
                             property <length> img-height: (att.width > 0 && att.height > 0) ? min(520px, max(120px, 320px * att.height / att.width)) : 200px;
                             width: att.is_image ? 320px : 280px;
-                            height: att.is_image ? img-height : 48px;
+                            // A playing video shows its picture above the card row.
+                            property <bool> video-open: att.is_video && root.playing_audio_url == att.url;
+                            property <length> video-h: video-open ? 158px : 0px;
+                            height: att.is_image ? img-height : 48px + video-h;
                             background: AppTheme.surface-input;
                             border-radius: 8px;
                             border-width: 1px;
@@ -1224,7 +1230,20 @@ export component ChatMessagesView inherits Rectangle {
                             }
 
                             // Whole-card click (below the progress bar, which seeks).
+                            if video-open : Rectangle {
+                                y: 0;
+                                height: video-h;
+                                background: #000000;
+                                if root.playing_video_shown : Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.playing_video_frame;
+                                    image-fit: contain;
+                                }
+                            }
                             if !att.is_image : TouchArea {
+                                y: video-h;
+                                height: 48px;
                                 mouse-cursor: pointer;
                                 clicked => {
                                     if (att.is_audio) {
@@ -1237,6 +1256,8 @@ export component ChatMessagesView inherits Rectangle {
 
                             // 5. Non-image attachment card (e.g. zip, pdf)
                             if !att.is_image : HorizontalLayout {
+                                y: video-h;
+                                height: 48px;
                                 padding-left: 10px;
                                 padding-right: 10px;
                                 spacing: 10px;

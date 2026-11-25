@@ -1005,7 +1005,11 @@ pub fn map_message_attachments(
             is_audio: !a.is_image && {
                 let f = a.filename.to_ascii_lowercase();
                 a.content_type.starts_with("audio/")
-                    || [".ogg", ".opus", ".wav", ".mp3", ".m4a", ".flac", ".aac"].iter().any(|e| f.ends_with(e))
+                    || [".ogg", ".opus", ".wav", ".mp3", ".m4a", ".flac", ".aac", ".mp4", ".m4v", ".mov"].iter().any(|e| f.ends_with(e))
+            },
+            is_video: !a.is_image && {
+                let f = a.filename.to_ascii_lowercase();
+                [".mp4", ".m4v", ".mov"].iter().any(|e| f.ends_with(e))
             },
             is_downloaded,
             is_loading: false,

@@ -50,7 +50,7 @@ pub fn toggle(url: String, app_weak: slint::Weak<crate::AppWindow>) {
         return;
     }
     let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
-    if [".m4a", ".flac", ".aac"].iter().any(|e| path.ends_with(e)) {
+    if [".flac", ".aac"].iter().any(|e| path.ends_with(e)) {
         // Formats this player does not decode: no point downloading them here.
         let w = app_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -106,6 +106,8 @@ fn set_playing_ui(app_weak: &slint::Weak<crate::AppWindow>, url: String) {
             if url.is_empty() {
                 ui.set_playing_audio_progress(0.0);
                 ui.set_playing_audio_time("".into());
+                ui.set_playing_video_frame(slint::Image::default());
+                ui.set_playing_video_shown(false);
             }
             ui.set_playing_audio_url(url.into());
         }
@@ -152,6 +154,7 @@ fn duration_secs(bytes: &[u8], source: &Source) -> f64 {
         Source::Wav(w) => (w.end - w.pos) as f64 / (w.bits / 8 * w.channels) as f64 / w.rate as f64,
         Source::Mp3(m) if m.bitrate_kbps > 0 => bytes.len() as f64 * 8.0 / (m.bitrate_kbps as f64 * 1000.0),
         Source::Mp3(_) => 0.0,
+        Source::Mp4(m) => m.duration,
     }
 }
 
@@ -197,6 +200,8 @@ fn open_source(bytes: &[u8]) -> Option<Source<'_>> {
         Some(Source::Vorbis(s))
     } else if let Some(s) = WavSource::new(bytes) {
         Some(Source::Wav(s))
+    } else if super::clip_mp4::is_mp4(bytes) {
+        super::clip_mp4::AacSource::new(bytes).map(Source::Mp4)
     } else {
         Mp3Source::new(bytes).map(Source::Mp3)
     }
@@ -206,6 +211,10 @@ fn open_source(bytes: &[u8]) -> Option<Source<'_>> {
 /// and the frames of the last chunk that lie after the target.
 fn source_at(bytes: &[u8], target: f64) -> Option<(Source<'_>, Vec<[f32; 2]>)> {
     let mut fresh = open_source(bytes)?;
+    if let Source::Mp4(m) = &mut fresh {
+        m.jump_to(target);
+        return Some((fresh, Vec::new()));
+    }
     let mut skip = (target * fresh.rate() as f64) as usize;
     let mut rest = Vec::new();
     let mut buf = Vec::with_capacity(CHUNK_FRAMES);
@@ -296,6 +305,38 @@ fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) 
         drained.store(false, Ordering::SeqCst);
         out.push(&rest);
     };
+    let video_stop = AtomicBool::new(false);
+    let has_video = matches!(source, Source::Mp4(_));
+    std::thread::scope(|scope| {
+    if has_video {
+        let played = Arc::clone(&played);
+        let video_stop = &video_stop;
+        let w = app_weak.clone();
+        let _ = std::thread::Builder::new().name("clip-video".into()).spawn_scoped(scope, move || {
+            let clock = || played.load(Ordering::Relaxed) as f64 / samples_per_sec;
+            let stop = || video_stop.load(Ordering::Relaxed) || GENERATION.load(Ordering::SeqCst) != gen;
+            let stop_flag = AtomicBool::new(false);
+            let watcher_clock = || {
+                if stop() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
+                clock()
+            };
+            super::clip_mp4::run_video(bytes, watcher_clock, &stop_flag, |frame| {
+                let w = w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if GENERATION.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    if let Some(ui) = w.upgrade() {
+                        ui.set_playing_video_frame(slint::Image::from_rgba8(frame));
+                        ui.set_playing_video_shown(true);
+                    }
+                });
+            });
+        });
+    }
+    let result = (|| {
     loop {
         loop {
             if GENERATION.load(Ordering::SeqCst) != gen {
@@ -343,6 +384,11 @@ fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) 
             break;
         }
     }
+    true
+    })();
+    video_stop.store(true, Ordering::Relaxed);
+    result
+    });
     drop(stream);
     true
 }
@@ -488,6 +534,7 @@ enum Source<'a> {
     Vorbis(VorbisSource<'a>),
     Wav(WavSource<'a>),
     Mp3(Mp3Source<'a>),
+    Mp4(super::clip_mp4::AacSource<'a>),
 }
 
 impl Source<'_> {
@@ -497,6 +544,7 @@ impl Source<'_> {
             Source::Vorbis(v) => v.rate,
             Source::Wav(w) => w.rate,
             Source::Mp3(m) => m.rate,
+            Source::Mp4(m) => m.rate,
         }
     }
 
@@ -507,6 +555,7 @@ impl Source<'_> {
             Source::Vorbis(s) => s.next_frames(out),
             Source::Wav(s) => s.next_frames(out),
             Source::Mp3(s) => s.next_frames(out),
+            Source::Mp4(s) => s.next_frames(out, CHUNK_FRAMES),
         }
     }
 }

@@ -4369,7 +4369,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(413) => crate::ui::uploads::too_large_text(),
                     Err(code) => crate::ui::uploads::failed_text(&if code == 0 { "network".to_string() } else { format!("HTTP {}", code) }),
                 };
-                crate::ui::uploads::refresh_ui(&app_w, status);
+                if status.is_empty() {
+                    crate::ui::uploads::refresh_ui(&app_w, status);
+                } else {
+                    crate::ui::uploads::show_error(&app_w, status);
+                }
             });
         }
     });

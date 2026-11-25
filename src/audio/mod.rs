@@ -4,6 +4,7 @@ pub mod engine;
 pub mod dsp;
 pub mod sound_effects;
 pub mod clip_player;
+pub mod clip_mp4;
 #[cfg(target_os = "windows")]
 pub mod wasapi_loopback;
 

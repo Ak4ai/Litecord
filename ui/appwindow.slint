@@ -173,6 +173,8 @@ export component AppWindow inherits Window {
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
     callback play_audio(string /* url */);
     callback seek_audio(string /* url */, float /* 0..1 */);
+    in-out property <image> playing_video_frame;
+    in-out property <bool> playing_video_shown: false;
     // Emoji / sticker picker (src/ui/picker.rs).
     in-out property <bool> picker_open: false;
     in-out property <int> picker_tab: 0;
@@ -2813,6 +2815,8 @@ export component AppWindow inherits Window {
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
                         play_audio(url) => { root.play_audio(url); }
                         seek_audio(url, f) => { root.seek_audio(url, f); }
+                        playing_video_frame: root.playing_video_frame;
+                        playing_video_shown: root.playing_video_shown;
                         playing_audio_url: root.playing_audio_url;
                         playing_audio_progress: root.playing_audio_progress;
                         playing_audio_time: root.playing_audio_time;
