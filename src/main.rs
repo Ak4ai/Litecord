@@ -1761,14 +1761,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let username = if is_self {
                         let resolved = if my_user_id != 0 { gateway::get_user_name(my_user_id) } else { String::new() };
-                        if resolved.is_empty() || resolved.starts_with("Participante #") || resolved.starts_with("Participant #") {
+                        if resolved.is_empty() || crate::utils::i18n_extra::is_placeholder_participant(&resolved) {
                             crate::utils::i18n_ui::en_pt("You", "Você").to_string()
                         } else {
                             resolved
                         }
                     } else {
                         let uname = gateway::get_user_name(user_id);
-                        if uname.starts_with("Participante #") || uname.starts_with("Participant #") {
+                        if crate::utils::i18n_extra::is_placeholder_participant(&uname) {
                             if let Ok(http_opt) = http_client_voice_loop_inner.try_lock() {
                                 if let Some(http) = http_opt.clone() {
                                     static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();

@@ -3,12 +3,16 @@
 //! missing here stays in English. Machine translations that still need a
 //! native-speaker review, like the other non-Portuguese tables.
 //!
-//! The default audio device names and "Participant" are left out on purpose:
-//! other code recognizes them by their English or Portuguese text.
+//! The default audio device names and "Participant" are recognized by text
+//! elsewhere: use `is_default_device` and `is_placeholder_participant`, which
+//! accept every language, instead of comparing against one of them.
 
 /// `[es, de, fr, ru, ja]` for an English string, if there is one.
 pub fn others(en: &str) -> Option<[&'static str; 5]> {
     Some(match en {
+        "System Default Microphone" => ["Micrófono predeterminado del sistema", "Standardmikrofon des Systems", "Microphone par défaut du système", "Микрофон системы по умолчанию", "システム既定のマイク"],
+        "System Default Speakers" => ["Altavoces predeterminados del sistema", "Standardlautsprecher des Systems", "Haut-parleurs par défaut du système", "Динамики системы по умолчанию", "システム既定のスピーカー"],
+        "Participant" => ["Participante", "Teilnehmer", "Participant", "Участник", "参加者"],
         "@user" => ["@usuario", "@Benutzer", "@utilisateur", "@пользователь", "@ユーザー"],
         "Automatic (Recommended)" => ["Automático (recomendado)", "Automatisch (empfohlen)", "Automatique (recommandé)", "Автоматически (рекомендуется)", "自動（推奨）"],
         "Captures foreground or background windows directly through DWM." => ["Captura ventanas en primer o segundo plano directamente con DWM.", "Erfasst Fenster im Vorder- oder Hintergrund direkt über DWM.", "Capture les fenêtres au premier ou à l’arrière-plan directement via DWM.", "Захватывает окна на переднем или заднем плане напрямую через DWM.", "DWMを通じて前面または背面のウィンドウを直接キャプチャします。"],
@@ -95,13 +99,48 @@ Ce salon est restreint et nécessite des rôles précis sur le serveur pour voir
     })
 }
 
+/// Every language's text for an English string, Portuguese included.
+fn all_texts(en: &'static str, pt: &'static str) -> impl Iterator<Item = &'static str> {
+    [en, pt].into_iter().chain(others(en).into_iter().flatten())
+}
+
+/// True for an empty name or the "system default" device name in any
+/// language, so a choice saved in one language still works in another.
+pub fn is_default_device(name: &str) -> bool {
+    name.is_empty()
+        || name.contains("Padrão")
+        || all_texts("System Default Microphone", "Microfone Padrão do Sistema")
+            .chain(all_texts("System Default Speakers", "Alto-falantes Padrão do Sistema"))
+            .any(|t| t == name)
+}
+
+/// True for the "Participant #id" placeholder in any language.
+pub fn is_placeholder_participant(name: &str) -> bool {
+    all_texts("Participant", "Participante").any(|t| {
+        name.strip_prefix(t).is_some_and(|rest| rest.starts_with(" #"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_device_and_participant_match_every_language() {
+        for n in ["", "System Default Speakers", "Microfone Padrão do Sistema", "Standardmikrofon des Systems", "システム既定のスピーカー"] {
+            assert!(super::is_default_device(n), "{n}");
+        }
+        assert!(!super::is_default_device("Realtek Speakers"));
+        for n in ["Participant #1", "Participante #2", "Teilnehmer #3", "Участник #4", "参加者 #5"] {
+            assert!(super::is_placeholder_participant(n), "{n}");
+        }
+        assert!(!super::is_placeholder_participant("Participant"));
+        assert!(!super::is_placeholder_participant("Henrique"));
+    }
+
     /// Every English string passed to `en_pt` has the other languages, except
     /// the ones other code matches by text.
     #[test]
     fn every_en_pt_string_is_translated() {
-        let skip = ["System Default Microphone", "System Default Speakers", "Participant"];
+        let skip: [&str; 0] = [];
         let mut missing = Vec::new();
         let mut stack = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
         while let Some(dir) = stack.pop() {

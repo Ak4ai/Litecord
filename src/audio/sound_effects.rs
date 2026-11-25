@@ -230,7 +230,7 @@ fn play_sound_cpal(sound: UiSound) -> Result<(), Box<dyn std::error::Error + Sen
     } else {
         String::new()
     };
-    let device = if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+    let device = if !crate::utils::i18n_extra::is_default_device(&target_dev_name) {
         host.output_devices().ok().and_then(|mut devs| devs.find(|d| d.name().map_or(false, |n| n == target_dev_name)))
             .or_else(|| host.default_output_device())
     } else {

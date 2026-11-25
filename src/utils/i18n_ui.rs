@@ -360,6 +360,21 @@ pub fn ui_text() -> &'static UiStrings {
 
 /// Text in the language shown in the UI, given its English and Portuguese
 /// versions. The other languages come from `i18n_extra`, or stay in English.
+/// Picks one of seven already formatted texts, in the order
+/// `[en, pt, es, de, fr, ru, ja]`, by the language shown in the UI.
+pub fn pick(texts: [String; 7]) -> String {
+    let idx = match current_language() {
+        Language::Portuguese => 1,
+        Language::Spanish => 2,
+        Language::German => 3,
+        Language::French => 4,
+        Language::Russian => 5,
+        Language::Japanese => 6,
+        _ => 0,
+    };
+    texts.into_iter().nth(idx).unwrap_or_default()
+}
+
 pub fn en_pt(en: &'static str, pt: &'static str) -> &'static str {
     let idx = match current_language() {
         Language::Portuguese => return pt,

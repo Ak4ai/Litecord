@@ -193,34 +193,74 @@ pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<Deta
         info!("Versão remota {} está marcada como ignorada pelo usuário.", tag_name);
     }
 
-    let pt = crate::utils::i18n_ui::current_language() == crate::utils::i18n::Language::Portuguese;
+    let (r, h, l) = (&remote_version, &local_hash, &local_version);
     let (status, formatted_status) = if is_newer_version(&remote_version, &local_version) {
         (
             VersionComparisonStatus::Outdated,
-            if pt { format!("Desatualizado (v{} disponível no GitHub)", remote_version) } else { format!("Outdated (v{} available on GitHub)", remote_version) },
+            crate::utils::i18n_ui::pick([
+                format!("Outdated (v{} available on GitHub)", r),
+                format!("Desatualizado (v{} disponível no GitHub)", r),
+                format!("Desactualizado (v{} disponible en GitHub)", r),
+                format!("Veraltet (v{} auf GitHub verfügbar)", r),
+                format!("Obsolète (v{} disponible sur GitHub)", r),
+                format!("Устарело (v{} доступна на GitHub)", r),
+                format!("古いバージョン（GitHubでv{}が公開中）", r),
+            ]),
         )
     } else if is_newer_version(&local_version, &remote_version) {
         if is_dirty {
             (
                 VersionComparisonStatus::Modified,
-                if pt { format!("Dev / Modificado ({}-modified • release v{})", local_hash, remote_version) } else { format!("Dev / Modified ({}-modified • release v{})", local_hash, remote_version) },
+                crate::utils::i18n_ui::pick([
+                    format!("Dev / Modified ({}-modified • release v{})", h, r),
+                    format!("Dev / Modificado ({}-modified • release v{})", h, r),
+                    format!("Dev / Modificado ({}-modified • versión v{})", h, r),
+                    format!("Dev / Geändert ({}-modified • Release v{})", h, r),
+                    format!("Dev / Modifié ({}-modified • version v{})", h, r),
+                    format!("Dev / Изменено ({}-modified • релиз v{})", h, r),
+                    format!("Dev / 変更あり（{}-modified • リリース v{}）", h, r),
+                ]),
             )
         } else {
             (
                 VersionComparisonStatus::AheadOfRelease,
-                if pt { format!("Atualizado / Dev ({} • à frente da release v{})", local_hash, remote_version) } else { format!("Up to date / Dev ({} • ahead of release v{})", local_hash, remote_version) },
+                crate::utils::i18n_ui::pick([
+                    format!("Up to date / Dev ({} • ahead of release v{})", h, r),
+                    format!("Atualizado / Dev ({} • à frente da release v{})", h, r),
+                    format!("Actualizado / Dev ({} • por delante de la versión v{})", h, r),
+                    format!("Aktuell / Dev ({} • neuer als Release v{})", h, r),
+                    format!("À jour / Dev ({} • en avance sur la version v{})", h, r),
+                    format!("Актуально / Dev ({} • новее релиза v{})", h, r),
+                    format!("最新 / Dev（{} • リリース v{} より新しい）", h, r),
+                ]),
             )
         }
     } else {
         if is_dirty {
             (
                 VersionComparisonStatus::Modified,
-                if pt { format!("Modificado ({}-modified • base v{})", local_hash, remote_version) } else { format!("Modified ({}-modified • base v{})", local_hash, remote_version) },
+                crate::utils::i18n_ui::pick([
+                    format!("Modified ({}-modified • base v{})", h, r),
+                    format!("Modificado ({}-modified • base v{})", h, r),
+                    format!("Modificado ({}-modified • base v{})", h, r),
+                    format!("Geändert ({}-modified • Basis v{})", h, r),
+                    format!("Modifié ({}-modified • base v{})", h, r),
+                    format!("Изменено ({}-modified • основа v{})", h, r),
+                    format!("変更あり（{}-modified • ベース v{}）", h, r),
+                ]),
             )
         } else {
             (
                 VersionComparisonStatus::UpToDate,
-                if pt { format!("Atualizado (v{} • {})", local_version, local_hash) } else { format!("Up to date (v{} • {})", local_version, local_hash) },
+                crate::utils::i18n_ui::pick([
+                    format!("Up to date (v{} • {})", l, h),
+                    format!("Atualizado (v{} • {})", l, h),
+                    format!("Actualizado (v{} • {})", l, h),
+                    format!("Aktuell (v{} • {})", l, h),
+                    format!("À jour (v{} • {})", l, h),
+                    format!("Актуально (v{} • {})", l, h),
+                    format!("最新（v{} • {}）", l, h),
+                ]),
             )
         }
     };

@@ -450,7 +450,7 @@ fn open_mic_stream(
         (out, cfg)
     } else {
         let devices = host.input_devices().ok()?;
-        let dev = if device_name.is_empty() || device_name.contains("Padrão") || device_name.starts_with("System Default") {
+        let dev = if crate::utils::i18n_extra::is_default_device(&device_name) {
             host.default_input_device()?
         } else {
             devices.into_iter().find(|d| {
@@ -623,7 +623,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
     let host = cpal::default_host();
     let devices = host.output_devices().ok()?;
 
-    let target_dev = if device_name.is_empty() || device_name.contains("Padrão") || device_name.starts_with("System Default") {
+    let target_dev = if crate::utils::i18n_extra::is_default_device(&device_name) {
         host.default_output_device()?
     } else {
         devices.into_iter().find(|d| {
