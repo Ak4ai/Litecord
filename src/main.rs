@@ -83,6 +83,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     commit_heap_pages_on_demand();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
 
+    // Settings, the token vault and the log live in the working directory. An .app
+    // opened from Finder starts in "/" (read-only), so on macOS use the user's
+    // Application Support folder instead.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = std::path::Path::new(&home).join("Library/Application Support/Litecord");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = std::env::set_current_dir(&dir);
+        }
+    }
+
     #[cfg(all(unix, not(target_vendor = "apple")))]
     let _ = i_slint_backend_winit::set_xdg_app_id("litecord");
 

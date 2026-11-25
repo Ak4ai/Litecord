@@ -4,6 +4,8 @@ use log::info;
 use serde::{Deserialize, Serialize};
 
 const REPO_OWNER: &str = "Ak4ai";
+/// The experimental macOS build in each release (Apple Silicon).
+const MACOS_ASSET: &str = "Litecord-macOS-arm64-experimental.zip";
 const REPO_NAME: &str = "Litecord";
 const CONFIG_FILE: &str = ".litecord_updater_config.json";
 
@@ -164,6 +166,8 @@ pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<Deta
 
     let target_asset_name = if cfg!(target_os = "windows") {
         "Litecord-Setup-x64.exe"
+    } else if cfg!(target_os = "macos") {
+        MACOS_ASSET
     } else {
         "litecord-linux-x64.tar.gz"
     };
@@ -303,10 +307,20 @@ fn get_secure_update_dir() -> PathBuf {
 }
 
 /// Downloads the release file and launches the updater/installer
+#[cfg_attr(target_os = "macos", allow(unreachable_code))]
 pub async fn download_and_install_update(
     download_url: String,
     progress_tx: mpsc::Sender<f32>,
 ) -> Result<(), String> {
+    // macOS (experimental): no in-place install yet; the new .app is downloaded by
+    // the browser from the release page instead of replacing this one.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = progress_tx;
+        let page = format!("https://github.com/{}/{}/releases/latest", REPO_OWNER, REPO_NAME);
+        info!("Atualização no macOS: abrindo {} ({})", page, download_url);
+        return std::process::Command::new("open").arg(page).spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
     info!("Iniciando download da atualização: {}", download_url);
     if !download_url.starts_with("https://github.com/Ak4ai/Litecord/")
         && !download_url.starts_with("https://objects.githubusercontent.com/")
