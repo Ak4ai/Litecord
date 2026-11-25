@@ -67,6 +67,11 @@ export struct CameraSourceItem {
     name: string,
 }
 
+export struct PendingFile {
+    name: string,
+    size: string,
+}
+
 export struct AccountItem {
     id: string,
     username: string,
@@ -101,6 +106,10 @@ export component AppWindow inherits Window {
     callback close_window();
     callback login(string /* token */);
     callback send_message(string /* content */);
+    callback pick_files();
+    callback remove_pending_file(int /* index */);
+    in-out property <[PendingFile]> pending_files: [];
+    in-out property <string> upload_status: "";
     callback select_channel(string /* channel_id */);
     callback toggle_category(string /* category_id */);
     callback select_guild(string /* guild_id */);
@@ -2904,6 +2913,66 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Files picked for the next message, and the upload status.
+                    if root.pending_files.length > 0 || root.upload_status != "" : Rectangle {
+                        height: 40px;
+                        background: AppTheme.surface-chat;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            padding-top: 6px;
+                            spacing: 6px;
+                            alignment: start;
+                            for f[i] in root.pending_files : Rectangle {
+                                background: AppTheme.surface-input;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: AppTheme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 4px;
+                                    spacing: 6px;
+                                    Text {
+                                        text: f.name;
+                                        max-width: 180px;
+                                        overflow: elide;
+                                        color: AppTheme.text-primary;
+                                        font-size: TypeScale.small;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: f.size;
+                                        color: AppTheme.text-muted;
+                                        font-size: TypeScale.caption;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        width: 20px;
+                                        background: rm_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                                        border-radius: 4px;
+                                        Image {
+                                            source: @image-url("../assets/x.svg");
+                                            width: 12px;
+                                            height: 12px;
+                                            colorize: AppTheme.text-muted;
+                                        }
+                                        rm_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.remove_pending_file(i); }
+                                        }
+                                    }
+                                }
+                            }
+                            if root.upload_status != "" : Text {
+                                text: root.upload_status;
+                                color: AppTheme.text-muted;
+                                font-size: TypeScale.small;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
                     // Message / Smart Command Input Box
                     Rectangle {
                         height: 56px;
@@ -2912,6 +2981,22 @@ export component AppWindow inherits Window {
                         HorizontalBox {
                             padding: 8px;
                             spacing: 8px;
+
+                            if root.active_command_name == "" : Rectangle {
+                                width: 36px;
+                                background: clip_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                                border-radius: 4px;
+                                Image {
+                                    source: @image-url("../assets/paperclip.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: clip_ta.has-hover ? AppTheme.text-primary : AppTheme.text-muted;
+                                }
+                                clip_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.pick_files(); }
+                                }
+                            }
 
                             if root.active_command_name != "" : HorizontalLayout {
                                 horizontal-stretch: 1;
@@ -3080,7 +3165,7 @@ export component AppWindow inherits Window {
                                     accepted => {
                                         if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                             root.select_suggestion(root.active_suggestion_index);
-                                        } else if (root.chat_input_text != "") {
+                                        } else if (root.chat_input_text != "" || root.pending_files.length > 0) {
                                             root.send_message(root.chat_input_text);
                                             root.chat_input_text = "";
                                             root.show_command_suggestions = false;
@@ -3106,7 +3191,7 @@ export component AppWindow inherits Window {
                                         root.command_arg_text = "";
                                     } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                         root.select_suggestion(root.active_suggestion_index);
-                                    } else if (root.chat_input_text != "") {
+                                    } else if (root.chat_input_text != "" || root.pending_files.length > 0) {
                                         root.send_message(root.chat_input_text);
                                         root.chat_input_text = "";
                                         root.show_command_suggestions = false;

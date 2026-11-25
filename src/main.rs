@@ -4000,9 +4000,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sm_chan_select = Arc::clone(&screen_manager);
 
+    let app_weak_clear_files = app_weak.clone();
     app.on_select_channel(move |channel_id: SharedString| {
         let ch_id = channel_id.to_string();
         info!("Canal selecionado pelo usuário: {}", ch_id);
+        let changed = *active_channel_chan_select.lock().unwrap() != ch_id;
+        if changed && crate::ui::uploads::has_pending() {
+            crate::ui::uploads::clear(&app_weak_clear_files);
+        }
         *active_channel_chan_select.lock().unwrap() = ch_id.clone();
 
         let gid = active_guild_chan_select.lock().unwrap().clone();
@@ -4277,18 +4282,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Send Message Callback from UI
     let http_client_msg = Arc::clone(&http_client);
     let active_channel_msg = Arc::clone(&active_channel_id);
+    let app_weak_send = app_weak.clone();
     app.on_send_message(move |content: SharedString| {
         let content_str = content.to_string();
         let channel_id = active_channel_msg.lock().unwrap().clone();
         invalidate_message_cache(&channel_id);
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
+        let files = crate::ui::uploads::take();
 
         if let Some(http) = http_opt {
+            if files.is_empty() {
+                tokio::spawn(async move {
+                    let _ = http.send_message(&channel_id, &content_str).await;
+                });
+                return;
+            }
+            let app_w = app_weak_send.clone();
+            crate::ui::uploads::refresh_ui(&app_w, crate::ui::uploads::sending_text(files.len()));
             tokio::spawn(async move {
-                let _ = http.send_message(&channel_id, &content_str).await;
+                let status = match http.send_message_with_files(&channel_id, &content_str, &files).await {
+                    Ok(()) => String::new(),
+                    Err(413) => crate::ui::uploads::too_large_text(),
+                    Err(code) => crate::ui::uploads::failed_text(&if code == 0 { "network".to_string() } else { format!("HTTP {}", code) }),
+                };
+                crate::ui::uploads::refresh_ui(&app_w, status);
             });
         }
     });
+
+    let app_weak_pick = app_weak.clone();
+    app.on_pick_files(move || crate::ui::uploads::pick(app_weak_pick.clone()));
+    let app_weak_rm = app_weak.clone();
+    app.on_remove_pending_file(move |i: i32| crate::ui::uploads::remove(i.max(0) as usize, &app_weak_rm));
 
     // Community onboarding: pick answers, save them, then reload the server so the
     // new roles and channels appear immediately.
