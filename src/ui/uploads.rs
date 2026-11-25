@@ -239,7 +239,17 @@ fn parse_multi_select(buf: &[u16]) -> Vec<PathBuf> {
 #[cfg(not(target_os = "windows"))]
 fn open_dialog() -> Vec<PathBuf> {
     let title = en_pt("Attach files", "Anexar arquivos");
-    let tries: [(&str, Vec<&str>); 2] = [
+    // macOS: the system's own picker through AppleScript, one POSIX path per line.
+    #[cfg(target_os = "macos")]
+    let prompt = format!("set fs to choose file with prompt \"{}\" with multiple selections allowed", title);
+    #[cfg(target_os = "macos")]
+    let tries: Vec<(&str, Vec<&str>)> = vec![(
+        "osascript",
+        vec!["-e", prompt.as_str(), "-e", "set out to \"\"", "-e", "repeat with f in fs", "-e",
+             "set out to out & POSIX path of f & linefeed", "-e", "end repeat", "-e", "return out"],
+    )];
+    #[cfg(not(target_os = "macos"))]
+    let tries: Vec<(&str, Vec<&str>)> = vec![
         ("zenity", vec!["--file-selection", "--multiple", "--separator=\n", "--title", title]),
         ("kdialog", vec!["--getopenfilename", "--multiple", "--separate-output", ".", "--title", title]),
     ];

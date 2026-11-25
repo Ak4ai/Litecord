@@ -10,6 +10,8 @@ pub mod device;
 pub mod dxva;
 #[cfg(windows)]
 pub mod layers;
+#[cfg(target_os = "linux")]
+pub mod gst;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -55,6 +57,8 @@ pub struct GpuDecoder {
     peer: u64,
     #[cfg(windows)]
     inner: dxva::DxvaDecoder,
+    #[cfg(target_os = "linux")]
+    inner: gst::GstDecoder,
 }
 
 impl GpuDecoder {
@@ -63,7 +67,11 @@ impl GpuDecoder {
         {
             Ok(Self { peer, inner: dxva::DxvaDecoder::new()? })
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Self { peer, inner: gst::GstDecoder::new()? })
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = peer;
             Err(HwError::Unsupported("no GPU decoder on this platform yet".into()))
@@ -84,7 +92,17 @@ impl GpuDecoder {
             let (w, h) = fit(frame.info.width, frame.info.height);
             Ok(Some(GpuPicture::Rgba(self.inner.read_rgba(&frame, w, h)?, frame.info.width, frame.info.height)))
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            // The picture comes back at the stream's size; the UI scales it.
+            let _ = fit;
+            match self.inner.decode(au)? {
+                // Not marked as drawn on the GPU: there are no window layers here.
+                Some((buf, w, h)) => Ok(Some(GpuPicture::Rgba(buf, w, h))),
+                None => Ok(None),
+            }
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = (au, fit);
             Err(HwError::Unsupported("no GPU decoder on this platform yet".into()))

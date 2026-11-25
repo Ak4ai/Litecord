@@ -4649,6 +4649,7 @@ dependencies = [
  "jpeg-encoder",
  "lewton",
  "libc",
+ "libloading 0.8.9",
  "log",
  "mimalloc",
  "minimp3",

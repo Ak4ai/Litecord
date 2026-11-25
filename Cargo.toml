@@ -130,6 +130,8 @@ gtk = "0.18"
 x11rb = { version = "0.14", features = ["allow-unsafe-code"] }
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 libc = "0.2"
+# Opens the system's GStreamer at run time for hardware video decoding.
+libloading = "0.8"
 
 [build-dependencies]
 slint-build = "1.9"
