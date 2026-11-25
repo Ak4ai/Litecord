@@ -940,8 +940,10 @@ pub fn map_message_lines(lines: &[gateway::MessageLineData], channel_id: &str, a
                 slint::Image::default()
             };
 
+            let spoiler_text = b.text.strip_prefix(crate::gateway::formatting::SPOILER_OPEN);
             MessageBlock {
-                text: b.text.clone().into(),
+                is_spoiler: spoiler_text.is_some(),
+                text: spoiler_text.unwrap_or(&b.text).into(),
                 is_link: b.is_link,
                 is_command: b.is_command,
                 is_emoji: b.is_emoji,
@@ -999,6 +1001,7 @@ pub fn map_message_attachments(
             width,
             height,
             is_image: a.is_image,
+            spoiler: a.filename.starts_with("SPOILER_"),
             is_audio: !a.is_image && {
                 let f = a.filename.to_ascii_lowercase();
                 a.content_type.starts_with("audio/")

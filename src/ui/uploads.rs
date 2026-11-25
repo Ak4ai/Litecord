@@ -16,6 +16,14 @@ pub const MAX_FILES: usize = 10;
 struct Pending {
     path: PathBuf,
     spoiler: bool,
+    /// Name chosen on the card, sent instead of the file's own.
+    name: Option<String>,
+}
+
+impl Pending {
+    fn shown_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| file_name(&self.path))
+    }
 }
 
 static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
@@ -40,7 +48,7 @@ pub fn add(paths: Vec<PathBuf>, app_weak: &slint::Weak<crate::AppWindow>) {
         let mut list = pending();
         for p in paths {
             if list.len() < MAX_FILES && p.is_file() && !list.iter().any(|f| f.path == p) {
-                list.push(Pending { path: p, spoiler: false });
+                list.push(Pending { path: p, spoiler: false, name: None });
             }
         }
     }
@@ -65,13 +73,26 @@ pub fn toggle_spoiler(index: usize, app_weak: &slint::Weak<crate::AppWindow>) {
     refresh_ui(app_weak, String::new());
 }
 
+/// Renames a file for sending (the file on disk is untouched). An empty
+/// name, or one with characters Windows forbids, keeps the current name.
+pub fn rename(index: usize, name: &str, app_weak: &slint::Weak<crate::AppWindow>) {
+    let name = name.trim();
+    let valid = !name.is_empty() && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']);
+    if valid {
+        if let Some(f) = pending().get_mut(index) {
+            f.name = Some(name.to_string());
+        }
+    }
+    refresh_ui(app_weak, String::new());
+}
+
 /// Takes the pending files for sending (the strip empties), each with the
 /// name it goes out under: spoilers get Discord's `SPOILER_` prefix.
 pub fn take() -> Vec<(PathBuf, String)> {
     std::mem::take(&mut *pending())
         .into_iter()
         .map(|f| {
-            let name = file_name(&f.path);
+            let name = f.shown_name();
             let name = if f.spoiler { format!("SPOILER_{}", name) } else { name };
             (f.path, name)
         })
@@ -109,7 +130,7 @@ pub fn refresh_ui(app_weak: &slint::Weak<crate::AppWindow>, status: String) {
         .iter()
         .map(|f| {
             let size = std::fs::metadata(&f.path).map(|m| format_size(m.len())).unwrap_or_default();
-            (file_name(&f.path), size, f.spoiler)
+            (f.shown_name(), size, f.spoiler)
         })
         .collect();
     let w = app_weak.clone();
@@ -250,9 +271,11 @@ mod tests {
         let dir = std::env::temp_dir().join("litecord_upload_test.txt");
         std::fs::write(&dir, b"x").unwrap();
         pending().clear();
-        pending().push(Pending { path: dir.clone(), spoiler: true });
+        pending().push(Pending { path: dir.clone(), spoiler: true, name: None });
+        pending().push(Pending { path: dir.clone(), spoiler: false, name: Some("novo nome.txt".into()) });
         let out = take();
         assert_eq!(out[0].1, "SPOILER_litecord_upload_test.txt");
+        assert_eq!(out[1].1, "novo nome.txt");
         let _ = std::fs::remove_file(dir);
     }
 }

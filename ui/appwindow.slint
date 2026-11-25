@@ -135,8 +135,9 @@ export component AppWindow inherits Window {
     callback pick_files();
     callback remove_pending_file(int /* index */);
     callback toggle_spoiler(int /* index */);
-    // Not handled yet: renaming a pending file.
-    callback edit_pending_file(int /* index */);
+    callback rename_pending_file(int /* index */, string /* new name */);
+    // Card whose file name is being edited, -1 for none.
+    in-out property <int> editing_file: -1;
     // Non-empty while files are dragged over the window.
     in-out property <string> drop_hint: "";
     in-out property <float> playing_audio_progress: 0;
@@ -2950,16 +2951,18 @@ export component AppWindow inherits Window {
 
                     // Message box: picked files on top, then the input row.
                     Rectangle {
-                        height: 60px + (root.pending_files.length > 0 ? 161px : 0px) + (root.upload_status != "" ? 24px : 0px);
+                        // Matches the profile card in the channel sidebar: 52px tall,
+                        // 6px corners, same colour and 8px from the bottom.
+                        height: 68px + (root.pending_files.length > 0 ? 161px : 0px) + (root.upload_status != "" ? 24px : 0px);
                         background: AppTheme.surface-chat;
 
                         Rectangle {
-                            x: 12px;
-                            y: 4px;
-                            width: parent.width - 24px;
-                            height: parent.height - 12px;
-                            background: AppTheme.surface-input;
-                            border-radius: 8px;
+                            x: 8px;
+                            y: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height - 16px;
+                            background: AppTheme.surface-elevated;
+                            border-radius: 6px;
 
                         VerticalLayout {
                             if root.pending_files.length > 0 : HorizontalLayout {
@@ -2969,7 +2972,7 @@ export component AppWindow inherits Window {
                                 alignment: start;
                                 for f[i] in root.pending_files : Rectangle {
                                     width: 150px;
-                                    background: AppTheme.surface-elevated;
+                                    background: AppTheme.surface-input;
                                     border-radius: 8px;
                                     border-width: 1px;
                                     border-color: tile_ta.has-hover ? AppTheme.text-subtle : AppTheme.border-subtle;
@@ -2984,7 +2987,7 @@ export component AppWindow inherits Window {
                                                 width: 56px;
                                                 height: 56px;
                                                 border-radius: 10px;
-                                                background: AppTheme.surface-input;
+                                                background: AppTheme.surface-elevated;
                                                 Image {
                                                     source: f.kind == "audio" ? @image-url("../assets/music.svg")
                                                         : f.kind == "video" ? @image-url("../assets/video.svg")
@@ -2996,12 +2999,45 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                         }
-                                        Text {
+                                        if root.editing_file != i : Text {
                                             text: f.name;
                                             overflow: elide;
                                             horizontal-alignment: center;
                                             color: AppTheme.text-primary;
                                             font-size: TypeScale.small;
+                                        }
+                                        if root.editing_file == i : Rectangle {
+                                            height: 24px;
+                                            background: AppTheme.surface-elevated;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: AppTheme.accent;
+                                            clip: true;
+                                            name_input := TextInput {
+                                                x: 6px;
+                                                width: parent.width - 12px;
+                                                height: 100%;
+                                                text: f.name;
+                                                single-line: true;
+                                                vertical-alignment: center;
+                                                color: AppTheme.text-primary;
+                                                font-size: TypeScale.small;
+                                                init => {
+                                                    self.focus();
+                                                    self.select-all();
+                                                }
+                                                accepted => {
+                                                    root.rename_pending_file(i, self.text);
+                                                    root.editing_file = -1;
+                                                }
+                                                key-pressed(event) => {
+                                                    if (event.text == Key.Escape) {
+                                                        root.editing_file = -1;
+                                                        return accept;
+                                                    }
+                                                    reject
+                                                }
+                                            }
                                         }
                                         Text {
                                             text: f.spoiler ? "SPOILER · " + f.size : f.size;
@@ -3038,7 +3074,9 @@ export component AppWindow inherits Window {
                                                     box: 28px;
                                                     size: 16px;
                                                     icon: @image-url("../assets/pencil.svg");
-                                                    clicked => { root.edit_pending_file(i); }
+                                                    active: root.editing_file == i;
+                                                    active-color: AppTheme.accent-link-hover;
+                                                    clicked => { root.editing_file = root.editing_file == i ? -1 : i; }
                                                 }
                                                 BarIcon {
                                                     box: 28px;
@@ -3070,7 +3108,7 @@ export component AppWindow inherits Window {
                             }
 
                         HorizontalLayout {
-                            height: 48px;
+                            height: 52px;
                             padding-left: 6px;
                             padding-right: 6px;
                             spacing: 4px;

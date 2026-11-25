@@ -688,6 +688,14 @@ async fn open_first_readable_channel(
         }
         let ch_id = text_ch.id.clone();
         *active_channel_id.lock().unwrap() = ch_id.clone();
+        // The chat only paints the batch of the channel the UI has open, so the UI
+        // must know the new channel first, or the previous server's chat stays.
+        let (app_w_open, open_id) = (app_weak.clone(), ch_id.clone());
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = app_w_open.upgrade() {
+                ui.set_active_channel_id(open_id.into());
+            }
+        });
         let readable = load_messages_for_channel(http, app_weak.clone(), &ch_id).await;
         let current = active_channel_id.lock().unwrap().clone();
         if current != ch_id {

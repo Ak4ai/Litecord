@@ -33,6 +33,32 @@ export struct MessageBlock {
     emoji_img: image,
     url: string,
     command_name: string,
+    is_spoiler: bool,
+}
+
+// `||text||`: covered until clicked, like Discord.
+component SpoilerText inherits Rectangle {
+    in property <string> text;
+    in property <length> max-text-width: 480px;
+    property <bool> revealed: false;
+    border-radius: 3px;
+    background: revealed ? AppTheme.surface-elevated : (sp_ta.has-hover ? AppTheme.interactive-hover : AppTheme.surface-input);
+    width: min(sp_text.preferred-width, root.max-text-width) + 6px;
+    height: sp_text.preferred-height + 2px;
+    sp_text := Text {
+        x: 3px;
+        width: parent.width - 6px;
+        text: root.text;
+        color: root.revealed ? AppTheme.text-primary : transparent;
+        font-family: ChatTypography.family;
+        font-size: ChatTypography.body-size;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+    sp_ta := TouchArea {
+        mouse-cursor: root.revealed ? default : pointer;
+        clicked => { root.revealed = true; }
+    }
 }
 
 export struct MessageLine {
@@ -48,6 +74,7 @@ export struct MessageAttachment {
     width: int,
     height: int,
     is_image: bool,
+    spoiler: bool,
     is_audio: bool,
     is_downloaded: bool,
     is_loading: bool,
@@ -412,7 +439,11 @@ export component ChatMessagesView inherits Rectangle {
                             }
 
                             // Case 1: Pure single text line -> Native responsive word-wrap!
-                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
+                            if line.blocks.length == 1 && line.blocks[0].is_spoiler: HorizontalLayout {
+                                alignment: start;
+                                SpoilerText { text: line.blocks[0].text; }
+                            }
+                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command && !line.blocks[0].is_spoiler: Text {
                                 text: line.blocks[0].text;
                                 color: AppTheme.text-primary;
                                 font-family: ChatTypography.family;
@@ -585,7 +616,11 @@ export component ChatMessagesView inherits Rectangle {
                                         }
                                     }
 
-                                    if !block.is_link && !block.is_command && !block.is_emoji: Text {
+                                    if block.is_spoiler: VerticalLayout {
+                                        alignment: center;
+                                        SpoilerText { text: block.text; }
+                                    }
+                                    if !block.is_link && !block.is_command && !block.is_emoji && !block.is_spoiler: Text {
                                         text: block.text;
                                         color: AppTheme.text-primary;
                                         font-family: ChatTypography.family;
@@ -659,7 +694,11 @@ export component ChatMessagesView inherits Rectangle {
                                             height: 4px;
                                         }
 
-                                        if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
+                                        if line.blocks.length == 1 && line.blocks[0].is_spoiler: HorizontalLayout {
+                                alignment: start;
+                                SpoilerText { text: line.blocks[0].text; }
+                            }
+                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command && !line.blocks[0].is_spoiler: Text {
                                             text: line.blocks[0].text;
                                             color: AppTheme.text-embed;
                                             font-family: ChatTypography.family;
@@ -1095,6 +1134,8 @@ export component ChatMessagesView inherits Rectangle {
                         alignment: start;
 
                         for att in msg.attachments : Rectangle {
+                            // A SPOILER_ file stays covered until clicked.
+                            property <bool> revealed: false;
                             property <length> img-height: (att.width > 0 && att.height > 0) ? min(520px, max(120px, 320px * att.height / att.width)) : 200px;
                             width: att.is_image ? 320px : 280px;
                             height: att.is_image ? img-height : 48px;
@@ -1250,6 +1291,27 @@ export component ChatMessagesView inherits Rectangle {
                                     } else {
                                         root.open_link(att.url);
                                     }
+                                }
+                            }
+
+                            if att.spoiler && !revealed : Rectangle {
+                                background: AppTheme.surface-input;
+                                border-radius: 8px;
+                                Rectangle {
+                                    width: 84px;
+                                    height: 28px;
+                                    border-radius: 14px;
+                                    background: reveal_ta.has-hover ? #000000d0 : #000000a0;
+                                    Text {
+                                        text: "SPOILER";
+                                        color: #ffffff;
+                                        font-size: TypeScale.small;
+                                        font-weight: 700;
+                                    }
+                                }
+                                reveal_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { revealed = true; }
                                 }
                             }
                         }

@@ -198,7 +198,9 @@ fn apply_inline_markdown(input: &str) -> String {
     }
 
     // ── Spoilers ||text|| ──────────────────────────────────────────────────
-    s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+    // Kept between two private-use marks; parse_text_into_lines turns them
+    // into spoiler blocks the chat covers until clicked.
+    s = replace_between(&s, "||", "||", |inner| format!("{SPOILER_OPEN}{inner}{SPOILER_CLOSE}"));
 
     // ── Mentions and Discord entities ──────────────────────────────────────
     // <t:timestamp:format> — Discord timestamps
@@ -503,7 +505,65 @@ fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, l
     });
 }
 
+/// Marks around `||spoiler||` text between parsing and display.
+pub const SPOILER_OPEN: char = '\u{E000}';
+pub const SPOILER_CLOSE: char = '\u{E001}';
+
+/// Removes the spoiler marks from text shown without blocks.
+pub fn strip_spoiler_marks(s: &str) -> String {
+    s.replace([SPOILER_OPEN, SPOILER_CLOSE], "")
+}
+
+/// Splits blocks at the spoiler marks. Spoiler pieces keep `SPOILER_OPEN` as
+/// their first character, which the UI mapping turns into `is_spoiler`.
+fn mark_spoilers(lines: &mut [MessageLineData]) {
+    let mut inside = false;
+    for line in lines.iter_mut() {
+        let mut out = Vec::with_capacity(line.blocks.len());
+        for block in line.blocks.drain(..) {
+            if block.is_emoji || !block.text.contains([SPOILER_OPEN, SPOILER_CLOSE]) {
+                let mut b = block;
+                if inside && !b.is_emoji {
+                    b.text.insert(0, SPOILER_OPEN);
+                }
+                out.push(b);
+                continue;
+            }
+            let mut piece = String::new();
+            let flush = |piece: &mut String, inside: bool, out: &mut Vec<MessageBlockData>| {
+                if !piece.trim().is_empty() {
+                    let mut b = block.clone();
+                    b.text = if inside { format!("{SPOILER_OPEN}{piece}") } else { piece.clone() };
+                    out.push(b);
+                }
+                piece.clear();
+            };
+            for c in block.text.chars() {
+                match c {
+                    SPOILER_OPEN => {
+                        flush(&mut piece, inside, &mut out);
+                        inside = true;
+                    }
+                    SPOILER_CLOSE => {
+                        flush(&mut piece, inside, &mut out);
+                        inside = false;
+                    }
+                    _ => piece.push(c),
+                }
+            }
+            flush(&mut piece, inside, &mut out);
+        }
+        line.blocks = out;
+    }
+}
+
 pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageLineData> {
+    let mut lines = parse_text_into_lines_inner(input, links);
+    mark_spoilers(&mut lines);
+    lines
+}
+
+fn parse_text_into_lines_inner(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageLineData> {
     let mut lines = Vec::new();
     if input.is_empty() {
         return lines;
@@ -1598,6 +1658,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
 
     let embed_content = embed_parts_all.join("\n\n");
 
+    let content = strip_spoiler_marks(&content);
+    let reply_content = strip_spoiler_marks(&reply_content);
+    let embed_content = strip_spoiler_marks(&embed_content);
     (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments_list)
 }
 
@@ -1949,4 +2012,21 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].blocks.len(), 2);
     }
+
+#[cfg(test)]
+mod spoiler_tests {
+    use super::*;
+
+    #[test]
+    fn spoiler_text_becomes_its_own_block() {
+        let md = parse_discord_markdown("look ||the twist|| here");
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines(&md, &mut links);
+        let texts: Vec<&str> = lines[0].blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(texts.iter().any(|t| t.starts_with(SPOILER_OPEN) && t.contains("the twist")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("look") && !t.starts_with(SPOILER_OPEN)), "{texts:?}");
+        assert_eq!(strip_spoiler_marks(&md), "look the twist here");
+    }
+}
+
 }

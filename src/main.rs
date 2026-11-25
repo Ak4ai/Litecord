@@ -4334,6 +4334,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_pick_files(move || crate::ui::uploads::pick(app_weak_pick.clone()));
     let app_weak_rm = app_weak.clone();
     app.on_remove_pending_file(move |i: i32| crate::ui::uploads::remove(i.max(0) as usize, &app_weak_rm));
+    let app_weak_rename = app_weak.clone();
+    app.on_rename_pending_file(move |i: i32, name: SharedString| {
+        crate::ui::uploads::rename(i.max(0) as usize, name.as_str(), &app_weak_rename)
+    });
     let app_weak_spoiler = app_weak.clone();
     app.on_toggle_spoiler(move |i: i32| crate::ui::uploads::toggle_spoiler(i.max(0) as usize, &app_weak_spoiler));
 
