@@ -245,6 +245,12 @@ The script will:
 
 > **Requirements:** `curl` and `tar` (pre-installed on virtually all Linux distros).
 
+To uninstall (it asks whether to also delete your settings and saved accounts):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/uninstall.sh | bash
+```
+
 ---
 
 ## 🛠️ Building from Source

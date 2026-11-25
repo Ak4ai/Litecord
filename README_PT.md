@@ -88,6 +88,12 @@
 curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/install.sh | bash
 ```
 
+Para desinstalar (ele pergunta se também apaga as configurações e as contas salvas):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Ak4ai/Litecord/main/uninstall.sh | bash
+```
+
 ---
 
 ## 🛠️ Compilando do Código-Fonte
