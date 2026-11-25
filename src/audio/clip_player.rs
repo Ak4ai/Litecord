@@ -1,6 +1,6 @@
-//! Plays audio attachments (Opus voice messages, .ogg/.opus files and .wav)
-//! inside the app, with the Opus decoder and cpal output the voice code
-//! already uses. Nothing runs until a clip is played: the file is fetched,
+//! Plays audio attachments (Opus voice messages, Ogg Opus/Vorbis, .wav and
+//! .mp3) inside the app, with the Opus decoder and cpal output the voice code
+//! already uses plus small Vorbis (lewton) and MP3 (minimp3) decoders. Nothing runs until a clip is played: the file is fetched,
 //! decoded a little ahead of the speaker on its own thread, and the thread and
 //! output stream go away when the clip ends or is stopped. Other formats are
 //! opened outside the app, as before.
@@ -29,7 +29,7 @@ pub fn toggle(url: String, app_weak: slint::Weak<crate::AppWindow>) {
         return;
     }
     let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
-    if [".mp3", ".m4a", ".flac", ".aac"].iter().any(|e| path.ends_with(e)) {
+    if [".m4a", ".flac", ".aac"].iter().any(|e| path.ends_with(e)) {
         // Formats this player does not decode: no point downloading them here.
         let w = app_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -125,8 +125,12 @@ async fn download(url: &str) -> Option<Vec<u8>> {
 fn play_bytes(bytes: &[u8], gen: u64) -> bool {
     let source = if let Some(s) = OpusSource::new(bytes) {
         Source::Opus(s)
+    } else if let Some(s) = VorbisSource::new(bytes) {
+        Source::Vorbis(s)
     } else if let Some(s) = WavSource::new(bytes) {
         Source::Wav(s)
+    } else if let Some(s) = Mp3Source::new(bytes) {
+        Source::Mp3(s)
     } else {
         return false;
     };
@@ -302,14 +306,18 @@ impl Output {
 
 enum Source<'a> {
     Opus(OpusSource<'a>),
+    Vorbis(VorbisSource<'a>),
     Wav(WavSource<'a>),
+    Mp3(Mp3Source<'a>),
 }
 
 impl Source<'_> {
     fn rate(&self) -> u32 {
         match self {
             Source::Opus(_) => 48000,
+            Source::Vorbis(v) => v.rate,
             Source::Wav(w) => w.rate,
+            Source::Mp3(m) => m.rate,
         }
     }
 
@@ -317,7 +325,9 @@ impl Source<'_> {
     fn next_frames(&mut self, out: &mut Vec<[f32; 2]>) -> bool {
         match self {
             Source::Opus(s) => s.next_frames(out),
+            Source::Vorbis(s) => s.next_frames(out),
             Source::Wav(s) => s.next_frames(out),
+            Source::Mp3(s) => s.next_frames(out),
         }
     }
 }
@@ -411,6 +421,79 @@ impl<'a> OpusSource<'a> {
             }
         }
         true
+    }
+}
+
+/// Appends interleaved 16-bit samples as stereo frames.
+fn push_i16(out: &mut Vec<[f32; 2]>, data: &[i16], channels: usize) {
+    let ch = channels.max(1);
+    for f in data.chunks_exact(ch) {
+        let l = f[0] as f32 / 32768.0;
+        let r = if ch > 1 { f[1] as f32 / 32768.0 } else { l };
+        out.push([l, r]);
+    }
+}
+
+struct VorbisSource<'a> {
+    reader: lewton::inside_ogg::OggStreamReader<std::io::Cursor<&'a [u8]>>,
+    rate: u32,
+    channels: usize,
+}
+
+impl<'a> VorbisSource<'a> {
+    fn new(data: &'a [u8]) -> Option<Self> {
+        if !data.starts_with(b"OggS") {
+            return None;
+        }
+        let reader = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(data)).ok()?;
+        let rate = reader.ident_hdr.audio_sample_rate;
+        let channels = reader.ident_hdr.audio_channels as usize;
+        (rate > 0 && channels > 0).then_some(Self { reader, rate, channels })
+    }
+
+    fn next_frames(&mut self, out: &mut Vec<[f32; 2]>) -> bool {
+        while out.len() < CHUNK_FRAMES {
+            match self.reader.read_dec_packet_itl() {
+                Ok(Some(pcm)) => push_i16(out, &pcm, self.channels),
+                _ => break,
+            }
+        }
+        !out.is_empty()
+    }
+}
+
+struct Mp3Source<'a> {
+    decoder: minimp3::Decoder<std::io::Cursor<&'a [u8]>>,
+    rate: u32,
+    /// The first frame, decoded to learn the rate, waiting to be played.
+    first: Option<minimp3::Frame>,
+}
+
+impl<'a> Mp3Source<'a> {
+    fn new(data: &'a [u8]) -> Option<Self> {
+        // An ID3 tag or an MPEG frame sync, so random files are not guessed as MP3.
+        let looks_mp3 = data.starts_with(b"ID3") || (data.len() > 1 && data[0] == 0xFF && data[1] & 0xE0 == 0xE0);
+        if !looks_mp3 {
+            return None;
+        }
+        let mut decoder = minimp3::Decoder::new(std::io::Cursor::new(data));
+        let first = decoder.next_frame().ok()?;
+        let rate = u32::try_from(first.sample_rate).ok().filter(|r| *r > 0)?;
+        Some(Self { decoder, rate, first: Some(first) })
+    }
+
+    fn next_frames(&mut self, out: &mut Vec<[f32; 2]>) -> bool {
+        if let Some(f) = self.first.take() {
+            push_i16(out, &f.data, f.channels);
+        }
+        while out.len() < CHUNK_FRAMES {
+            match self.decoder.next_frame() {
+                Ok(f) => push_i16(out, &f.data, f.channels),
+                Err(minimp3::Error::SkippedData) => continue,
+                Err(_) => break,
+            }
+        }
+        !out.is_empty()
     }
 }
 
@@ -531,6 +614,31 @@ mod tests {
         assert!(out.flush());
         let chunk = rx.try_recv().unwrap();
         assert_eq!(chunk.len(), 200 * 2);
+    }
+
+    /// Decodes real files: `LITECORD_TEST_DIR` holding 1 s clips `t.ogg`
+    /// (Opus), `v.ogg` (Vorbis) and `m.mp3`.
+    #[test]
+    #[ignore]
+    fn decodes_real_vorbis_and_mp3_files() {
+        let dir = std::path::PathBuf::from(std::env::var("LITECORD_TEST_DIR").unwrap());
+        let v = std::fs::read(dir.join("v.ogg")).unwrap();
+        let m = std::fs::read(dir.join("m.mp3")).unwrap();
+        assert!(OpusSource::new(&v).is_none());
+        let mut srcs = [
+            Source::Vorbis(VorbisSource::new(&v).expect("vorbis")),
+            Source::Mp3(Mp3Source::new(&m).expect("mp3")),
+        ];
+        for src in srcs.iter_mut() {
+            let rate = src.rate() as usize;
+            let (mut total, mut peak, mut out) = (0, 0.0f32, Vec::new());
+            while { out.clear(); src.next_frames(&mut out) } {
+                total += out.len();
+                peak = out.iter().fold(peak, |p, f| p.max(f[0].abs()));
+            }
+            assert!(total > rate * 9 / 10 && total < rate * 12 / 10, "{total} frames at {rate}");
+            assert!(peak > 0.05, "peak {peak}");
+        }
     }
 
     /// Decodes a real Ogg Opus file: `LITECORD_TEST_OGG=<1 s mono clip>`.
