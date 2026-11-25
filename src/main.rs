@@ -2500,6 +2500,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    crate::ui::member_list::set_app(app_weak.clone());
+    {
+        let (w, http, chan) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_channel_id));
+        app.on_toggle_member_list(move || {
+            let on = video_settings::toggle_show_member_list();
+            if let Some(ui) = w.upgrade() {
+                ui.set_show_member_list(on);
+            }
+            if on {
+                let h = http.lock().unwrap().as_ref().cloned();
+                let ch = chan.lock().unwrap().clone();
+                if let Some(h) = h {
+                    if !ch.is_empty() {
+                        crate::ui::member_list::open_channel(&h, &w, &ch);
+                    }
+                }
+            } else {
+                crate::ui::member_list::clear(&w);
+            }
+        });
+        app.on_member_list_scrolled(|row: i32| crate::ui::member_list::scrolled(row));
+    }
+
     let app_weak_hw = app_weak.clone();
     app.on_toggle_hardware_monitor(move || {
         let new_val = video_settings::toggle_show_hardware_monitor();
@@ -3928,6 +3951,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_select_guild(move |guild_id: SharedString| {
         let gid = guild_id.to_string();
         info!("Servidor selecionado pelo usuário: {}", gid);
+        crate::ui::member_list::set_guild(&gid);
 
         if let Some(ui) = app_weak_guild_select.upgrade() {
             ui.set_is_voice_focused(false);

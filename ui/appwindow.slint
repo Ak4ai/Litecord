@@ -6,6 +6,8 @@ import "../assets/fonts/Inter-Variable.ttf";
 
 import { IconButton } from "components/icon_button.slint";
 import { EmojiPicker, PickerItem, PickerRow, PickerCat } from "components/picker.slint";
+import { MemberColumn, MemberItem } from "components/member_list.slint";
+export { MemberItem }
 export { PickerItem, PickerRow, PickerCat }
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
 import { SettingsView, LanguageItem, SettingOptionItem, AudioDeviceItem } from "components/settings_view.slint";
@@ -407,6 +409,10 @@ export component AppWindow inherits Window {
     in-out property <string> selected_audio_loopback_backend: "auto";
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
+    in-out property <bool> show_member_list: false;
+    in-out property <[MemberItem]> member_rows: [];
+    callback toggle_member_list();
+    callback member_list_scrolled(int);
     in-out property <bool> go_live_unlock: false;
     in-out property <bool> use_gpu_renderer: false;
     in-out property <bool> net_diag_running: false;
@@ -3374,8 +3380,16 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+            // 4. Server members (optional): thin avatar column, wider on hover.
+            if root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" : MemberColumn {
+                members: root.member_rows;
+                avatar_pool: root.avatar_pool;
+                avatar_pool_urls: root.avatar_pool_urls;
+                scrolled(r) => { root.member_list_scrolled(r); }
+            }
         }
     }
+
     }
     }
 
@@ -3596,6 +3610,8 @@ export component AppWindow inherits Window {
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
+        show_member_list: root.show_member_list;
+        toggle_member_list => { root.toggle_member_list(); }
         go_live_unlock: root.go_live_unlock;
         use_gpu_renderer: root.use_gpu_renderer;
         net_diag_running: root.net_diag_running;

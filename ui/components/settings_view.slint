@@ -63,6 +63,8 @@ export component SettingsView inherits Rectangle {
     in property <[SettingOptionItem]> audio_loopback_options;
     in property <bool> enable_self_preview_notice;
     in property <bool> show_hardware_monitor;
+    in property <bool> show_member_list;
+    callback toggle_member_list();
     in property <bool> go_live_unlock;
     in property <bool> use_gpu_renderer;
     in property <bool> net_diag_running;
@@ -524,6 +526,12 @@ export component SettingsView inherits Rectangle {
                                     desc: Tr.perf_monitor_desc;
                                     checked: root.show_hardware_monitor;
                                     toggled => { root.toggle_hardware_monitor(); }
+                                }
+                                SettingsSwitchRow {
+                                    title: Tr.member_list;
+                                    desc: Tr.member_list_desc;
+                                    checked: root.show_member_list;
+                                    toggled => { root.toggle_member_list(); }
                                 }
                                 SettingsSwitchRow {
                                     title: Tr.gpu_render;

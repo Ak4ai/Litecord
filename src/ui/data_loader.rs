@@ -319,6 +319,7 @@ pub async fn fetch_and_populate_channels(
 ) {
     info!("Buscando canais do servidor {} via REST API...", guild_id);
     *active_guild_id.lock().unwrap() = guild_id.to_string();
+    crate::ui::member_list::set_guild(guild_id);
 
     let g_name = guilds_map.lock().unwrap()
         .get(guild_id)
@@ -970,6 +971,7 @@ pub async fn load_messages_for_channel(
 ) -> bool {
     info!("Carregando mensagens do canal {}...", channel_id);
     emoji_cache::get_emoji_cache().set_active_channel(channel_id);
+    crate::ui::member_list::open_channel(http, &app_weak, channel_id);
     // Reopening a channel paints its last batch at once; REST only replaces it when
     // something changed, so switching channels feels instant.
     let cached = message_cache_get(channel_id);
