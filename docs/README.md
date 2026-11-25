@@ -20,6 +20,12 @@ Este diretório contém as especificações técnicas, planos arquiteturais, rel
   * Fragmentação de NAL Units RFC 6184 para H.264 sobre UDP P2P de baixa latência.
   * Pipeline de aceleração por GPU (NVENC, AMD AMF, Intel/Windows Media Foundation MFT e fallback FFmpeg).
 
+### 🍎 Port para macOS
+* **[macOS Port — Findings & High-Level Plan](MACOS_PORT_PLAN.md)**:
+  * Auditoria completa da superfície de código específico de plataforma (Windows/Linux) e o que já é cross-platform.
+  * O único bloqueio de compilação (`libc` no target macOS) e o mapa de features inertas por fase.
+  * Planos por fase: [Phase 1 — compile & run](MACOS_PORT_PHASE1.md) · [Phase 2 — screen sharing (ScreenCaptureKit + CoreAudio)](MACOS_PORT_PHASE2.md) · [Phase 3 — polish, signing & CI](MACOS_PORT_PHASE3.md).
+
 ### 🛡️ Segurança, Criptografia & Auditorias
 * **[Relatório de Auditoria de Segurança](SECURITY_AUDIT.md)**:
   * Análise aprofundada de superfície de ataque e modelos de ameaça.

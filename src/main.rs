@@ -45,6 +45,30 @@ fn commit_heap_pages_on_demand() {
     const MI_OPTION_PAGE_COMMIT_ON_DEMAND: i32 = 40;
     unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
 }
+
+/// The command that hands a URL to the default browser on this platform
+/// (the spawn arm of `on_open_link`; Windows uses ShellExecuteW instead).
+/// macOS has no xdg-open — `open` is its default-browser handler.
+#[cfg(target_os = "macos")]
+fn browser_open_command() -> &'static str {
+    "open"
+}
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn browser_open_command() -> &'static str {
+    "xdg-open"
+}
+
+/// Whether the startup path may re-enable native window decorations on the
+/// freshly created winit window (the explicit `set_decorations(true)` call).
+///
+/// This exists solely for the WSLg workaround (commit d754dd3): on WSLg/X11
+/// the top-level desktop presentation needs the explicit decoration request.
+/// Windows and macOS keep Slint's `no-frame: true` self-drawn chrome — the
+/// override must not fire there, or the native titlebar draws on top of the
+/// app's own titlebar.
+pub(crate) fn startup_native_decorations_wanted() -> bool {
+    cfg!(target_os = "linux")
+}
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -262,6 +286,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if matches!(ev, winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::Resized(_)) {
                 crate::ui::window_place::observe(&main_weak);
+                // On macOS `is_maximized()` is a mutating getter for borderless windows (winit
+                // re-applies the style mask to ask AppKit), which posts another window event and
+                // loops forever. The app tracks maximize state itself there, so don't query it.
+                #[cfg(not(target_os = "macos"))]
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
@@ -376,8 +404,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                #[cfg(not(target_os = "windows"))]
-                {
+                // WSLg/X11 needs the explicit decoration request for instant
+                // desktop presentation (commit d754dd3); Windows and macOS
+                // keep Slint's `no-frame` self-drawn chrome.
+                if startup_native_decorations_wanted() {
                     winit_win.set_decorations(true);
                 }
             });
@@ -590,7 +620,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            let _ = std::process::Command::new(browser_open_command()).arg(&url).spawn();
         }
     });
 
@@ -4831,8 +4861,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            // `window().is_maximized()` misses the state on some Wayland compositors.
+            // `window().is_maximized()` misses the state on some Wayland compositors; on
+            // macOS querying winit's state is a mutating getter for borderless windows, so
+            // there the UI property is the source of truth.
+            #[allow(unused_mut)]
             let mut is_max = app_instance.get_is_maximized();
+            #[cfg(not(target_os = "macos"))]
             app_instance.window().with_winit_window(|w| {
                 is_max = crate::ui::window_place::is_maximized(w);
             });
@@ -5265,6 +5299,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
     crate::ui::window_place::save_now();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Chat links must hand off to the platform's default-browser handler:
+    /// `open` on macOS (there is no xdg-open — links would silently fail),
+    /// xdg-open on the other non-Windows platforms. Windows uses
+    /// ShellExecuteW directly in `on_open_link`, so it has no command.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn browser_open_command_is_open_on_macos() {
+        assert_eq!(crate::browser_open_command(), "open");
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    #[test]
+    fn browser_open_command_is_xdg_open_off_macos() {
+        assert_eq!(crate::browser_open_command(), "xdg-open");
+    }
+
+    /// Slint's `no-frame: true` chrome is authoritative on Windows and macOS;
+    /// only Linux keeps the WSLg override that re-enables native decorations
+    /// at startup (commit d754dd3). On macOS the override must be off, or the
+    /// native titlebar doubles the app's own titlebar.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn startup_native_decorations_are_linux_only() {
+        assert_eq!(
+            crate::startup_native_decorations_wanted(),
+            cfg!(target_os = "linux"),
+            "the explicit native-decoration startup override (WSLg workaround) must apply to Linux only; Windows and macOS keep Slint's no-frame chrome",
+        );
+    }
 }
 
 /// Lights or clears the speaking ring on the sidebar rows of call members. Only the

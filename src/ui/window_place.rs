@@ -115,8 +115,12 @@ pub fn save_now() {
 fn save_geometry() {
     let Some(app) = WINDOW.with(|w| w.borrow().as_ref().and_then(|w| w.upgrade())) else { return };
     let previous = LAST.with(|l| l.get());
-    let Some(geometry) = app.window().with_winit_window(|w| current(w, previous)).flatten() else { return };
-    if app.get_is_maximized() != geometry.maximized {
+    // The UI property is the source of truth for maximize state: on macOS
+    // `Window::is_maximized` is a mutating getter for borderless windows, and
+    // elsewhere the window event handler keeps it in sync with the OS.
+    let maximized = app.get_is_maximized();
+    let Some(geometry) = app.window().with_winit_window(|w| current(w, previous, maximized)).flatten() else { return };
+    if maximized != geometry.maximized {
         app.set_is_maximized(geometry.maximized);
     }
     if Some(geometry) != previous {
@@ -128,7 +132,7 @@ fn save_geometry() {
 /// Whether the window is maximized. On Wayland the compositor does not always report
 /// it, so fall back to comparing the window size with its monitor.
 pub fn is_maximized(window: &winit::window::Window) -> bool {
-    if window.is_maximized() {
+    if !cfg!(target_os = "macos") && window.is_maximized() {
         return true;
     }
     #[cfg(target_os = "linux")]
@@ -144,14 +148,16 @@ pub fn is_maximized(window: &winit::window::Window) -> bool {
     false
 }
 
-fn current(window: &winit::window::Window, previous: Option<WindowGeometry>) -> Option<WindowGeometry> {
+/// `ui_maximized` is the UI's own state: on macOS `Window::is_maximized` is a mutating
+/// getter for borderless windows, so there the UI property is the source of truth.
+fn current(window: &winit::window::Window, previous: Option<WindowGeometry>, ui_maximized: bool) -> Option<WindowGeometry> {
     // A hidden window reports no usable area. `is_minimized` is unreliable on
     // Wayland, where it may stay true while the window is on screen.
     let inner = window.inner_size();
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
-    let maximized = is_maximized(window);
+    let maximized = if cfg!(target_os = "macos") { ui_maximized } else { is_maximized(window) };
     if maximized {
         // Keep the size and place the window goes back to when restored.
         let (width, height) = previous.map_or(DEFAULT_SIZE, |g| (g.width, g.height));
