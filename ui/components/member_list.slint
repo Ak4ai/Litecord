@@ -113,8 +113,9 @@ export component MemberColumn inherits Rectangle {
                         height: 32px;
                         border-radius: 16px;
                         clip: true;
-                        opacity: m.status == "offline" ? 0.35 : 1.0;
-                        background: m.known ? AppTheme.accent : AppTheme.surface-input;
+                        // A row not received yet is a faint circle, not a dark one.
+                        opacity: !m.known ? 0.25 : (m.status == "offline" ? 0.35 : 1.0);
+                        background: m.known ? AppTheme.accent : AppTheme.text-muted;
                         if m.known && !(m.avatar_url != "" && root.avatar_pool_urls[m.avatar_slot] == m.avatar_url) : Text {
                             text: m.initials;
                             color: AppTheme.text-on-accent;

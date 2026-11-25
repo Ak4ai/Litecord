@@ -39,6 +39,10 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static GUILD: Mutex<String> = Mutex::new(String::new());
+/// Lists of the last servers left, shown at once when coming back while the
+/// gateway sends the fresh one. A few thousand small rows at most.
+static CACHE: Mutex<Vec<(String, Vec<Row>, HashMap<String, String>)>> = Mutex::new(Vec::new());
+const CACHED_SERVERS: usize = 4;
 static APP: std::sync::OnceLock<slint::Weak<crate::AppWindow>> = std::sync::OnceLock::new();
 
 pub fn set_app(app_weak: slint::Weak<crate::AppWindow>) {
@@ -62,10 +66,31 @@ pub fn open_channel(http: &DiscordHttpClient, app_weak: &slint::Weak<crate::AppW
     }
     let roles_known = {
         let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let same_guild = st.as_ref().is_some_and(|s| s.guild == guild);
-        let roles = if same_guild { st.take().map(|s| s.roles).unwrap_or_default() } else { HashMap::new() };
+        // Channels of one server nearly always share its list: keep showing it
+        // until the new one arrives, instead of blank rows.
+        let (rows, roles) = match st.take() {
+            Some(s) if s.guild == guild => (s.rows, s.roles),
+            other => {
+                let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(old) = other {
+                    cache.retain(|(g, _, _)| *g != old.guild);
+                    cache.push((old.guild, old.rows, old.roles));
+                    if cache.len() > CACHED_SERVERS {
+                        cache.remove(0);
+                    }
+                }
+                cache
+                    .iter()
+                    .position(|(g, _, _)| *g == guild)
+                    .map(|i| {
+                        let (_, rows, roles) = cache.remove(i);
+                        (rows, roles)
+                    })
+                    .unwrap_or_default()
+            }
+        };
         let known = !roles.is_empty();
-        *st = Some(State { guild: guild.clone(), channel: channel_id.to_string(), rows: Vec::new(), roles, page: 0 });
+        *st = Some(State { guild: guild.clone(), channel: channel_id.to_string(), rows, roles, page: 0 });
         known
     };
     push_ui(app_weak);
@@ -101,8 +126,8 @@ pub fn resubscribe() {
 }
 
 /// Turned off in settings: drop everything.
+/// The list stays in memory, so turning the column back on shows it at once.
 pub fn clear(app_weak: &slint::Weak<crate::AppWindow>) {
-    *STATE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     push_ui(app_weak);
 }
 
@@ -163,6 +188,11 @@ pub fn apply(d: &Value) {
         let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = st.as_mut() else { return };
         if d["guild_id"].as_str() != Some(s.guild.as_str()) {
+            return;
+        }
+        if !enabled() {
+            // Kept up to date (cheap) but not drawn while the column is off.
+            apply_ops(s, d);
             return;
         }
         if !apply_ops(s, d) {
@@ -242,7 +272,7 @@ fn group_name(id: &str, roles: &HashMap<String, String>) -> String {
 fn push_ui(app_weak: &slint::Weak<crate::AppWindow>) {
     let rows: Vec<(String, String, String, String, String, bool)> = {
         let st = STATE.lock().unwrap_or_else(|e| e.into_inner());
-        match st.as_ref() {
+        match st.as_ref().filter(|_| enabled()) {
             None => Vec::new(),
             Some(s) => s
                 .rows
