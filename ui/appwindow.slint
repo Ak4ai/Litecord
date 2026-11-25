@@ -3380,6 +3380,8 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
             // 4. Server members (optional): thin avatar column, wider on hover.
             if root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" : MemberColumn {
                 members: root.member_rows;
@@ -3387,8 +3389,6 @@ export component AppWindow inherits Window {
                 avatar_pool_urls: root.avatar_pool_urls;
                 scrolled(r) => { root.member_list_scrolled(r); }
             }
-        }
-    }
 
     }
     }
