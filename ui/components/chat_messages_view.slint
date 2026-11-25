@@ -1185,11 +1185,14 @@ export component ChatMessagesView inherits Rectangle {
                                 spacing: 10px;
                                 alignment: center;
 
-                                if !att.is_audio : Image {
-                                    source: @image-url("../../assets/external-link.svg");
-                                    width: 16px;
-                                    height: 16px;
-                                    colorize: AppTheme.text-muted;
+                                if !att.is_audio : VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../../assets/external-link.svg");
+                                        width: 16px;
+                                        height: 16px;
+                                        colorize: AppTheme.text-muted;
+                                    }
                                 }
 
                                 if att.is_audio : Text {
