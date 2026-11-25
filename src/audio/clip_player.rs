@@ -61,7 +61,7 @@ pub fn toggle(url: String, app_weak: slint::Weak<crate::AppWindow>) {
             return;
         }
         let _ = std::thread::Builder::new().name("clip-player".into()).spawn(move || {
-            let ok = play_bytes(&bytes, gen);
+            let ok = play_bytes(&bytes, gen, &app_weak);
             if !ok {
                 fall_back(gen, url, app_weak);
             } else {
@@ -82,9 +82,56 @@ fn set_playing_ui(app_weak: &slint::Weak<crate::AppWindow>, url: String) {
     let w = app_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = w.upgrade() {
+            if url.is_empty() {
+                ui.set_playing_audio_progress(0.0);
+                ui.set_playing_audio_time("".into());
+            }
             ui.set_playing_audio_url(url.into());
         }
     });
+}
+
+/// "m:ss".
+fn clock(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Shows how far the clip has played: a bar and "0:12 / 0:45".
+fn report_progress(app_weak: &slint::Weak<crate::AppWindow>, gen: u64, played: f64, total: f64) {
+    let (progress, text) = if total > 0.0 {
+        ((played / total).clamp(0.0, 1.0) as f32, format!("{} / {}", clock(played.min(total)), clock(total)))
+    } else {
+        (0.0, clock(played))
+    };
+    let w = app_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if GENERATION.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        if let Some(ui) = w.upgrade() {
+            ui.set_playing_audio_progress(progress);
+            ui.set_playing_audio_time(text.into());
+        }
+    });
+}
+
+/// The granule position of the last Ogg page: the clip length in samples.
+fn ogg_last_granule(bytes: &[u8]) -> Option<u64> {
+    let i = bytes.windows(4).rposition(|w| w == b"OggS")?;
+    let g = bytes.get(i + 6..i + 14)?;
+    Some(u64::from_le_bytes(g.try_into().ok()?))
+}
+
+/// Clip length in seconds, 0 when unknown. MP3 is estimated from its bitrate.
+fn duration_secs(bytes: &[u8], source: &Source) -> f64 {
+    match source {
+        Source::Opus(_) => ogg_last_granule(bytes).map_or(0.0, |g| g as f64 / 48000.0),
+        Source::Vorbis(v) => ogg_last_granule(bytes).map_or(0.0, |g| g as f64 / v.rate as f64),
+        Source::Wav(w) => (w.end - w.pos) as f64 / (w.bits / 8 * w.channels) as f64 / w.rate as f64,
+        Source::Mp3(m) if m.bitrate_kbps > 0 => bytes.len() as f64 * 8.0 / (m.bitrate_kbps as f64 * 1000.0),
+        Source::Mp3(_) => 0.0,
+    }
 }
 
 /// Clears the playing state if this clip is still the current one.
@@ -122,7 +169,7 @@ async fn download(url: &str) -> Option<Vec<u8>> {
 
 /// Decodes and plays the file. Returns false when the format is not one this
 /// player reads or no output device opens.
-fn play_bytes(bytes: &[u8], gen: u64) -> bool {
+fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) -> bool {
     let source = if let Some(s) = OpusSource::new(bytes) {
         Source::Opus(s)
     } else if let Some(s) = VorbisSource::new(bytes) {
@@ -153,9 +200,11 @@ fn play_bytes(bytes: &[u8], gen: u64) -> bool {
     let dst_rate = config.sample_rate().0;
     let dst_ch = config.channels() as usize;
 
+    let total = duration_secs(bytes, &source);
     let (tx, rx) = sync_channel::<Vec<f32>>(4);
     let drained = Arc::new(AtomicBool::new(false));
-    let stream = match build_stream(&device, &config, rx, Arc::clone(&drained)) {
+    let played = Arc::new(AtomicU64::new(0));
+    let stream = match build_stream(&device, &config, rx, Arc::clone(&drained), Arc::clone(&played)) {
         Some(s) => s,
         None => return false,
     };
@@ -167,10 +216,20 @@ fn play_bytes(bytes: &[u8], gen: u64) -> bool {
     let mut out = Output::new(tx, source.rate(), dst_rate, dst_ch);
     let mut source = source;
     let mut frames = Vec::with_capacity(CHUNK_FRAMES);
+    // Progress goes to the UI at most 4 times a second, only while playing.
+    let samples_per_sec = (dst_rate as usize * dst_ch) as f64;
+    let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
+    let tick = |last: &mut std::time::Instant| {
+        if last.elapsed() >= Duration::from_millis(250) {
+            *last = std::time::Instant::now();
+            report_progress(app_weak, gen, played.load(Ordering::Relaxed) as f64 / samples_per_sec, total);
+        }
+    };
     loop {
         if GENERATION.load(Ordering::SeqCst) != gen {
             return true;
         }
+        tick(&mut last_report);
         frames.clear();
         if !source.next_frames(&mut frames) {
             break;
@@ -184,6 +243,7 @@ fn play_bytes(bytes: &[u8], gen: u64) -> bool {
 
     // Let the last chunks reach the speaker, unless stopped first.
     while !drained.load(Ordering::Relaxed) && GENERATION.load(Ordering::SeqCst) == gen {
+        tick(&mut last_report);
         std::thread::sleep(Duration::from_millis(50));
     }
     drop(stream);
@@ -195,8 +255,9 @@ fn build_stream(
     config: &cpal::SupportedStreamConfig,
     rx: Receiver<Vec<f32>>,
     drained: Arc<AtomicBool>,
+    played: Arc<AtomicU64>,
 ) -> Option<cpal::Stream> {
-    let mut feed = Feed { rx, cur: Vec::new(), pos: 0, drained };
+    let mut feed = Feed { rx, cur: Vec::new(), pos: 0, drained, played };
     let err = |e| warn!("Erro no stream do player de áudio: {}", e);
     match config.sample_format() {
         cpal::SampleFormat::F32 => device
@@ -223,6 +284,8 @@ struct Feed {
     cur: Vec<f32>,
     pos: usize,
     drained: Arc<AtomicBool>,
+    /// Samples handed to the device so far (counted per chunk).
+    played: Arc<AtomicU64>,
 }
 
 impl Feed {
@@ -230,12 +293,15 @@ impl Feed {
         while self.pos >= self.cur.len() {
             match self.rx.try_recv() {
                 Ok(chunk) => {
+                    self.played.fetch_add(self.cur.len() as u64, Ordering::Relaxed);
                     self.cur = chunk;
                     self.pos = 0;
                 }
                 Err(TryRecvError::Empty) => return 0.0,
                 Err(TryRecvError::Disconnected) => {
-                    self.drained.store(true, Ordering::Relaxed);
+                    if !self.drained.swap(true, Ordering::Relaxed) {
+                        self.played.fetch_add(self.cur.len() as u64, Ordering::Relaxed);
+                    }
                     return 0.0;
                 }
             }
@@ -465,6 +531,7 @@ impl<'a> VorbisSource<'a> {
 struct Mp3Source<'a> {
     decoder: minimp3::Decoder<std::io::Cursor<&'a [u8]>>,
     rate: u32,
+    bitrate_kbps: i32,
     /// The first frame, decoded to learn the rate, waiting to be played.
     first: Option<minimp3::Frame>,
 }
@@ -479,7 +546,7 @@ impl<'a> Mp3Source<'a> {
         let mut decoder = minimp3::Decoder::new(std::io::Cursor::new(data));
         let first = decoder.next_frame().ok()?;
         let rate = u32::try_from(first.sample_rate).ok().filter(|r| *r > 0)?;
-        Some(Self { decoder, rate, first: Some(first) })
+        Some(Self { decoder, rate, bitrate_kbps: first.bitrate, first: Some(first) })
     }
 
     fn next_frames(&mut self, out: &mut Vec<[f32; 2]>) -> bool {
@@ -586,6 +653,14 @@ mod tests {
             v.extend(s.to_le_bytes());
         }
         v
+    }
+
+    #[test]
+    fn clock_and_durations() {
+        assert_eq!(clock(75.4), "1:15");
+        let data = wav(8000, &[0; 8000]);
+        let src = Source::Wav(WavSource::new(&data).unwrap());
+        assert!((duration_secs(&data, &src) - 1.0).abs() < 1e-9);
     }
 
     #[test]

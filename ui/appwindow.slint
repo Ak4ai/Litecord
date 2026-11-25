@@ -70,6 +70,32 @@ export struct CameraSourceItem {
 export struct PendingFile {
     name: string,
     size: string,
+    kind: string,
+    spoiler: bool,
+}
+
+// Icon button with a rounded, lighter background on hover.
+component BarIcon inherits Rectangle {
+    in property <image> icon;
+    in property <length> box: 34px;
+    in property <length> size: 20px;
+    in property <bool> active: false;
+    in property <color> active-color: AppTheme.text-primary;
+    callback clicked();
+    width: box;
+    height: box;
+    border-radius: 6px;
+    background: ta.has-hover ? AppTheme.interactive-hover : transparent;
+    Image {
+        source: root.icon;
+        width: root.size;
+        height: root.size;
+        colorize: root.active ? root.active-color : (ta.has-hover ? AppTheme.text-primary : AppTheme.text-muted);
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
 }
 
 export struct AccountItem {
@@ -108,6 +134,13 @@ export component AppWindow inherits Window {
     callback send_message(string /* content */);
     callback pick_files();
     callback remove_pending_file(int /* index */);
+    callback toggle_spoiler(int /* index */);
+    // Not handled yet: renaming a pending file.
+    callback edit_pending_file(int /* index */);
+    // Non-empty while files are dragged over the window.
+    in-out property <string> drop_hint: "";
+    in-out property <float> playing_audio_progress: 0;
+    in-out property <string> playing_audio_time: "";
     in-out property <[PendingFile]> pending_files: [];
     in-out property <string> upload_status: "";
     callback select_channel(string /* channel_id */);
@@ -2760,6 +2793,8 @@ export component AppWindow inherits Window {
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
                         play_audio(url) => { root.play_audio(url); }
                         playing_audio_url: root.playing_audio_url;
+                        playing_audio_progress: root.playing_audio_progress;
+                        playing_audio_time: root.playing_audio_time;
                         click_command(cmd) => {
                             root.click_command(cmd);
                         }
@@ -2913,87 +2948,137 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Files picked for the next message, and the upload status.
-                    if root.pending_files.length > 0 || root.upload_status != "" : Rectangle {
-                        height: 40px;
-                        background: AppTheme.surface-chat;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            padding-top: 6px;
-                            spacing: 6px;
-                            alignment: start;
-                            for f[i] in root.pending_files : Rectangle {
-                                background: AppTheme.surface-input;
-                                border-radius: 6px;
-                                border-width: 1px;
-                                border-color: AppTheme.border-subtle;
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 4px;
-                                    spacing: 6px;
-                                    Text {
-                                        text: f.name;
-                                        max-width: 180px;
-                                        overflow: elide;
-                                        color: AppTheme.text-primary;
-                                        font-size: TypeScale.small;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: f.size;
-                                        color: AppTheme.text-muted;
-                                        font-size: TypeScale.caption;
-                                        vertical-alignment: center;
-                                    }
-                                    Rectangle {
-                                        width: 20px;
-                                        background: rm_ta.has-hover ? AppTheme.interactive-hover : transparent;
-                                        border-radius: 4px;
-                                        Image {
-                                            source: @image-url("../assets/x.svg");
-                                            width: 12px;
-                                            height: 12px;
-                                            colorize: AppTheme.text-muted;
-                                        }
-                                        rm_ta := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => { root.remove_pending_file(i); }
-                                        }
-                                    }
-                                }
-                            }
-                            if root.upload_status != "" : Text {
-                                text: root.upload_status;
-                                color: AppTheme.text-muted;
-                                font-size: TypeScale.small;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                        }
-                    }
-
-                    // Message / Smart Command Input Box
+                    // Message box: picked files on top, then the input row.
                     Rectangle {
-                        height: 56px;
+                        height: 60px + (root.pending_files.length > 0 ? 161px : 0px) + (root.upload_status != "" ? 24px : 0px);
                         background: AppTheme.surface-chat;
 
-                        HorizontalBox {
-                            padding: 8px;
-                            spacing: 8px;
+                        Rectangle {
+                            x: 12px;
+                            y: 4px;
+                            width: parent.width - 24px;
+                            height: parent.height - 12px;
+                            background: AppTheme.surface-input;
+                            border-radius: 8px;
 
-                            if root.active_command_name == "" : Rectangle {
-                                width: 36px;
-                                background: clip_ta.has-hover ? AppTheme.interactive-hover : transparent;
-                                border-radius: 4px;
-                                Image {
-                                    source: @image-url("../assets/paperclip.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: clip_ta.has-hover ? AppTheme.text-primary : AppTheme.text-muted;
+                        VerticalLayout {
+                            if root.pending_files.length > 0 : HorizontalLayout {
+                                height: 160px;
+                                padding: 12px;
+                                spacing: 12px;
+                                alignment: start;
+                                for f[i] in root.pending_files : Rectangle {
+                                    width: 150px;
+                                    background: AppTheme.surface-elevated;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: tile_ta.has-hover ? AppTheme.text-subtle : AppTheme.border-subtle;
+
+                                    VerticalLayout {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 56px;
+                                                height: 56px;
+                                                border-radius: 10px;
+                                                background: AppTheme.surface-input;
+                                                Image {
+                                                    source: f.kind == "audio" ? @image-url("../assets/music.svg")
+                                                        : f.kind == "video" ? @image-url("../assets/video.svg")
+                                                        : f.kind == "image" ? @image-url("../assets/image.svg")
+                                                        : @image-url("../assets/file.svg");
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    colorize: AppTheme.accent-link-hover;
+                                                }
+                                            }
+                                        }
+                                        Text {
+                                            text: f.name;
+                                            overflow: elide;
+                                            horizontal-alignment: center;
+                                            color: AppTheme.text-primary;
+                                            font-size: TypeScale.small;
+                                        }
+                                        Text {
+                                            text: f.spoiler ? "SPOILER · " + f.size : f.size;
+                                            horizontal-alignment: center;
+                                            color: f.spoiler ? AppTheme.accent-link-hover : AppTheme.text-muted;
+                                            font-size: TypeScale.caption;
+                                        }
+                                    }
+
+                                    // Hovering the card shows its actions; they sit inside the
+                                    // card's TouchArea so the hover holds while using them.
+                                    tile_ta := TouchArea {
+                                        if tile_ta.has-hover : Rectangle {
+                                            x: parent.width - 98px;
+                                            y: -10px;
+                                            width: 96px;
+                                            height: 32px;
+                                            background: AppTheme.surface-chat;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: AppTheme.border-subtle;
+                                            HorizontalLayout {
+                                                padding: 2px;
+                                                spacing: 2px;
+                                                BarIcon {
+                                                    box: 28px;
+                                                    size: 16px;
+                                                    icon: @image-url("../assets/eye.svg");
+                                                    active: f.spoiler;
+                                                    active-color: AppTheme.accent-link-hover;
+                                                    clicked => { root.toggle_spoiler(i); }
+                                                }
+                                                BarIcon {
+                                                    box: 28px;
+                                                    size: 16px;
+                                                    icon: @image-url("../assets/pencil.svg");
+                                                    clicked => { root.edit_pending_file(i); }
+                                                }
+                                                BarIcon {
+                                                    box: 28px;
+                                                    size: 16px;
+                                                    icon: @image-url("../assets/trash.svg");
+                                                    active: true;
+                                                    active-color: #f23f43;
+                                                    clicked => { root.remove_pending_file(i); }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                clip_ta := TouchArea {
-                                    mouse-cursor: pointer;
+                            }
+                            if root.pending_files.length > 0 : Rectangle {
+                                height: 1px;
+                                background: AppTheme.border-subtle;
+                            }
+                            if root.upload_status != "" : HorizontalLayout {
+                                height: 24px;
+                                padding-left: 14px;
+                                Text {
+                                    text: root.upload_status;
+                                    color: AppTheme.text-muted;
+                                    font-size: TypeScale.small;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                        HorizontalLayout {
+                            height: 48px;
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 4px;
+
+                            if root.active_command_name == "" : VerticalLayout {
+                                alignment: center;
+                                BarIcon {
+                                    icon: @image-url("../assets/plus.svg");
                                     clicked => { root.pick_files(); }
                                 }
                             }
@@ -3110,10 +3195,6 @@ export component AppWindow inherits Window {
 
                             if root.active_command_name == "" : Rectangle {
                                 horizontal-stretch: 1;
-                                background: AppTheme.surface-input;
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: chat_text_input.has-focus ? AppTheme.accent : AppTheme.border-subtle;
                                 clip: true;
 
                                 if root.chat_input_text == "" : Text {
@@ -3174,30 +3255,44 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            Button {
-                                text: root.tr_send;
-                                primary: true;
-                                clicked => {
-                                    if (root.active_command_name != "") {
-                                        root.execute_active_command(
-                                            root.active_command_name,
-                                            root.command_arg_text,
-                                            root.active_command_app_id,
-                                            root.active_command_cmd_id,
-                                            root.active_command_version,
-                                            root.active_param_name
-                                        );
-                                        root.active_command_name = "";
-                                        root.command_arg_text = "";
-                                    } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
-                                        root.select_suggestion(root.active_suggestion_index);
-                                    } else if (root.chat_input_text != "" || root.pending_files.length > 0) {
-                                        root.send_message(root.chat_input_text);
-                                        root.chat_input_text = "";
-                                        root.show_command_suggestions = false;
+                            if root.active_command_name == "" : VerticalLayout {
+                                alignment: center;
+                                BarIcon { icon: @image-url("../assets/sticker.svg"); }
+                            }
+                            if root.active_command_name == "" : VerticalLayout {
+                                alignment: center;
+                                BarIcon { icon: @image-url("../assets/smile.svg"); }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                BarIcon {
+                                    icon: @image-url("../assets/send.svg");
+                                    active: root.chat_input_text != "" || root.pending_files.length > 0 || root.active_command_name != "";
+                                    active-color: AppTheme.accent-link-hover;
+                                    clicked => {
+                                        if (root.active_command_name != "") {
+                                            root.execute_active_command(
+                                                root.active_command_name,
+                                                root.command_arg_text,
+                                                root.active_command_app_id,
+                                                root.active_command_cmd_id,
+                                                root.active_command_version,
+                                                root.active_param_name
+                                            );
+                                            root.active_command_name = "";
+                                            root.command_arg_text = "";
+                                        } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
+                                            root.select_suggestion(root.active_suggestion_index);
+                                        } else if (root.chat_input_text != "" || root.pending_files.length > 0) {
+                                            root.send_message(root.chat_input_text);
+                                            root.chat_input_text = "";
+                                            root.show_command_suggestions = false;
+                                        }
                                     }
                                 }
                             }
+                        }
+                        }
                         }
                     }
                 }
@@ -3205,6 +3300,36 @@ export component AppWindow inherits Window {
         }
     }
     }
+    }
+
+    // Files dragged over the window.
+    if root.drop_hint != "" : Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: #000000a0;
+        Rectangle {
+            width: 320px;
+            height: 160px;
+            background: AppTheme.accent;
+            border-radius: 12px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    Image { source: @image-url("../assets/plus.svg"); width: 40px; height: 40px; colorize: AppTheme.text-on-accent; }
+                }
+                Text {
+                    text: root.drop_hint;
+                    horizontal-alignment: center;
+                    color: AppTheme.text-on-accent;
+                    font-size: TypeScale.body;
+                    font-weight: 700;
+                }
+            }
+        }
     }
 
     // Settings overlay: backend state stays on AppWindow.

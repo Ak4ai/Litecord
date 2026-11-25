@@ -9,10 +9,6 @@ pub struct DiscordHttpClient {
     token: String,
 }
 
-fn file_name(p: &std::path::Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())
-}
-
 /// Content type by extension, so Discord shows images, video and audio inline.
 fn mime_for(p: &std::path::Path) -> &'static str {
     let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -322,22 +318,22 @@ impl DiscordHttpClient {
         &self,
         channel_id: &str,
         content: &str,
-        files: &[std::path::PathBuf],
+        files: &[(std::path::PathBuf, String)],
     ) -> Result<(), u16> {
         let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
         let attachments: Vec<_> = files
             .iter()
             .enumerate()
-            .map(|(i, p)| json!({ "id": i, "filename": file_name(p) }))
+            .map(|(i, (_, name))| json!({ "id": i, "filename": name }))
             .collect();
         let payload = json!({ "content": content, "attachments": attachments });
         let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
-        for (i, p) in files.iter().enumerate() {
+        for (i, (p, name)) in files.iter().enumerate() {
             let file = tokio::fs::File::open(p).await.map_err(|_| 0u16)?;
             let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
             let body = reqwest::Body::from(file);
             let part = reqwest::multipart::Part::stream_with_length(body, len)
-                .file_name(file_name(p))
+                .file_name(name.clone())
                 .mime_str(mime_for(p))
                 .map_err(|_| 0u16)?;
             form = form.part(format!("files[{}]", i), part);

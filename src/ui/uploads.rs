@@ -1,6 +1,7 @@
-//! Files picked to send with the next message. The picker is the system's own
-//! dialog (Windows common dialog; zenity or kdialog on Linux), run on a short
-//! lived thread; nothing here runs while no file is being picked or sent.
+//! Files picked to send with the next message. They come from the system's
+//! own picker (Windows common dialog; zenity or kdialog on Linux), run on a
+//! short lived thread, or from files dropped on the window. Nothing here runs
+//! while no file is being picked or sent.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -12,9 +13,14 @@ use crate::utils::i18n_ui::en_pt;
 /// Discord accepts at most 10 files per message.
 pub const MAX_FILES: usize = 10;
 
-static PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+struct Pending {
+    path: PathBuf,
+    spoiler: bool,
+}
 
-fn pending() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
+
+fn pending() -> std::sync::MutexGuard<'static, Vec<Pending>> {
     PENDING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -22,19 +28,23 @@ fn pending() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
 pub fn pick(app_weak: slint::Weak<crate::AppWindow>) {
     let _ = std::thread::Builder::new().name("file-picker".into()).spawn(move || {
         let picked = open_dialog();
-        if picked.is_empty() {
-            return;
+        if !picked.is_empty() {
+            add(picked, &app_weak);
         }
-        {
-            let mut list = pending();
-            for p in picked {
-                if list.len() < MAX_FILES && !list.contains(&p) {
-                    list.push(p);
-                }
+    });
+}
+
+/// Adds files (from the picker or dropped on the window); folders are skipped.
+pub fn add(paths: Vec<PathBuf>, app_weak: &slint::Weak<crate::AppWindow>) {
+    {
+        let mut list = pending();
+        for p in paths {
+            if list.len() < MAX_FILES && p.is_file() && !list.iter().any(|f| f.path == p) {
+                list.push(Pending { path: p, spoiler: false });
             }
         }
-        refresh_ui(&app_weak, String::new());
-    });
+    }
+    refresh_ui(app_weak, String::new());
 }
 
 pub fn remove(index: usize, app_weak: &slint::Weak<crate::AppWindow>) {
@@ -47,9 +57,25 @@ pub fn remove(index: usize, app_weak: &slint::Weak<crate::AppWindow>) {
     refresh_ui(app_weak, String::new());
 }
 
-/// Takes the pending files for sending (the strip empties).
-pub fn take() -> Vec<PathBuf> {
+/// Marks a file as a spoiler (Discord blurs it until clicked), or unmarks it.
+pub fn toggle_spoiler(index: usize, app_weak: &slint::Weak<crate::AppWindow>) {
+    if let Some(f) = pending().get_mut(index) {
+        f.spoiler = !f.spoiler;
+    }
+    refresh_ui(app_weak, String::new());
+}
+
+/// Takes the pending files for sending (the strip empties), each with the
+/// name it goes out under: spoilers get Discord's `SPOILER_` prefix.
+pub fn take() -> Vec<(PathBuf, String)> {
     std::mem::take(&mut *pending())
+        .into_iter()
+        .map(|f| {
+            let name = file_name(&f.path);
+            let name = if f.spoiler { format!("SPOILER_{}", name) } else { name };
+            (f.path, name)
+        })
+        .collect()
 }
 
 pub fn has_pending() -> bool {
@@ -62,14 +88,28 @@ pub fn clear(app_weak: &slint::Weak<crate::AppWindow>) {
     refresh_ui(app_weak, String::new());
 }
 
+fn file_name(p: &std::path::Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// "audio", "video", "image" or "file", for the icon on the card.
+pub fn kind_of(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "mp3" | "ogg" | "opus" | "wav" | "m4a" | "flac" | "aac" => "audio",
+        "mp4" | "webm" | "mov" | "mkv" | "avi" => "video",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => "image",
+        _ => "file",
+    }
+}
+
 /// Shows the pending files and a status line (empty for none).
 pub fn refresh_ui(app_weak: &slint::Weak<crate::AppWindow>, status: String) {
-    let items: Vec<(String, String)> = pending()
+    let items: Vec<(String, String, bool)> = pending()
         .iter()
-        .map(|p| {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let size = std::fs::metadata(p).map(|m| format_size(m.len())).unwrap_or_default();
-            (name, size)
+        .map(|f| {
+            let size = std::fs::metadata(&f.path).map(|m| format_size(m.len())).unwrap_or_default();
+            (file_name(&f.path), size, f.spoiler)
         })
         .collect();
     let w = app_weak.clone();
@@ -77,7 +117,12 @@ pub fn refresh_ui(app_weak: &slint::Weak<crate::AppWindow>, status: String) {
         let Some(ui) = w.upgrade() else { return };
         let model: Vec<crate::PendingFile> = items
             .into_iter()
-            .map(|(name, size)| crate::PendingFile { name: name.into(), size: size.into() })
+            .map(|(name, size, spoiler)| crate::PendingFile {
+                kind: kind_of(&name).into(),
+                name: name.into(),
+                size: size.into(),
+                spoiler,
+            })
             .collect();
         ui.set_pending_files(slint::ModelRc::new(slint::VecModel::from(model)));
         ui.set_upload_status(status.into());
@@ -96,6 +141,10 @@ pub fn format_size(bytes: u64) -> String {
 
 pub fn sending_text(count: usize) -> String {
     format!("{} ({})", en_pt("Uploading", "Enviando"), count)
+}
+
+pub fn drop_hint() -> &'static str {
+    en_pt("Drop to attach", "Solte para anexar")
 }
 
 pub fn too_large_text() -> String {
@@ -190,5 +239,20 @@ mod tests {
             vec![PathBuf::from("C:\\dir").join("x.mp4"), PathBuf::from("C:\\dir").join("y.pdf")]
         );
         assert!(parse_multi_select(&w("\0\0")).is_empty());
+    }
+
+    #[test]
+    fn kinds_and_spoiler_names() {
+        assert_eq!(kind_of("a.MP3"), "audio");
+        assert_eq!(kind_of("b.mp4"), "video");
+        assert_eq!(kind_of("c.png"), "image");
+        assert_eq!(kind_of("d.pdf"), "file");
+        let dir = std::env::temp_dir().join("litecord_upload_test.txt");
+        std::fs::write(&dir, b"x").unwrap();
+        pending().clear();
+        pending().push(Pending { path: dir.clone(), spoiler: true });
+        let out = take();
+        assert_eq!(out[0].1, "SPOILER_litecord_upload_test.txt");
+        let _ = std::fs::remove_file(dir);
     }
 }

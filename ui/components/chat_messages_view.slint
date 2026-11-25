@@ -108,6 +108,8 @@ export component ChatMessagesView inherits Rectangle {
     // Plays or stops an audio attachment inside the app (by its URL).
     callback play_audio(string);
     in property <string> playing_audio_url;
+    in property <float> playing_audio_progress;
+    in property <string> playing_audio_time;
     callback click_command(string);
     callback bottom_state_changed(bool);
 
@@ -1204,17 +1206,34 @@ export component ChatMessagesView inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                Text {
+                                VerticalLayout {
                                     horizontal-stretch: 1;
-                                    text: att.filename;
-                                    color: AppTheme.accent-link-hover;
-                                    font-size: TypeScale.body;
-                                    overflow: elide;
-                                    vertical-alignment: center;
+                                    alignment: center;
+                                    spacing: 5px;
+                                    Text {
+                                        text: att.filename;
+                                        color: AppTheme.accent-link-hover;
+                                        font-size: TypeScale.body;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    // How far the clip has played.
+                                    if root.playing_audio_url == att.url : Rectangle {
+                                        height: 4px;
+                                        border-radius: 2px;
+                                        background: AppTheme.border-subtle;
+                                        Rectangle {
+                                            x: 0;
+                                            width: parent.width * root.playing_audio_progress;
+                                            height: 100%;
+                                            border-radius: 2px;
+                                            background: AppTheme.accent;
+                                        }
+                                    }
                                 }
 
                                 Text {
-                                    text: att.size_str;
+                                    text: root.playing_audio_url == att.url && root.playing_audio_time != "" ? root.playing_audio_time : att.size_str;
                                     color: AppTheme.text-muted;
                                     font-size: TypeScale.caption;
                                     vertical-alignment: center;

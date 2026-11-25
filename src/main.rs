@@ -240,6 +240,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_capture::set_main_window_has_area(has);
                 refresh_main();
             }
+            // Files dragged onto the window: a hint while hovering, attached on drop.
+            match ev {
+                winit::event::WindowEvent::HoveredFile(_) => {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_drop_hint(crate::ui::uploads::drop_hint().into());
+                    }
+                }
+                winit::event::WindowEvent::HoveredFileCancelled => {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_drop_hint("".into());
+                    }
+                }
+                winit::event::WindowEvent::DroppedFile(path) => {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_drop_hint("".into());
+                    }
+                    crate::ui::uploads::add(vec![path.clone()], &main_weak);
+                }
+                _ => {}
+            }
             if matches!(ev, winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::Resized(_)) {
                 crate::ui::window_place::observe(&main_weak);
                 window.with_winit_window(|w| {
@@ -4314,6 +4334,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_pick_files(move || crate::ui::uploads::pick(app_weak_pick.clone()));
     let app_weak_rm = app_weak.clone();
     app.on_remove_pending_file(move |i: i32| crate::ui::uploads::remove(i.max(0) as usize, &app_weak_rm));
+    let app_weak_spoiler = app_weak.clone();
+    app.on_toggle_spoiler(move |i: i32| crate::ui::uploads::toggle_spoiler(i.max(0) as usize, &app_weak_spoiler));
 
     // Community onboarding: pick answers, save them, then reload the server so the
     // new roles and channels appear immediately.
