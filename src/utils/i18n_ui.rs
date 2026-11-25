@@ -358,10 +358,19 @@ pub fn ui_text() -> &'static UiStrings {
     }
 }
 
-/// Picks between an English and a Portuguese string by the language shown in
-/// the UI. Other languages get English until they have their own text.
+/// Text in the language shown in the UI, given its English and Portuguese
+/// versions. The other languages come from `i18n_extra`, or stay in English.
 pub fn en_pt(en: &'static str, pt: &'static str) -> &'static str {
-    if current_language() == Language::Portuguese { pt } else { en }
+    let idx = match current_language() {
+        Language::Portuguese => return pt,
+        Language::Spanish => 0,
+        Language::German => 1,
+        Language::French => 2,
+        Language::Russian => 3,
+        Language::Japanese => 4,
+        _ => return en,
+    };
+    super::i18n_extra::others(en).map(|t| t[idx]).unwrap_or(en)
 }
 
 pub fn table_for(lang: Language) -> &'static UiStrings {

@@ -543,6 +543,38 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
             "Desactivado (Audio puro)",
             "Audio puro sin filtros ni cortes. Recomendado para cantar, tocar guitarra y transmitir instrumentos musicales."
         ),
+        i18n::Language::German => (
+            "Erweiterte Unterdrückung",
+            "Ideal für Spiele und Tippen: blockiert mechanische Tastaturen, Haustiere, Haushaltsgeräusche und Lüfter. (Nicht für Musik).",
+            "Standard (RNNoise)",
+            "Für ruhige Räume mit gleichmäßigem Rauschen (Lüfter, Klimaanlage). Natürliche Stimme, filtert aber keine Tasten.",
+            "Deaktiviert (reines Audio)",
+            "Reines Audio ohne Filter oder Schnitte. Empfohlen zum Singen, Gitarrespielen und Übertragen von Instrumenten."
+        ),
+        i18n::Language::French => (
+            "Suppression avancée",
+            "Idéal pour le jeu et la frappe : bloque claviers mécaniques, animaux, bruits domestiques et ventilateurs. (À éviter pour la musique).",
+            "Standard (RNNoise)",
+            "Pour les pièces calmes avec un bruit continu (ventilateur, clim). Voix naturelle, mais ne retire pas les touches.",
+            "Désactivé (audio brut)",
+            "Audio brut sans filtre ni coupure. Recommandé pour chanter, jouer de la guitare et diffuser des instruments."
+        ),
+        i18n::Language::Russian => (
+            "Продвинутое шумоподавление",
+            "Для игр и набора текста: убирает механическую клавиатуру, питомцев, бытовой шум и вентиляторы. (Не для музыки).",
+            "Стандартное (RNNoise)",
+            "Для тихих комнат с ровным шумом (вентилятор, кондиционер). Естественный голос, но клавиши не убирает.",
+            "Отключено (чистый звук)",
+            "Чистый звук без фильтров и обрезки. Для пения, игры на гитаре и трансляции инструментов."
+        ),
+        i18n::Language::Japanese => (
+            "高度なノイズ抑制",
+            "ゲームやタイピングに最適：メカニカルキーボード、ペット、生活音、ファンの音を抑えます（音楽には不向き）。",
+            "標準 (RNNoise)",
+            "ファンやエアコンなど一定のノイズがある静かな部屋向け。声は自然ですが、キー音は除去しません。",
+            "無効（生の音声）",
+            "フィルターやカットのない生の音声。歌や楽器の演奏・配信におすすめです。"
+        ),
         i18n::Language::Portuguese => (
             "Supressão Avançada",
             "Ideal para jogos e digitação: bloqueia teclado mecânico, pets, ruídos domésticos e ventoinhas. (Evitar para música).",
