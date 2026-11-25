@@ -597,6 +597,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_dl = app_weak.clone();
     app.on_seek_audio(move |url: SharedString, f: f32| audio::clip_player::seek(url.as_str(), f as f64));
 
+    // Big video view and full screen.
+    {
+        let w = app_weak.clone();
+        app.on_open_video_modal(move || {
+            if let Some(ui) = w.upgrade() {
+                audio::clip_mp4::FULL_SIZE.store(true, std::sync::atomic::Ordering::Relaxed);
+                ui.set_video_modal_open(true);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_close_video_modal(move || {
+            if let Some(ui) = w.upgrade() {
+                audio::clip_player::close_video_window(&ui);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_toggle_video_fullscreen(move || {
+            if let Some(ui) = w.upgrade() {
+                let next = !ui.get_video_fullscreen();
+                ui.set_video_fullscreen(next);
+                ui.window().set_fullscreen(next);
+            }
+        });
+    }
+
     // Emoji / sticker picker.
     {
         let (w, http, guild) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_guild_id));

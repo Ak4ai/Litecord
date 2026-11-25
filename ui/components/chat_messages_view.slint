@@ -137,6 +137,7 @@ export component ChatMessagesView inherits Rectangle {
     callback play_audio(string);
     in property <image> playing_video_frame;
     in property <bool> playing_video_shown;
+    callback open_video_modal();
     // Jumps the playing clip to a point (0..1) of its length.
     callback seek_audio(string, float);
     in property <string> playing_audio_url;
@@ -1239,6 +1240,25 @@ export component ChatMessagesView inherits Rectangle {
                                     height: 100%;
                                     source: root.playing_video_frame;
                                     image-fit: contain;
+                                }
+                                // Opens the video in a bigger window.
+                                Rectangle {
+                                    x: parent.width - 34px;
+                                    y: 6px;
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 6px;
+                                    background: max_ta.has-hover ? #000000c0 : #00000080;
+                                    Image {
+                                        source: @image-url("../../assets/chrome-maximize.svg");
+                                        width: 14px;
+                                        height: 14px;
+                                        colorize: #ffffff;
+                                    }
+                                    max_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.open_video_modal(); }
+                                    }
                                 }
                             }
                             if !att.is_image : TouchArea {

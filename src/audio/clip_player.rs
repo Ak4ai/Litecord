@@ -108,10 +108,23 @@ fn set_playing_ui(app_weak: &slint::Weak<crate::AppWindow>, url: String) {
                 ui.set_playing_audio_time("".into());
                 ui.set_playing_video_frame(slint::Image::default());
                 ui.set_playing_video_shown(false);
+                close_video_window(&ui);
             }
             ui.set_playing_audio_url(url.into());
         }
     });
+}
+
+/// Leaves the big video view (and full screen) when the video stops.
+pub fn close_video_window(ui: &crate::AppWindow) {
+    super::clip_mp4::FULL_SIZE.store(false, Ordering::Relaxed);
+    if ui.get_video_modal_open() {
+        ui.set_video_modal_open(false);
+        if ui.get_video_fullscreen() {
+            ui.set_video_fullscreen(false);
+            ui.window().set_fullscreen(false);
+        }
+    }
 }
 
 /// "m:ss".

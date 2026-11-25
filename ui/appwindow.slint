@@ -175,6 +175,12 @@ export component AppWindow inherits Window {
     callback seek_audio(string /* url */, float /* 0..1 */);
     in-out property <image> playing_video_frame;
     in-out property <bool> playing_video_shown: false;
+    // Big video view (same size as Settings) and full screen.
+    in-out property <bool> video_modal_open: false;
+    in-out property <bool> video_fullscreen: false;
+    callback open_video_modal();
+    callback close_video_modal();
+    callback toggle_video_fullscreen();
     // Emoji / sticker picker (src/ui/picker.rs).
     in-out property <bool> picker_open: false;
     in-out property <int> picker_tab: 0;
@@ -2817,6 +2823,7 @@ export component AppWindow inherits Window {
                         seek_audio(url, f) => { root.seek_audio(url, f); }
                         playing_video_frame: root.playing_video_frame;
                         playing_video_shown: root.playing_video_shown;
+                        open_video_modal => { root.open_video_modal(); }
                         playing_audio_url: root.playing_audio_url;
                         playing_audio_progress: root.playing_audio_progress;
                         playing_audio_time: root.playing_audio_time;
@@ -3422,6 +3429,120 @@ export component AppWindow inherits Window {
                     color: AppTheme.text-on-accent;
                     font-size: TypeScale.body;
                     font-weight: 700;
+                }
+            }
+        }
+    }
+
+    // Big video view: the Settings window's size, or the whole screen.
+    if root.video_modal_open : Rectangle {
+        background: root.video_fullscreen ? #000000 : AppTheme.backdrop-strong;
+        TouchArea {
+            clicked => { root.close_video_modal(); }
+        }
+        video_keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    if (root.video_fullscreen) {
+                        root.toggle_video_fullscreen();
+                    } else {
+                        root.close_video_modal();
+                    }
+                    return accept;
+                }
+                if (e.text == " ") {
+                    root.play_audio(root.playing_audio_url);
+                    return accept;
+                }
+                reject
+            }
+        }
+        Rectangle {
+            width: root.video_fullscreen ? parent.width : Math.min(1060px, parent.width - 32px);
+            height: root.video_fullscreen ? parent.height : Math.min(680px, parent.height - 32px);
+            background: #000000;
+            border-radius: root.video_fullscreen ? 0px : 12px;
+            border-width: root.video_fullscreen ? 0px : 1px;
+            border-color: AppTheme.border-subtle;
+            clip: true;
+            // Clicks on the picture must not close the view.
+            TouchArea { }
+            if root.playing_video_shown : Image {
+                y: 0;
+                width: 100%;
+                height: parent.height - 48px;
+                source: root.playing_video_frame;
+                image-fit: contain;
+            }
+            // Controls: play/stop, progress (click to jump), time, full screen, close.
+            Rectangle {
+                y: parent.height - 48px;
+                height: 48px;
+                background: #111214;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 10px;
+                    spacing: 12px;
+                    Text {
+                        text: "■";
+                        color: #ffffff;
+                        font-size: TypeScale.body;
+                        vertical-alignment: center;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.play_audio(root.playing_audio_url); }
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        Rectangle {
+                            height: 4px;
+                            border-radius: 2px;
+                            background: #ffffff40;
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * root.playing_audio_progress;
+                                height: 100%;
+                                border-radius: 2px;
+                                background: AppTheme.accent;
+                            }
+                        }
+                        TouchArea {
+                            height: 20px;
+                            mouse-cursor: pointer;
+                            clicked => { root.seek_audio(root.playing_audio_url, self.mouse-x / self.width); }
+                        }
+                    }
+                    Text {
+                        text: root.playing_audio_time;
+                        color: #dbdee1;
+                        font-size: TypeScale.caption;
+                        vertical-alignment: center;
+                    }
+                    for b[bi] in [@image-url("../assets/chrome-maximize.svg"), @image-url("../assets/x.svg")] : Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        y: 8px;
+                        border-radius: 6px;
+                        background: vb_ta.has-hover ? #ffffff20 : transparent;
+                        Image {
+                            source: b;
+                            width: 16px;
+                            height: 16px;
+                            colorize: #ffffff;
+                        }
+                        vb_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (bi == 0) {
+                                    root.toggle_video_fullscreen();
+                                } else {
+                                    root.close_video_modal();
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

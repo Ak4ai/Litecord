@@ -15,8 +15,10 @@ use symphonia_core::audio::SampleBuffer;
 use symphonia_core::codecs::{CodecParameters, Decoder, DecoderOptions, CODEC_TYPE_AAC};
 use symphonia_core::formats::Packet;
 
-/// Pictures wider than this are scaled down before reaching the UI.
+/// Pictures wider than this are scaled down before reaching the UI, unless the
+/// video is open in its own window (FULL_SIZE).
 const MAX_WIDTH: usize = 560;
+pub static FULL_SIZE: AtomicBool = AtomicBool::new(false);
 
 pub fn is_mp4(data: &[u8]) -> bool {
     data.len() > 12 && &data[4..8] == b"ftyp"
@@ -248,7 +250,9 @@ pub fn run_video(data: &[u8], clock: impl Fn() -> f64, stop: &AtomicBool, show: 
 
 /// Nearest-neighbour shrink to at most MAX_WIDTH wide.
 fn scale_down(rgba: &[u8], w: usize, h: usize) -> SharedPixelBuffer<Rgba8Pixel> {
-    let (dw, dh) = if w > MAX_WIDTH { (MAX_WIDTH, (h * MAX_WIDTH / w).max(1)) } else { (w, h) };
+    let (dw, dh) = if FULL_SIZE.load(Ordering::Relaxed) {
+        (w, h)
+    } else if w > MAX_WIDTH { (MAX_WIDTH, (h * MAX_WIDTH / w).max(1)) } else { (w, h) };
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(dw as u32, dh as u32);
     let dst = buf.make_mut_bytes();
     for y in 0..dh {
