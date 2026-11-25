@@ -18,6 +18,7 @@
 //! {"cmd":"key","key":"Return"}               Return, Escape, Tab, Backspace, arrows...
 //! {"cmd":"set","prop":"show_settings_modal","value":true}
 //! {"cmd":"set_language","code":"de"}
+//! {"cmd":"open_settings"}                  same as the gear button (fills the option lists)
 //! {"cmd":"video_encoder_options"}           choices and the current capture path
 //! {"cmd":"select_video_encoder","id":"auto"} same callback as the settings radio button
 //! {"cmd":"size"}
@@ -237,6 +238,10 @@ fn execute(ui: &AppWindow, cmd: &Value) -> Result<Value, String> {
                 "show_user_menu" => ui.set_show_user_menu(as_bool()?),
                 other => return Err(format!("property {other} is not settable from automation")),
             }
+            Ok(json!({ "ok": true }))
+        }
+        "open_settings" => {
+            ui.invoke_open_settings();
             Ok(json!({ "ok": true }))
         }
         "set_language" => {
