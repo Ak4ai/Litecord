@@ -358,6 +358,12 @@ pub fn ui_text() -> &'static UiStrings {
     }
 }
 
+/// Picks between an English and a Portuguese string by the language shown in
+/// the UI. Other languages get English until they have their own text.
+pub fn en_pt(en: &'static str, pt: &'static str) -> &'static str {
+    if current_language() == Language::Portuguese { pt } else { en }
+}
+
 pub fn table_for(lang: Language) -> &'static UiStrings {
     match lang {
         Language::Portuguese => &PT_UI,

@@ -190,10 +190,10 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
             let mut inputs = pw_inputs;
             let mut outputs = pw_outputs;
             if inputs.is_empty() {
-                inputs.push("Microfone Padrão do Sistema".to_string());
+                inputs.push(crate::utils::i18n_ui::en_pt("System Default Microphone", "Microfone Padrão do Sistema").to_string());
             }
             if outputs.is_empty() {
-                outputs.push("Alto-falantes Padrão do Sistema".to_string());
+                outputs.push(crate::utils::i18n_ui::en_pt("System Default Speakers", "Alto-falantes Padrão do Sistema").to_string());
             }
             let result = (inputs, outputs);
             if let Ok(mut cache) = get_audio_devices_cache().lock() {
@@ -238,11 +238,11 @@ pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
     }
 
     if inputs.is_empty() {
-        inputs.push("Microfone Padrão do Sistema".to_string());
+        inputs.push(crate::utils::i18n_ui::en_pt("System Default Microphone", "Microfone Padrão do Sistema").to_string());
     }
 
     if outputs.is_empty() {
-        outputs.push("Alto-falantes Padrão do Sistema".to_string());
+        outputs.push(crate::utils::i18n_ui::en_pt("System Default Speakers", "Alto-falantes Padrão do Sistema").to_string());
     }
 
     let result = (inputs, outputs);
@@ -450,7 +450,7 @@ fn open_mic_stream(
         (out, cfg)
     } else {
         let devices = host.input_devices().ok()?;
-        let dev = if device_name.is_empty() || device_name.contains("Padrão") {
+        let dev = if device_name.is_empty() || device_name.contains("Padrão") || device_name.starts_with("System Default") {
             host.default_input_device()?
         } else {
             devices.into_iter().find(|d| {
@@ -623,7 +623,7 @@ pub fn start_mic_loopback_stream(device_name: String) -> Option<cpal::Stream> {
     let host = cpal::default_host();
     let devices = host.output_devices().ok()?;
 
-    let target_dev = if device_name.is_empty() || device_name.contains("Padrão") {
+    let target_dev = if device_name.is_empty() || device_name.contains("Padrão") || device_name.starts_with("System Default") {
         host.default_output_device()?
     } else {
         devices.into_iter().find(|d| {

@@ -193,33 +193,34 @@ pub async fn check_version_status_detailed(respect_ignored: bool) -> Result<Deta
         info!("Versão remota {} está marcada como ignorada pelo usuário.", tag_name);
     }
 
+    let pt = crate::utils::i18n_ui::current_language() == crate::utils::i18n::Language::Portuguese;
     let (status, formatted_status) = if is_newer_version(&remote_version, &local_version) {
         (
             VersionComparisonStatus::Outdated,
-            format!("Desatualizado (v{} disponível no GitHub)", remote_version),
+            if pt { format!("Desatualizado (v{} disponível no GitHub)", remote_version) } else { format!("Outdated (v{} available on GitHub)", remote_version) },
         )
     } else if is_newer_version(&local_version, &remote_version) {
         if is_dirty {
             (
                 VersionComparisonStatus::Modified,
-                format!("Dev / Modificado ({}-modified • release v{})", local_hash, remote_version),
+                if pt { format!("Dev / Modificado ({}-modified • release v{})", local_hash, remote_version) } else { format!("Dev / Modified ({}-modified • release v{})", local_hash, remote_version) },
             )
         } else {
             (
                 VersionComparisonStatus::AheadOfRelease,
-                format!("Atualizado / Dev ({} • à frente da release v{})", local_hash, remote_version),
+                if pt { format!("Atualizado / Dev ({} • à frente da release v{})", local_hash, remote_version) } else { format!("Up to date / Dev ({} • ahead of release v{})", local_hash, remote_version) },
             )
         }
     } else {
         if is_dirty {
             (
                 VersionComparisonStatus::Modified,
-                format!("Modificado ({}-modified • base v{})", local_hash, remote_version),
+                if pt { format!("Modificado ({}-modified • base v{})", local_hash, remote_version) } else { format!("Modified ({}-modified • base v{})", local_hash, remote_version) },
             )
         } else {
             (
                 VersionComparisonStatus::UpToDate,
-                format!("Atualizado (v{} • {})", local_version, local_hash),
+                if pt { format!("Atualizado (v{} • {})", local_version, local_hash) } else { format!("Up to date (v{} • {})", local_version, local_hash) },
             )
         }
     };

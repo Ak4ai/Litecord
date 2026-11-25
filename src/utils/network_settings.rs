@@ -138,14 +138,27 @@ pub async fn test_proxy_connection() -> Result<String, String> {
     match client.get(url).timeout(std::time::Duration::from_secs(6)).send().await {
         Ok(resp) => {
             let latency_ms = start.elapsed().as_millis();
+            let pt = crate::utils::i18n_ui::current_language() == crate::utils::i18n::Language::Portuguese;
             if resp.status().is_success() {
-                Ok(format!("Conexão bem-sucedida! Latência: {}ms (Status: {})", latency_ms, resp.status()))
+                Ok(if pt {
+                    format!("Conexão bem-sucedida! Latência: {}ms (Status: {})", latency_ms, resp.status())
+                } else {
+                    format!("Connected! Latency: {}ms (Status: {})", latency_ms, resp.status())
+                })
             } else {
-                Ok(format!("Proxy respondeu em {}ms, mas com status HTTP {}", latency_ms, resp.status()))
+                Ok(if pt {
+                    format!("Proxy respondeu em {}ms, mas com status HTTP {}", latency_ms, resp.status())
+                } else {
+                    format!("The proxy answered in {}ms, but with HTTP status {}", latency_ms, resp.status())
+                })
             }
         }
         Err(e) => {
-            Err(format!("Falha ao conectar via Proxy: {}", e))
+            Err(if crate::utils::i18n_ui::current_language() == crate::utils::i18n::Language::Portuguese {
+                format!("Falha ao conectar via Proxy: {}", e)
+            } else {
+                format!("Could not connect through the proxy: {}", e)
+            })
         }
     }
 }
@@ -181,11 +194,21 @@ pub fn is_proxy_error(err_str: &str) -> bool {
 pub fn format_proxy_alert_message() -> String {
     let settings = get_network_settings();
     let mode = settings.proxy_mode.to_uppercase();
+    let pt = crate::utils::i18n_ui::current_language() == crate::utils::i18n::Language::Portuguese;
     if settings.proxy_mode == "system" {
-        "Falha de conexão via Proxy do Sistema! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.".to_string()
-    } else {
+        if pt {
+            "Falha de conexão via Proxy do Sistema! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.".to_string()
+        } else {
+            "Could not connect through the system proxy! Click here or the gear at the top to open Settings and turn it off.".to_string()
+        }
+    } else if pt {
         format!(
             "O Proxy ({}: {}:{}) está inacessível ou recusando conexão! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.",
+            mode, settings.proxy_host, settings.proxy_port
+        )
+    } else {
+        format!(
+            "The proxy ({}: {}:{}) is unreachable or refusing connections! Click here or the gear at the top to open Settings and turn it off.",
             mode, settings.proxy_host, settings.proxy_port
         )
     }

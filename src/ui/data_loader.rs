@@ -611,7 +611,7 @@ pub async fn fetch_and_populate_channels(
                 let empty_msgs = vec![ChatMessage {
                     id: "".into(),
                     author: "Litecord System".into(),
-                    content: "Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                    content: crate::utils::i18n_ui::en_pt("This server has no text channels your account can access.", "Este servidor não possui canais de texto acessíveis para a sua conta.").into(),
                     commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
@@ -993,9 +993,9 @@ pub async fn load_messages_for_channel(
             }
             error!("Erro ao carregar mensagens do canal {}: {}", channel_id, err);
             let friendly_msg = if err.contains("403") || err.contains("Forbidden") {
-                "Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.".to_string()
+                crate::utils::i18n_ui::en_pt("Private Channel\nThis channel is restricted and needs specific server roles to view its messages.", "Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.").to_string()
             } else {
-                format!("Não foi possível carregar as mensagens ({})", err)
+                format!("{} ({})", crate::utils::i18n_ui::en_pt("Could not load the messages", "Não foi possível carregar as mensagens"), err)
             };
 
             let _ = slint::invoke_from_event_loop(move || {
@@ -1061,7 +1061,7 @@ fn paint_channel_messages(
                 vec![ChatMessage {
                     id: "".into(),
                     author: "Litecord System".into(),
-                    content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                    content: crate::utils::i18n_ui::en_pt("This channel is empty or has no recent messages.", "Este canal está vazio ou não possui mensagens recentes.").into(),
                     commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),

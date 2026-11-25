@@ -1761,14 +1761,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let username = if is_self {
                         let resolved = if my_user_id != 0 { gateway::get_user_name(my_user_id) } else { String::new() };
-                        if resolved.is_empty() || resolved.starts_with("Participante #") {
-                            "Você".to_string()
+                        if resolved.is_empty() || resolved.starts_with("Participante #") || resolved.starts_with("Participant #") {
+                            crate::utils::i18n_ui::en_pt("You", "Você").to_string()
                         } else {
                             resolved
                         }
                     } else {
                         let uname = gateway::get_user_name(user_id);
-                        if uname.starts_with("Participante #") {
+                        if uname.starts_with("Participante #") || uname.starts_with("Participant #") {
                             if let Ok(http_opt) = http_client_voice_loop_inner.try_lock() {
                                 if let Some(http) = http_opt.clone() {
                                     static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();
@@ -2615,7 +2615,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     let friendly = if e.is_connect() {
-                        "Falha de conexão: o proxy recusou a conexão ou está offline.".to_string()
+                        crate::utils::i18n_ui::en_pt("Connection failed: the proxy refused the connection or is offline.", "Falha de conexão: o proxy recusou a conexão ou está offline.").to_string()
                     } else if e.is_timeout() {
                         "Tempo esgotado: o servidor proxy demorou para responder.".to_string()
                     } else {
@@ -2727,7 +2727,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 current_msgs.push(ChatMessage {
                     id: "".into(),
                     author: "Litecord Voice".into(),
-                    content: "🔴 Desconectado da sala de voz.".into(),
+                    content: crate::utils::i18n_ui::en_pt("🔴 Disconnected from the voice channel.", "🔴 Desconectado da sala de voz.").into(),
                     commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
@@ -2965,7 +2965,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(e) = updater::download_and_install_update(rel.download_url, prog_tx).await {
                     error!("Erro ao atualizar Litecord: {}", e);
                     let app_w = app_w_fail.clone();
-                    let err_msg = format!("Falha na atualização: {}", e);
+                    let err_msg = format!("{}: {}", crate::utils::i18n_ui::en_pt("Update failed", "Falha na atualização"), e);
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_is_updating(false);
@@ -4772,7 +4772,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             let clean_reason = if reason_clone.contains("10054") || reason_clone.contains("ConnectionReset") || reason_clone.contains("reset by peer") {
-                                "Conexão reiniciada".to_string()
+                                crate::utils::i18n_ui::en_pt("Connection restarted", "Conexão reiniciada").to_string()
                             } else if reason_clone.contains("timeout") || reason_clone.contains("TimedOut") {
                                 "Sem internet / Timeout".to_string()
                             } else {
@@ -5080,7 +5080,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 resolved_name = if !caller_raw.is_empty() && caller_raw != "Alguém" {
                                     caller_raw
                                 } else {
-                                    "Amigo".to_string()
+                                    crate::utils::i18n_ui::en_pt("Friend", "Amigo").to_string()
                                 };
                             }
 

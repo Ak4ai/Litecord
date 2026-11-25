@@ -55,9 +55,9 @@ pub fn parse_discord_markdown(input: &str) -> String {
                 ("", trimmed)
             };
             if lang.is_empty() {
-                lines_to_process.push((format!("[Bloco de Código]\n{}", code_body.trim_end()), true));
+                lines_to_process.push((format!("{}\n{}", crate::utils::i18n_ui::en_pt("[Code Block]", "[Bloco de Código]"), code_body.trim_end()), true));
             } else {
-                lines_to_process.push((format!("[Bloco de Código ({})]\n{}", lang, code_body.trim_end()), true));
+                lines_to_process.push((format!("{} ({})]\n{}", crate::utils::i18n_ui::en_pt("[Code Block", "[Bloco de Código"), lang, code_body.trim_end()), true));
             }
         } else {
             for line in part.split('\n') {
@@ -210,12 +210,12 @@ fn apply_inline_markdown(input: &str) -> String {
     });
 
     // <@!USER_ID> and <@USER_ID> — user mentions
-    s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
+    s = regex_replace_simple(&s, "<@!", ">", |_inner| crate::utils::i18n_ui::en_pt("@user", "@usuário").to_string());
     s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
     s = regex_replace_simple(&s, "<@", ">", |inner| {
         // Only if purely numeric (user ID)
         if inner.chars().all(|c| c.is_ascii_digit()) {
-            "@usuário".to_string()
+            crate::utils::i18n_ui::en_pt("@user", "@usuário").to_string()
         } else {
             format!("<@{}>", inner)
         }
@@ -1159,7 +1159,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                     embed_parts_all.push(f_embed);
                 }
                 if !f_content.is_empty() {
-                    content_parts.push(format!("↪ *[Mensagem encaminhada]*\n{}", f_content));
+                    content_parts.push(format!("↪ *{}*\n{}", crate::utils::i18n_ui::en_pt("[Forwarded message]", "[Mensagem encaminhada]"), f_content));
                     content_lines.extend(f_lines);
                 } else if !f_lines.is_empty() {
                     content_lines.extend(f_lines);
@@ -1370,10 +1370,10 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             if let Some(video_url) = embed["video"]["url"].as_str() {
                 if !video_url.is_empty() {
                     links.push(LinkData {
-                        label: "Assistir Vídeo".to_string(),
+                        label: crate::utils::i18n_ui::en_pt("Watch Video", "Assistir Vídeo").to_string(),
                         url: video_url.to_string(),
                     });
-                    ep.push(format!("🎥 [Vídeo: {}]", video_url));
+                    ep.push(format!("🎥 [{}: {}]", crate::utils::i18n_ui::en_pt("Video", "Vídeo"), video_url));
                 }
             }
 
@@ -1566,36 +1566,36 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() && attachments_list.is_empty() && embed_lines.is_empty() && links.is_empty() {
         match msg_type {
             0 => String::new(),
-            1 => "[Membro adicionado ao grupo]".to_string(),
-            2 => "[Membro removido do grupo]".to_string(),
-            3 => "[Chamada de voz iniciada/encerrada]".to_string(),
-            4 => "[Nome do canal alterado]".to_string(),
-            5 => "[Ícone do canal alterado]".to_string(),
-            6 => "[Mensagem Fixada]".to_string(),
-            7 => "[Novo membro entrou no servidor!]".to_string(),
-            8 => "[Servidor Impulsionado!]".to_string(),
-            9 => "[Servidor alcançou nível 1 de impulso!]".to_string(),
-            10 => "[Servidor alcançou nível 2 de impulso!]".to_string(),
-            11 => "[Servidor alcançou nível 3 de impulso!]".to_string(),
-            12 => "[Canal seguido adicionado]".to_string(),
-            14 => "[Servidor desqualificado da descoberta]".to_string(),
-            15 => "[Servidor requalificado na descoberta]".to_string(),
-            18 => "[Novo tópico criado]".to_string(),
+            1 => crate::utils::i18n_ui::en_pt("[Member added to the group]", "[Membro adicionado ao grupo]").to_string(),
+            2 => crate::utils::i18n_ui::en_pt("[Member removed from the group]", "[Membro removido do grupo]").to_string(),
+            3 => crate::utils::i18n_ui::en_pt("[Voice call started/ended]", "[Chamada de voz iniciada/encerrada]").to_string(),
+            4 => crate::utils::i18n_ui::en_pt("[Channel name changed]", "[Nome do canal alterado]").to_string(),
+            5 => crate::utils::i18n_ui::en_pt("[Channel icon changed]", "[Ícone do canal alterado]").to_string(),
+            6 => crate::utils::i18n_ui::en_pt("[Message pinned]", "[Mensagem Fixada]").to_string(),
+            7 => crate::utils::i18n_ui::en_pt("[A new member joined the server!]", "[Novo membro entrou no servidor!]").to_string(),
+            8 => crate::utils::i18n_ui::en_pt("[Server boosted!]", "[Servidor Impulsionado!]").to_string(),
+            9 => crate::utils::i18n_ui::en_pt("[Server reached boost level 1!]", "[Servidor alcançou nível 1 de impulso!]").to_string(),
+            10 => crate::utils::i18n_ui::en_pt("[Server reached boost level 2!]", "[Servidor alcançou nível 2 de impulso!]").to_string(),
+            11 => crate::utils::i18n_ui::en_pt("[Server reached boost level 3!]", "[Servidor alcançou nível 3 de impulso!]").to_string(),
+            12 => crate::utils::i18n_ui::en_pt("[Followed channel added]", "[Canal seguido adicionado]").to_string(),
+            14 => crate::utils::i18n_ui::en_pt("[Server removed from Discovery]", "[Servidor desqualificado da descoberta]").to_string(),
+            15 => crate::utils::i18n_ui::en_pt("[Server back in Discovery]", "[Servidor requalificado na descoberta]").to_string(),
+            18 => crate::utils::i18n_ui::en_pt("[New thread created]", "[Novo tópico criado]").to_string(),
             19 => String::new(),
             20 => String::new(),
-            21 => "[Mensagem inicial de tópico/fórum]".to_string(),
-            22 => "[Lembrete de convite]".to_string(),
+            21 => crate::utils::i18n_ui::en_pt("[Thread/forum starter message]", "[Mensagem inicial de tópico/fórum]").to_string(),
+            22 => crate::utils::i18n_ui::en_pt("[Invite reminder]", "[Lembrete de convite]").to_string(),
             23 => String::new(),
-            24 => "[Ação do AutoMod]".to_string(),
-            25 => "[Compra de assinatura de cargo]".to_string(),
-            26 => "[Oferta Nitro / Upgrade]".to_string(),
-            27..=30 => "[Transmissão de Palco iniciada/atualizada]".to_string(),
-            31 => "[Assinatura de aplicativo ativada]".to_string(),
-            32 => "[Integração de canal adicionada]".to_string(),
-            33 => "[Integração de canal removida]".to_string(),
-            36..=38 => "[Alerta de segurança do servidor]".to_string(),
-            39 => "[Compra realizada no servidor]".to_string(),
-            40 => "[Resultado de enquete finalizado]".to_string(),
+            24 => crate::utils::i18n_ui::en_pt("[AutoMod action]", "[Ação do AutoMod]").to_string(),
+            25 => crate::utils::i18n_ui::en_pt("[Role subscription purchase]", "[Compra de assinatura de cargo]").to_string(),
+            26 => crate::utils::i18n_ui::en_pt("[Nitro offer / upgrade]", "[Oferta Nitro / Upgrade]").to_string(),
+            27..=30 => crate::utils::i18n_ui::en_pt("[Stage started/updated]", "[Transmissão de Palco iniciada/atualizada]").to_string(),
+            31 => crate::utils::i18n_ui::en_pt("[App subscription activated]", "[Assinatura de aplicativo ativada]").to_string(),
+            32 => crate::utils::i18n_ui::en_pt("[Channel integration added]", "[Integração de canal adicionada]").to_string(),
+            33 => crate::utils::i18n_ui::en_pt("[Channel integration removed]", "[Integração de canal removida]").to_string(),
+            36..=38 => crate::utils::i18n_ui::en_pt("[Server safety alert]", "[Alerta de segurança do servidor]").to_string(),
+            39 => crate::utils::i18n_ui::en_pt("[Server purchase]", "[Compra realizada no servidor]").to_string(),
+            40 => crate::utils::i18n_ui::en_pt("[Poll result]", "[Resultado de enquete finalizado]").to_string(),
             _ => String::new(),
         }
     } else {
@@ -1872,7 +1872,7 @@ mod tests {
             ]
         });
         let (content, _, content_lines, embed_content, _, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(&msg);
-        assert!(content.contains("Mensagem encaminhada"));
+        assert!(content.contains("Forwarded message") || content.contains("Mensagem encaminhada"));
         assert!(content.contains("Jogo Gratis: Half-Life 2"));
         assert!(embed_content.contains("Disponível no Steam!"));
         assert!(!content_lines.is_empty());

@@ -397,26 +397,26 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let enc_items = vec![
         SettingOptionItem {
             id: "auto".into(),
-            name: "Automático (Recomendado)".into(),
-            desc: "Prioriza aceleração por hardware GPU disponível com fallback para CPU.".into(),
+            name: crate::utils::i18n_ui::en_pt("Automatic (Recommended)", "Automático (Recomendado)").into(),
+            desc: crate::utils::i18n_ui::en_pt("Prefers GPU hardware acceleration, falling back to the CPU.", "Prioriza aceleração por hardware GPU disponível com fallback para CPU.").into(),
             is_selected: enc == "auto",
         },
         SettingOptionItem {
             id: "nvenc".into(),
             name: "NVIDIA NVENC".into(),
-            desc: "Codificação acelerada por hardware via GPU NVIDIA GeForce / RTX.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Hardware-accelerated encoding on NVIDIA GeForce / RTX GPUs.", "Codificação acelerada por hardware via GPU NVIDIA GeForce / RTX.").into(),
             is_selected: enc == "nvenc",
         },
         SettingOptionItem {
             id: "ffmpeg".into(),
             name: "FFmpeg Hardware (VA-API / QSV)".into(),
-            desc: "Pipeline acelerado por GPU via FFmpeg (VA-API, QSV, NVENC).".into(),
+            desc: crate::utils::i18n_ui::en_pt("GPU-accelerated pipeline through FFmpeg (VA-API, QSV, NVENC).", "Pipeline acelerado por GPU via FFmpeg (VA-API, QSV, NVENC).").into(),
             is_selected: enc == "ffmpeg",
         },
         SettingOptionItem {
             id: "openh264".into(),
             name: "Cisco OpenH264 (CPU)".into(),
-            desc: "Codificação universal por software multithread com otimizações SIMD.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Universal multithreaded software encoding with SIMD optimizations.", "Codificação universal por software multithread com otimizações SIMD.").into(),
             is_selected: enc == "openh264",
         },
     ];
@@ -425,20 +425,20 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let vcap_items = vec![
         SettingOptionItem {
             id: "auto".into(),
-            name: "Automático (Recomendado)".into(),
-            desc: "Tenta PrintWindow para janelas DirectX e usa BitBlt GDI para desktop e fallback.".into(),
+            name: crate::utils::i18n_ui::en_pt("Automatic (Recommended)", "Automático (Recomendado)").into(),
+            desc: crate::utils::i18n_ui::en_pt("Tries PrintWindow for DirectX windows and uses GDI BitBlt for the desktop and as fallback.", "Tenta PrintWindow para janelas DirectX e usa BitBlt GDI para desktop e fallback.").into(),
             is_selected: vcap == "auto",
         },
         SettingOptionItem {
             id: "printwindow".into(),
             name: "PrintWindow (DirectX / DWM)".into(),
-            desc: "Captura direta de janelas em primeiro ou segundo plano via DWM.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Captures foreground or background windows directly through DWM.", "Captura direta de janelas em primeiro ou segundo plano via DWM.").into(),
             is_selected: vcap == "printwindow",
         },
         SettingOptionItem {
             id: "bitblt".into(),
             name: "BitBlt GDI (Desktop Crop)".into(),
-            desc: "Captura clássica de alto desempenho diretamente do framebuffer do desktop.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Classic high-performance capture straight from the desktop framebuffer.", "Captura clássica de alto desempenho diretamente do framebuffer do desktop.").into(),
             is_selected: vcap == "bitblt",
         },
     ];
@@ -447,20 +447,20 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let vcap_items = vec![
         SettingOptionItem {
             id: "auto".into(),
-            name: "Automático (Recomendado)".into(),
-            desc: "Utiliza o seletor nativo do sistema via XDG Desktop Portal e PipeWire.".into(),
+            name: crate::utils::i18n_ui::en_pt("Automatic (Recommended)", "Automático (Recomendado)").into(),
+            desc: crate::utils::i18n_ui::en_pt("Uses the system's own picker through XDG Desktop Portal and PipeWire.", "Utiliza o seletor nativo do sistema via XDG Desktop Portal e PipeWire.").into(),
             is_selected: vcap == "auto",
         },
         SettingOptionItem {
             id: "portal".into(),
             name: "XDG Desktop Portal + PipeWire".into(),
-            desc: "Captura de tela moderna de baixa latência compatível com Wayland e Flatpak.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Modern low-latency screen capture that works with Wayland and Flatpak.", "Captura de tela moderna de baixa latência compatível com Wayland e Flatpak.").into(),
             is_selected: vcap == "portal",
         },
         SettingOptionItem {
             id: "x11".into(),
             name: "X11 Fallback".into(),
-            desc: "Captura legada direta de tela em sessões gráficas X11.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Legacy direct screen capture on X11 sessions.", "Captura legada direta de tela em sessões gráficas X11.").into(),
             is_selected: vcap == "x11",
         },
     ];
@@ -469,20 +469,20 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let aloop_items = vec![
         SettingOptionItem {
             id: "auto".into(),
-            name: "Automático (Recomendado)".into(),
-            desc: "Captura com isolamento de processo WASAPI (exclui o Litecord do áudio da stream).".into(),
+            name: crate::utils::i18n_ui::en_pt("Automatic (Recommended)", "Automático (Recomendado)").into(),
+            desc: crate::utils::i18n_ui::en_pt("WASAPI process-isolated capture (keeps Litecord out of the stream audio).", "Captura com isolamento de processo WASAPI (exclui o Litecord do áudio da stream).").into(),
             is_selected: aloop == "auto",
         },
         SettingOptionItem {
             id: "wasapi_isolated".into(),
             name: "WASAPI Process-Loopback Isolado".into(),
-            desc: "Captura nativa que remove vozes dos amigos e sons do Litecord da sua transmissão.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Native capture that keeps friends' voices and Litecord sounds out of your stream.", "Captura nativa que remove vozes dos amigos e sons do Litecord da sua transmissão.").into(),
             is_selected: aloop == "wasapi_isolated",
         },
         SettingOptionItem {
             id: "cpal".into(),
             name: "CPAL WASAPI Loopback".into(),
-            desc: "Captura direta do endpoint de saída padrão do sistema operacional.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Captures the system's default output device directly.", "Captura direta do endpoint de saída padrão do sistema operacional.").into(),
             is_selected: aloop == "cpal",
         },
     ];
@@ -491,20 +491,20 @@ pub fn populate_video_interface_settings(ui: &AppWindow) {
     let aloop_items = vec![
         SettingOptionItem {
             id: "auto".into(),
-            name: "Automático (Recomendado)".into(),
-            desc: "Captura monitor do sink padrão PulseAudio/PipeWire via GStreamer pulsesrc.".into(),
+            name: crate::utils::i18n_ui::en_pt("Automatic (Recommended)", "Automático (Recomendado)").into(),
+            desc: crate::utils::i18n_ui::en_pt("Captures the default PulseAudio/PipeWire sink monitor through GStreamer pulsesrc.", "Captura monitor do sink padrão PulseAudio/PipeWire via GStreamer pulsesrc.").into(),
             is_selected: aloop == "auto",
         },
         SettingOptionItem {
             id: "pulsesrc".into(),
             name: "GStreamer pulsesrc (Monitor)".into(),
-            desc: "Pipeline GStreamer dedicado conectado ao sink monitor do PipeWire.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Dedicated GStreamer pipeline attached to the PipeWire sink monitor.", "Pipeline GStreamer dedicado conectado ao sink monitor do PipeWire.").into(),
             is_selected: aloop == "pulsesrc",
         },
         SettingOptionItem {
             id: "cpal".into(),
             name: "CPAL Audio Loopback".into(),
-            desc: "Captura padrão via interface de áudio CPAL.".into(),
+            desc: crate::utils::i18n_ui::en_pt("Standard capture through the CPAL audio interface.", "Captura padrão via interface de áudio CPAL.").into(),
             is_selected: aloop == "cpal",
         },
     ];
@@ -532,16 +532,8 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
     ui.set_echo_cancellation(aec);
     ui.set_automatic_gain_control(agc);
 
-    let lang = i18n::load_persisted_language_config();
+    let lang = crate::utils::i18n_ui::current_language();
     let (adv_name, adv_desc, std_name, std_desc, off_name, off_desc) = match lang {
-        i18n::Language::English => (
-            "Advanced Suppression",
-            "Ideal for gaming & typing: blocks mechanical keyboards, pets, house noise & fans. (Avoid for musical instruments).",
-            "Standard (RNNoise)",
-            "For quiet rooms with steady hum (PC fans, AC). Preserves voice warmth, but does not block keyboard clicks.",
-            "Disabled (Raw Audio)",
-            "Pure unprocessed audio. Recommended for singing, playing guitar, and musical instruments."
-        ),
         i18n::Language::Spanish => (
             "Supresión avanzada",
             "Ideal para gaming y llamadas: bloquea teclados mecánicos, mascotas, ruidos de casa y ventiladores. (Evitar para música).",
@@ -550,13 +542,21 @@ pub fn populate_voice_processing_settings(ui: &AppWindow) {
             "Desactivado (Audio puro)",
             "Audio puro sin filtros ni cortes. Recomendado para cantar, tocar guitarra y transmitir instrumentos musicales."
         ),
-        _ => (
+        i18n::Language::Portuguese => (
             "Supressão Avançada",
             "Ideal para jogos e digitação: bloqueia teclado mecânico, pets, ruídos domésticos e ventoinhas. (Evitar para música).",
             "Padrão (RNNoise)",
             "Para ambientes calmos com ruído contínuo (ventoinha, AC). Mantém voz natural, mas não remove teclas.",
             "Desativado (Áudio puro)",
             "Áudio puro sem filtros ou cortes. Recomendado para cantar, tocar violão/guitarra e transmitir instrumentos."
+        ),
+        _ => (
+            "Advanced Suppression",
+            "Ideal for gaming & typing: blocks mechanical keyboards, pets, house noise & fans. (Avoid for musical instruments).",
+            "Standard (RNNoise)",
+            "For quiet rooms with steady hum (PC fans, AC). Preserves voice warmth, but does not block keyboard clicks.",
+            "Disabled (Raw Audio)",
+            "Pure unprocessed audio. Recommended for singing, playing guitar, and musical instruments."
         ),
     };
 
@@ -600,26 +600,26 @@ pub fn populate_network_proxy_settings(ui: &AppWindow) {
     let mode_items = vec![
         SettingOptionItem {
             id: "off".into(),
-            name: "Desativado (Conexão Direta)".into(),
-            desc: "Conexão direta aos servidores do Discord (Padrão).".into(),
+            name: crate::utils::i18n_ui::en_pt("Disabled (Direct Connection)", "Desativado (Conexão Direta)").into(),
+            desc: crate::utils::i18n_ui::en_pt("Connects straight to Discord's servers (default).", "Conexão direta aos servidores do Discord (Padrão).").into(),
             is_selected: settings.proxy_mode == "off",
         },
         SettingOptionItem {
             id: "http".into(),
             name: "Proxy HTTP / HTTPS".into(),
-            desc: "Túnel HTTP CONNECT para redes restritas e proxies.".into(),
+            desc: crate::utils::i18n_ui::en_pt("HTTP CONNECT tunnel for restricted networks and proxies.", "Túnel HTTP CONNECT para redes restritas e proxies.").into(),
             is_selected: settings.proxy_mode == "http" || settings.proxy_mode == "https",
         },
         SettingOptionItem {
             id: "socks5".into(),
             name: "Proxy SOCKS5".into(),
-            desc: "Túnel SOCKS5 compatível com Tor, Shadowsocks e SSH.".into(),
+            desc: crate::utils::i18n_ui::en_pt("SOCKS5 tunnel that works with Tor, Shadowsocks and SSH.", "Túnel SOCKS5 compatível com Tor, Shadowsocks e SSH.").into(),
             is_selected: settings.proxy_mode == "socks5",
         },
         SettingOptionItem {
             id: "system".into(),
-            name: "Proxy do Sistema".into(),
-            desc: "Detecta automaticamente o proxy global do sistema.".into(),
+            name: crate::utils::i18n_ui::en_pt("System Proxy", "Proxy do Sistema").into(),
+            desc: crate::utils::i18n_ui::en_pt("Uses the system-wide proxy automatically.", "Detecta automaticamente o proxy global do sistema.").into(),
             is_selected: settings.proxy_mode == "system",
         },
     ];
@@ -659,22 +659,22 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
         Arc::new(std::sync::Mutex::new(vec![
             CommandSuggestionItem {
                 name: "/play".to_string(),
-                desc: "Tocar música ou adicionar à fila".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Play a song or add it to the queue", "Tocar música ou adicionar à fila").to_string(),
                 usage: "/play <query>".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "query".to_string(),
-                param_desc: "Nome da música ou link do YouTube/Spotify".to_string(),
+                param_desc: crate::utils::i18n_ui::en_pt("Song name or YouTube/Spotify link", "Nome da música ou link do YouTube/Spotify").to_string(),
                 is_required: true,
             },
             CommandSuggestionItem {
                 name: "/skip".to_string(),
-                desc: "Pular para a próxima música".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Skip to the next song", "Pular para a próxima música").to_string(),
                 usage: "/skip".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -683,10 +683,10 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
             },
             CommandSuggestionItem {
                 name: "/stop".to_string(),
-                desc: "Parar reprodução e limpar a fila".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Stop playback and clear the queue", "Parar reprodução e limpar a fila").to_string(),
                 usage: "/stop".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -695,10 +695,10 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
             },
             CommandSuggestionItem {
                 name: "/pause".to_string(),
-                desc: "Pausar a reprodução atual".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Pause playback", "Pausar a reprodução atual").to_string(),
                 usage: "/pause".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -707,10 +707,10 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
             },
             CommandSuggestionItem {
                 name: "/resume".to_string(),
-                desc: "Retomar a reprodução pausada".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Resume playback", "Retomar a reprodução pausada").to_string(),
                 usage: "/resume".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -719,10 +719,10 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
             },
             CommandSuggestionItem {
                 name: "/queue".to_string(),
-                desc: "Ver a fila de músicas atual".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Show the current queue", "Ver a fila de músicas atual").to_string(),
                 usage: "/queue".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -731,10 +731,10 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
             },
             CommandSuggestionItem {
                 name: "/nowplaying".to_string(),
-                desc: "Exibir a música tocando agora".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Show the song playing now", "Exibir a música tocando agora").to_string(),
                 usage: "/nowplaying".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
@@ -743,10 +743,10 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
             },
             CommandSuggestionItem {
                 name: "/247".to_string(),
-                desc: "Manter o bot 24/7 conectado no canal de voz".to_string(),
+                desc: crate::utils::i18n_ui::en_pt("Keep the bot in the voice channel 24/7", "Manter o bot 24/7 conectado no canal de voz").to_string(),
                 usage: "/247".to_string(),
                 app_id: "".to_string(),
-                app_name: "Música".to_string(),
+                app_name: crate::utils::i18n_ui::en_pt("Music", "Música").to_string(),
                 cmd_id: "".to_string(),
                 version: "".to_string(),
                 param_name: "".to_string(),
