@@ -807,14 +807,14 @@ pub async fn fetch_and_populate_dms(
                     let (name, initials) = if let Some(recipients) = dm["recipients"].as_array() {
                         if let Some(first_user) = recipients.first() {
                             let disp_name = first_user["global_name"].as_str()
-                                .unwrap_or_else(|| first_user["username"].as_str().unwrap_or("Amigo"));
+                                .unwrap_or_else(|| first_user["username"].as_str().unwrap_or(crate::utils::i18n_ui::en_pt("Friend", "Amigo")));
                             let inits = get_guild_initials(disp_name);
                             (disp_name.to_string(), inits)
                         } else {
-                            ("Amigo".to_string(), "DM".to_string())
+                            (crate::utils::i18n_ui::en_pt("Friend", "Amigo").to_string(), "DM".to_string())
                         }
                     } else {
-                        ("Amigo".to_string(), "DM".to_string())
+                        (crate::utils::i18n_ui::en_pt("Friend", "Amigo").to_string(), "DM".to_string())
                     };
                     (name, initials)
                 };

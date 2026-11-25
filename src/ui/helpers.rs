@@ -256,6 +256,7 @@ pub fn apply_i18n_translations(ui: &AppWindow, lang: i18n::Language) {
 
     ui.set_current_language_code(lang.code().into());
     i18n_ui::set_current(resolved);
+    refresh_master_command_suggestions();
     i18n_ui::apply_to_window(ui, i18n_ui::table_for(resolved));
     crate::ui::message_grouping::relabel_day_separators(&ui.get_messages());
     ui.set_tr_login_title(tr.login_title.into());
@@ -655,8 +656,27 @@ pub struct CommandSuggestionItem {
 pub static MASTER_COMMAND_SUGGESTIONS: std::sync::OnceLock<Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>>> = std::sync::OnceLock::new();
 
 pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSuggestionItem>>> {
-    MASTER_COMMAND_SUGGESTIONS.get_or_init(|| {
-        Arc::new(std::sync::Mutex::new(vec![
+    MASTER_COMMAND_SUGGESTIONS.get_or_init(|| Arc::new(std::sync::Mutex::new(build_master_commands()))).clone()
+}
+
+/// Rebuilds the built-in command descriptions in the language now shown.
+pub fn refresh_master_command_suggestions() {
+    if let Some(cache) = MASTER_COMMAND_SUGGESTIONS.get() {
+        if let Ok(mut list) = cache.lock() {
+            // Only the built-in list; a server's own commands replace it and come
+            // with Discord's text.
+            let fresh = build_master_commands();
+            let same = list.len() == fresh.len()
+                && list.iter().zip(&fresh).all(|(a, b)| a.name == b.name && a.app_id == b.app_id);
+            if same {
+                *list = fresh;
+            }
+        }
+    }
+}
+
+fn build_master_commands() -> Vec<CommandSuggestionItem> {
+        vec![
             CommandSuggestionItem {
                 name: "/play".to_string(),
                 desc: crate::utils::i18n_ui::en_pt("Play a song or add it to the queue", "Tocar música ou adicionar à fila").to_string(),
@@ -753,8 +773,7 @@ pub fn get_master_command_suggestions() -> Arc<std::sync::Mutex<Vec<CommandSugge
                 param_desc: "".to_string(),
                 is_required: false,
             },
-        ]))
-    }).clone()
+        ]
 }
 
 pub async fn load_guild_command_index(
