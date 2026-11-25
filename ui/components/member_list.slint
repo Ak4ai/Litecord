@@ -31,6 +31,24 @@ export component MemberColumn inherits Rectangle {
     width: 56px;
     background: AppTheme.surface-sidebar;
 
+    // The chat's rounded corner follows the panel's edge when it opens.
+    if root.open : Rectangle {
+        x: panel.x - 8px;
+        y: 0;
+        width: 8px;
+        height: 8px;
+        background: AppTheme.surface-sidebar;
+        clip: true;
+        Rectangle {
+            x: -8px;
+            y: 0;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: AppTheme.surface-chat;
+        }
+    }
+
     panel := Rectangle {
         x: parent.width - self.width;
         width: root.open ? 240px : 56px;
@@ -40,14 +58,6 @@ export component MemberColumn inherits Rectangle {
         drop-shadow-color: #00000050;
         clip: true;
         animate width { duration: 120ms; easing: ease-out; }
-
-        // Divider to the chat.
-        Rectangle {
-            x: 0;
-            width: 1px;
-            height: 100%;
-            background: AppTheme.separator;
-        }
 
         bg_ta := TouchArea {
             changed has-hover => {
@@ -60,13 +70,12 @@ export component MemberColumn inherits Rectangle {
         }
 
         list := ListView {
-            x: 1px;
-            width: parent.width - 1px;
+            width: parent.width;
             changed viewport-y => {
                 root.scrolled((-self.viewport-y / 44px).floor());
             }
             for m[i] in root.members : Rectangle {
-                height: m.header != "" ? 28px : 44px;
+                height: m.header != "" ? (root.open ? 28px : 8px) : 44px;
 
                 row_ta := TouchArea {
                     changed has-hover => {
@@ -78,13 +87,7 @@ export component MemberColumn inherits Rectangle {
                     }
                 }
 
-                // Group header: a short line when thin, the name when open.
-                if m.header != "" && !root.open : Rectangle {
-                    x: 16px;
-                    width: 24px;
-                    height: 1px;
-                    background: AppTheme.separator;
-                }
+                // Group header: a small gap when thin, the name when open.
                 if m.header != "" && root.open : Text {
                     x: 12px;
                     width: parent.width - 20px;

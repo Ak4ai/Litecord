@@ -2804,10 +2804,15 @@ export component AppWindow inherits Window {
                     }
 
                     // Messages Chat Feed & Input Container with rounded top-left corner
+                    HorizontalLayout {
+                    vertical-stretch: 1;
                     Rectangle {
                         vertical-stretch: 1;
                         background: AppTheme.surface-chat;
+                        horizontal-stretch: 1;
                         border-top-left-radius: 8px;
+                        // Rounded on the member column's side too.
+                        border-top-right-radius: root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" ? 8px : 0px;
                         clip: true;
 
                         VerticalBox {
@@ -3380,15 +3385,16 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+                    // 4. Server members (optional): thin avatar column, wider on hover.
+                    if root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" : MemberColumn {
+                        members: root.member_rows;
+                        avatar_pool: root.avatar_pool;
+                        avatar_pool_urls: root.avatar_pool_urls;
+                        scrolled(r) => { root.member_list_scrolled(r); }
+                    }
+                    }
         }
     }
-            // 4. Server members (optional): thin avatar column, wider on hover.
-            if root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" : MemberColumn {
-                members: root.member_rows;
-                avatar_pool: root.avatar_pool;
-                avatar_pool_urls: root.avatar_pool_urls;
-                scrolled(r) => { root.member_list_scrolled(r); }
-            }
 
     }
     }
