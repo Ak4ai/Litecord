@@ -107,9 +107,13 @@ pub fn clear(app_weak: &slint::Weak<crate::AppWindow>) {
 }
 
 fn subscribe(guild: &str, channel: &str, page: usize) {
+    // The top of the list plus the page on screen and the next one, so rows
+    // across a page boundary are never left out (Discord takes 3 ranges).
     let mut ranges = vec![[0, PAGE - 1]];
-    if page > 0 {
-        ranges.push([page * PAGE, page * PAGE + PAGE - 1]);
+    for p in [page, page + 1] {
+        if p > 0 {
+            ranges.push([p * PAGE, p * PAGE + PAGE - 1]);
+        }
     }
     crate::gateway::client::send_gateway(serde_json::json!({
         "op": 14,
@@ -122,7 +126,7 @@ fn subscribe(guild: &str, channel: &str, page: usize) {
 pub fn scrolled(first_row: i32) {
     let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(s) = st.as_mut() else { return };
-    let page = (first_row.max(0) as usize + PAGE / 2) / PAGE;
+    let page = first_row.max(0) as usize / PAGE;
     if page != s.page {
         s.page = page;
         subscribe(&s.guild, &s.channel, page);
@@ -217,13 +221,9 @@ fn apply_ops(s: &mut State, d: &Value) -> bool {
                     changed = true;
                 }
             }
-            "INVALIDATE" => {
-                let (a, b) = (op["range"][0].as_u64().unwrap_or(0) as usize, op["range"][1].as_u64().unwrap_or(0) as usize);
-                for r in s.rows.iter_mut().take(b + 1).skip(a) {
-                    *r = Row::Unknown;
-                }
-                changed = true;
-            }
+            // A range no longer followed: keep showing what it had (better
+            // than blank rows); it is synced again when scrolled back to.
+            "INVALIDATE" => {}
             _ => {}
         }
     }
