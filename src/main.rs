@@ -595,6 +595,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app_weak_dl = app_weak.clone();
+    app.on_seek_audio(move |url: SharedString, f: f32| audio::clip_player::seek(url.as_str(), f as f64));
+
+    // Emoji / sticker picker.
+    {
+        let (w, http, guild) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_guild_id));
+        app.on_picker_toggle(move |tab: i32| {
+            let Some(ui) = w.upgrade() else { return };
+            let h = http.lock().unwrap().as_ref().cloned();
+            let g = guild.lock().unwrap().clone();
+            crate::ui::picker::toggle(&ui, tab, h, g);
+        });
+        let w = app_weak.clone();
+        app.on_picker_close(move || {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::close(&ui);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_picker_set_tab(move |t: i32| {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::set_tab(&ui, t);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_picker_search(move || {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::search(&ui);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_picker_scrolled(move |top: f32, h: f32| {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::scrolled(&ui, top, h);
+            }
+        });
+        let (w, http, chan) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_channel_id));
+        app.on_picker_pick(move |r: i32, c: i32| {
+            let Some(ui) = w.upgrade() else { return };
+            let h = http.lock().unwrap().as_ref().cloned();
+            let ch = chan.lock().unwrap().clone();
+            crate::ui::picker::pick(&ui, r, c, h, ch);
+        });
+    }
+
     let app_weak_play = app_weak.clone();
     app.on_play_audio(move |url: SharedString| {
         audio::clip_player::toggle(url.to_string(), app_weak_play.clone());

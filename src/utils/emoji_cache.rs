@@ -79,6 +79,11 @@ impl EmojiCache {
         true
     }
 
+    /// Folder holding downloaded emoji (shared with the emoji picker).
+    pub fn disk_dir(&self) -> &std::path::Path {
+        &self.disk_dir
+    }
+
     /// Returns cached Slint Image if already in RAM, otherwise checks disk cache.
     pub fn get(&self, emoji_id: &str) -> Option<slint::Image> {
         if emoji_id.is_empty() {

@@ -5,6 +5,8 @@ import { AppTheme, ChatTypography, ThemeMode , TypeScale } from "theme.slint";
 import "../assets/fonts/Inter-Variable.ttf";
 
 import { IconButton } from "components/icon_button.slint";
+import { EmojiPicker, PickerItem, PickerRow, PickerCat } from "components/picker.slint";
+export { PickerItem, PickerRow, PickerCat }
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
 import { SettingsView, LanguageItem, SettingOptionItem, AudioDeviceItem } from "components/settings_view.slint";
 import { OnboardingView, OnboardingPromptItem, OnboardingOptionItem } from "components/onboarding_view.slint";
@@ -170,6 +172,23 @@ export component AppWindow inherits Window {
     callback open_link(string /* url */);
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
     callback play_audio(string /* url */);
+    callback seek_audio(string /* url */, float /* 0..1 */);
+    // Emoji / sticker picker (src/ui/picker.rs).
+    in-out property <bool> picker_open: false;
+    in-out property <int> picker_tab: 0;
+    in-out property <string> picker_query: "";
+    in-out property <[PickerRow]> picker_rows: [];
+    in-out property <[PickerCat]> picker_cats: [];
+    in-out property <int> picker_scroll_reset: 0;
+    in-out property <string> picker_tr_emoji: "Emoji";
+    in-out property <string> picker_tr_stickers: "Stickers";
+    in-out property <string> picker_tr_search: "Search";
+    callback picker_toggle(int /* tab */);
+    callback picker_close();
+    callback picker_set_tab(int);
+    callback picker_search();
+    callback picker_scrolled(float, float);
+    callback picker_pick(int, int);
     in-out property <string> playing_audio_url: "";
     callback set_vad_threshold(float /* threshold */);
     callback set_mic_volume(float /* volume */);
@@ -2793,6 +2812,7 @@ export component AppWindow inherits Window {
                         open_link(url) => { root.open_link(url); }
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
                         play_audio(url) => { root.play_audio(url); }
+                        seek_audio(url, f) => { root.seek_audio(url, f); }
                         playing_audio_url: root.playing_audio_url;
                         playing_audio_progress: root.playing_audio_progress;
                         playing_audio_time: root.playing_audio_time;
@@ -3295,11 +3315,19 @@ export component AppWindow inherits Window {
 
                             if root.active_command_name == "" : VerticalLayout {
                                 alignment: center;
-                                BarIcon { icon: @image-url("../assets/sticker.svg"); }
+                                BarIcon {
+                                    icon: @image-url("../assets/sticker.svg");
+                                    active: root.picker_open && root.picker_tab == 1;
+                                    clicked => { root.picker_toggle(1); }
+                                }
                             }
                             if root.active_command_name == "" : VerticalLayout {
                                 alignment: center;
-                                BarIcon { icon: @image-url("../assets/smile.svg"); }
+                                BarIcon {
+                                    icon: @image-url("../assets/smile.svg");
+                                    active: root.picker_open && root.picker_tab == 0;
+                                    clicked => { root.picker_toggle(0); }
+                                }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -3338,6 +3366,31 @@ export component AppWindow inherits Window {
         }
     }
     }
+    }
+
+    // Emoji / sticker picker above the message bar; a click outside closes it.
+    if root.picker_open : TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { root.picker_close(); }
+    }
+    if root.picker_open : EmojiPicker {
+        x: root.width - self.width - 16px;
+        y: root.height - self.height - 64px - (root.pending_files.length > 0 ? 161px : 0px) - (root.upload_status != "" ? 24px : 0px);
+        rows: root.picker_rows;
+        cats: root.picker_cats;
+        tab: root.picker_tab;
+        query <=> root.picker_query;
+        scroll-reset: root.picker_scroll_reset;
+        tr-emoji: root.picker_tr_emoji;
+        tr-stickers: root.picker_tr_stickers;
+        tr-search: root.picker_tr_search;
+        set-tab(t) => { root.picker_set_tab(t); }
+        search => { root.picker_search(); }
+        scrolled(top, h) => { root.picker_scrolled(top, h); }
+        pick(r, c) => { root.picker_pick(r, c); }
     }
 
     // Files dragged over the window.

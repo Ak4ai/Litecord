@@ -134,6 +134,8 @@ export component ChatMessagesView inherits Rectangle {
     callback download_attachment(string, string, string);
     // Plays or stops an audio attachment inside the app (by its URL).
     callback play_audio(string);
+    // Jumps the playing clip to a point (0..1) of its length.
+    callback seek_audio(string, float);
     in property <string> playing_audio_url;
     in property <float> playing_audio_progress;
     in property <string> playing_audio_time;
@@ -1221,6 +1223,18 @@ export component ChatMessagesView inherits Rectangle {
                                 }
                             }
 
+                            // Whole-card click (below the progress bar, which seeks).
+                            if !att.is_image : TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if (att.is_audio) {
+                                        root.play_audio(att.url);
+                                    } else {
+                                        root.open_link(att.url);
+                                    }
+                                }
+                            }
+
                             // 5. Non-image attachment card (e.g. zip, pdf)
                             if !att.is_image : HorizontalLayout {
                                 padding-left: 10px;
@@ -1259,16 +1273,25 @@ export component ChatMessagesView inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                     // How far the clip has played.
+                                    // Clicking a point of it jumps there.
                                     if root.playing_audio_url == att.url : Rectangle {
-                                        height: 4px;
-                                        border-radius: 2px;
-                                        background: AppTheme.border-subtle;
+                                        height: 10px;
                                         Rectangle {
-                                            x: 0;
-                                            width: parent.width * root.playing_audio_progress;
-                                            height: 100%;
+                                            y: 3px;
+                                            height: 4px;
                                             border-radius: 2px;
-                                            background: AppTheme.accent;
+                                            background: AppTheme.border-subtle;
+                                            Rectangle {
+                                                x: 0;
+                                                width: parent.width * root.playing_audio_progress;
+                                                height: 100%;
+                                                border-radius: 2px;
+                                                background: AppTheme.accent;
+                                            }
+                                        }
+                                        seek_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.seek_audio(att.url, self.mouse-x / self.width); }
                                         }
                                     }
                                 }
@@ -1283,16 +1306,6 @@ export component ChatMessagesView inherits Rectangle {
 
                             // Covers the whole card: inside the layout above it got no
                             // width of its own, so clicks on the file did nothing.
-                            if !att.is_image : TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    if (att.is_audio) {
-                                        root.play_audio(att.url);
-                                    } else {
-                                        root.open_link(att.url);
-                                    }
-                                }
-                            }
 
                             if att.spoiler && !revealed : Rectangle {
                                 background: AppTheme.surface-input;

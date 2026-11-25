@@ -22,6 +22,27 @@ const CHUNK_FRAMES: usize = 4096;
 /// Bumped on every play or stop; a running clip quits when it no longer matches.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static PLAYING_URL: Mutex<String> = Mutex::new(String::new());
+/// A jump asked for by clicking the progress bar: (generation, 0..1 of the clip).
+static SEEK: Mutex<Option<(u64, f64)>> = Mutex::new(None);
+
+/// Jumps the clip playing from `url` to `fraction` (0..1) of its length.
+pub fn seek(url: &str, fraction: f64) {
+    if *PLAYING_URL.lock().unwrap_or_else(|e| e.into_inner()) == url {
+        let gen = GENERATION.load(Ordering::SeqCst);
+        *SEEK.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, fraction.clamp(0.0, 1.0)));
+    }
+}
+
+fn take_seek(gen: u64) -> Option<f64> {
+    let mut s = SEEK.lock().unwrap_or_else(|e| e.into_inner());
+    match *s {
+        Some((g, f)) if g == gen => {
+            *s = None;
+            Some(f)
+        }
+        _ => None,
+    }
+}
 
 /// Plays the clip, or stops it if it is the one playing.
 pub fn toggle(url: String, app_weak: slint::Weak<crate::AppWindow>) {
@@ -169,18 +190,42 @@ async fn download(url: &str) -> Option<Vec<u8>> {
 
 /// Decodes and plays the file. Returns false when the format is not one this
 /// player reads or no output device opens.
-fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) -> bool {
-    let source = if let Some(s) = OpusSource::new(bytes) {
-        Source::Opus(s)
+fn open_source(bytes: &[u8]) -> Option<Source<'_>> {
+    if let Some(s) = OpusSource::new(bytes) {
+        Some(Source::Opus(s))
     } else if let Some(s) = VorbisSource::new(bytes) {
-        Source::Vorbis(s)
+        Some(Source::Vorbis(s))
     } else if let Some(s) = WavSource::new(bytes) {
-        Source::Wav(s)
-    } else if let Some(s) = Mp3Source::new(bytes) {
-        Source::Mp3(s)
+        Some(Source::Wav(s))
     } else {
-        return false;
-    };
+        Mp3Source::new(bytes).map(Source::Mp3)
+    }
+}
+
+/// Opens the clip again and decodes past `target` seconds; returns the source
+/// and the frames of the last chunk that lie after the target.
+fn source_at(bytes: &[u8], target: f64) -> Option<(Source<'_>, Vec<[f32; 2]>)> {
+    let mut fresh = open_source(bytes)?;
+    let mut skip = (target * fresh.rate() as f64) as usize;
+    let mut rest = Vec::new();
+    let mut buf = Vec::with_capacity(CHUNK_FRAMES);
+    while skip > 0 {
+        buf.clear();
+        if !fresh.next_frames(&mut buf) {
+            break;
+        }
+        if buf.len() > skip {
+            rest.extend_from_slice(&buf[skip..]);
+            skip = 0;
+        } else {
+            skip -= buf.len();
+        }
+    }
+    Some((fresh, rest))
+}
+
+fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) -> bool {
+    let Some(source) = open_source(bytes) else { return false };
 
     let host = cpal::default_host();
     let wanted = crate::gateway::get_selected_output_device_store()
@@ -204,7 +249,18 @@ fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) 
     let (tx, rx) = sync_channel::<Vec<f32>>(4);
     let drained = Arc::new(AtomicBool::new(false));
     let played = Arc::new(AtomicU64::new(0));
-    let stream = match build_stream(&device, &config, rx, Arc::clone(&drained), Arc::clone(&played)) {
+    let done = Arc::new(AtomicBool::new(false));
+    let flush = Arc::new(AtomicBool::new(false));
+    let feed = Feed {
+        rx,
+        cur: Vec::new(),
+        pos: 0,
+        drained: Arc::clone(&drained),
+        played: Arc::clone(&played),
+        done: Arc::clone(&done),
+        flush: Arc::clone(&flush),
+    };
+    let stream = match build_stream(&device, &config, feed) {
         Some(s) => s,
         None => return false,
     };
@@ -225,39 +281,73 @@ fn play_bytes(bytes: &[u8], gen: u64, app_weak: &slint::Weak<crate::AppWindow>) 
             report_progress(app_weak, gen, played.load(Ordering::Relaxed) as f64 / samples_per_sec, total);
         }
     };
-    loop {
-        if GENERATION.load(Ordering::SeqCst) != gen {
-            return true;
+    // Restarts decoding at `fraction` of the clip: the file is decoded again from
+    // the start up to that point (fast next to playback) and the queued audio dropped.
+    let jump = |target: f64, rest: Vec<[f32; 2]>, out: &mut Output| {
+        out.reset();
+        // The output drops what it holds; wait for it so new audio is not dropped too.
+        flush.store(true, Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        while flush.load(Ordering::SeqCst) && start.elapsed() < Duration::from_millis(300) {
+            std::thread::sleep(Duration::from_millis(5));
         }
-        tick(&mut last_report);
-        frames.clear();
-        if !source.next_frames(&mut frames) {
+        played.store((target * samples_per_sec) as u64, Ordering::Relaxed);
+        done.store(false, Ordering::SeqCst);
+        drained.store(false, Ordering::SeqCst);
+        out.push(&rest);
+    };
+    loop {
+        loop {
+            if GENERATION.load(Ordering::SeqCst) != gen {
+                return true;
+            }
+            if let Some(f) = take_seek(gen) {
+                if total > 0.0 {
+                    if let Some((fresh, rest)) = source_at(bytes, f * total) {
+                        source = fresh;
+                        jump(f * total, rest, &mut out);
+                    }
+                }
+                last_report = std::time::Instant::now() - Duration::from_secs(1);
+            }
+            tick(&mut last_report);
+            frames.clear();
+            if !source.next_frames(&mut frames) {
+                break;
+            }
+            if !out.push(&frames) {
+                return true;
+            }
+        }
+        out.flush();
+        done.store(true, Ordering::SeqCst);
+
+        // Let the last chunks reach the speaker, unless stopped or moved first.
+        let mut moved = false;
+        while !drained.load(Ordering::Relaxed) && GENERATION.load(Ordering::SeqCst) == gen {
+            if let Some(f) = take_seek(gen) {
+                if total > 0.0 {
+                    if let Some((fresh, rest)) = source_at(bytes, f * total) {
+                        source = fresh;
+                        jump(f * total, rest, &mut out);
+                    }
+                }
+                last_report = std::time::Instant::now() - Duration::from_secs(1);
+                moved = true;
+                break;
+            }
+            tick(&mut last_report);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !moved {
             break;
         }
-        if !out.push(&frames) {
-            return true;
-        }
-    }
-    out.flush();
-    drop(out);
-
-    // Let the last chunks reach the speaker, unless stopped first.
-    while !drained.load(Ordering::Relaxed) && GENERATION.load(Ordering::SeqCst) == gen {
-        tick(&mut last_report);
-        std::thread::sleep(Duration::from_millis(50));
     }
     drop(stream);
     true
 }
 
-fn build_stream(
-    device: &cpal::Device,
-    config: &cpal::SupportedStreamConfig,
-    rx: Receiver<Vec<f32>>,
-    drained: Arc<AtomicBool>,
-    played: Arc<AtomicU64>,
-) -> Option<cpal::Stream> {
-    let mut feed = Feed { rx, cur: Vec::new(), pos: 0, drained, played };
+fn build_stream(device: &cpal::Device, config: &cpal::SupportedStreamConfig, mut feed: Feed) -> Option<cpal::Stream> {
     let err = |e| warn!("Erro no stream do player de áudio: {}", e);
     match config.sample_format() {
         cpal::SampleFormat::F32 => device
@@ -286,10 +376,20 @@ struct Feed {
     drained: Arc<AtomicBool>,
     /// Samples handed to the device so far (counted per chunk).
     played: Arc<AtomicU64>,
+    /// Set by the decoder when the clip has been fully decoded.
+    done: Arc<AtomicBool>,
+    /// Set by the decoder on a jump: drop everything queued.
+    flush: Arc<AtomicBool>,
 }
 
 impl Feed {
     fn next(&mut self) -> f32 {
+        if self.flush.load(Ordering::SeqCst) {
+            self.cur.clear();
+            self.pos = 0;
+            while self.rx.try_recv().is_ok() {}
+            self.flush.store(false, Ordering::SeqCst);
+        }
         while self.pos >= self.cur.len() {
             match self.rx.try_recv() {
                 Ok(chunk) => {
@@ -297,7 +397,13 @@ impl Feed {
                     self.cur = chunk;
                     self.pos = 0;
                 }
-                Err(TryRecvError::Empty) => return 0.0,
+                Err(TryRecvError::Empty) => {
+                    if self.done.load(Ordering::SeqCst) && !self.drained.swap(true, Ordering::Relaxed) {
+                        self.played.fetch_add(self.cur.len() as u64, Ordering::Relaxed);
+                        self.cur.clear();
+                    }
+                    return 0.0;
+                }
                 Err(TryRecvError::Disconnected) => {
                     if !self.drained.swap(true, Ordering::Relaxed) {
                         self.played.fetch_add(self.cur.len() as u64, Ordering::Relaxed);
@@ -359,6 +465,13 @@ impl Output {
             return self.flush();
         }
         true
+    }
+
+    /// Forgets the resampler state and anything not yet sent (after a jump).
+    fn reset(&mut self) {
+        self.t = 0.0;
+        self.last = [0.0; 2];
+        self.buf.clear();
     }
 
     fn flush(&mut self) -> bool {

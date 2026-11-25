@@ -1,0 +1,189 @@
+// Emoji and sticker picker shown above the message bar. Rows and images come
+// from src/ui/picker.rs; row heights here must match the constants there.
+import { ListView } from "std-widgets.slint";
+import { AppTheme, TypeScale } from "../theme.slint";
+
+export struct PickerItem {
+    key: string,
+    name: string,
+    insert: string,
+    img: image,
+    loaded: bool,
+}
+
+export struct PickerRow {
+    header: string,
+    items: [PickerItem],
+    sticker: bool,
+}
+
+export struct PickerCat {
+    key: string,
+    name: string,
+    img: image,
+    loaded: bool,
+    y: float,
+}
+
+export component EmojiPicker inherits Rectangle {
+    in property <[PickerRow]> rows;
+    in property <[PickerCat]> cats;
+    in property <int> tab;
+    in-out property <string> query;
+    in property <int> scroll-reset;
+    in property <string> tr-emoji: "Emoji";
+    in property <string> tr-stickers: "Stickers";
+    in property <string> tr-search: "Search";
+    callback set-tab(int);
+    callback search();
+    callback scrolled(float, float);
+    callback pick(int, int);
+
+    property <string> hovered;
+
+    width: 404px;
+    height: 440px;
+    background: AppTheme.surface-elevated;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: AppTheme.border-subtle;
+
+    changed scroll-reset => {
+        list.viewport-y = 0;
+    }
+
+    // Clicks inside the panel stay here.
+    TouchArea { }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            height: 28px;
+            spacing: 6px;
+            alignment: start;
+            for t[ti] in [root.tr-emoji, root.tr-stickers] : Rectangle {
+                width: tab_label.preferred-width + 20px;
+                border-radius: 6px;
+                background: root.tab == ti ? AppTheme.interactive-hover : (tab_ta.has-hover ? AppTheme.surface-input : transparent);
+                tab_label := Text {
+                    text: t;
+                    color: root.tab == ti ? AppTheme.text-primary : AppTheme.text-muted;
+                    font-size: TypeScale.small;
+                    font-weight: 600;
+                }
+                tab_ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.set-tab(ti); }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 32px;
+            background: AppTheme.surface-input;
+            border-radius: 6px;
+            if root.query == "" : Text {
+                x: 10px;
+                height: 100%;
+                text: root.tr-search;
+                color: AppTheme.text-subtle;
+                font-size: TypeScale.small;
+                vertical-alignment: center;
+            }
+            search_input := TextInput {
+                x: 10px;
+                width: parent.width - 20px;
+                height: 100%;
+                text <=> root.query;
+                single-line: true;
+                color: AppTheme.text-primary;
+                font-size: TypeScale.small;
+                vertical-alignment: center;
+                edited => { root.search(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+
+            // Category bar: jumps the list to a section.
+            if root.cats.length > 0 : VerticalLayout {
+                width: 36px;
+                spacing: 2px;
+                alignment: start;
+                for c in root.cats : Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 6px;
+                    background: cat_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                    if c.loaded : Image {
+                        source: c.img;
+                        width: 20px;
+                        height: 20px;
+                    }
+                    cat_ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            list.viewport-y = -c.y * 1px;
+                            root.scrolled(c.y, list.visible-height / 1px);
+                        }
+                    }
+                }
+            }
+
+            list := ListView {
+                changed viewport-y => {
+                    root.scrolled(-self.viewport-y / 1px, self.visible-height / 1px);
+                }
+                for row[ri] in root.rows : Rectangle {
+                    height: row.header != "" ? 28px : (row.sticker ? 96px : 40px);
+                    if row.header != "" : Text {
+                        x: 4px;
+                        height: 100%;
+                        text: row.header;
+                        color: AppTheme.text-muted;
+                        font-size: TypeScale.caption;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    if row.header == "" : HorizontalLayout {
+                        alignment: start;
+                        for it[ci] in row.items : Rectangle {
+                            width: row.sticker ? 96px : 40px;
+                            height: row.sticker ? 96px : 40px;
+                            border-radius: 6px;
+                            background: item_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                            if it.loaded : Image {
+                                source: it.img;
+                                width: row.sticker ? 88px : 28px;
+                                height: row.sticker ? 88px : 28px;
+                                image-fit: contain;
+                            }
+                            item_ta := TouchArea {
+                                mouse-cursor: pointer;
+                                changed has-hover => {
+                                    if (self.has-hover) {
+                                        root.hovered = it.name;
+                                    }
+                                }
+                                clicked => { root.pick(ri, ci); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Name of the emoji under the pointer, like Discord's footer.
+        Text {
+            height: 18px;
+            text: root.hovered;
+            color: AppTheme.text-muted;
+            font-size: TypeScale.caption;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}

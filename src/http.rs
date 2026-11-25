@@ -312,6 +312,28 @@ impl DiscordHttpClient {
         }
     }
 
+    /// GET on a Discord API path (e.g. "/guilds/1/emojis").
+    pub async fn get_json(&self, path: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10{}", path);
+        let resp = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        resp.json().await.map_err(|e| e.to_string())
+    }
+
+    /// Sends one of the server's stickers as a message.
+    pub async fn send_sticker(&self, channel_id: &str, sticker_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
+        let resp = self.client.post(&url).json(&json!({ "sticker_ids": [sticker_id] })).send().await.map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            error!("Falha ao enviar figurinha: HTTP {}", resp.status());
+            Err(format!("HTTP {}", resp.status()))
+        }
+    }
+
     /// Sends a message with files attached (multipart), streaming each file
     /// from disk. Returns the HTTP status on failure (413 = too large).
     pub async fn send_message_with_files(
