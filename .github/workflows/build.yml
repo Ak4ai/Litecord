@@ -155,6 +155,9 @@ jobs:
       # quick-sharun refuses Arch's libgallium (it links libLLVM, +100 MiB, and
       # needs recent kernels): swap in the Anylinux Mesa build without LLVM.
       - name: Install Mesa without LLVM for bundling
+        # Authenticated GitHub API calls: anonymous ones hit the shared runner's rate limit.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           wget --retry-connrefused --tries=5 -q             https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/get-debloated-pkgs.sh             -O ./get-debloated-pkgs.sh
           sh ./get-debloated-pkgs.sh --add-opengl
