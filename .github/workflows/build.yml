@@ -210,7 +210,7 @@ jobs:
   # so Gatekeeper asks to confirm the first launch). See docs/MACOS_PORT_PLAN.md.
   build-macos:
     name: Build macOS (experimental .app)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
