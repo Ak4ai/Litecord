@@ -1,17 +1,25 @@
+#[cfg(windows)]
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+#[cfg(windows)]
 use std::time::Instant;
 
+#[cfg(windows)]
 type AVCodec = c_void;
+#[cfg(windows)]
 type AVCodecContext = c_void;
+#[cfg(windows)]
 type AVFrame = c_void;
+#[cfg(windows)]
 type AVPacket = c_void;
 
 #[repr(C)]
+#[cfg(windows)]
 struct AVRational {
     num: c_int,
     den: c_int,
 }
 
+#[cfg(windows)]
 fn main() {
     println!("============================================================");
     println!("🚀 TESTE: FFMPEG HARDWARE ENCODER (h264_nvenc) ESTILO OBS/SUNSHINE");
@@ -268,4 +276,9 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    println!("test_ffmpeg_nvenc is only supported on Windows.");
 }

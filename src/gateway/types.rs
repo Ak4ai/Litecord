@@ -344,7 +344,7 @@ pub fn get_voice_channel_participants(channel_id: &str) -> Vec<(u64, String)> {
                 .as_ref()
                 .and_then(|known_names| known_names.get(&user_id))
                 .cloned()
-                .unwrap_or_else(|| format!("Participante #{}", user_id));
+                .unwrap_or_else(|| format!("{} #{}", crate::utils::i18n_ui::en_pt("Participant", "Participante"), user_id));
             (user_id, name)
         })
         .collect();
@@ -402,9 +402,9 @@ pub fn set_my_username(name: String) {
 
 pub fn get_my_username() -> String {
     if let Ok(uname) = MY_USERNAME.get_or_init(|| Arc::new(std::sync::Mutex::new(String::new()))).lock() {
-        if uname.is_empty() { "Você".to_string() } else { uname.clone() }
+        if uname.is_empty() { crate::utils::i18n_ui::en_pt("You", "Você").to_string() } else { uname.clone() }
     } else {
-        "Você".to_string()
+        crate::utils::i18n_ui::en_pt("You", "Você").to_string()
     }
 }
 
@@ -680,10 +680,7 @@ pub fn get_user_name(user_id: u64) -> String {
         }
     }
     match user_id {
-        1307641538502725643 => "MusicMan [Bot]".to_string(),
-        1323489999953465385 => "cortez".to_string(),
-        398203126630580225 => "Marido da juju (Você)".to_string(),
-        _ => format!("Participante #{}", user_id),
+        _ => format!("{} #{}", crate::utils::i18n_ui::en_pt("Participant", "Participante"), user_id),
     }
 }
 

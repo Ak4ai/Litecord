@@ -1,8 +1,11 @@
+#[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(windows)]
 use std::time::Instant;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
+#[cfg(windows)]
 struct GUID {
     data1: u32,
     data2: u16,
@@ -10,6 +13,7 @@ struct GUID {
     data4: [u8; 8],
 }
 
+#[cfg(windows)]
 const IID_IDXGIFACTORY1: GUID = GUID {
     data1: 0x770aae78,
     data2: 0xf26f,
@@ -17,6 +21,7 @@ const IID_IDXGIFACTORY1: GUID = GUID {
     data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87],
 };
 
+#[cfg(windows)]
 const NV_ENC_CODEC_H264_GUID: GUID = GUID {
     data1: 0x6bc82762,
     data2: 0x4e63,
@@ -24,6 +29,7 @@ const NV_ENC_CODEC_H264_GUID: GUID = GUID {
     data4: [0xaa, 0x85, 0x1e, 0x50, 0xf3, 0x21, 0xf6, 0xbf],
 };
 
+#[cfg(windows)]
 const NV_ENC_PRESET_P1_GUID: GUID = GUID {
     data1: 0xfc0a36d2,
     data2: 0xda0e,
@@ -32,6 +38,7 @@ const NV_ENC_PRESET_P1_GUID: GUID = GUID {
 };
 
 #[repr(C)]
+#[cfg(windows)]
 struct DXGI_ADAPTER_DESC1 {
     description: [u16; 128],
     vendor_id: u32,
@@ -46,6 +53,7 @@ struct DXGI_ADAPTER_DESC1 {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct IUnknownVtbl {
     query_interface: unsafe extern "system" fn(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> i32,
     add_ref: unsafe extern "system" fn(this: *mut c_void) -> u32,
@@ -53,6 +61,7 @@ struct IUnknownVtbl {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct IDXGIFactory1Vtbl {
     parent: IUnknownVtbl,
     set_private_data: *const c_void,
@@ -68,6 +77,7 @@ struct IDXGIFactory1Vtbl {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct IDXGIAdapter1Vtbl {
     parent: IUnknownVtbl,
     set_private_data: *const c_void,
@@ -81,6 +91,7 @@ struct IDXGIAdapter1Vtbl {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NV_ENCODE_API_FUNCTION_LIST {
     version: u32,
     reserved: u32,
@@ -126,6 +137,7 @@ struct NV_ENCODE_API_FUNCTION_LIST {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncOpenEncodeSessionExParams {
     version: u32,
     device_type: u32,
@@ -137,6 +149,7 @@ struct NvEncOpenEncodeSessionExParams {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncConfig {
     version: u32,
     profile_guid: GUID,
@@ -150,6 +163,7 @@ struct NvEncConfig {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncPresetConfig {
     version: u32,
     preset_cfg: NvEncConfig,
@@ -158,6 +172,7 @@ struct NvEncPresetConfig {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncInitializeParams {
     version: u32,
     encode_guid: GUID,
@@ -182,6 +197,7 @@ struct NvEncInitializeParams {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncCreateInputBufferParams {
     version: u32,
     width: u32,
@@ -196,6 +212,7 @@ struct NvEncCreateInputBufferParams {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncCreateBitstreamBufferParams {
     version: u32,
     size: u32,
@@ -208,6 +225,7 @@ struct NvEncCreateBitstreamBufferParams {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncLockInputBufferParams {
     version: u32,
     do_not_wait: u32,
@@ -220,6 +238,7 @@ struct NvEncLockInputBufferParams {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncPicParamsStruct {
     version: u32,
     input_width: u32,
@@ -240,6 +259,7 @@ struct NvEncPicParamsStruct {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct NvEncLockBitstreamParams {
     version: u32,
     do_not_wait: u32,
@@ -264,6 +284,7 @@ struct NvEncLockBitstreamParams {
     reserved2: [*mut c_void; 64],
 }
 
+#[cfg(windows)]
 fn main() {
     println!("============================================================");
     println!("🚀 TESTE ISOLADO: HARDWARE ENCODER NVIDIA NVENC + DIRECT3D 11");
@@ -671,4 +692,9 @@ fn main() {
             avg_latency_ms, 1000.0 / avg_latency_ms.max(0.001));
         println!("============================================================");
     }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    println!("test_nvenc is only supported on Windows.");
 }

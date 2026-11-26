@@ -206,9 +206,47 @@ jobs:
           name: Litecord-x86_64.AppImage
           path: dist/Litecord-x86_64.AppImage
 
+  # macOS (experimental): Apple Silicon .app, ad-hoc signed (no Developer ID yet,
+  # so Gatekeeper asks to confirm the first launch). See docs/MACOS_PORT_PLAN.md.
+  build-macos:
+    name: Build macOS (experimental .app)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust dependencies & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "macos-release"
+          cache-on-failure: true
+
+      - name: Build macOS Binary (Release)
+        run: cargo build --release --bin litecord ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
+
+      - name: Bundle Litecord.app
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION%%-*}" scripts/macos/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${VERSION%%-*}" scripts/macos/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 12.0" scripts/macos/Info.plist
+          bash scripts/macos/bundle.sh target/release/litecord
+          ditto -c -k --keepParent target/release/Litecord.app Litecord-macOS-arm64-experimental.zip
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Litecord-macOS-arm64-experimental
+          path: Litecord-macOS-arm64-experimental.zip
+
   create-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-linux, build-appimage]
+    needs: [build-windows, build-linux, build-appimage, build-macos]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true && inputs.features == '')
     runs-on: ubuntu-latest
     steps:
@@ -243,13 +281,14 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.version.outputs.version) }}
-          name: "Litecord v${{ steps.version.outputs.version }}"
+          name: "Litecord v${{ steps.version.outputs.version }} (macOS experimental)"
           body_path: release-notes.md
           files: |
             release-artifacts/Litecord-Setup-x64.exe
             release-artifacts/litecord-windows-x64-portable.zip
             release-artifacts/litecord-linux-x64.tar.gz
             release-artifacts/Litecord-x86_64.AppImage
+            release-artifacts/Litecord-macOS-arm64-experimental.zip
           generate_release_notes: false
           append_body: false
           draft: false

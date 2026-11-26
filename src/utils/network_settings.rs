@@ -138,14 +138,39 @@ pub async fn test_proxy_connection() -> Result<String, String> {
     match client.get(url).timeout(std::time::Duration::from_secs(6)).send().await {
         Ok(resp) => {
             let latency_ms = start.elapsed().as_millis();
-            if resp.status().is_success() {
-                Ok(format!("Conexão bem-sucedida! Latência: {}ms (Status: {})", latency_ms, resp.status()))
+            let (l, st) = (latency_ms, resp.status());
+            if st.is_success() {
+                Ok(crate::utils::i18n_ui::pick([
+                    format!("Connected! Latency: {}ms (Status: {})", l, st),
+                    format!("Conexão bem-sucedida! Latência: {}ms (Status: {})", l, st),
+                    format!("¡Conectado! Latencia: {}ms (Estado: {})", l, st),
+                    format!("Verbunden! Latenz: {}ms (Status: {})", l, st),
+                    format!("Connecté ! Latence : {}ms (Statut : {})", l, st),
+                    format!("Подключено! Задержка: {}ms (Статус: {})", l, st),
+                    format!("接続しました。遅延: {}ms（ステータス: {}）", l, st),
+                ]))
             } else {
-                Ok(format!("Proxy respondeu em {}ms, mas com status HTTP {}", latency_ms, resp.status()))
+                Ok(crate::utils::i18n_ui::pick([
+                    format!("The proxy answered in {}ms, but with HTTP status {}", l, st),
+                    format!("Proxy respondeu em {}ms, mas com status HTTP {}", l, st),
+                    format!("El proxy respondió en {}ms, pero con el estado HTTP {}", l, st),
+                    format!("Der Proxy hat in {}ms geantwortet, aber mit HTTP-Status {}", l, st),
+                    format!("Le proxy a répondu en {}ms, mais avec le statut HTTP {}", l, st),
+                    format!("Прокси ответил за {}ms, но со статусом HTTP {}", l, st),
+                    format!("プロキシは{}msで応答しましたが、HTTPステータスは{}でした", l, st),
+                ]))
             }
         }
         Err(e) => {
-            Err(format!("Falha ao conectar via Proxy: {}", e))
+            Err(crate::utils::i18n_ui::pick([
+                format!("Could not connect through the proxy: {}", e),
+                format!("Falha ao conectar via Proxy: {}", e),
+                format!("No se pudo conectar a través del proxy: {}", e),
+                format!("Verbindung über den Proxy fehlgeschlagen: {}", e),
+                format!("Impossible de se connecter via le proxy : {}", e),
+                format!("Не удалось подключиться через прокси: {}", e),
+                format!("プロキシ経由で接続できませんでした: {}", e),
+            ]))
         }
     }
 }
@@ -182,12 +207,26 @@ pub fn format_proxy_alert_message() -> String {
     let settings = get_network_settings();
     let mode = settings.proxy_mode.to_uppercase();
     if settings.proxy_mode == "system" {
-        "Falha de conexão via Proxy do Sistema! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.".to_string()
+        crate::utils::i18n_ui::pick([
+            "Could not connect through the system proxy! Click here or the gear at the top to open Settings and turn it off.".into(),
+            "Falha de conexão via Proxy do Sistema! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.".into(),
+            "¡No se pudo conectar a través del proxy del sistema! Haz clic aquí o en el engranaje de arriba para abrir la Configuración y desactivarlo.".into(),
+            "Verbindung über den System-Proxy fehlgeschlagen! Klicke hier oder oben auf das Zahnrad, um die Einstellungen zu öffnen und ihn auszuschalten.".into(),
+            "Impossible de se connecter via le proxy système ! Cliquez ici ou sur l’engrenage en haut pour ouvrir les Paramètres et le désactiver.".into(),
+            "Не удалось подключиться через системный прокси! Нажмите здесь или на шестерёнку вверху, чтобы открыть настройки и отключить его.".into(),
+            "システムプロキシ経由で接続できませんでした。ここか上部の歯車をクリックして設定を開き、オフにしてください。".into(),
+        ])
     } else {
-        format!(
-            "O Proxy ({}: {}:{}) está inacessível ou recusando conexão! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.",
-            mode, settings.proxy_host, settings.proxy_port
-        )
+        let (h, p) = (&settings.proxy_host, settings.proxy_port);
+        crate::utils::i18n_ui::pick([
+            format!("The proxy ({}: {}:{}) is unreachable or refusing connections! Click here or the gear at the top to open Settings and turn it off.", mode, h, p),
+            format!("O Proxy ({}: {}:{}) está inacessível ou recusando conexão! Clique aqui ou na engrenagem no topo para abrir as Configurações e desativá-lo.", mode, h, p),
+            format!("¡El proxy ({}: {}:{}) no responde o rechaza la conexión! Haz clic aquí o en el engranaje de arriba para abrir la Configuración y desactivarlo.", mode, h, p),
+            format!("Der Proxy ({}: {}:{}) ist nicht erreichbar oder lehnt Verbindungen ab! Klicke hier oder oben auf das Zahnrad, um die Einstellungen zu öffnen und ihn auszuschalten.", mode, h, p),
+            format!("Le proxy ({} : {}:{}) est injoignable ou refuse les connexions ! Cliquez ici ou sur l’engrenage en haut pour ouvrir les Paramètres et le désactiver.", mode, h, p),
+            format!("Прокси ({}: {}:{}) недоступен или отклоняет соединения! Нажмите здесь или на шестерёнку вверху, чтобы открыть настройки и отключить его.", mode, h, p),
+            format!("プロキシ（{}: {}:{}）に接続できないか、接続を拒否しています。ここか上部の歯車をクリックして設定を開き、オフにしてください。", mode, h, p),
+        ])
     }
 }
 

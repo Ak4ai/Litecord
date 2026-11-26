@@ -48,6 +48,11 @@ fn send_go_live(payload: Value) {
     }
 }
 
+/// Sends any payload on the main gateway connection.
+pub fn send_gateway(payload: Value) {
+    send_go_live(payload);
+}
+
 /// Opcode 18 payload; a DM call has no guild.
 fn stream_create_payload(guild_id: Option<&str>, channel_id: u64) -> Value {
     match guild_id {
@@ -150,6 +155,7 @@ const HANDLED_EVENTS: &[&str] = &[
     "RESUMED",
     "GUILD_CREATE",
     "GUILD_MEMBERS_CHUNK",
+    "GUILD_MEMBER_LIST_UPDATE",
     "VOICE_STATE_UPDATE",
     "VOICE_SERVER_UPDATE",
     "STREAM_CREATE",
@@ -782,6 +788,8 @@ impl GatewayClient {
                     let _ = self.event_tx.send(GatewayEvent::Connected { user_tag }).await;
                 }
                 "READY_SUPPLEMENTAL" => {
+                    // A channel opened before the gateway was up asked for nothing.
+                    crate::ui::member_list::resubscribe();
                     info!("📌 Evento READY_SUPPLEMENTAL recebido da Gateway! Keys: {:?}", v["d"].as_object().map(|m| m.keys().collect::<Vec<_>>()));
                     if let Some(vs_arr) = v["d"]["voice_states"].as_array() {
                         info!("📌 [READY_SUPPLEMENTAL] Encontrados {} voice_states na raiz!", vs_arr.len());
@@ -1234,6 +1242,9 @@ impl GatewayClient {
                         info!("📴 CALL_DELETE recebido no canal {}", channel_id);
                         let _ = self.event_tx.send(GatewayEvent::CallEnded { channel_id }).await;
                     }
+                }
+                "GUILD_MEMBER_LIST_UPDATE" => {
+                    crate::ui::member_list::apply(&v["d"]);
                 }
                 "GUILD_CREATE" => {
                     let id = v["d"]["id"].as_str().unwrap_or("").to_string();

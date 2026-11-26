@@ -5,6 +5,34 @@ All notable changes to **Litecord** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.0-beta] - 2026-11-25 — Anexos, player de mídia, emojis e figurinhas, lista de membros e macOS experimental
+
+**Em resumo:** o chat ganhou a barra de mensagem no estilo do Discord, com anexos (botão +, arrastar e soltar, spoiler e renomear), seletor de emojis e figurinhas, e um player que toca áudio e vídeo MP4 dentro do app, com tela cheia. Há uma lista de membros opcional, fina, que abre ao passar o mouse. No Linux, as transmissões podem ser decodificadas pelo hardware via GStreamer, e o Litecord tem a primeira versão **experimental** para macOS (Apple Silicon).
+
+**In English:** the chat gets a Discord-style message bar with attachments (+ button, drag and drop, spoiler and rename), an emoji and sticker picker, and an in-app player for audio and MP4 video, with full screen. An optional thin server member list widens on hover. On Linux, streams can be decoded in hardware through GStreamer, and Litecord ships its first **experimental** macOS build (Apple Silicon). Thanks to @StreamOfRon for the macOS port (#71).
+
+### 💬 Chat
+- **Anexar arquivos**: botão + na barra, arrastar arquivos para a janela, cartões com ícone por tipo e ações de spoiler, renomear e remover (#89).
+- **Spoilers**: `||texto||` e anexos `SPOILER_` ficam cobertos até o clique.
+- **Seletor de emojis e figurinhas** como no Discord, com busca, categorias, recentes, emojis do servidor e envio de figurinhas. A lista só desenha o que está na tela.
+- **Player embutido**: áudio Opus, Vorbis, MP3, WAV e M4A, e vídeo MP4 (H.264 + AAC), com barra de progresso clicável para pular. O vídeo abre numa janela grande ou em tela cheia (#89).
+- A mensagem de erro de envio some sozinha depois de 10 segundos.
+- Trocar de servidor não deixa mais o chat do servidor anterior na tela.
+
+### 👥 Lista de membros (opcional)
+- Coluna fina de fotos à direita do chat; ao passar o mouse, ela abre com nome e tag. Quem está offline fica esmaecido. Ligue em Configurações → Aparência e idioma (#91).
+
+### 🐧 Linux
+- **Decodificação por hardware das transmissões** via o GStreamer do sistema, quando instalado: `v4l2slh264dec` em placas embarcadas, VA-API em Intel/AMD e NVDEC. Sem GStreamer, continua no OpenH264. `LITECORD_GST_DECODER` escolhe ou desliga (#60).
+- `uninstall.sh` para remover a instalação (#90).
+
+### 🍎 macOS (experimental)
+- Primeira versão para Macs com Apple Silicon: login, chat, mensagens diretas, voz e bandeja. Compartilhar tela ainda não funciona no macOS.
+- O app ainda não é assinado com Apple Developer ID: na primeira abertura, clique com o botão direito → Abrir. A atualização abre a página de releases em vez de instalar sozinha. Contribuição de @StreamOfRon (#71).
+
+### 🌐 Idiomas
+- Opções das configurações, mensagens do sistema, textos do proxy e do atualizador, nomes de dispositivos e placeholders traduzidos em todos os idiomas (#88).
+
 ## [v1.3.2-beta] - 2026-11-23 — Go Live com o Discord oficial
 
 **Em resumo:** quem usa o Discord oficial (PC, web ou celular) agora assiste a sua transmissão e você assiste a deles, com imagem e som, pelo Go Live do próprio Discord. A voz ganhou um processamento novo, se recupera quando a rede troca e conecta mais rápido em redes com IPv6 quebrado; o chat mostra mensagens Components V2, troca de canal na hora e não acumula memória; a lista de voz mostra quem está falando e quem está ao vivo; e os tokens salvos nunca mais vão para o disco sem criptografia. Parado, o Litecord fica em ~14 MB de RAM e 0,005% de CPU com a janela aberta.

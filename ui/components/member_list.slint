@@ -1,0 +1,175 @@
+// Server members: a thin column of avatars at the right of the chat. Hovering it
+// widens it over the chat to show names and tags. Offline members are faded.
+// Rows come from src/ui/member_list.rs.
+import { ListView } from "std-widgets.slint";
+import { AppTheme, TypeScale } from "../theme.slint";
+
+export struct MemberItem {
+    // Non-empty for a group header ("Online — 12").
+    header: string,
+    // False for a row not received yet.
+    known: bool,
+    name: string,
+    tag: string,
+    initials: string,
+    // "online", "idle", "dnd" or "offline".
+    status: string,
+    avatar_url: string,
+    avatar_slot: int,
+}
+
+export component MemberColumn inherits Rectangle {
+    in property <[MemberItem]> members;
+    in property <[image]> avatar_pool;
+    in property <[string]> avatar_pool_urls;
+    callback scrolled(int);
+
+    // Row under the pointer: -1 none, -2 the empty part of the column.
+    property <int> hovered: -1;
+    property <bool> open: hovered != -1;
+
+    width: 56px;
+    background: AppTheme.surface-sidebar;
+
+    // The chat's rounded corner follows the panel's edge when it opens.
+    if root.open : Rectangle {
+        x: panel.x - 8px;
+        y: 0;
+        width: 8px;
+        height: 8px;
+        background: AppTheme.surface-sidebar;
+        clip: true;
+        Rectangle {
+            x: -8px;
+            y: 0;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: AppTheme.surface-chat;
+        }
+    }
+
+    panel := Rectangle {
+        x: parent.width - self.width;
+        width: root.open ? 240px : 56px;
+        height: 100%;
+        background: AppTheme.surface-sidebar;
+        drop-shadow-blur: root.open ? 16px : 0px;
+        drop-shadow-color: #00000050;
+        clip: true;
+        animate width { duration: 120ms; easing: ease-out; }
+
+        bg_ta := TouchArea {
+            changed has-hover => {
+                if (self.has-hover) {
+                    root.hovered = -2;
+                } else if (root.hovered == -2) {
+                    root.hovered = -1;
+                }
+            }
+        }
+
+        list := ListView {
+            width: parent.width;
+            changed viewport-y => {
+                root.scrolled((-self.viewport-y / 44px).floor());
+            }
+            for m[i] in root.members : Rectangle {
+                height: m.header != "" ? (root.open ? 28px : 8px) : 44px;
+
+                row_ta := TouchArea {
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            root.hovered = i;
+                        } else if (root.hovered == i) {
+                            root.hovered = -1;
+                        }
+                    }
+                }
+
+                // Group header: a small gap when thin, the name when open.
+                if m.header != "" && root.open : Text {
+                    x: 12px;
+                    width: parent.width - 20px;
+                    height: 100%;
+                    text: m.header;
+                    color: AppTheme.text-muted;
+                    font-size: TypeScale.caption;
+                    font-weight: 700;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                if m.header == "" : Rectangle {
+                    background: root.open && row_ta.has-hover ? AppTheme.interactive-hover : transparent;
+                    border-radius: 6px;
+                    x: 4px;
+                    width: parent.width - 8px;
+
+                    // Avatar, faded when offline.
+                    avatar := Rectangle {
+                        x: 8px;
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 16px;
+                        clip: true;
+                        // A row not received yet is a faint circle, not a dark one.
+                        opacity: !m.known ? 0.25 : (m.status == "offline" ? 0.35 : 1.0);
+                        background: m.known ? AppTheme.accent : AppTheme.text-muted;
+                        if m.known && !(m.avatar_url != "" && root.avatar_pool_urls[m.avatar_slot] == m.avatar_url) : Text {
+                            text: m.initials;
+                            color: AppTheme.text-on-accent;
+                            font-size: TypeScale.caption;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        if m.avatar_url != "" && root.avatar_pool_urls[m.avatar_slot] == m.avatar_url : Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.avatar_pool[m.avatar_slot];
+                            image-fit: cover;
+                        }
+                    }
+                    // Status dot (not for offline members).
+                    if m.known && m.status != "offline" : Rectangle {
+                        x: avatar.x + 22px;
+                        y: (parent.height - 32px) / 2 + 22px;
+                        width: 12px;
+                        height: 12px;
+                        border-radius: 6px;
+                        background: AppTheme.surface-sidebar;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: m.status == "online" ? #23a55a : (m.status == "idle" ? #f0b232 : #f23f43);
+                        }
+                    }
+
+                    if root.open : VerticalLayout {
+                        x: 50px;
+                        width: parent.width - 56px;
+                        alignment: center;
+                        spacing: 1px;
+                        Text {
+                            text: m.name;
+                            color: AppTheme.text-strong;
+                            opacity: m.status == "offline" ? 0.45 : 1.0;
+                            font-size: TypeScale.small;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        if m.tag != "" : Text {
+                            text: m.tag;
+                            color: AppTheme.text-muted;
+                            opacity: m.status == "offline" ? 0.45 : 1.0;
+                            font-size: TypeScale.caption;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

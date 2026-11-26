@@ -13,6 +13,9 @@ pub struct VideoSettings {
     pub enable_self_preview_notice: bool, // default true
     #[serde(default = "default_true")]
     pub show_hardware_monitor: bool,      // default true
+    /// Thin column of server members on the right of the chat.
+    #[serde(default)]
+    pub show_member_list: bool,
     #[serde(default)]
     pub use_light_theme: bool,            // default false
     /// Draw the UI with the GPU (OpenGL) instead of the CPU software renderer. Off by
@@ -83,6 +86,7 @@ impl Default for VideoSettings {
             audio_loopback_backend: "auto".to_string(),
             enable_self_preview_notice: true,
             show_hardware_monitor: true,
+            show_member_list: false,
             use_light_theme: false,
             use_gpu_renderer: false,
             channel_sidebar_width: default_channel_sidebar_width(),
@@ -249,6 +253,18 @@ pub fn toggle_show_hardware_monitor() -> bool {
     let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
     store.show_hardware_monitor = !store.show_hardware_monitor;
     let new_val = store.show_hardware_monitor;
+    persist(store);
+    new_val
+}
+
+pub fn get_show_member_list() -> bool {
+    get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner()).show_member_list
+}
+
+pub fn toggle_show_member_list() -> bool {
+    let mut store = get_video_settings_store().lock().unwrap_or_else(|e| e.into_inner());
+    store.show_member_list = !store.show_member_list;
+    let new_val = store.show_member_list;
     persist(store);
     new_val
 }

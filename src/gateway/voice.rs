@@ -878,7 +878,7 @@ pub async fn connect_voice_gateway(
                                                         let target_dev_name = current_target_dev.clone();
                                                         let device = if let Ok(devices) = host.output_devices() {
                                                             let dev_list: Vec<_> = devices.into_iter().collect();
-                                                            if !target_dev_name.is_empty() && !target_dev_name.contains("Padrão") {
+                                                            if !crate::utils::i18n_extra::is_default_device(&target_dev_name) {
                                                                 dev_list.into_iter().find(|d| d.name().map(|n| n == target_dev_name).unwrap_or(false))
                                                                     .or_else(|| host.default_output_device())
                                                             } else {

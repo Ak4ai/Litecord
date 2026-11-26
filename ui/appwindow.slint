@@ -5,6 +5,10 @@ import { AppTheme, ChatTypography, ThemeMode , TypeScale } from "theme.slint";
 import "../assets/fonts/Inter-Variable.ttf";
 
 import { IconButton } from "components/icon_button.slint";
+import { EmojiPicker, PickerItem, PickerRow, PickerCat } from "components/picker.slint";
+import { MemberColumn, MemberItem } from "components/member_list.slint";
+export { MemberItem }
+export { PickerItem, PickerRow, PickerCat }
 import { ChannelSidebar, ChannelItem } from "components/channel_sidebar.slint";
 import { SettingsView, LanguageItem, SettingOptionItem, AudioDeviceItem } from "components/settings_view.slint";
 import { OnboardingView, OnboardingPromptItem, OnboardingOptionItem } from "components/onboarding_view.slint";
@@ -67,6 +71,37 @@ export struct CameraSourceItem {
     name: string,
 }
 
+export struct PendingFile {
+    name: string,
+    size: string,
+    kind: string,
+    spoiler: bool,
+}
+
+// Icon button with a rounded, lighter background on hover.
+component BarIcon inherits Rectangle {
+    in property <image> icon;
+    in property <length> box: 34px;
+    in property <length> size: 20px;
+    in property <bool> active: false;
+    in property <color> active-color: AppTheme.text-primary;
+    callback clicked();
+    width: box;
+    height: box;
+    border-radius: 6px;
+    background: ta.has-hover ? AppTheme.interactive-hover : transparent;
+    Image {
+        source: root.icon;
+        width: root.size;
+        height: root.size;
+        colorize: root.active ? root.active-color : (ta.has-hover ? AppTheme.text-primary : AppTheme.text-muted);
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 export struct AccountItem {
     id: string,
     username: string,
@@ -101,6 +136,18 @@ export component AppWindow inherits Window {
     callback close_window();
     callback login(string /* token */);
     callback send_message(string /* content */);
+    callback pick_files();
+    callback remove_pending_file(int /* index */);
+    callback toggle_spoiler(int /* index */);
+    callback rename_pending_file(int /* index */, string /* new name */);
+    // Card whose file name is being edited, -1 for none.
+    in-out property <int> editing_file: -1;
+    // Non-empty while files are dragged over the window.
+    in-out property <string> drop_hint: "";
+    in-out property <float> playing_audio_progress: 0;
+    in-out property <string> playing_audio_time: "";
+    in-out property <[PendingFile]> pending_files: [];
+    in-out property <string> upload_status: "";
     callback select_channel(string /* channel_id */);
     callback toggle_category(string /* category_id */);
     callback select_guild(string /* guild_id */);
@@ -126,6 +173,33 @@ export component AppWindow inherits Window {
     callback toggle_voice_focus();
     callback open_link(string /* url */);
     callback download_attachment(string /* att_id */, string /* filename */, string /* url */);
+    callback play_audio(string /* url */);
+    callback seek_audio(string /* url */, float /* 0..1 */);
+    in-out property <image> playing_video_frame;
+    in-out property <bool> playing_video_shown: false;
+    // Big video view (same size as Settings) and full screen.
+    in-out property <bool> video_modal_open: false;
+    in-out property <bool> video_fullscreen: false;
+    callback open_video_modal();
+    callback close_video_modal();
+    callback toggle_video_fullscreen();
+    // Emoji / sticker picker (src/ui/picker.rs).
+    in-out property <bool> picker_open: false;
+    in-out property <int> picker_tab: 0;
+    in-out property <string> picker_query: "";
+    in-out property <[PickerRow]> picker_rows: [];
+    in-out property <[PickerCat]> picker_cats: [];
+    in-out property <int> picker_scroll_reset: 0;
+    in-out property <string> picker_tr_emoji: "Emoji";
+    in-out property <string> picker_tr_stickers: "Stickers";
+    in-out property <string> picker_tr_search: "Search";
+    callback picker_toggle(int /* tab */);
+    callback picker_close();
+    callback picker_set_tab(int);
+    callback picker_search();
+    callback picker_scrolled(float, float);
+    callback picker_pick(int, int);
+    in-out property <string> playing_audio_url: "";
     callback set_vad_threshold(float /* threshold */);
     callback set_mic_volume(float /* volume */);
     callback toggle_test_mic();
@@ -335,6 +409,10 @@ export component AppWindow inherits Window {
     in-out property <string> selected_audio_loopback_backend: "auto";
     in-out property <bool> enable_self_preview_notice: true;
     in-out property <bool> show_hardware_monitor: true;
+    in-out property <bool> show_member_list: false;
+    in-out property <[MemberItem]> member_rows: [];
+    callback toggle_member_list();
+    callback member_list_scrolled(int);
     in-out property <bool> go_live_unlock: false;
     in-out property <bool> use_gpu_renderer: false;
     in-out property <bool> net_diag_running: false;
@@ -433,8 +511,8 @@ export component AppWindow inherits Window {
     in-out property <[LanguageItem]> languages: [];
     in-out property <[AudioDeviceItem]> input_devices: [];
     in-out property <[AudioDeviceItem]> output_devices: [];
-    in-out property <string> selected_input_device: "Microfone Padrão do Sistema";
-    in-out property <string> selected_output_device: "Alto-falantes Padrão do Sistema";
+    in-out property <string> selected_input_device: "System Default Microphone";
+    in-out property <string> selected_output_device: "System Default Speakers";
     in-out property <float> mic_level: 0.0; // Real-time mic volume level (0.0 to 1.0)
     in-out property <float> mic_volume: 1.0; // Microphone Input Gain Volume (0.0 to 2.0, 100% = 1.0)
     in-out property <float> vad_threshold: 0.05; // Voice Activity Detection Threshold (0.0 to 1.0)
@@ -2726,10 +2804,15 @@ export component AppWindow inherits Window {
                     }
 
                     // Messages Chat Feed & Input Container with rounded top-left corner
+                    HorizontalLayout {
+                    vertical-stretch: 1;
                     Rectangle {
                         vertical-stretch: 1;
                         background: AppTheme.surface-chat;
+                        horizontal-stretch: 1;
                         border-top-left-radius: 8px;
+                        // Rounded on the member column's side too.
+                        border-top-right-radius: root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" ? 8px : 0px;
                         clip: true;
 
                         VerticalBox {
@@ -2747,6 +2830,14 @@ export component AppWindow inherits Window {
                         load_older_messages => { root.load_older_messages(); }
                         open_link(url) => { root.open_link(url); }
                         download_attachment(id, fn, url) => { root.download_attachment(id, fn, url); }
+                        play_audio(url) => { root.play_audio(url); }
+                        seek_audio(url, f) => { root.seek_audio(url, f); }
+                        playing_video_frame: root.playing_video_frame;
+                        playing_video_shown: root.playing_video_shown;
+                        open_video_modal => { root.open_video_modal(); }
+                        playing_audio_url: root.playing_audio_url;
+                        playing_audio_progress: root.playing_audio_progress;
+                        playing_audio_time: root.playing_audio_time;
                         click_command(cmd) => {
                             root.click_command(cmd);
                         }
@@ -2900,14 +2991,177 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Message / Smart Command Input Box
+                    // Message box: picked files on top, then the input row.
                     Rectangle {
-                        height: 56px;
+                        // Matches the profile card in the channel sidebar: 52px tall,
+                        // 6px corners, same colour and 8px from the bottom.
+                        height: 68px + (root.pending_files.length > 0 ? 161px : 0px) + (root.upload_status != "" ? 24px : 0px);
                         background: AppTheme.surface-chat;
 
-                        HorizontalBox {
-                            padding: 8px;
-                            spacing: 8px;
+                        Rectangle {
+                            x: 8px;
+                            y: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height - 16px;
+                            background: AppTheme.surface-elevated;
+                            border-radius: 6px;
+
+                        VerticalLayout {
+                            if root.pending_files.length > 0 : HorizontalLayout {
+                                height: 160px;
+                                padding: 12px;
+                                spacing: 12px;
+                                alignment: start;
+                                for f[i] in root.pending_files : Rectangle {
+                                    width: 150px;
+                                    background: AppTheme.surface-input;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: tile_ta.has-hover ? AppTheme.text-subtle : AppTheme.border-subtle;
+
+                                    VerticalLayout {
+                                        padding: 10px;
+                                        spacing: 6px;
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 56px;
+                                                height: 56px;
+                                                border-radius: 10px;
+                                                background: AppTheme.surface-elevated;
+                                                Image {
+                                                    source: f.kind == "audio" ? @image-url("../assets/music.svg")
+                                                        : f.kind == "video" ? @image-url("../assets/video.svg")
+                                                        : f.kind == "image" ? @image-url("../assets/image.svg")
+                                                        : @image-url("../assets/file.svg");
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    colorize: AppTheme.accent-link-hover;
+                                                }
+                                            }
+                                        }
+                                        if root.editing_file != i : Text {
+                                            text: f.name;
+                                            overflow: elide;
+                                            horizontal-alignment: center;
+                                            color: AppTheme.text-primary;
+                                            font-size: TypeScale.small;
+                                        }
+                                        if root.editing_file == i : Rectangle {
+                                            height: 24px;
+                                            background: AppTheme.surface-elevated;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: AppTheme.accent;
+                                            clip: true;
+                                            name_input := TextInput {
+                                                x: 6px;
+                                                width: parent.width - 12px;
+                                                height: 100%;
+                                                text: f.name;
+                                                single-line: true;
+                                                vertical-alignment: center;
+                                                color: AppTheme.text-primary;
+                                                font-size: TypeScale.small;
+                                                init => {
+                                                    self.focus();
+                                                    self.select-all();
+                                                }
+                                                accepted => {
+                                                    root.rename_pending_file(i, self.text);
+                                                    root.editing_file = -1;
+                                                }
+                                                key-pressed(event) => {
+                                                    if (event.text == Key.Escape) {
+                                                        root.editing_file = -1;
+                                                        return accept;
+                                                    }
+                                                    reject
+                                                }
+                                            }
+                                        }
+                                        Text {
+                                            text: f.spoiler ? "SPOILER · " + f.size : f.size;
+                                            horizontal-alignment: center;
+                                            color: f.spoiler ? AppTheme.accent-link-hover : AppTheme.text-muted;
+                                            font-size: TypeScale.caption;
+                                        }
+                                    }
+
+                                    // Hovering the card shows its actions; they sit inside the
+                                    // card's TouchArea so the hover holds while using them.
+                                    tile_ta := TouchArea {
+                                        if tile_ta.has-hover : Rectangle {
+                                            x: parent.width - 98px;
+                                            y: -10px;
+                                            width: 96px;
+                                            height: 32px;
+                                            background: AppTheme.surface-chat;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: AppTheme.border-subtle;
+                                            HorizontalLayout {
+                                                padding: 2px;
+                                                spacing: 2px;
+                                                BarIcon {
+                                                    box: 28px;
+                                                    size: 16px;
+                                                    icon: @image-url("../assets/eye.svg");
+                                                    active: f.spoiler;
+                                                    active-color: AppTheme.accent-link-hover;
+                                                    clicked => { root.toggle_spoiler(i); }
+                                                }
+                                                BarIcon {
+                                                    box: 28px;
+                                                    size: 16px;
+                                                    icon: @image-url("../assets/pencil.svg");
+                                                    active: root.editing_file == i;
+                                                    active-color: AppTheme.accent-link-hover;
+                                                    clicked => { root.editing_file = root.editing_file == i ? -1 : i; }
+                                                }
+                                                BarIcon {
+                                                    box: 28px;
+                                                    size: 16px;
+                                                    icon: @image-url("../assets/trash.svg");
+                                                    active: true;
+                                                    active-color: #f23f43;
+                                                    clicked => { root.remove_pending_file(i); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if root.pending_files.length > 0 : Rectangle {
+                                height: 1px;
+                                background: AppTheme.border-subtle;
+                            }
+                            if root.upload_status != "" : HorizontalLayout {
+                                height: 24px;
+                                padding-left: 14px;
+                                Text {
+                                    text: root.upload_status;
+                                    color: AppTheme.text-muted;
+                                    font-size: TypeScale.small;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                        HorizontalLayout {
+                            height: 52px;
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 4px;
+
+                            if root.active_command_name == "" : VerticalLayout {
+                                alignment: center;
+                                BarIcon {
+                                    icon: @image-url("../assets/plus.svg");
+                                    clicked => { root.pick_files(); }
+                                }
+                            }
 
                             if root.active_command_name != "" : HorizontalLayout {
                                 horizontal-stretch: 1;
@@ -3021,10 +3275,6 @@ export component AppWindow inherits Window {
 
                             if root.active_command_name == "" : Rectangle {
                                 horizontal-stretch: 1;
-                                background: AppTheme.surface-input;
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: chat_text_input.has-focus ? AppTheme.accent : AppTheme.border-subtle;
                                 clip: true;
 
                                 if root.chat_input_text == "" : Text {
@@ -3076,7 +3326,7 @@ export component AppWindow inherits Window {
                                     accepted => {
                                         if (root.show_command_suggestions && root.command_suggestions.length > 0) {
                                             root.select_suggestion(root.active_suggestion_index);
-                                        } else if (root.chat_input_text != "") {
+                                        } else if (root.chat_input_text != "" || root.pending_files.length > 0) {
                                             root.send_message(root.chat_input_text);
                                             root.chat_input_text = "";
                                             root.show_command_suggestions = false;
@@ -3085,28 +3335,230 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            Button {
-                                text: root.tr_send;
-                                primary: true;
-                                clicked => {
-                                    if (root.active_command_name != "") {
-                                        root.execute_active_command(
-                                            root.active_command_name,
-                                            root.command_arg_text,
-                                            root.active_command_app_id,
-                                            root.active_command_cmd_id,
-                                            root.active_command_version,
-                                            root.active_param_name
-                                        );
-                                        root.active_command_name = "";
-                                        root.command_arg_text = "";
-                                    } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
-                                        root.select_suggestion(root.active_suggestion_index);
-                                    } else if (root.chat_input_text != "") {
-                                        root.send_message(root.chat_input_text);
-                                        root.chat_input_text = "";
-                                        root.show_command_suggestions = false;
+                            if root.active_command_name == "" : VerticalLayout {
+                                alignment: center;
+                                BarIcon {
+                                    icon: @image-url("../assets/sticker.svg");
+                                    active: root.picker_open && root.picker_tab == 1;
+                                    clicked => { root.picker_toggle(1); }
+                                }
+                            }
+                            if root.active_command_name == "" : VerticalLayout {
+                                alignment: center;
+                                BarIcon {
+                                    icon: @image-url("../assets/smile.svg");
+                                    active: root.picker_open && root.picker_tab == 0;
+                                    clicked => { root.picker_toggle(0); }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                BarIcon {
+                                    icon: @image-url("../assets/send.svg");
+                                    active: root.chat_input_text != "" || root.pending_files.length > 0 || root.active_command_name != "";
+                                    active-color: AppTheme.accent-link-hover;
+                                    clicked => {
+                                        if (root.active_command_name != "") {
+                                            root.execute_active_command(
+                                                root.active_command_name,
+                                                root.command_arg_text,
+                                                root.active_command_app_id,
+                                                root.active_command_cmd_id,
+                                                root.active_command_version,
+                                                root.active_param_name
+                                            );
+                                            root.active_command_name = "";
+                                            root.command_arg_text = "";
+                                        } else if (root.show_command_suggestions && root.command_suggestions.length > 0) {
+                                            root.select_suggestion(root.active_suggestion_index);
+                                        } else if (root.chat_input_text != "" || root.pending_files.length > 0) {
+                                            root.send_message(root.chat_input_text);
+                                            root.chat_input_text = "";
+                                            root.show_command_suggestions = false;
+                                        }
                                     }
+                                }
+                            }
+                        }
+                        }
+                        }
+                    }
+                }
+            }
+                    // 4. Server members (optional): thin avatar column, wider on hover.
+                    if root.show_member_list && root.active_guild_id != "@me" && root.active_guild_id != "" : MemberColumn {
+                        members: root.member_rows;
+                        avatar_pool: root.avatar_pool;
+                        avatar_pool_urls: root.avatar_pool_urls;
+                        scrolled(r) => { root.member_list_scrolled(r); }
+                    }
+                    }
+        }
+    }
+
+    }
+    }
+
+    // Emoji / sticker picker above the message bar; a click outside closes it.
+    if root.picker_open : TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { root.picker_close(); }
+    }
+    if root.picker_open : EmojiPicker {
+        x: root.width - self.width - 16px;
+        y: root.height - self.height - 64px - (root.pending_files.length > 0 ? 161px : 0px) - (root.upload_status != "" ? 24px : 0px);
+        rows: root.picker_rows;
+        cats: root.picker_cats;
+        tab: root.picker_tab;
+        query <=> root.picker_query;
+        scroll-reset: root.picker_scroll_reset;
+        tr-emoji: root.picker_tr_emoji;
+        tr-stickers: root.picker_tr_stickers;
+        tr-search: root.picker_tr_search;
+        set-tab(t) => { root.picker_set_tab(t); }
+        search => { root.picker_search(); }
+        scrolled(top, h) => { root.picker_scrolled(top, h); }
+        pick(r, c) => { root.picker_pick(r, c); }
+    }
+
+    // Files dragged over the window.
+    if root.drop_hint != "" : Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: #000000a0;
+        Rectangle {
+            width: 320px;
+            height: 160px;
+            background: AppTheme.accent;
+            border-radius: 12px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    Image { source: @image-url("../assets/plus.svg"); width: 40px; height: 40px; colorize: AppTheme.text-on-accent; }
+                }
+                Text {
+                    text: root.drop_hint;
+                    horizontal-alignment: center;
+                    color: AppTheme.text-on-accent;
+                    font-size: TypeScale.body;
+                    font-weight: 700;
+                }
+            }
+        }
+    }
+
+    // Big video view: the Settings window's size, or the whole screen.
+    if root.video_modal_open : Rectangle {
+        background: root.video_fullscreen ? #000000 : AppTheme.backdrop-strong;
+        TouchArea {
+            clicked => { root.close_video_modal(); }
+        }
+        video_keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    if (root.video_fullscreen) {
+                        root.toggle_video_fullscreen();
+                    } else {
+                        root.close_video_modal();
+                    }
+                    return accept;
+                }
+                if (e.text == " ") {
+                    root.play_audio(root.playing_audio_url);
+                    return accept;
+                }
+                reject
+            }
+        }
+        Rectangle {
+            width: root.video_fullscreen ? parent.width : Math.min(1060px, parent.width - 32px);
+            height: root.video_fullscreen ? parent.height : Math.min(680px, parent.height - 32px);
+            background: #000000;
+            border-radius: root.video_fullscreen ? 0px : 12px;
+            border-width: root.video_fullscreen ? 0px : 1px;
+            border-color: AppTheme.border-subtle;
+            clip: true;
+            // Clicks on the picture must not close the view.
+            TouchArea { }
+            if root.playing_video_shown : Image {
+                y: 0;
+                width: 100%;
+                height: parent.height - 48px;
+                source: root.playing_video_frame;
+                image-fit: contain;
+            }
+            // Controls: play/stop, progress (click to jump), time, full screen, close.
+            Rectangle {
+                y: parent.height - 48px;
+                height: 48px;
+                background: #111214;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 10px;
+                    spacing: 12px;
+                    Text {
+                        text: "■";
+                        color: #ffffff;
+                        font-size: TypeScale.body;
+                        vertical-alignment: center;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.play_audio(root.playing_audio_url); }
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        Rectangle {
+                            height: 4px;
+                            border-radius: 2px;
+                            background: #ffffff40;
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * root.playing_audio_progress;
+                                height: 100%;
+                                border-radius: 2px;
+                                background: AppTheme.accent;
+                            }
+                        }
+                        TouchArea {
+                            height: 20px;
+                            mouse-cursor: pointer;
+                            clicked => { root.seek_audio(root.playing_audio_url, self.mouse-x / self.width); }
+                        }
+                    }
+                    Text {
+                        text: root.playing_audio_time;
+                        color: #dbdee1;
+                        font-size: TypeScale.caption;
+                        vertical-alignment: center;
+                    }
+                    for b[bi] in [@image-url("../assets/chrome-maximize.svg"), @image-url("../assets/x.svg")] : Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        y: 8px;
+                        border-radius: 6px;
+                        background: vb_ta.has-hover ? #ffffff20 : transparent;
+                        Image {
+                            source: b;
+                            width: 16px;
+                            height: 16px;
+                            colorize: #ffffff;
+                        }
+                        vb_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (bi == 0) {
+                                    root.toggle_video_fullscreen();
+                                } else {
+                                    root.close_video_modal();
                                 }
                             }
                         }
@@ -3114,8 +3566,6 @@ export component AppWindow inherits Window {
                 }
             }
         }
-    }
-    }
     }
 
     // Settings overlay: backend state stays on AppWindow.
@@ -3166,6 +3616,8 @@ export component AppWindow inherits Window {
         audio_loopback_options: root.audio_loopback_options;
         enable_self_preview_notice: root.enable_self_preview_notice;
         show_hardware_monitor: root.show_hardware_monitor;
+        show_member_list: root.show_member_list;
+        toggle_member_list => { root.toggle_member_list(); }
         go_live_unlock: root.go_live_unlock;
         use_gpu_renderer: root.use_gpu_renderer;
         net_diag_running: root.net_diag_running;

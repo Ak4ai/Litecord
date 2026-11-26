@@ -55,9 +55,9 @@ pub fn parse_discord_markdown(input: &str) -> String {
                 ("", trimmed)
             };
             if lang.is_empty() {
-                lines_to_process.push((format!("[Bloco de Código]\n{}", code_body.trim_end()), true));
+                lines_to_process.push((format!("{}\n{}", crate::utils::i18n_ui::en_pt("[Code Block]", "[Bloco de Código]"), code_body.trim_end()), true));
             } else {
-                lines_to_process.push((format!("[Bloco de Código ({})]\n{}", lang, code_body.trim_end()), true));
+                lines_to_process.push((format!("{} ({})]\n{}", crate::utils::i18n_ui::en_pt("[Code Block", "[Bloco de Código"), lang, code_body.trim_end()), true));
             }
         } else {
             for line in part.split('\n') {
@@ -198,7 +198,9 @@ fn apply_inline_markdown(input: &str) -> String {
     }
 
     // ── Spoilers ||text|| ──────────────────────────────────────────────────
-    s = replace_between(&s, "||", "||", |_| "[SPOILER]".to_string());
+    // Kept between two private-use marks; parse_text_into_lines turns them
+    // into spoiler blocks the chat covers until clicked.
+    s = replace_between(&s, "||", "||", |inner| format!("{SPOILER_OPEN}{inner}{SPOILER_CLOSE}"));
 
     // ── Mentions and Discord entities ──────────────────────────────────────
     // <t:timestamp:format> — Discord timestamps
@@ -210,12 +212,12 @@ fn apply_inline_markdown(input: &str) -> String {
     });
 
     // <@!USER_ID> and <@USER_ID> — user mentions
-    s = regex_replace_simple(&s, "<@!", ">", |_inner| "@usuário".to_string());
+    s = regex_replace_simple(&s, "<@!", ">", |_inner| crate::utils::i18n_ui::en_pt("@user", "@usuário").to_string());
     s = regex_replace_simple(&s, "<@&", ">", |_inner| "@cargo".to_string());
     s = regex_replace_simple(&s, "<@", ">", |inner| {
         // Only if purely numeric (user ID)
         if inner.chars().all(|c| c.is_ascii_digit()) {
-            "@usuário".to_string()
+            crate::utils::i18n_ui::en_pt("@user", "@usuário").to_string()
         } else {
             format!("<@{}>", inner)
         }
@@ -503,7 +505,65 @@ fn push_text_before_cmd(before: &str, line_blocks: &mut Vec<MessageBlockData>, l
     });
 }
 
+/// Marks around `||spoiler||` text between parsing and display.
+pub const SPOILER_OPEN: char = '\u{E000}';
+pub const SPOILER_CLOSE: char = '\u{E001}';
+
+/// Removes the spoiler marks from text shown without blocks.
+pub fn strip_spoiler_marks(s: &str) -> String {
+    s.replace([SPOILER_OPEN, SPOILER_CLOSE], "")
+}
+
+/// Splits blocks at the spoiler marks. Spoiler pieces keep `SPOILER_OPEN` as
+/// their first character, which the UI mapping turns into `is_spoiler`.
+fn mark_spoilers(lines: &mut [MessageLineData]) {
+    let mut inside = false;
+    for line in lines.iter_mut() {
+        let mut out = Vec::with_capacity(line.blocks.len());
+        for block in line.blocks.drain(..) {
+            if block.is_emoji || !block.text.contains([SPOILER_OPEN, SPOILER_CLOSE]) {
+                let mut b = block;
+                if inside && !b.is_emoji {
+                    b.text.insert(0, SPOILER_OPEN);
+                }
+                out.push(b);
+                continue;
+            }
+            let mut piece = String::new();
+            let flush = |piece: &mut String, inside: bool, out: &mut Vec<MessageBlockData>| {
+                if !piece.trim().is_empty() {
+                    let mut b = block.clone();
+                    b.text = if inside { format!("{SPOILER_OPEN}{piece}") } else { piece.clone() };
+                    out.push(b);
+                }
+                piece.clear();
+            };
+            for c in block.text.chars() {
+                match c {
+                    SPOILER_OPEN => {
+                        flush(&mut piece, inside, &mut out);
+                        inside = true;
+                    }
+                    SPOILER_CLOSE => {
+                        flush(&mut piece, inside, &mut out);
+                        inside = false;
+                    }
+                    _ => piece.push(c),
+                }
+            }
+            flush(&mut piece, inside, &mut out);
+        }
+        line.blocks = out;
+    }
+}
+
 pub fn parse_text_into_lines(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageLineData> {
+    let mut lines = parse_text_into_lines_inner(input, links);
+    mark_spoilers(&mut lines);
+    lines
+}
+
+fn parse_text_into_lines_inner(input: &str, links: &mut Vec<LinkData>) -> Vec<MessageLineData> {
     let mut lines = Vec::new();
     if input.is_empty() {
         return lines;
@@ -1159,7 +1219,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                     embed_parts_all.push(f_embed);
                 }
                 if !f_content.is_empty() {
-                    content_parts.push(format!("↪ *[Mensagem encaminhada]*\n{}", f_content));
+                    content_parts.push(format!("↪ *{}*\n{}", crate::utils::i18n_ui::en_pt("[Forwarded message]", "[Mensagem encaminhada]"), f_content));
                     content_lines.extend(f_lines);
                 } else if !f_lines.is_empty() {
                     content_lines.extend(f_lines);
@@ -1370,10 +1430,10 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
             if let Some(video_url) = embed["video"]["url"].as_str() {
                 if !video_url.is_empty() {
                     links.push(LinkData {
-                        label: "Assistir Vídeo".to_string(),
+                        label: crate::utils::i18n_ui::en_pt("Watch Video", "Assistir Vídeo").to_string(),
                         url: video_url.to_string(),
                     });
-                    ep.push(format!("🎥 [Vídeo: {}]", video_url));
+                    ep.push(format!("🎥 [{}: {}]", crate::utils::i18n_ui::en_pt("Video", "Vídeo"), video_url));
                 }
             }
 
@@ -1452,18 +1512,12 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
 
             if is_voice {
                 let dur = duration_secs.map(|d| format!(" ({:.0}s)", d)).unwrap_or_default();
-                content_parts.push(format!("🎤 [Mensagem de Voz{}]", dur));
-                if !url.is_empty() {
-                    links.push(LinkData {
-                        label: format!("▶ Ouvir Mensagem de Voz{}", dur),
-                        url: url.clone(),
-                    });
-                }
+                content_parts.push(format!("🎤 [{}{}]", crate::utils::i18n_ui::en_pt("Voice message", "Mensagem de Voz"), dur));
             } else if !is_image {
                 let label = if content_type.starts_with("video/") {
-                    "Video"
+                    crate::utils::i18n_ui::en_pt("Video", "Vídeo")
                 } else if content_type.starts_with("audio/") {
-                    "Audio"
+                    crate::utils::i18n_ui::en_pt("Audio", "Áudio")
                 } else {
                     crate::utils::i18n_ui::ui_text().attachment_label
                 };
@@ -1476,7 +1530,7 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
                 }
             } else if !url.is_empty() {
                 links.push(LinkData {
-                    label: format!("Imagem: {}", filename),
+                    label: format!("{}: {}", crate::utils::i18n_ui::en_pt("Image", "Imagem"), filename),
                     url: url.clone(),
                 });
             }
@@ -1566,36 +1620,36 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
     let content = if content_parts.is_empty() && embed_parts_all.is_empty() && buttons.is_empty() && attachments_list.is_empty() && embed_lines.is_empty() && links.is_empty() {
         match msg_type {
             0 => String::new(),
-            1 => "[Membro adicionado ao grupo]".to_string(),
-            2 => "[Membro removido do grupo]".to_string(),
-            3 => "[Chamada de voz iniciada/encerrada]".to_string(),
-            4 => "[Nome do canal alterado]".to_string(),
-            5 => "[Ícone do canal alterado]".to_string(),
-            6 => "[Mensagem Fixada]".to_string(),
-            7 => "[Novo membro entrou no servidor!]".to_string(),
-            8 => "[Servidor Impulsionado!]".to_string(),
-            9 => "[Servidor alcançou nível 1 de impulso!]".to_string(),
-            10 => "[Servidor alcançou nível 2 de impulso!]".to_string(),
-            11 => "[Servidor alcançou nível 3 de impulso!]".to_string(),
-            12 => "[Canal seguido adicionado]".to_string(),
-            14 => "[Servidor desqualificado da descoberta]".to_string(),
-            15 => "[Servidor requalificado na descoberta]".to_string(),
-            18 => "[Novo tópico criado]".to_string(),
+            1 => crate::utils::i18n_ui::en_pt("[Member added to the group]", "[Membro adicionado ao grupo]").to_string(),
+            2 => crate::utils::i18n_ui::en_pt("[Member removed from the group]", "[Membro removido do grupo]").to_string(),
+            3 => crate::utils::i18n_ui::en_pt("[Voice call started/ended]", "[Chamada de voz iniciada/encerrada]").to_string(),
+            4 => crate::utils::i18n_ui::en_pt("[Channel name changed]", "[Nome do canal alterado]").to_string(),
+            5 => crate::utils::i18n_ui::en_pt("[Channel icon changed]", "[Ícone do canal alterado]").to_string(),
+            6 => crate::utils::i18n_ui::en_pt("[Message pinned]", "[Mensagem Fixada]").to_string(),
+            7 => crate::utils::i18n_ui::en_pt("[A new member joined the server!]", "[Novo membro entrou no servidor!]").to_string(),
+            8 => crate::utils::i18n_ui::en_pt("[Server boosted!]", "[Servidor Impulsionado!]").to_string(),
+            9 => crate::utils::i18n_ui::en_pt("[Server reached boost level 1!]", "[Servidor alcançou nível 1 de impulso!]").to_string(),
+            10 => crate::utils::i18n_ui::en_pt("[Server reached boost level 2!]", "[Servidor alcançou nível 2 de impulso!]").to_string(),
+            11 => crate::utils::i18n_ui::en_pt("[Server reached boost level 3!]", "[Servidor alcançou nível 3 de impulso!]").to_string(),
+            12 => crate::utils::i18n_ui::en_pt("[Followed channel added]", "[Canal seguido adicionado]").to_string(),
+            14 => crate::utils::i18n_ui::en_pt("[Server removed from Discovery]", "[Servidor desqualificado da descoberta]").to_string(),
+            15 => crate::utils::i18n_ui::en_pt("[Server back in Discovery]", "[Servidor requalificado na descoberta]").to_string(),
+            18 => crate::utils::i18n_ui::en_pt("[New thread created]", "[Novo tópico criado]").to_string(),
             19 => String::new(),
             20 => String::new(),
-            21 => "[Mensagem inicial de tópico/fórum]".to_string(),
-            22 => "[Lembrete de convite]".to_string(),
+            21 => crate::utils::i18n_ui::en_pt("[Thread/forum starter message]", "[Mensagem inicial de tópico/fórum]").to_string(),
+            22 => crate::utils::i18n_ui::en_pt("[Invite reminder]", "[Lembrete de convite]").to_string(),
             23 => String::new(),
-            24 => "[Ação do AutoMod]".to_string(),
-            25 => "[Compra de assinatura de cargo]".to_string(),
-            26 => "[Oferta Nitro / Upgrade]".to_string(),
-            27..=30 => "[Transmissão de Palco iniciada/atualizada]".to_string(),
-            31 => "[Assinatura de aplicativo ativada]".to_string(),
-            32 => "[Integração de canal adicionada]".to_string(),
-            33 => "[Integração de canal removida]".to_string(),
-            36..=38 => "[Alerta de segurança do servidor]".to_string(),
-            39 => "[Compra realizada no servidor]".to_string(),
-            40 => "[Resultado de enquete finalizado]".to_string(),
+            24 => crate::utils::i18n_ui::en_pt("[AutoMod action]", "[Ação do AutoMod]").to_string(),
+            25 => crate::utils::i18n_ui::en_pt("[Role subscription purchase]", "[Compra de assinatura de cargo]").to_string(),
+            26 => crate::utils::i18n_ui::en_pt("[Nitro offer / upgrade]", "[Oferta Nitro / Upgrade]").to_string(),
+            27..=30 => crate::utils::i18n_ui::en_pt("[Stage started/updated]", "[Transmissão de Palco iniciada/atualizada]").to_string(),
+            31 => crate::utils::i18n_ui::en_pt("[App subscription activated]", "[Assinatura de aplicativo ativada]").to_string(),
+            32 => crate::utils::i18n_ui::en_pt("[Channel integration added]", "[Integração de canal adicionada]").to_string(),
+            33 => crate::utils::i18n_ui::en_pt("[Channel integration removed]", "[Integração de canal removida]").to_string(),
+            36..=38 => crate::utils::i18n_ui::en_pt("[Server safety alert]", "[Alerta de segurança do servidor]").to_string(),
+            39 => crate::utils::i18n_ui::en_pt("[Server purchase]", "[Compra realizada no servidor]").to_string(),
+            40 => crate::utils::i18n_ui::en_pt("[Poll result]", "[Resultado de enquete finalizado]").to_string(),
             _ => String::new(),
         }
     } else {
@@ -1604,6 +1658,9 @@ pub fn format_discord_message_parts(m: &Value) -> (String, Vec<String>, Vec<Mess
 
     let embed_content = embed_parts_all.join("\n\n");
 
+    let content = strip_spoiler_marks(&content);
+    let reply_content = strip_spoiler_marks(&reply_content);
+    let embed_content = strip_spoiler_marks(&embed_content);
     (content, commands, content_lines, embed_content, embed_lines, embed_color, embed_footer, code_block, reply_author, reply_content, reply_command, links, buttons, attachments_list)
 }
 
@@ -1872,7 +1929,7 @@ mod tests {
             ]
         });
         let (content, _, content_lines, embed_content, _, _, _, _, _, _, _, _, _, _) = format_discord_message_parts(&msg);
-        assert!(content.contains("Mensagem encaminhada"));
+        assert!(content.contains("Forwarded message") || content.contains("Mensagem encaminhada"));
         assert!(content.contains("Jogo Gratis: Half-Life 2"));
         assert!(embed_content.contains("Disponível no Steam!"));
         assert!(!content_lines.is_empty());
@@ -1906,9 +1963,9 @@ mod tests {
             ]
         });
         let (content, _, _, _, _, _, _, _, _, _, _, links, _, attachments) = format_discord_message_parts(&msg);
-        assert!(content.contains("Mensagem de Voz"));
+        assert!(content.contains("Voice message") || content.contains("Mensagem de Voz"));
         assert!(content.contains("15s"));
-        assert!(links.iter().any(|l| l.label.contains("Ouvir Mensagem de Voz")));
+        assert!(!links.iter().any(|l| l.label.contains("15s")));
         assert!(attachments.iter().any(|a| a.is_image && a.url.contains("game-banner.png")));
     }
 
@@ -1955,4 +2012,21 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].blocks.len(), 2);
     }
+
+#[cfg(test)]
+mod spoiler_tests {
+    use super::*;
+
+    #[test]
+    fn spoiler_text_becomes_its_own_block() {
+        let md = parse_discord_markdown("look ||the twist|| here");
+        let mut links = Vec::new();
+        let lines = parse_text_into_lines(&md, &mut links);
+        let texts: Vec<&str> = lines[0].blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(texts.iter().any(|t| t.starts_with(SPOILER_OPEN) && t.contains("the twist")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("look") && !t.starts_with(SPOILER_OPEN)), "{texts:?}");
+        assert_eq!(strip_spoiler_marks(&md), "look the twist here");
+    }
+}
+
 }

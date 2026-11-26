@@ -33,6 +33,32 @@ export struct MessageBlock {
     emoji_img: image,
     url: string,
     command_name: string,
+    is_spoiler: bool,
+}
+
+// `||text||`: covered until clicked, like Discord.
+component SpoilerText inherits Rectangle {
+    in property <string> text;
+    in property <length> max-text-width: 480px;
+    property <bool> revealed: false;
+    border-radius: 3px;
+    background: revealed ? AppTheme.surface-elevated : (sp_ta.has-hover ? AppTheme.interactive-hover : AppTheme.surface-input);
+    width: min(sp_text.preferred-width, root.max-text-width) + 6px;
+    height: sp_text.preferred-height + 2px;
+    sp_text := Text {
+        x: 3px;
+        width: parent.width - 6px;
+        text: root.text;
+        color: root.revealed ? AppTheme.text-primary : transparent;
+        font-family: ChatTypography.family;
+        font-size: ChatTypography.body-size;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+    sp_ta := TouchArea {
+        mouse-cursor: root.revealed ? default : pointer;
+        clicked => { root.revealed = true; }
+    }
 }
 
 export struct MessageLine {
@@ -48,6 +74,9 @@ export struct MessageAttachment {
     width: int,
     height: int,
     is_image: bool,
+    spoiler: bool,
+    is_audio: bool,
+    is_video: bool,
     is_downloaded: bool,
     is_loading: bool,
     full_img: image,
@@ -104,6 +133,16 @@ export component ChatMessagesView inherits Rectangle {
     callback load_older_messages();
     callback open_link(string);
     callback download_attachment(string, string, string);
+    // Plays or stops an audio attachment inside the app (by its URL).
+    callback play_audio(string);
+    in property <image> playing_video_frame;
+    in property <bool> playing_video_shown;
+    callback open_video_modal();
+    // Jumps the playing clip to a point (0..1) of its length.
+    callback seek_audio(string, float);
+    in property <string> playing_audio_url;
+    in property <float> playing_audio_progress;
+    in property <string> playing_audio_time;
     callback click_command(string);
     callback bottom_state_changed(bool);
 
@@ -406,7 +445,11 @@ export component ChatMessagesView inherits Rectangle {
                             }
 
                             // Case 1: Pure single text line -> Native responsive word-wrap!
-                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
+                            if line.blocks.length == 1 && line.blocks[0].is_spoiler: HorizontalLayout {
+                                alignment: start;
+                                SpoilerText { text: line.blocks[0].text; }
+                            }
+                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command && !line.blocks[0].is_spoiler: Text {
                                 text: line.blocks[0].text;
                                 color: AppTheme.text-primary;
                                 font-family: ChatTypography.family;
@@ -579,7 +622,11 @@ export component ChatMessagesView inherits Rectangle {
                                         }
                                     }
 
-                                    if !block.is_link && !block.is_command && !block.is_emoji: Text {
+                                    if block.is_spoiler: VerticalLayout {
+                                        alignment: center;
+                                        SpoilerText { text: block.text; }
+                                    }
+                                    if !block.is_link && !block.is_command && !block.is_emoji && !block.is_spoiler: Text {
                                         text: block.text;
                                         color: AppTheme.text-primary;
                                         font-family: ChatTypography.family;
@@ -653,7 +700,11 @@ export component ChatMessagesView inherits Rectangle {
                                             height: 4px;
                                         }
 
-                                        if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command: Text {
+                                        if line.blocks.length == 1 && line.blocks[0].is_spoiler: HorizontalLayout {
+                                alignment: start;
+                                SpoilerText { text: line.blocks[0].text; }
+                            }
+                            if line.blocks.length == 1 && !line.blocks[0].is_link && !line.blocks[0].is_command && !line.blocks[0].is_spoiler: Text {
                                             text: line.blocks[0].text;
                                             color: AppTheme.text-embed;
                                             font-family: ChatTypography.family;
@@ -1089,9 +1140,14 @@ export component ChatMessagesView inherits Rectangle {
                         alignment: start;
 
                         for att in msg.attachments : Rectangle {
+                            // A SPOILER_ file stays covered until clicked.
+                            property <bool> revealed: false;
                             property <length> img-height: (att.width > 0 && att.height > 0) ? min(520px, max(120px, 320px * att.height / att.width)) : 200px;
                             width: att.is_image ? 320px : 280px;
-                            height: att.is_image ? img-height : 48px;
+                            // A playing video shows its picture above the card row.
+                            property <bool> video-open: att.is_video && root.playing_audio_url == att.url;
+                            property <length> video-h: video-open ? 158px : 0px;
+                            height: att.is_image ? img-height : 48px + video-h;
                             background: AppTheme.surface-input;
                             border-radius: 8px;
                             border-width: 1px;
@@ -1174,39 +1230,142 @@ export component ChatMessagesView inherits Rectangle {
                                 }
                             }
 
+                            // Whole-card click (below the progress bar, which seeks).
+                            if video-open : Rectangle {
+                                y: 0;
+                                height: video-h;
+                                background: #000000;
+                                if root.playing_video_shown : Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.playing_video_frame;
+                                    image-fit: contain;
+                                }
+                                // Opens the video in a bigger window.
+                                Rectangle {
+                                    x: parent.width - 34px;
+                                    y: 6px;
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 6px;
+                                    background: max_ta.has-hover ? #000000c0 : #00000080;
+                                    Image {
+                                        source: @image-url("../../assets/chrome-maximize.svg");
+                                        width: 14px;
+                                        height: 14px;
+                                        colorize: #ffffff;
+                                    }
+                                    max_ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.open_video_modal(); }
+                                    }
+                                }
+                            }
+                            if !att.is_image : TouchArea {
+                                y: video-h;
+                                height: 48px;
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if (att.is_audio) {
+                                        root.play_audio(att.url);
+                                    } else {
+                                        root.open_link(att.url);
+                                    }
+                                }
+                            }
+
                             // 5. Non-image attachment card (e.g. zip, pdf)
                             if !att.is_image : HorizontalLayout {
+                                y: video-h;
+                                height: 48px;
                                 padding-left: 10px;
                                 padding-right: 10px;
                                 spacing: 10px;
                                 alignment: center;
 
-                                Image {
-                                    source: @image-url("../../assets/external-link.svg");
-                                    width: 16px;
-                                    height: 16px;
-                                    colorize: AppTheme.text-muted;
+                                if !att.is_audio : VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: @image-url("../../assets/external-link.svg");
+                                        width: 16px;
+                                        height: 16px;
+                                        colorize: AppTheme.text-muted;
+                                    }
                                 }
 
-                                Text {
-                                    horizontal-stretch: 1;
-                                    text: att.filename;
+                                if att.is_audio : Text {
+                                    width: 16px;
+                                    text: root.playing_audio_url == att.url ? "■" : "▶";
                                     color: AppTheme.accent-link-hover;
                                     font-size: TypeScale.body;
-                                    overflow: elide;
+                                    horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
 
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 5px;
+                                    Text {
+                                        text: att.filename;
+                                        color: AppTheme.accent-link-hover;
+                                        font-size: TypeScale.body;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    // How far the clip has played.
+                                    // Clicking a point of it jumps there.
+                                    if root.playing_audio_url == att.url : Rectangle {
+                                        height: 10px;
+                                        Rectangle {
+                                            y: 3px;
+                                            height: 4px;
+                                            border-radius: 2px;
+                                            background: AppTheme.border-subtle;
+                                            Rectangle {
+                                                x: 0;
+                                                width: parent.width * root.playing_audio_progress;
+                                                height: 100%;
+                                                border-radius: 2px;
+                                                background: AppTheme.accent;
+                                            }
+                                        }
+                                        seek_ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.seek_audio(att.url, self.mouse-x / self.width); }
+                                        }
+                                    }
+                                }
+
                                 Text {
-                                    text: att.size_str;
+                                    text: root.playing_audio_url == att.url && root.playing_audio_time != "" ? root.playing_audio_time : att.size_str;
                                     color: AppTheme.text-muted;
                                     font-size: TypeScale.caption;
                                     vertical-alignment: center;
                                 }
+                            }
 
-                                non_img_ta := TouchArea {
+                            // Covers the whole card: inside the layout above it got no
+                            // width of its own, so clicks on the file did nothing.
+
+                            if att.spoiler && !revealed : Rectangle {
+                                background: AppTheme.surface-input;
+                                border-radius: 8px;
+                                Rectangle {
+                                    width: 84px;
+                                    height: 28px;
+                                    border-radius: 14px;
+                                    background: reveal_ta.has-hover ? #000000d0 : #000000a0;
+                                    Text {
+                                        text: "SPOILER";
+                                        color: #ffffff;
+                                        font-size: TypeScale.small;
+                                        font-weight: 700;
+                                    }
+                                }
+                                reveal_ta := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.open_link(att.url); }
+                                    clicked => { revealed = true; }
                                 }
                             }
                         }

@@ -3,6 +3,7 @@
 pub mod logger;
 pub mod i18n;
 pub mod i18n_ui;
+pub mod i18n_extra;
 pub mod keybinds;
 pub mod tray;
 pub mod updater;

@@ -45,6 +45,30 @@ fn commit_heap_pages_on_demand() {
     const MI_OPTION_PAGE_COMMIT_ON_DEMAND: i32 = 40;
     unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
 }
+
+/// The command that hands a URL to the default browser on this platform
+/// (the spawn arm of `on_open_link`; Windows uses ShellExecuteW instead).
+/// macOS has no xdg-open — `open` is its default-browser handler.
+#[cfg(target_os = "macos")]
+fn browser_open_command() -> &'static str {
+    "open"
+}
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn browser_open_command() -> &'static str {
+    "xdg-open"
+}
+
+/// Whether the startup path may re-enable native window decorations on the
+/// freshly created winit window (the explicit `set_decorations(true)` call).
+///
+/// This exists solely for the WSLg workaround (commit d754dd3): on WSLg/X11
+/// the top-level desktop presentation needs the explicit decoration request.
+/// Windows and macOS keep Slint's `no-frame: true` self-drawn chrome — the
+/// override must not fire there, or the native titlebar draws on top of the
+/// app's own titlebar.
+pub(crate) fn startup_native_decorations_wanted() -> bool {
+    cfg!(target_os = "linux")
+}
 use tray_icon::{TrayIconEvent, menu::MenuEvent, MouseButton};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -58,6 +82,17 @@ slint::include_modules!();
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     commit_heap_pages_on_demand();
     let _tokio_guard = tokio::runtime::Handle::current().enter();
+
+    // Settings, the token vault and the log live in the working directory. An .app
+    // opened from Finder starts in "/" (read-only), so on macOS use the user's
+    // Application Support folder instead.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = std::path::Path::new(&home).join("Library/Application Support/Litecord");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = std::env::set_current_dir(&dir);
+        }
+    }
 
     #[cfg(all(unix, not(target_vendor = "apple")))]
     let _ = i_slint_backend_winit::set_xdg_app_id("litecord");
@@ -240,8 +275,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_capture::set_main_window_has_area(has);
                 refresh_main();
             }
+            // Files dragged onto the window: a hint while hovering, attached on drop.
+            match ev {
+                winit::event::WindowEvent::HoveredFile(_) => {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_drop_hint(crate::ui::uploads::drop_hint().into());
+                    }
+                }
+                winit::event::WindowEvent::HoveredFileCancelled => {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_drop_hint("".into());
+                    }
+                }
+                winit::event::WindowEvent::DroppedFile(path) => {
+                    if let Some(ui) = main_weak.upgrade() {
+                        ui.set_drop_hint("".into());
+                    }
+                    crate::ui::uploads::add(vec![path.clone()], &main_weak);
+                }
+                _ => {}
+            }
             if matches!(ev, winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::Resized(_)) {
                 crate::ui::window_place::observe(&main_weak);
+                // On macOS `is_maximized()` is a mutating getter for borderless windows (winit
+                // re-applies the style mask to ask AppKit), which posts another window event and
+                // loops forever. The app tracks maximize state itself there, so don't query it.
+                #[cfg(not(target_os = "macos"))]
                 window.with_winit_window(|w| {
                     // Maximizing also happens outside the title bar button (Win+Up, snapping).
                     if let Some(ui) = main_weak.upgrade() {
@@ -356,8 +415,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                #[cfg(not(target_os = "windows"))]
-                {
+                // WSLg/X11 needs the explicit decoration request for instant
+                // desktop presentation (commit d754dd3); Windows and macOS
+                // keep Slint's `no-frame` self-drawn chrome.
+                if startup_native_decorations_wanted() {
                     winit_win.set_decorations(true);
                 }
             });
@@ -570,11 +631,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            let _ = std::process::Command::new(browser_open_command()).arg(&url).spawn();
         }
     });
 
     let app_weak_dl = app_weak.clone();
+    app.on_seek_audio(move |url: SharedString, f: f32| audio::clip_player::seek(url.as_str(), f as f64));
+
+    // Big video view and full screen.
+    {
+        let w = app_weak.clone();
+        app.on_open_video_modal(move || {
+            if let Some(ui) = w.upgrade() {
+                audio::clip_mp4::FULL_SIZE.store(true, std::sync::atomic::Ordering::Relaxed);
+                ui.set_video_modal_open(true);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_close_video_modal(move || {
+            if let Some(ui) = w.upgrade() {
+                audio::clip_player::close_video_window(&ui);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_toggle_video_fullscreen(move || {
+            if let Some(ui) = w.upgrade() {
+                let next = !ui.get_video_fullscreen();
+                ui.set_video_fullscreen(next);
+                ui.window().set_fullscreen(next);
+            }
+        });
+    }
+
+    // Emoji / sticker picker.
+    {
+        let (w, http, guild) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_guild_id));
+        app.on_picker_toggle(move |tab: i32| {
+            let Some(ui) = w.upgrade() else { return };
+            let h = http.lock().unwrap().as_ref().cloned();
+            let g = guild.lock().unwrap().clone();
+            crate::ui::picker::toggle(&ui, tab, h, g);
+        });
+        let w = app_weak.clone();
+        app.on_picker_close(move || {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::close(&ui);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_picker_set_tab(move |t: i32| {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::set_tab(&ui, t);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_picker_search(move || {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::search(&ui);
+            }
+        });
+        let w = app_weak.clone();
+        app.on_picker_scrolled(move |top: f32, h: f32| {
+            if let Some(ui) = w.upgrade() {
+                crate::ui::picker::scrolled(&ui, top, h);
+            }
+        });
+        let (w, http, chan) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_channel_id));
+        app.on_picker_pick(move |r: i32, c: i32| {
+            let Some(ui) = w.upgrade() else { return };
+            let h = http.lock().unwrap().as_ref().cloned();
+            let ch = chan.lock().unwrap().clone();
+            crate::ui::picker::pick(&ui, r, c, h, ch);
+        });
+    }
+
+    let app_weak_play = app_weak.clone();
+    app.on_play_audio(move |url: SharedString| {
+        audio::clip_player::toggle(url.to_string(), app_weak_play.clone());
+    });
+
     app.on_download_attachment(move |att_id: SharedString, filename: SharedString, url: SharedString| {
         let cache = attachment_cache::get_attachment_cache();
         cache.download_full_async(att_id.as_str(), filename.as_str(), url.as_str(), app_weak_dl.clone());
@@ -1761,14 +1896,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let username = if is_self {
                         let resolved = if my_user_id != 0 { gateway::get_user_name(my_user_id) } else { String::new() };
-                        if resolved.is_empty() || resolved.starts_with("Participante #") {
-                            "Você".to_string()
+                        if resolved.is_empty() || crate::utils::i18n_extra::is_placeholder_participant(&resolved) {
+                            crate::utils::i18n_ui::en_pt("You", "Você").to_string()
                         } else {
                             resolved
                         }
                     } else {
                         let uname = gateway::get_user_name(user_id);
-                        if uname.starts_with("Participante #") {
+                        if crate::utils::i18n_extra::is_placeholder_participant(&uname) {
                             if let Ok(http_opt) = http_client_voice_loop_inner.try_lock() {
                                 if let Some(http) = http_opt.clone() {
                                     static FETCHING_USERS: std::sync::OnceLock<Arc<Mutex<std::collections::HashSet<u64>>>> = std::sync::OnceLock::new();
@@ -2406,6 +2541,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    crate::ui::member_list::set_app(app_weak.clone());
+    {
+        let (w, http, chan) = (app_weak.clone(), Arc::clone(&http_client), Arc::clone(&active_channel_id));
+        app.on_toggle_member_list(move || {
+            let on = video_settings::toggle_show_member_list();
+            if let Some(ui) = w.upgrade() {
+                ui.set_show_member_list(on);
+            }
+            if on {
+                let h = http.lock().unwrap().as_ref().cloned();
+                let ch = chan.lock().unwrap().clone();
+                if let Some(h) = h {
+                    if !ch.is_empty() {
+                        crate::ui::member_list::open_channel(&h, &w, &ch);
+                    }
+                }
+            } else {
+                crate::ui::member_list::clear(&w);
+            }
+        });
+        app.on_member_list_scrolled(|row: i32| crate::ui::member_list::scrolled(row));
+    }
+
     let app_weak_hw = app_weak.clone();
     app.on_toggle_hardware_monitor(move || {
         let new_val = video_settings::toggle_show_hardware_monitor();
@@ -2615,7 +2773,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     let friendly = if e.is_connect() {
-                        "Falha de conexão: o proxy recusou a conexão ou está offline.".to_string()
+                        crate::utils::i18n_ui::en_pt("Connection failed: the proxy refused the connection or is offline.", "Falha de conexão: o proxy recusou a conexão ou está offline.").to_string()
                     } else if e.is_timeout() {
                         "Tempo esgotado: o servidor proxy demorou para responder.".to_string()
                     } else {
@@ -2727,7 +2885,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 current_msgs.push(ChatMessage {
                     id: "".into(),
                     author: "Litecord Voice".into(),
-                    content: "🔴 Desconectado da sala de voz.".into(),
+                    content: crate::utils::i18n_ui::en_pt("🔴 Disconnected from the voice channel.", "🔴 Desconectado da sala de voz.").into(),
                     commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
@@ -2965,7 +3123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(e) = updater::download_and_install_update(rel.download_url, prog_tx).await {
                     error!("Erro ao atualizar Litecord: {}", e);
                     let app_w = app_w_fail.clone();
-                    let err_msg = format!("Falha na atualização: {}", e);
+                    let err_msg = format!("{}: {}", crate::utils::i18n_ui::en_pt("Update failed", "Falha na atualização"), e);
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_w.upgrade() {
                             ui.set_is_updating(false);
@@ -3834,6 +3992,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.on_select_guild(move |guild_id: SharedString| {
         let gid = guild_id.to_string();
         info!("Servidor selecionado pelo usuário: {}", gid);
+        crate::ui::member_list::set_guild(&gid);
 
         if let Some(ui) = app_weak_guild_select.upgrade() {
             ui.set_is_voice_focused(false);
@@ -3995,9 +4154,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sm_chan_select = Arc::clone(&screen_manager);
 
+    let app_weak_clear_files = app_weak.clone();
     app.on_select_channel(move |channel_id: SharedString| {
         let ch_id = channel_id.to_string();
         info!("Canal selecionado pelo usuário: {}", ch_id);
+        let changed = *active_channel_chan_select.lock().unwrap() != ch_id;
+        if changed && crate::ui::uploads::has_pending() {
+            crate::ui::uploads::clear(&app_weak_clear_files);
+        }
         *active_channel_chan_select.lock().unwrap() = ch_id.clone();
 
         let gid = active_guild_chan_select.lock().unwrap().clone();
@@ -4272,18 +4436,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Send Message Callback from UI
     let http_client_msg = Arc::clone(&http_client);
     let active_channel_msg = Arc::clone(&active_channel_id);
+    let app_weak_send = app_weak.clone();
     app.on_send_message(move |content: SharedString| {
         let content_str = content.to_string();
         let channel_id = active_channel_msg.lock().unwrap().clone();
         invalidate_message_cache(&channel_id);
         let http_opt = http_client_msg.lock().unwrap().as_ref().cloned();
+        let files = crate::ui::uploads::take();
 
         if let Some(http) = http_opt {
+            if files.is_empty() {
+                tokio::spawn(async move {
+                    let _ = http.send_message(&channel_id, &content_str).await;
+                });
+                return;
+            }
+            let app_w = app_weak_send.clone();
+            crate::ui::uploads::refresh_ui(&app_w, crate::ui::uploads::sending_text(files.len()));
             tokio::spawn(async move {
-                let _ = http.send_message(&channel_id, &content_str).await;
+                let status = match http.send_message_with_files(&channel_id, &content_str, &files).await {
+                    Ok(()) => String::new(),
+                    Err(413) => crate::ui::uploads::too_large_text(),
+                    Err(code) => crate::ui::uploads::failed_text(&if code == 0 { "network".to_string() } else { format!("HTTP {}", code) }),
+                };
+                if status.is_empty() {
+                    crate::ui::uploads::refresh_ui(&app_w, status);
+                } else {
+                    crate::ui::uploads::show_error(&app_w, status);
+                }
             });
         }
     });
+
+    let app_weak_pick = app_weak.clone();
+    app.on_pick_files(move || crate::ui::uploads::pick(app_weak_pick.clone()));
+    let app_weak_rm = app_weak.clone();
+    app.on_remove_pending_file(move |i: i32| crate::ui::uploads::remove(i.max(0) as usize, &app_weak_rm));
+    let app_weak_rename = app_weak.clone();
+    app.on_rename_pending_file(move |i: i32, name: SharedString| {
+        crate::ui::uploads::rename(i.max(0) as usize, name.as_str(), &app_weak_rename)
+    });
+    let app_weak_spoiler = app_weak.clone();
+    app.on_toggle_spoiler(move |i: i32| crate::ui::uploads::toggle_spoiler(i.max(0) as usize, &app_weak_spoiler));
 
     // Community onboarding: pick answers, save them, then reload the server so the
     // new roles and channels appear immediately.
@@ -4678,8 +4872,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_weak_max = app_weak.clone();
     app.on_maximize_window(move || {
         if let Some(app_instance) = app_weak_max.upgrade() {
-            // `window().is_maximized()` misses the state on some Wayland compositors.
+            // `window().is_maximized()` misses the state on some Wayland compositors; on
+            // macOS querying winit's state is a mutating getter for borderless windows, so
+            // there the UI property is the source of truth.
+            #[allow(unused_mut)]
             let mut is_max = app_instance.get_is_maximized();
+            #[cfg(not(target_os = "macos"))]
             app_instance.window().with_winit_window(|w| {
                 is_max = crate::ui::window_place::is_maximized(w);
             });
@@ -4772,7 +4970,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = app_weak_inner.upgrade() {
                             let clean_reason = if reason_clone.contains("10054") || reason_clone.contains("ConnectionReset") || reason_clone.contains("reset by peer") {
-                                "Conexão reiniciada".to_string()
+                                crate::utils::i18n_ui::en_pt("Connection restarted", "Conexão reiniciada").to_string()
                             } else if reason_clone.contains("timeout") || reason_clone.contains("TimedOut") {
                                 "Sem internet / Timeout".to_string()
                             } else {
@@ -5080,7 +5278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 resolved_name = if !caller_raw.is_empty() && caller_raw != "Alguém" {
                                     caller_raw
                                 } else {
-                                    "Amigo".to_string()
+                                    crate::utils::i18n_ui::en_pt("Friend", "Amigo").to_string()
                                 };
                             }
 
@@ -5112,6 +5310,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
     crate::ui::window_place::save_now();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Chat links must hand off to the platform's default-browser handler:
+    /// `open` on macOS (there is no xdg-open — links would silently fail),
+    /// xdg-open on the other non-Windows platforms. Windows uses
+    /// ShellExecuteW directly in `on_open_link`, so it has no command.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn browser_open_command_is_open_on_macos() {
+        assert_eq!(crate::browser_open_command(), "open");
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    #[test]
+    fn browser_open_command_is_xdg_open_off_macos() {
+        assert_eq!(crate::browser_open_command(), "xdg-open");
+    }
+
+    /// Slint's `no-frame: true` chrome is authoritative on Windows and macOS;
+    /// only Linux keeps the WSLg override that re-enables native decorations
+    /// at startup (commit d754dd3). On macOS the override must be off, or the
+    /// native titlebar doubles the app's own titlebar.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn startup_native_decorations_are_linux_only() {
+        assert_eq!(
+            crate::startup_native_decorations_wanted(),
+            cfg!(target_os = "linux"),
+            "the explicit native-decoration startup override (WSLg workaround) must apply to Linux only; Windows and macOS keep Slint's no-frame chrome",
+        );
+    }
 }
 
 /// Lights or clears the speaking ring on the sidebar rows of call members. Only the

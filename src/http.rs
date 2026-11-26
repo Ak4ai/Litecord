@@ -9,6 +9,29 @@ pub struct DiscordHttpClient {
     token: String,
 }
 
+/// Content type by extension, so Discord shows images, video and audio inline.
+fn mime_for(p: &std::path::Path) -> &'static str {
+    let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "ogg" | "opus" => "audio/ogg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "flac" => "audio/flac",
+        "txt" | "log" => "text/plain",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
 impl DiscordHttpClient {
     pub fn new(token: String) -> Self {
         let clean_token = token.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect::<String>();
@@ -285,6 +308,70 @@ impl DiscordHttpClient {
                 let err = format!("Falha ao enviar mensagem via HTTP: {:?}", e);
                 error!("{}", err);
                 Err(err)
+            }
+        }
+    }
+
+    /// GET on a Discord API path (e.g. "/guilds/1/emojis").
+    pub async fn get_json(&self, path: &str) -> Result<serde_json::Value, String> {
+        let url = format!("https://discord.com/api/v10{}", path);
+        let resp = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        resp.json().await.map_err(|e| e.to_string())
+    }
+
+    /// Sends one of the server's stickers as a message.
+    pub async fn send_sticker(&self, channel_id: &str, sticker_id: &str) -> Result<(), String> {
+        let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
+        let resp = self.client.post(&url).json(&json!({ "sticker_ids": [sticker_id] })).send().await.map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            error!("Falha ao enviar figurinha: HTTP {}", resp.status());
+            Err(format!("HTTP {}", resp.status()))
+        }
+    }
+
+    /// Sends a message with files attached (multipart), streaming each file
+    /// from disk. Returns the HTTP status on failure (413 = too large).
+    pub async fn send_message_with_files(
+        &self,
+        channel_id: &str,
+        content: &str,
+        files: &[(std::path::PathBuf, String)],
+    ) -> Result<(), u16> {
+        let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
+        let attachments: Vec<_> = files
+            .iter()
+            .enumerate()
+            .map(|(i, (_, name))| json!({ "id": i, "filename": name }))
+            .collect();
+        let payload = json!({ "content": content, "attachments": attachments });
+        let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
+        for (i, (p, name)) in files.iter().enumerate() {
+            let file = tokio::fs::File::open(p).await.map_err(|_| 0u16)?;
+            let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+            let body = reqwest::Body::from(file);
+            let part = reqwest::multipart::Part::stream_with_length(body, len)
+                .file_name(name.clone())
+                .mime_str(mime_for(p))
+                .map_err(|_| 0u16)?;
+            form = form.part(format!("files[{}]", i), part);
+        }
+        match self.client.post(&url).multipart(form).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!("{} arquivo(s) enviados para o canal {}", files.len(), channel_id);
+                Ok(())
+            }
+            Ok(resp) => {
+                error!("Falha ao enviar arquivos: HTTP {}", resp.status());
+                Err(resp.status().as_u16())
+            }
+            Err(e) => {
+                error!("Falha ao enviar arquivos: {:?}", e);
+                Err(0)
             }
         }
     }

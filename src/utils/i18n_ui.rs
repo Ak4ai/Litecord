@@ -151,6 +151,8 @@ ui_strings! {
     (stream_ui_title, set_stream_ui_title, "STREAM NOTICES AND INTERFACE", "AVISOS E INTERFACE DE TRANSMISSÃO", "AVISOS E INTERFAZ DE TRANSMISIÓN", "HINWEISE UND OBERFLÄCHE DER ÜBERTRAGUNG", "AVIS ET INTERFACE DE DIFFUSION", "УВЕДОМЛЕНИЯ И ИНТЕРФЕЙС ТРАНСЛЯЦИИ", "配信の通知とインターフェース"),
     (economy_notice, set_economy_notice, "Reduced Preview Notice", "Aviso de Prévia Econômica", "Aviso de vista previa reducida", "Hinweis auf reduzierte Vorschau", "Avis d'aperçu réduit", "Уведомление об уменьшенном предпросмотре", "簡易プレビューの通知"),
     (economy_notice_desc, set_economy_notice_desc, "Shows the warning pill in your own preview when the stream starts, telling you the frame rate is reduced to save resources.", "Exibe a pílula de aviso na pré-visualização própria ao iniciar a transmissão informando sobre a taxa de quadros reduzida para economizar recursos.", "Muestra la etiqueta de aviso en tu propia vista previa al iniciar la transmisión, indicando que la tasa de fotogramas se reduce para ahorrar recursos.", "Zeigt beim Start der Übertragung in deiner eigenen Vorschau ein Hinweis-Label, dass die Bildrate zur Ressourcenschonung reduziert ist.", "Affiche l'étiquette d'avertissement dans votre propre aperçu au démarrage de la diffusion, indiquant que la fréquence d'images est réduite pour économiser des ressources.", "Показывает метку-предупреждение в вашем предпросмотре при запуске трансляции: частота кадров снижена для экономии ресурсов.", "配信開始時、自分のプレビューに、リソース節約のためフレームレートを下げている旨の通知を表示します。"),
+    (member_list, set_member_list, "Server member list", "Lista de membros do servidor", "Lista de miembros del servidor", "Mitgliederliste des Servers", "Liste des membres du serveur", "Список участников сервера", "サーバーのメンバーリスト"),
+    (member_list_desc, set_member_list_desc, "Shows a thin column of member pictures to the right of the chat; hover it to see names. Offline members are faded.", "Mostra uma coluna fina com as fotos dos membros à direita do chat; passe o mouse para ver os nomes. Quem está offline fica esmaecido.", "Muestra una columna fina con las fotos de los miembros a la derecha del chat; pasa el ratón para ver los nombres. Los desconectados aparecen atenuados.", "Zeigt rechts neben dem Chat eine schmale Spalte mit Mitgliederbildern; beim Überfahren erscheinen die Namen. Offline-Mitglieder sind abgeblendet.", "Affiche une fine colonne de photos des membres à droite du chat ; survolez-la pour voir les noms. Les membres hors ligne sont estompés.", "Показывает узкую колонку с аватарами участников справа от чата; наведите курсор, чтобы увидеть имена. Участники не в сети затемнены.", "チャットの右に細いメンバーアイコンの列を表示します。マウスを乗せると名前が表示されます。オフラインのメンバーは薄く表示されます。"),
     (perf_monitor, set_perf_monitor, "Performance Monitor (CPU / RAM / GPU)", "Monitor de Desempenho (CPU / RAM / GPU)", "Monitor de rendimiento (CPU / RAM / GPU)", "Leistungsmonitor (CPU / RAM / GPU)", "Moniteur de performances (CPU / RAM / GPU)", "Монитор производительности (CPU / RAM / GPU)", "パフォーマンスモニター (CPU / RAM / GPU)"),
     (perf_monitor_desc, set_perf_monitor_desc, "Shows live RAM, CPU and GPU usage in the application title bar next to the settings.", "Exibe em tempo real o percentual de uso de RAM, CPU e GPU na barra de título do aplicativo ao lado das configurações.", "Muestra en tiempo real el uso de RAM, CPU y GPU en la barra de título de la aplicación, junto a los ajustes.", "Zeigt die RAM-, CPU- und GPU-Auslastung live in der Titelleiste der Anwendung neben den Einstellungen an.", "Affiche en temps réel l'utilisation de la RAM, du CPU et du GPU dans la barre de titre de l'application, à côté des paramètres.", "Показывает в реальном времени загрузку RAM, CPU и GPU в строке заголовка приложения рядом с настройками.", "RAM、CPU、GPUの使用率を、設定の横にあるアプリのタイトルバーにリアルタイムで表示します。"),
     (net_diag_title, set_net_diag_title, "Network diagnostics", "Diagnóstico de rede", "Diagnóstico de red", "Netzwerkdiagnose", "Diagnostic réseau", "Диагностика сети", "ネットワーク診断"),
@@ -356,6 +358,36 @@ pub fn ui_text() -> &'static UiStrings {
         6 => &JA_UI,
         _ => &EN_UI,
     }
+}
+
+/// Text in the language shown in the UI, given its English and Portuguese
+/// versions. The other languages come from `i18n_extra`, or stay in English.
+/// Picks one of seven already formatted texts, in the order
+/// `[en, pt, es, de, fr, ru, ja]`, by the language shown in the UI.
+pub fn pick(texts: [String; 7]) -> String {
+    let idx = match current_language() {
+        Language::Portuguese => 1,
+        Language::Spanish => 2,
+        Language::German => 3,
+        Language::French => 4,
+        Language::Russian => 5,
+        Language::Japanese => 6,
+        _ => 0,
+    };
+    texts.into_iter().nth(idx).unwrap_or_default()
+}
+
+pub fn en_pt(en: &'static str, pt: &'static str) -> &'static str {
+    let idx = match current_language() {
+        Language::Portuguese => return pt,
+        Language::Spanish => 0,
+        Language::German => 1,
+        Language::French => 2,
+        Language::Russian => 3,
+        Language::Japanese => 4,
+        _ => return en,
+    };
+    super::i18n_extra::others(en).map(|t| t[idx]).unwrap_or(en)
 }
 
 pub fn table_for(lang: Language) -> &'static UiStrings {

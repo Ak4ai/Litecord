@@ -7,6 +7,10 @@ pub mod message_grouping;
 pub mod gpu_video;
 pub mod window_place;
 pub mod onboarding;
+pub mod uploads;
+pub mod picker;
+pub mod member_list;
+pub mod emoji_data;
 
 pub use helpers::*;
 pub use data_loader::*;

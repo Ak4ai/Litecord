@@ -319,6 +319,7 @@ pub async fn fetch_and_populate_channels(
 ) {
     info!("Buscando canais do servidor {} via REST API...", guild_id);
     *active_guild_id.lock().unwrap() = guild_id.to_string();
+    crate::ui::member_list::set_guild(guild_id);
 
     let g_name = guilds_map.lock().unwrap()
         .get(guild_id)
@@ -611,7 +612,7 @@ pub async fn fetch_and_populate_channels(
                 let empty_msgs = vec![ChatMessage {
                     id: "".into(),
                     author: "Litecord System".into(),
-                    content: "Este servidor não possui canais de texto acessíveis para a sua conta.".into(),
+                    content: crate::utils::i18n_ui::en_pt("This server has no text channels your account can access.", "Este servidor não possui canais de texto acessíveis para a sua conta.").into(),
                     commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
@@ -688,6 +689,14 @@ async fn open_first_readable_channel(
         }
         let ch_id = text_ch.id.clone();
         *active_channel_id.lock().unwrap() = ch_id.clone();
+        // The chat only paints the batch of the channel the UI has open, so the UI
+        // must know the new channel first, or the previous server's chat stays.
+        let (app_w_open, open_id) = (app_weak.clone(), ch_id.clone());
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = app_w_open.upgrade() {
+                ui.set_active_channel_id(open_id.into());
+            }
+        });
         let readable = load_messages_for_channel(http, app_weak.clone(), &ch_id).await;
         let current = active_channel_id.lock().unwrap().clone();
         if current != ch_id {
@@ -807,14 +816,14 @@ pub async fn fetch_and_populate_dms(
                     let (name, initials) = if let Some(recipients) = dm["recipients"].as_array() {
                         if let Some(first_user) = recipients.first() {
                             let disp_name = first_user["global_name"].as_str()
-                                .unwrap_or_else(|| first_user["username"].as_str().unwrap_or("Amigo"));
+                                .unwrap_or_else(|| first_user["username"].as_str().unwrap_or(crate::utils::i18n_ui::en_pt("Friend", "Amigo")));
                             let inits = get_guild_initials(disp_name);
                             (disp_name.to_string(), inits)
                         } else {
-                            ("Amigo".to_string(), "DM".to_string())
+                            (crate::utils::i18n_ui::en_pt("Friend", "Amigo").to_string(), "DM".to_string())
                         }
                     } else {
-                        ("Amigo".to_string(), "DM".to_string())
+                        (crate::utils::i18n_ui::en_pt("Friend", "Amigo").to_string(), "DM".to_string())
                     };
                     (name, initials)
                 };
@@ -962,6 +971,7 @@ pub async fn load_messages_for_channel(
 ) -> bool {
     info!("Carregando mensagens do canal {}...", channel_id);
     emoji_cache::get_emoji_cache().set_active_channel(channel_id);
+    crate::ui::member_list::open_channel(http, &app_weak, channel_id);
     // Reopening a channel paints its last batch at once; REST only replaces it when
     // something changed, so switching channels feels instant.
     let cached = message_cache_get(channel_id);
@@ -993,9 +1003,9 @@ pub async fn load_messages_for_channel(
             }
             error!("Erro ao carregar mensagens do canal {}: {}", channel_id, err);
             let friendly_msg = if err.contains("403") || err.contains("Forbidden") {
-                "Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.".to_string()
+                crate::utils::i18n_ui::en_pt("Private Channel\nThis channel is restricted and needs specific server roles to view its messages.", "Canal Privado\nEste canal é restrito e exige cargos específicos no servidor para visualizar as mensagens.").to_string()
             } else {
-                format!("Não foi possível carregar as mensagens ({})", err)
+                format!("{} ({})", crate::utils::i18n_ui::en_pt("Could not load the messages", "Não foi possível carregar as mensagens"), err)
             };
 
             let _ = slint::invoke_from_event_loop(move || {
@@ -1061,7 +1071,7 @@ fn paint_channel_messages(
                 vec![ChatMessage {
                     id: "".into(),
                     author: "Litecord System".into(),
-                    content: "Este canal está vazio ou não possui mensagens recentes.".into(),
+                    content: crate::utils::i18n_ui::en_pt("This channel is empty or has no recent messages.", "Este canal está vazio ou não possui mensagens recentes.").into(),
                     commands: slint::ModelRc::default(),
                     content_lines: slint::ModelRc::default(),
                     embed_content: "".into(),
